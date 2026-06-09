@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COUNT(*) AS rule_count, MAX(updated_at) AS max_updated_at FROM skills WHERE status = 'active'",
+  "describe": {
+    "columns": [
+      {
+        "name": "rule_count",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "max_updated_at",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "0ae6a78d16ce4f6e6cc1b0a448b163bbf32e2a59ee9166cbe60e00aba549cc5b"
+}

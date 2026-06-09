@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR REPLACE INTO auth (key, value) VALUES ('token', ?1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "2e38d3d8392c7958898fd9614aad54a6285183ff74b87affe33141d38bb34118"
+}

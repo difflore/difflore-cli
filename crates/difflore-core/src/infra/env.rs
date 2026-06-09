@@ -1,0 +1,368 @@
+// Centralized accessors for environment-derived runtime configuration.
+//
+// All env reads in non-test code should funnel through this module so that:
+//   * The list of recognised env vars is discoverable in one place.
+//   * Tests can shadow values by setting the var before first access (each
+//     accessor caches per-process via `OnceLock`).
+//   * Bool/integer parsing happens in one place.
+
+use std::ffi::OsString;
+use std::sync::OnceLock;
+
+// --- env var name constants ---
+
+pub const OPENAI_API_KEY: &str = "OPENAI_API_KEY";
+pub const ANTHROPIC_API_KEY: &str = "ANTHROPIC_API_KEY";
+
+pub const DIFFLORE_FIX_DEBUG: &str = "DIFFLORE_FIX_DEBUG";
+pub const DIFFLORE_FIX_DUMP_DIR: &str = "DIFFLORE_FIX_DUMP_DIR";
+pub const DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS: &str =
+    "DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS";
+pub const DIFFLORE_TRACE_HOOK: &str = "DIFFLORE_TRACE_HOOK";
+pub const DIFFLORE_HOOK_CACHE_TTL_MS: &str = "DIFFLORE_HOOK_CACHE_TTL_MS";
+/// Controls the per-process `hook_post_edit` short-circuit cache.
+///
+/// `auto` (default): apply the empirical heuristic — once a file extension
+/// has produced ≥10 hook serves in the trailing window with ≥90% empties,
+/// skip the index round-trip and return an empty rule list immediately.
+/// `off`: always run the full retrieval path (debugging / regression check).
+/// `force`: always short-circuit on the FIRST call for every extension —
+/// diagnostic-only; the agent gets no rules so cite this from a flag, not
+/// production config.
+///
+/// The cache is in-process and does NOT persist across CLI invocations:
+/// every fresh daemon launch re-learns. Short-circuited calls deliberately
+/// do not write to `mcp_rule_serves` or `cloud_outbox`, so a recovering
+/// corpus quality can let the extension recover the next launch.
+pub const DIFFLORE_HOOK_SHORT_CIRCUIT: &str = "DIFFLORE_HOOK_SHORT_CIRCUIT";
+pub const DIFFLORE_HOOK_CLIENT: &str = "DIFFLORE_HOOK_CLIENT";
+pub const DIFFLORE_HOOK_FORWARD: &str = "DIFFLORE_HOOK_FORWARD";
+pub const DIFFLORE_DEBUG_HOOKS: &str = "DIFFLORE_DEBUG_HOOKS";
+pub const DIFFLORE_HOOK_SHIM_TRACE: &str = "DIFFLORE_HOOK_SHIM_TRACE";
+/// Opt-in: allow the post-edit / pre-read hook to fall back to cross-repo
+/// "starter" rules when the current repo has no scoped memory. Default OFF —
+/// the hook is repo-level only: it surfaces THIS repo's own memory or stays
+/// silent, never auto-injecting transferable rules from other repos on every
+/// edit. (The explicit `difflore recall` command keeps its own starter path.)
+pub const DIFFLORE_HOOK_CROSS_REPO_STARTER: &str = "DIFFLORE_HOOK_CROSS_REPO_STARTER";
+pub const DIFFLORE_MASTER_KEY: &str = "DIFFLORE_MASTER_KEY";
+pub const DIFFLORE_HOME: &str = "DIFFLORE_HOME";
+pub const DIFFLORE_MCP_HOME: &str = "DIFFLORE_MCP_HOME";
+pub const DIFFLORE_NO_WELCOME: &str = "DIFFLORE_NO_WELCOME";
+pub const DIFFLORE_CLOUD_TOKEN: &str = "DIFFLORE_CLOUD_TOKEN";
+/// API key for `difflore embeddings setup` (BYOK), read from env/stdin so it
+/// stays out of shell history. The runtime resolver uses the encrypted key
+/// stored by that command — not a raw env var at embed time.
+pub const DIFFLORE_EMBEDDING_KEY: &str = "DIFFLORE_EMBEDDING_KEY";
+pub const DIFFLORE_TOKEN: &str = "DIFFLORE_TOKEN";
+pub const DIFFLORE_DEBUG_CLOUD: &str = "DIFFLORE_DEBUG_CLOUD";
+pub const DIFFLORE_DEBUG_TELEMETRY: &str = "DIFFLORE_DEBUG_TELEMETRY";
+pub const DIFFLORE_DEBUG_PROVIDERS: &str = "DIFFLORE_DEBUG_PROVIDERS";
+pub const DIFFLORE_BFS_RETRIEVAL: &str = "DIFFLORE_BFS_RETRIEVAL";
+pub const DIFFLORE_INTENT_RERANK: &str = "DIFFLORE_INTENT_RERANK";
+pub const DIFFLORE_DISABLE_RULES: &str = "DIFFLORE_DISABLE_RULES";
+/// Probability (0.0–0.10) that an MCP recall serve with caller-requested
+/// `top_k == 5` is transparently bumped to `top_k = 8` so we accrue data on
+/// whether rules at ranks 6–8 ever get accepted.
+pub const DIFFLORE_DEEP_RECALL_SAMPLE_RATE: &str = "DIFFLORE_DEEP_RECALL_SAMPLE_RATE";
+pub const DIFFLORE_CLAUDE_HOME: &str = "DIFFLORE_CLAUDE_HOME";
+pub const DIFFLORE_CLOUD_URL: &str = "DIFFLORE_CLOUD_URL";
+pub const DIFF_LORE_CLOUD_URL: &str = "DIFF_LORE_CLOUD_URL";
+
+pub const NO_COLOR: &str = "NO_COLOR";
+pub const COLORTERM: &str = "COLORTERM";
+pub const TERM: &str = "TERM";
+pub const PATH: &str = "PATH";
+pub const COLORFGBG: &str = "COLORFGBG";
+pub const DIFFLORE_THEME: &str = "DIFFLORE_THEME";
+
+// --- low-level helpers ---
+
+#[must_use]
+pub fn var(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
+
+#[must_use]
+pub fn var_os(name: &str) -> Option<OsString> {
+    std::env::var_os(name)
+}
+
+#[must_use]
+pub fn flag_set(name: &str) -> bool {
+    std::env::var_os(name).is_some()
+}
+
+#[must_use]
+pub fn non_empty(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+#[must_use]
+pub fn truthy(name: &str) -> bool {
+    matches!(std::env::var(name), Ok(v) if !v.is_empty() && v != "0" && v != "false")
+}
+
+// --- typed accessors (cached) ---
+
+#[must_use]
+pub fn fix_debug() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| flag_set(DIFFLORE_FIX_DEBUG))
+}
+
+#[must_use]
+pub fn trace_hook() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| flag_set(DIFFLORE_TRACE_HOOK))
+}
+
+/// Whether the hook may inject cross-repo "starter" rules when the current repo
+/// has no scoped memory. Default OFF: the hook is repo-level only — it surfaces
+/// THIS repo's own memory or stays silent, instead of injecting transferable
+/// rules from other repos on every edit. Set `DIFFLORE_HOOK_CROSS_REPO_STARTER`
+/// to a truthy value to opt back into cold-start starter hints in the hook.
+#[must_use]
+pub fn hook_cross_repo_starter_enabled() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| truthy(DIFFLORE_HOOK_CROSS_REPO_STARTER))
+}
+
+#[must_use]
+pub fn debug_cloud() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| flag_set(DIFFLORE_DEBUG_CLOUD))
+}
+
+#[must_use]
+pub fn debug_telemetry() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| flag_set(DIFFLORE_DEBUG_TELEMETRY))
+}
+
+#[must_use]
+pub fn debug_providers() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| flag_set(DIFFLORE_DEBUG_PROVIDERS))
+}
+
+#[must_use]
+pub fn hook_cache_ttl_ms() -> Option<u64> {
+    var(DIFFLORE_HOOK_CACHE_TTL_MS).and_then(|v| v.parse().ok())
+}
+
+/// Tri-state knob for the `hook_post_edit` short-circuit heuristic.
+///
+/// See [`DIFFLORE_HOOK_SHORT_CIRCUIT`] for the env semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookShortCircuitMode {
+    /// Apply the empirical heuristic — short-circuit when the trailing
+    /// window's empty-rate clears the threshold.
+    Auto,
+    /// Never short-circuit (debugging).
+    Off,
+    /// Always short-circuit (diagnostic only).
+    Force,
+}
+
+impl HookShortCircuitMode {
+    #[must_use]
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" | "disable" | "disabled" | "0" | "false" => Self::Off,
+            "force" | "always" => Self::Force,
+            _ => Self::Auto,
+        }
+    }
+}
+
+/// Resolve [`DIFFLORE_HOOK_SHORT_CIRCUIT`] into a tri-state mode.
+///
+/// Read directly from the env on every call so tests can flip behaviour
+/// without racing a `OnceLock` cache. The check is cheap (one
+/// `std::env::var` lookup) compared to the rest of the hook hot path.
+#[must_use]
+pub fn hook_short_circuit_mode() -> HookShortCircuitMode {
+    match var(DIFFLORE_HOOK_SHORT_CIRCUIT) {
+        Some(v) if !v.is_empty() => HookShortCircuitMode::parse(&v),
+        _ => HookShortCircuitMode::Auto,
+    }
+}
+
+/// Default deep-recall sample rate when the env var is unset (2%).
+pub const DEFAULT_DEEP_RECALL_SAMPLE_RATE: f32 = 0.02;
+
+/// Maximum permitted deep-recall sample rate (10%). Anything higher would
+/// substantially shift the cost/token profile of the hot recall path; the
+/// whole point of the sampler is "cheap occasional probe", not a knob the
+/// caller can crank into a second production mode.
+pub const MAX_DEEP_RECALL_SAMPLE_RATE: f32 = 0.10;
+
+/// Parse a raw `DIFFLORE_DEEP_RECALL_SAMPLE_RATE` string into a validated
+/// `f32` in `[0.0, MAX_DEEP_RECALL_SAMPLE_RATE]`.
+///
+/// Returns a human-readable error message on:
+/// * non-numeric input (e.g. `"two"`),
+/// * non-finite values (`NaN`, `±inf`),
+/// * negative values,
+/// * values above `MAX_DEEP_RECALL_SAMPLE_RATE`.
+///
+/// Empty / whitespace input is rejected too — an explicit
+/// `DIFFLORE_DEEP_RECALL_SAMPLE_RATE=` is almost always a typo, and silently
+/// falling back to the default would mask it; the caller can simply unset the
+/// var to get the default.
+pub fn parse_deep_recall_sample_rate(raw: &str) -> Result<f32, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!(
+            "{DIFFLORE_DEEP_RECALL_SAMPLE_RATE} is empty; unset it to use the default \
+             ({DEFAULT_DEEP_RECALL_SAMPLE_RATE}) or pass a value in \
+             [0.0, {MAX_DEEP_RECALL_SAMPLE_RATE}]"
+        ));
+    }
+    let parsed: f32 = trimmed.parse().map_err(|_| {
+        format!(
+            "{DIFFLORE_DEEP_RECALL_SAMPLE_RATE}={raw:?} is not a valid f32; expected a \
+             number in [0.0, {MAX_DEEP_RECALL_SAMPLE_RATE}]"
+        )
+    })?;
+    if !parsed.is_finite() {
+        return Err(format!(
+            "{DIFFLORE_DEEP_RECALL_SAMPLE_RATE}={raw:?} must be finite; got {parsed}"
+        ));
+    }
+    if !(0.0..=MAX_DEEP_RECALL_SAMPLE_RATE).contains(&parsed) {
+        return Err(format!(
+            "{DIFFLORE_DEEP_RECALL_SAMPLE_RATE}={parsed} is out of range; expected \
+             [0.0, {MAX_DEEP_RECALL_SAMPLE_RATE}]"
+        ));
+    }
+    Ok(parsed)
+}
+
+/// Resolve [`DIFFLORE_DEEP_RECALL_SAMPLE_RATE`] into a validated probability.
+///
+/// Read on every call (no `OnceLock` cache) so tests can flip the rate
+/// per-test without racing. The read is one `std::env::var` lookup and a
+/// short parse — negligible against the rest of the recall hot path.
+///
+/// An invalid env value falls back to [`DEFAULT_DEEP_RECALL_SAMPLE_RATE`]
+/// after logging a single `eprintln!` to stderr. Recall must never fail
+/// because of a malformed observability knob; the caller-visible behaviour
+/// degrades to "no sampling beyond the default", which is the safe default.
+#[must_use]
+pub fn deep_recall_sample_rate() -> f32 {
+    match var(DIFFLORE_DEEP_RECALL_SAMPLE_RATE) {
+        Some(raw) => match parse_deep_recall_sample_rate(&raw) {
+            Ok(rate) => rate,
+            Err(msg) => {
+                eprintln!(
+                    "[difflore] invalid {DIFFLORE_DEEP_RECALL_SAMPLE_RATE}: {msg}; \
+                     falling back to default {DEFAULT_DEEP_RECALL_SAMPLE_RATE}"
+                );
+                DEFAULT_DEEP_RECALL_SAMPLE_RATE
+            }
+        },
+        None => DEFAULT_DEEP_RECALL_SAMPLE_RATE,
+    }
+}
+
+#[must_use]
+pub fn master_key_hex() -> Option<String> {
+    var(DIFFLORE_MASTER_KEY)
+}
+
+#[must_use]
+pub fn difflore_home() -> Option<OsString> {
+    var_os(DIFFLORE_HOME)
+}
+
+#[must_use]
+pub fn fix_dump_dir() -> Option<String> {
+    var(DIFFLORE_FIX_DUMP_DIR)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_deep_recall_sample_rate_accepts_in_range_values() {
+        for raw in ["0.0", "0.02", "0.05", "0.10", " 0.02 "] {
+            let parsed = parse_deep_recall_sample_rate(raw)
+                .unwrap_or_else(|e| panic!("expected {raw:?} to parse, got error: {e}"));
+            assert!(
+                (0.0..=MAX_DEEP_RECALL_SAMPLE_RATE).contains(&parsed),
+                "{raw:?} parsed to {parsed}, outside the permitted range"
+            );
+        }
+        // Exact-value sanity for the canonical defaults users will set.
+        assert!((parse_deep_recall_sample_rate("0.02").unwrap() - 0.02).abs() < 1e-6);
+        assert!((parse_deep_recall_sample_rate("0.0").unwrap()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hook_short_circuit_mode_parses_each_state() {
+        assert_eq!(
+            HookShortCircuitMode::parse("auto"),
+            HookShortCircuitMode::Auto
+        );
+        assert_eq!(HookShortCircuitMode::parse(""), HookShortCircuitMode::Auto);
+        assert_eq!(
+            HookShortCircuitMode::parse("AUTO"),
+            HookShortCircuitMode::Auto
+        );
+        assert_eq!(
+            HookShortCircuitMode::parse("off"),
+            HookShortCircuitMode::Off
+        );
+        assert_eq!(
+            HookShortCircuitMode::parse("OFF"),
+            HookShortCircuitMode::Off
+        );
+        assert_eq!(
+            HookShortCircuitMode::parse("disabled"),
+            HookShortCircuitMode::Off
+        );
+        assert_eq!(HookShortCircuitMode::parse("0"), HookShortCircuitMode::Off);
+        assert_eq!(
+            HookShortCircuitMode::parse("false"),
+            HookShortCircuitMode::Off
+        );
+        assert_eq!(
+            HookShortCircuitMode::parse("force"),
+            HookShortCircuitMode::Force
+        );
+        assert_eq!(
+            HookShortCircuitMode::parse("FORCE"),
+            HookShortCircuitMode::Force
+        );
+        assert_eq!(
+            HookShortCircuitMode::parse("always"),
+            HookShortCircuitMode::Force
+        );
+        // Unknown values fall back to Auto rather than silently disabling
+        // the feature.
+        assert_eq!(
+            HookShortCircuitMode::parse("yolo"),
+            HookShortCircuitMode::Auto
+        );
+    }
+
+    #[test]
+    fn parse_deep_recall_sample_rate_rejects_out_of_range_and_garbage() {
+        // Above the 10% cap.
+        assert!(parse_deep_recall_sample_rate("0.5").is_err());
+        assert!(parse_deep_recall_sample_rate("1.0").is_err());
+        // Negative.
+        assert!(parse_deep_recall_sample_rate("-0.01").is_err());
+        // Non-numeric.
+        assert!(parse_deep_recall_sample_rate("two").is_err());
+        // Empty / whitespace.
+        assert!(parse_deep_recall_sample_rate("").is_err());
+        assert!(parse_deep_recall_sample_rate("   ").is_err());
+        // Non-finite.
+        assert!(parse_deep_recall_sample_rate("NaN").is_err());
+        assert!(parse_deep_recall_sample_rate("inf").is_err());
+    }
+}

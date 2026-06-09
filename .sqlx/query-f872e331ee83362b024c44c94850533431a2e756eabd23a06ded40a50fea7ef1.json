@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO fix_outcomes (id, rule_id, rule_name, file_path, accepted, applied_ok, created_at) VALUES ('r1', 'router', 'Pin Actions to commit SHAs', '.github/workflows/ci.yml', 1, 1, '2026-05-05T10:00:00Z'), ('r2', 'router', 'Pin Actions to commit SHAs', '.github/workflows/ci.yml', 1, 1, '2026-05-05T11:00:00Z'), ('r3', 'router', 'Pin Actions to commit SHAs', '.github/workflows/ci.yml', 1, 1, '2026-05-05T12:00:00Z'), ('g1', 'gin', 'BindAll returns 413 for MaxBytesError', 'binding/binding.go', 1, 1, '2026-05-05T13:00:00Z')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "f872e331ee83362b024c44c94850533431a2e756eabd23a06ded40a50fea7ef1"
+}

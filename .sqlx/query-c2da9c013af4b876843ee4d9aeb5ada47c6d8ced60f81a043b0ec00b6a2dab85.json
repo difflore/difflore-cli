@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, kind, source, confidence_before, confidence_after, reason, created_at FROM rule_events WHERE skill_id = ?1 ORDER BY created_at ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "kind",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "source",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "confidence_before",
+        "ordinal": 3,
+        "type_info": "Float"
+      },
+      {
+        "name": "confidence_after",
+        "ordinal": 4,
+        "type_info": "Float"
+      },
+      {
+        "name": "reason",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 6,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "c2da9c013af4b876843ee4d9aeb5ada47c6d8ced60f81a043b0ec00b6a2dab85"
+}

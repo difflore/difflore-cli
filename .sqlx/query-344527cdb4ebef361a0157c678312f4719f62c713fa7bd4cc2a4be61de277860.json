@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO rule_chunks (id, skill_id, content, embedding, file_patterns) VALUES ('rule-legacy', 'legacy', 'legacy rule body', NULL, NULL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "344527cdb4ebef361a0157c678312f4719f62c713fa7bd4cc2a4be61de277860"
+}

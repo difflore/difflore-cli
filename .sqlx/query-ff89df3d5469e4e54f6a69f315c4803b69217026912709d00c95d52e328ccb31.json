@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM rule_chunks WHERE skill_id = 't1'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "ff89df3d5469e4e54f6a69f315c4803b69217026912709d00c95d52e328ccb31"
+}

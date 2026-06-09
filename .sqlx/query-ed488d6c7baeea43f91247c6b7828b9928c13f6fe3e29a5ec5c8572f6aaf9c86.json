@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE skills SET id = ?1 WHERE id = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "ed488d6c7baeea43f91247c6b7828b9928c13f6fe3e29a5ec5c8572f6aaf9c86"
+}

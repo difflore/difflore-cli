@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, name, description, origin, installed_at, file_patterns FROM skills WHERE status = 'pending' AND (source_repo = ?1 OR (repo_owner || '/' || repo_name) = ?1) ORDER BY installed_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "description",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "origin",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "installed_at",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_patterns",
+        "ordinal": 5,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "6849bdce0f2a1c7f91706cd2cbaef5541d18068d22d21b6527b47975268c0ff4"
+}

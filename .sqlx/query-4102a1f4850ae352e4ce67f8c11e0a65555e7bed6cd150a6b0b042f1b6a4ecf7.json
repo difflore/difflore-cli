@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO rule_examples (id, skill_id, bad_code, good_code, description, source, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "4102a1f4850ae352e4ce67f8c11e0a65555e7bed6cd150a6b0b042f1b6a4ecf7"
+}

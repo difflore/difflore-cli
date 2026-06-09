@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE cloud_outbox SET payload_json = ?1, enriched_at = ?2 WHERE id = ?3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "c12a2078ed0647c4f289cf2395dfe707d52bead519a6fff80e18c92eba8c2be8"
+}

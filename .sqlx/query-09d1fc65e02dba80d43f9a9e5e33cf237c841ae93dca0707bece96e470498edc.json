@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM rule_chunks WHERE skill_id NOT IN (SELECT value FROM json_each(?1))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "09d1fc65e02dba80d43f9a9e5e33cf237c841ae93dca0707bece96e470498edc"
+}

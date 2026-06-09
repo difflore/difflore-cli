@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE skills SET name = ?1, description = ?2, type = ?3, version = ?4,\n                 engines = ?5, tags = ?6, trigger = ?7, check_prompt = ?8, file_patterns = ?9,\n                 enabled_for_codex = 1, enabled_for_claude = 1,\n                 enabled_for_gemini = 1, enabled_for_cursor = 1,\n                 updated_at = ?10\n                 WHERE id = ?11",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 11
+    },
+    "nullable": []
+  },
+  "hash": "ff8c227093326e98634564b99eac3fe107024d2302a8e84da0961bbde371ed4a"
+}

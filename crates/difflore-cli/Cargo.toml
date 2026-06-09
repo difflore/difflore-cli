@@ -1,0 +1,86 @@
+[package]
+name = "difflore-cli"
+version = "0.1.0"
+edition = "2024"
+# Two binaries ship from this crate (`difflore` + the `difflore-hook` shim), so
+# `cargo run -p difflore-cli` is ambiguous without this. CI's "Verify plugin
+# distribution manifests" step (`cargo run -p difflore-cli -- dist verify`)
+# relies on it resolving to the main binary.
+default-run = "difflore"
+rust-version = "1.87"
+authors = ["Zachary <hello@difflore.dev>"]
+description = "Your AI coding agent, taught by your team's PR reviews — a local-first, open-source MCP server that turns past review comments into rules your agent follows automatically."
+documentation = "https://github.com/difflore/difflore-cli"
+homepage = "https://difflore.dev"
+repository = "https://github.com/difflore/difflore-cli"
+readme = "../../README.md"
+license = "Apache-2.0"
+keywords = ["mcp", "ai-agent", "code-review", "claude-code", "cursor"]
+categories = ["development-tools", "command-line-utilities"]
+
+[lib]
+name = "difflore_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "difflore"
+path = "src/main.rs"
+
+[[bin]]
+name = "difflore-hook"
+path = "src/bin/difflore-hook.rs"
+
+[dependencies]
+# Path + version: `path` for local workspace dev, `version` for crates.io
+# resolution after publish. Both required — cargo publish rejects path-only.
+# Publish order on each release: difflore-core → difflore-tui → difflore-cli.
+difflore-core = { path = "../difflore-core", version = "0.1.0" }
+difflore-tui = { path = "../difflore-tui", version = "0.1.0" }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", default-features = false, features = [
+  "fs",
+  "io-std",
+  "io-util",
+  "macros",
+  "net",
+  "process",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+  "time",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = [
+  "runtime-tokio",
+  "sqlite",
+  "macros",
+] }
+globset = { version = "0.4", default-features = false }
+# Cross-platform local-socket IPC (Unix domain sockets on Unix,
+# named pipes on Windows). Replaces hand-rolled cfg(windows)/cfg(unix)
+# branches in `bin/difflore-hook.rs` and `hook_forward.rs`.
+interprocess = { version = "2", features = ["tokio"] }
+colored = "3"
+which = "8"
+gate4agent = "0.2"
+dirs = "6"
+tower-lsp = "0.20"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+anyhow = "1"
+thiserror = "2"
+reqwest = { version = "0.13", default-features = false, features = [
+  "json",
+  "rustls",
+] }
+tiny_http = "0.12"
+webbrowser = "1"
+rand = "0.10"
+sha1 = "0.10"
+tempfile = "3"
+toml = "0.8"
+
+[dev-dependencies]
+
+[lints]
+workspace = true

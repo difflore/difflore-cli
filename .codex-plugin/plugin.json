@@ -1,0 +1,37 @@
+{
+  "name": "difflore",
+  "version": "0.1.0",
+  "description": "DiffLore team knowledge injection into coding sessions via MCP and lifecycle hooks.",
+  "author": {
+    "name": "Zachary",
+    "url": "https://github.com/difflore"
+  },
+  "homepage": "https://github.com/difflore/difflore-cli#readme",
+  "repository": "https://github.com/difflore/difflore-cli",
+  "license": "Apache-2.0",
+  "keywords": [
+    "codex",
+    "mcp",
+    "code-review",
+    "rules",
+    "hooks"
+  ],
+  "interface": {
+    "displayName": "difflore",
+    "shortDescription": "Inject team rules into coding sessions.",
+    "longDescription": "DiffLore captures and retrieves team coding rules, then injects relevant guidance into coding-agent sessions through MCP tools and lifecycle hooks.",
+    "developerName": "Zachary",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/difflore/difflore-cli",
+    "defaultPrompt": [
+      "Find relevant team rules for the file I am editing.",
+      "Explain why this rule was injected.",
+      "Show me rule changes since my last sync."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

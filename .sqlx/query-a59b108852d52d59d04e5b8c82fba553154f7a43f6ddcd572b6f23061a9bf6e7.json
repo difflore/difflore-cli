@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT kind, source, reason, metadata FROM rule_events WHERE skill_id = ?1 AND kind = 'source_proof'",
+  "describe": {
+    "columns": [
+      {
+        "name": "kind",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "source",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "reason",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "metadata",
+        "ordinal": 3,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "a59b108852d52d59d04e5b8c82fba553154f7a43f6ddcd572b6f23061a9bf6e7"
+}

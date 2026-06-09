@@ -1,0 +1,34 @@
+# cargo-nextest config — install with `cargo install cargo-nextest --locked`,
+# then `cargo nextest run` (faster + nicer output than `cargo test`).
+#
+# Falls back gracefully on machines without nextest installed: the file is
+# only read when the binary is invoked, so this doesn't affect `cargo test`.
+
+[profile.default]
+# Print failures inline (default), but keep the summary brief on green runs.
+status-level = "skip"
+final-status-level = "slow"
+
+# Spread test execution across cores. nextest defaults to logical CPU count
+# which is usually the right answer on Linux/macOS; Windows benefits from a
+# small explicit number on smaller VMs (CI runners often report inflated
+# CPU counts under hyperthreading).
+test-threads = "num-cpus"
+
+# Auto-retry once on transient failures. Network-touching paths
+# (`commands::cloud::*`, `commands::sync`) flake under CI throttling more
+# than logic warrants — a single retry covers the noise without hiding
+# real regressions (those reproduce on the second attempt too).
+retries = 1
+
+# Mark anything over 30s as slow. On a clean dev machine the slowest test in
+# the workspace finishes in ~12s; 30s is a generous ceiling that catches
+# wedge points.
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[profile.ci]
+# CI gets less retry tolerance — we want flakes to surface.
+retries = 0
+fail-fast = false
+status-level = "all"
+final-status-level = "fail"

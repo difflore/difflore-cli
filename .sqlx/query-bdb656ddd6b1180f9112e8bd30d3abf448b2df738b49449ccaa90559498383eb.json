@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT status FROM cloud_outbox WHERE id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "status",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "bdb656ddd6b1180f9112e8bd30d3abf448b2df738b49449ccaa90559498383eb"
+}

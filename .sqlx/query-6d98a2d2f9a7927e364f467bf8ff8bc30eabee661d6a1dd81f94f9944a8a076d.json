@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE cloud_outbox SET claimed_at = ?1 WHERE id = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "6d98a2d2f9a7927e364f467bf8ff8bc30eabee661d6a1dd81f94f9944a8a076d"
+}

@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT diff_signature FROM fix_outcomes WHERE rule_id = 'rule-1'",
+  "describe": {
+    "columns": [
+      {
+        "name": "diff_signature",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "f009fb7dfb86bfb2e7b0e02ddafe8fc68a800224b6760d9c4c6c291d25727092"
+}

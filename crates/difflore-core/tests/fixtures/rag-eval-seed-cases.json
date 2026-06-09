@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "status": "seed_fixture",
+  "placementDecision": "The canonical multi-repo RAG harness lives in ../difflore-test-e2e so it can reuse real fork corpora without bloating this OSS runtime repository. This file is the committed smoke fixture: small, stable, and copied into the external harness as the minimum contract.",
+  "rules": [
+    {
+      "id": "seed/gin-body-limit-413",
+      "title": "Return 413 for body size limit errors",
+      "body": "When Gin request bodies exceed the configured limit, return HTTP 413 and keep middleware assertions separate from route assertions.",
+      "filePatterns": ["**/*gin*_test.go", "**/*middleware*.go"],
+      "sourceRepo": "gin-gonic/gin"
+    },
+    {
+      "id": "seed/tokio-errgroup-context",
+      "title": "Propagate cancellation through errgroup contexts",
+      "body": "When spawning related async work, derive child tasks from the caller context and propagate cancellation instead of using detached background contexts.",
+      "filePatterns": ["**/*.rs"],
+      "sourceRepo": "tokio-rs/tokio"
+    },
+    {
+      "id": "seed/router-adapter-boundary",
+      "title": "Do not import router-core inside adapters",
+      "body": "Adapter packages must depend on the public adapter boundary and avoid direct router-core imports.",
+      "filePatterns": ["packages/*adapter*/**/*.ts", "src/adapters/**/*.ts"],
+      "sourceRepo": "tanstack/router"
+    },
+    {
+      "id": "seed/python-headers-mapping",
+      "title": "Use Mapping for request headers",
+      "body": "Python request helper APIs should accept Mapping[str, str] for headers rather than concrete dict so callers can pass immutable or framework-provided mappings.",
+      "filePatterns": ["**/*.py"],
+      "sourceRepo": "fastapi/fastapi"
+    },
+    {
+      "id": "seed/npm-publish-dry-run",
+      "title": "Dry-run package publishing before release",
+      "body": "Before publishing a package, run the package manager dry-run and inspect included files so generated artifacts and secrets do not ship accidentally.",
+      "filePatterns": ["package.json", "packages/**/package.json", ".github/workflows/*.yml"],
+      "sourceRepo": "cli/cli"
+    }
+  ],
+  "cases": [
+    {
+      "id": "search/gin-body-limit",
+      "surface": "search_rules",
+      "query": "body size limit should return the right status in gin middleware tests",
+      "file": "router/gin_body_limit_test.go",
+      "intent": "edit failing middleware regression",
+      "expectedRuleIds": ["seed/gin-body-limit-413"],
+      "forbiddenRuleIds": ["seed/router-adapter-boundary", "seed/npm-publish-dry-run"],
+      "metrics": ["recall@3", "precision@3", "first_relevant_rank", "strict_file_match_correctness"],
+      "rationale": "Pins a same-language strict-file match where HTTP status behavior matters."
+    },
+    {
+      "id": "hook/tokio-cancellation",
+      "surface": "hook_post_edit",
+      "query": "spawned async work ignores cancellation",
+      "file": "crates/runtime/src/task_group.rs",
+      "intent": "post-edit add cancellation-aware task group",
+      "expectedRuleIds": ["seed/tokio-errgroup-context"],
+      "forbiddenRuleIds": ["seed/gin-body-limit-413", "seed/python-headers-mapping"],
+      "metrics": ["recall@5", "precision@5", "false_positive_rate"],
+      "rationale": "Covers hook injection where the edit diff, not a direct search query, should recall the rule."
+    },
+    {
+      "id": "search/router-boundary",
+      "surface": "search_rules",
+      "query": "adapter imports router-core directly",
+      "file": "packages/react-router-adapter/src/index.ts",
+      "intent": "remove direct core dependency from adapter",
+      "expectedRuleIds": ["seed/router-adapter-boundary"],
+      "forbiddenRuleIds": ["seed/tokio-errgroup-context"],
+      "metrics": ["recall@3", "first_relevant_rank", "strict_file_match_correctness"],
+      "rationale": "Protects repo-boundary rules that are easy to over-generalize."
+    },
+    {
+      "id": "search/python-header-type",
+      "surface": "search_rules",
+      "query": "headers parameter should accept immutable mapping",
+      "file": "fastapi/_compat/headers.py",
+      "intent": "type annotation cleanup",
+      "expectedRuleIds": ["seed/python-headers-mapping"],
+      "forbiddenRuleIds": ["seed/npm-publish-dry-run"],
+      "metrics": ["recall@3", "precision@3", "first_relevant_rank"],
+      "rationale": "Covers API typing guidance with language-specific file scope."
+    },
+    {
+      "id": "negative/readme-copy",
+      "surface": "search_rules",
+      "query": "rewrite README launch copy for pricing clarity",
+      "file": "README.md",
+      "intent": "documentation copy edit",
+      "expectedRuleIds": [],
+      "forbiddenRuleIds": [
+        "seed/gin-body-limit-413",
+        "seed/tokio-errgroup-context",
+        "seed/router-adapter-boundary",
+        "seed/python-headers-mapping",
+        "seed/npm-publish-dry-run"
+      ],
+      "metrics": ["false_positive_rate"],
+      "rationale": "A documentation-only edit should not recall unrelated code-path rules."
+    }
+  ]
+}

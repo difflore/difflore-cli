@@ -1,0 +1,67 @@
+[package]
+name = "difflore-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+authors = ["Zachary <hello@difflore.dev>"]
+description = "Core library for the difflore CLI — rule store, retrieval, MCP server, hooks, cloud sync. Not intended for direct use; depend on `difflore-cli` instead."
+documentation = "https://github.com/difflore/difflore-cli"
+homepage = "https://difflore.dev"
+repository = "https://github.com/difflore/difflore-cli"
+readme = "../../README.md"
+license = "Apache-2.0"
+keywords = ["mcp", "ai-agent", "code-review", "rules", "claude"]
+categories = ["development-tools", "database"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = [
+  "runtime-tokio",
+  "sqlite",
+  "migrate",
+  "macros",
+] }
+dirs = "6"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = [
+  "clock",
+  "serde",
+  "std",
+] }
+which = "8"
+tokio = { version = "1", default-features = false, features = [
+  "fs",
+  "io-std",
+  "io-util",
+  "macros",
+  "net",
+  "process",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+  "time",
+] }
+md-5 = "0.10"
+sha1 = "0.10"
+sha2 = "0.11"
+unicode-segmentation = "1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
+openapi-contract = "0.1"
+aes-gcm = "0.10"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+rand = "0.10"
+futures-util = "0.3"
+thiserror = "2"
+libc = "0.2"
+async-trait = "0.1"
+globset = { version = "0.4", default-features = false }
+hnsw_rs = "0.3"
+gate4agent = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+temp-env = "0.3"
+
+[lints]
+workspace = true

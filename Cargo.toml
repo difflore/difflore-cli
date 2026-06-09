@@ -1,0 +1,88 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/difflore-core",
+    "crates/difflore-cli",
+    "crates/difflore-tui",
+]
+
+# Lint preset: strict. Inspired by Embark Studios' rust-ecosystem lints
+# (https://github.com/EmbarkStudios/rust-ecosystem/blob/main/lints.rs)
+# plus clippy::pedantic / clippy::nursery as warn-baseline. Tests opt out
+# of `unwrap_used` at each crate root via
+# `#![cfg_attr(test, allow(clippy::unwrap_used))]`.
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused_qualifications = "warn"
+trivial_numeric_casts = "warn"
+
+[workspace.lints.clippy]
+# --- group baselines (priority -1 so individual overrides take precedence) ---
+pedantic = { level = "warn", priority = -1 }
+nursery  = { level = "warn", priority = -1 }
+
+# --- hard denies: correctness & safety ---
+unwrap_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+mem_forget = "deny"
+lossy_float_literal = "deny"
+rest_pat_in_fully_bound_structs = "deny"
+verbose_file_reads = "deny"
+
+# --- warns: hygiene & performance ---
+expect_used = "warn"
+panic = "warn"
+exit = "warn"
+print_stdout = "allow"   # CLI legitimately writes to stdout
+print_stderr = "allow"   # CLI legitimately writes to stderr
+clone_on_ref_ptr = "warn"
+inefficient_to_string = "warn"
+str_to_string = "warn"
+string_lit_as_bytes = "warn"
+needless_pass_by_value = "warn"
+large_stack_arrays = "warn"
+mutex_atomic = "warn"
+match_wildcard_for_single_variants = "warn"
+imprecise_flops = "warn"
+suboptimal_flops = "warn"
+
+# --- allows: noisy pedantic/nursery lints we accept ---
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+return_self_not_must_use = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+struct_excessive_bools = "allow"
+fn_params_excessive_bools = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+cast_possible_wrap = "allow"
+significant_drop_tightening = "allow"  # nursery, lots of false positives
+significant_drop_in_scrutinee = "allow"
+option_if_let_else = "allow"           # nursery, often style noise
+or_fun_call = "allow"                  # often readability tradeoff
+future_not_send = "allow"              # tokio code triggers this often
+cognitive_complexity = "allow"         # noisy on CLI dispatch fns
+doc_markdown = "allow"                 # backtick-pedantry in prose docs
+too_long_first_doc_paragraph = "allow" # stylistic only
+redundant_pub_crate = "allow"          # pub(crate) inside private mod is fine
+format_push_string = "allow"           # marginal perf, hurts readability
+unused_async = "allow"                  # tokio trait impls often trigger this
+case_sensitive_file_extension_comparisons = "allow"  # we control inputs
+items_after_statements = "allow"        # often style choice
+no_effect_underscore_binding = "allow"  # `let _ = ...` to drop guards is idiomatic
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = "z"
+panic = "abort"
+strip = "symbols"

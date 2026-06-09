@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO fix_outcomes\n             (id, rule_id, rule_name, file_path, accepted, applied_ok, created_at)\n             VALUES\n             ('f-old', 'r1', 'Real rule', 'src/old.rs', 1, 1, '2026-05-01 00:00:00'),\n             ('f-new', 'r1', 'Real rule', 'src/new.rs', 1, 1, datetime('now')),\n             ('f-rejected', 'r1', 'Real rule', 'src/rejected.rs', 0, 0, datetime('now'))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "a793c07758a47b2f3022590c0f04df42e323311ea7661573085b7dbcb3df7466"
+}

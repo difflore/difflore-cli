@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO rule_chunks (id, skill_id, content, embedding, file_patterns, language, repo_scope)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)\n             ON CONFLICT(id) DO UPDATE SET\n                content = excluded.content,\n                embedding = excluded.embedding,\n                file_patterns = excluded.file_patterns,\n                language = excluded.language,\n                repo_scope = excluded.repo_scope",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "739804d2a0e65ad9a4fd7ace8aa82e5b616aba21db026d878269507381711fda"
+}

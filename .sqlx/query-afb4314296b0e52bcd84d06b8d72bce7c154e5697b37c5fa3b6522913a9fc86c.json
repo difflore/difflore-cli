@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE rule_events SET created_at = datetime('now', '+2 second') WHERE skill_id = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "afb4314296b0e52bcd84d06b8d72bce7c154e5697b37c5fa3b6522913a9fc86c"
+}

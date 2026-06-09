@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO fix_outcomes\n                 (id, rule_id, rule_name, file_path, accepted, applied_ok, created_at)\n                 VALUES (?1, ?2, ?3, ?4, 1, 1, ?5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "8af9cf5fa75e43e7f8fb8f211d2ba6672940310b8189980c8da9142ca862b32e"
+}

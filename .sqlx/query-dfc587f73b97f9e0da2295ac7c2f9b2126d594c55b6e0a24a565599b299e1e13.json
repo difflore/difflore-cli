@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO skills (id, name, source, directory, version, description, type, engines, tags, enabled_for_codex, enabled_for_claude, enabled_for_gemini, enabled_for_cursor, installed_at, updated_at, status) VALUES ('old-cloud-rule', 'Old cloud rule', 'cloud', 'old-cloud-rule', '1.0.0', 'legacy cloud sync row', 'review_standard', '[]', '[]', 0, 1, 0, 0, '2026-05-05 00:00:00', '2026-05-05 00:00:00', 'active')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "dfc587f73b97f9e0da2295ac7c2f9b2126d594c55b6e0a24a565599b299e1e13"
+}

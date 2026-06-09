@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "CREATE TABLE IF NOT EXISTS auth (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "e770b331529fb586691513fc5071a9ec19ea58f83f44845e4ae1dfdef867f57a"
+}

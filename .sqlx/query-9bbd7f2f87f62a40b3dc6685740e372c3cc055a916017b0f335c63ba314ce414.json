@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE cloud_outbox\n             SET status = 'processing', claimed_at = ?1\n             WHERE id = (\n                 SELECT id FROM cloud_outbox\n                 WHERE status = 'pending'\n                    OR (status = 'processing'\n                        AND claimed_at IS NOT NULL\n                        AND claimed_at < ?2)\n                 ORDER BY created_at ASC, id ASC\n                 LIMIT 1\n             )\n             RETURNING id as \"id!: i64\", kind, payload_json, retry_count",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "kind",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "payload_json",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "retry_count",
+        "ordinal": 3,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9bbd7f2f87f62a40b3dc6685740e372c3cc055a916017b0f335c63ba314ce414"
+}

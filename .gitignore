@@ -1,0 +1,42 @@
+node_modules
+dist
+dist-pwa
+build
+CONOUT$
+.env
+.env.local
+.env.*.local
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+.codex/worktrees/
+
+# codex review loop runtime artifacts
+.codex-runtime/
+.codex-review-loop/
+docs/difflore-review-loop.md
+src-tauri/target/
+target*
+scratch*
+*.db
+*.db-shm
+*.db-wal
+!crates/difflore-core/migrations/*.sql
+scratch
+
+extensions/vscode/dist/
+extensions/vscode/webview/dist/
+extensions/vscode/*.vsix
+.worktrees/
+
+# `difflore doctor report` outputs — local-machine diagnostics, never commit
+difflore-bug-report-*.md
+difflore-doctor-*.md
+
+# asciinema raw recordings — commit only the converted SVG/GIF outputs
+assets/*.cast
+
+# local bacon watcher config
+bacon.toml
+
+# local developer install helper
+scripts/dev-install.sh

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, source_repo FROM skills WHERE id IN (SELECT value FROM json_each(?1)) AND source_repo IS NOT NULL AND source_repo != ''",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "source_repo",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "08a69890e8a64313912d70cb5d221a7773777f80090dd74e0d10623037f348f3"
+}

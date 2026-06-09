@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM auth WHERE key = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "9a9f1aab77d76eb9bbf8e3ab7fe9d93dca2f5e7ee11fda647a0cd5ae19b25b00"
+}
