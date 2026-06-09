@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: "true"
+
+jobs:
+  cargo:
+    name: cargo check + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS included so platform-specific keyring backends (we ship
+        # `apple+windows+linux` features) get exercised — without it, a
+        # macOS-only regression can ship and we hear about it from a
+        # user instead of from CI.
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Linux runners need libdbus-1-dev for the keyring crate's
+      # secret-service backend (libdbus-sys system dependency).
+      # ubuntu-latest doesn't ship it by default. macOS uses Apple's
+      # Security framework; Windows uses DPAPI — neither needs apt.
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo check (workspace)
+        run: cargo check --workspace --all-targets
+
+      - name: Verify plugin distribution manifests
+        run: cargo run -p difflore-cli -- dist verify
+
+      # Workspace `[lints.clippy] unwrap_used = "deny"` already
+      # converts that lint to a hard error, regardless of `-D warnings`.
+      # Other warnings (collapsible-if, etc.) print but don't fail CI —
+      # this matches the project policy of "deny errors only, not
+      # cosmetic style". Was previously `-D warnings + continue-on-error`
+      # which silently passed even when deny-level lints fired.
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets
+
+      # nextest is faster than `cargo test` and gives nicer output. It
+      # reads `.config/nextest.toml` for retry / slow-test thresholds.
+      # The `ci` profile there disables retries so flakes surface.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: cargo nextest run
+        run: cargo nextest run --workspace --all-targets --profile ci
+
+      # nextest skips doctests by design — run them separately so we
+      # don't lose coverage of `///` examples.
+      - name: cargo test --doc
+        run: cargo test --workspace --doc

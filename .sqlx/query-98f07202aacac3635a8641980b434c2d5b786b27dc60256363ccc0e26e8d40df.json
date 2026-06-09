@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO fix_outcomes (rule_id, accepted, applied_ok)\n             VALUES\n               ('rule-applied', 1, 1),\n               ('rule-rejected', 0, 0),\n               ('rule-failed', 1, 0)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "98f07202aacac3635a8641980b434c2d5b786b27dc60256363ccc0e26e8d40df"
+}

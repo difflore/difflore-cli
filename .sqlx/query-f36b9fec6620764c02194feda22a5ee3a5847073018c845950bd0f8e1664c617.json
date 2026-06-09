@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT origin FROM skills WHERE id IN (SELECT value FROM json_each(?1))",
+  "describe": {
+    "columns": [
+      {
+        "name": "origin",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f36b9fec6620764c02194feda22a5ee3a5847073018c845950bd0f8e1664c617"
+}

@@ -1,0 +1,752 @@
+use std::collections::HashMap;
+
+// ── Settings ──
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextEngineRecord {
+    #[serde(default = "default_context_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_context_auto_retrieve")]
+    pub auto_retrieve: bool,
+    #[serde(default = "default_max_rule_results")]
+    pub max_rule_results: i32,
+    #[serde(default = "default_rule_token_budget")]
+    pub rule_token_budget: i32,
+    #[serde(default)]
+    pub allow_hosted_embeddings: bool,
+    // ── Semantic embedding provider (P3 MVP) ──
+    /// Master switch for the real (non-SHA1) embedding provider.
+    #[serde(default)]
+    pub semantic_embedding: bool,
+    /// OpenAI-compatible base URL, e.g. `https://api.openai.com/v1`.
+    #[serde(default)]
+    pub embedding_provider_url: Option<String>,
+    /// Keyring storage key for the provider's API key.
+    ///
+    /// This value is NOT the plaintext API key. It is an opaque identifier
+    /// (an AES-GCM ciphertext hex blob produced by `crypto::encrypt_secret`)
+    /// that is decrypted via `context::embedding::load_embedding_key` at
+    /// use time. The actual API key is protected by a master key stored in
+    /// the OS keyring.
+    #[serde(default)]
+    pub embedding_provider_key: Option<String>,
+    /// Model name, e.g. `text-embedding-3-small`.
+    #[serde(default)]
+    pub embedding_model: Option<String>,
+    /// Embedding dimension, e.g. 1536 for `text-embedding-3-small`.
+    #[serde(default)]
+    pub embedding_dim: Option<usize>,
+}
+
+const fn default_context_enabled() -> bool {
+    true
+}
+const fn default_context_auto_retrieve() -> bool {
+    true
+}
+const fn default_max_rule_results() -> i32 {
+    4
+}
+const fn default_rule_token_budget() -> i32 {
+    1500
+}
+
+impl Default for ContextEngineRecord {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_retrieve: true,
+            max_rule_results: 4,
+            rule_token_budget: 1500,
+            allow_hosted_embeddings: false,
+            semantic_embedding: false,
+            embedding_provider_url: None,
+            embedding_provider_key: None,
+            embedding_model: None,
+            embedding_dim: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewEngineRecord {
+    #[serde(default)]
+    pub multi_perspective: bool,
+    /// Phase 2 review-memory: recall past verdicts for similar code and
+    /// inject them into the review prompt. Defaults to `true` so upgrade
+    /// paths get the feature automatically; users can opt out via
+    /// settings without touching any other flag.
+    #[serde(default = "default_past_verdict_recall")]
+    pub past_verdict_recall: bool,
+    /// Phase 5.1 review-memory: run a second cheap-model "self-check"
+    /// pass over the merged issues to score confidence and drop obvious
+    /// false positives. Defaults to `true` so upgrade paths get the
+    /// feature automatically; users can opt out via settings.
+    #[serde(default = "default_true")]
+    pub self_check_enabled: bool,
+    /// Phase 5.3 review-memory: emit a one-line PR summary plus a
+    /// per-file walkthrough on each review. Defaults to `true` so
+    /// upgrade paths get the feature automatically.
+    #[serde(default = "default_true")]
+    pub review_summary_enabled: bool,
+    /// Phase 4 (review depth): snap each issue's reported line to the exact
+    /// new-file line range by matching against the parsed diff hunks
+    /// (hunk-aware resolution, ported from open-code-review), instead of
+    /// trusting the model's claimed diff line. Defaults to `true`: the
+    /// resolver only ever *sharpens* a line number — it returns `None` (and
+    /// the model's claimed line is kept) whenever no hunk confidently matches,
+    /// so this never regresses attribution, only tightens `difflore fix`
+    /// patch precision. Set to `false` to fall back to claimed lines only.
+    #[serde(default = "default_true")]
+    pub hunk_line_resolution: bool,
+    /// Review-depth: after rule recall, ask the review LLM provider, in one
+    /// extra batched call, whether each recalled rule's lesson actually
+    /// applies to THIS diff, then drop the rules it judges non-applicable
+    /// before they enter the review prompt. Higher-precision review with
+    /// fewer irrelevant injected rules, at the cost of one additional
+    /// latency-tolerant round-trip per review (only ever fired at review
+    /// time, never on the 800ms commit hook).
+    ///
+    /// Defaults to `false`. Unlike the other review-depth flags this is NOT
+    /// on-by-default: it adds a whole extra LLM call, the existing intent
+    /// rerank + strict file-pattern cascade already prune most off-topic
+    /// rules, and a flaky judge response must never silently starve a review
+    /// of its rules. Keeping it opt-in means the default review path is
+    /// byte-for-byte unchanged. Enabling it also widens the recalled
+    /// candidate pool (so the judge has more to filter from) — see
+    /// `judge_candidate_pool_top_k` in the review pipeline.
+    #[serde(default)]
+    pub rule_applicability_judge: bool,
+}
+
+const fn default_past_verdict_recall() -> bool {
+    true
+}
+const fn default_true() -> bool {
+    true
+}
+
+impl Default for ReviewEngineRecord {
+    fn default() -> Self {
+        Self {
+            multi_perspective: false,
+            past_verdict_recall: default_past_verdict_recall(),
+            self_check_enabled: default_true(),
+            review_summary_enabled: default_true(),
+            hunk_line_resolution: default_true(),
+            rule_applicability_judge: false,
+        }
+    }
+}
+
+/// Per-file intent / walkthrough entry emitted by Phase 5.3 review
+/// summary. `intent` is a short (one-sentence) human-readable
+/// description of what the file's diff is trying to accomplish.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileIntent {
+    pub file: String,
+    pub intent: String,
+}
+
+/// Phase 5.3 review summary: one-line PR description + per-file
+/// walkthrough + blocking / non-blocking issue counts. Attached to the
+/// top-level `ReviewCheckResult` as an `Option` so callers built before
+/// Phase 5.3 continue to see `None` and behave identically.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewSummary {
+    pub one_line_summary: String,
+    pub walkthrough_by_file: Vec<FileIntent>,
+    pub blocking_count: u32,
+    pub non_blocking_count: u32,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettingsRecord {
+    #[serde(default)]
+    pub proxy_enabled: bool,
+    #[serde(default = "default_proxy_port")]
+    pub proxy_port: i32,
+    #[serde(default = "default_language")]
+    pub language: String,
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default)]
+    pub sound_notifications: bool,
+    #[serde(default)]
+    pub default_shell: Option<String>,
+    #[serde(default = "default_workspace")]
+    pub default_workspace: String,
+    #[serde(default)]
+    pub shortcuts: HashMap<String, String>,
+    #[serde(default)]
+    pub context_engine: ContextEngineRecord,
+    #[serde(default)]
+    pub review_engine: ReviewEngineRecord,
+    /// Show the "install `DiffLore` into your agent" hint after local
+    /// commands when an agent is detected but the MCP server isn't wired
+    /// up. `true` = show (default), `false` = user has dismissed it.
+    #[serde(default = "default_true")]
+    pub hints_mcp: bool,
+
+    /// Default mode for `difflore fix` when no flag is given. One of
+    /// `preview | apply | ci`. Stored on disk as `fixDefaultMode`.
+    #[serde(default = "default_fix_default_mode", rename = "fixDefaultMode")]
+    pub fix_default_mode: String,
+
+    /// Whether `difflore cloud sync` should run automatically in the background
+    /// after login. Stored on disk as `syncAuto`.
+    #[serde(default, rename = "syncAuto")]
+    pub sync_auto: bool,
+
+    /// Whether commands that need cloud may auto-trigger a browser login
+    /// flow. `false` (default) keeps the CLI quiet on shared / headless
+    /// machines. Stored on disk as `cloudAutoLogin`.
+    #[serde(default, rename = "cloudAutoLogin")]
+    pub cloud_auto_login: bool,
+}
+
+const fn default_proxy_port() -> i32 {
+    4000
+}
+fn default_language() -> String {
+    "en".into()
+}
+fn default_theme() -> String {
+    "dark".into()
+}
+fn default_workspace() -> String {
+    "~/projects".into()
+}
+fn default_fix_default_mode() -> String {
+    "preview".into()
+}
+impl Default for AppSettingsRecord {
+    fn default() -> Self {
+        Self {
+            proxy_enabled: false,
+            proxy_port: default_proxy_port(),
+            language: default_language(),
+            theme: default_theme(),
+            sound_notifications: false,
+            default_shell: None,
+            default_workspace: default_workspace(),
+            shortcuts: HashMap::new(),
+            context_engine: ContextEngineRecord::default(),
+            review_engine: ReviewEngineRecord::default(),
+            hints_mcp: true,
+            fix_default_mode: default_fix_default_mode(),
+            sync_auto: false,
+            cloud_auto_login: false,
+        }
+    }
+}
+
+// ── Runtime Event ──
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeReadyEvent {
+    pub runtime: String,
+}
+
+// ── Projects ──
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRecord {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub git_branch: Option<String>,
+    pub active_sessions: i32,
+    pub total_sessions: Option<i32>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddProjectInput {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveProjectInput {
+    pub id: String,
+}
+
+// ── Providers ──
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRecord {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub model_mapping: HashMap<String, String>,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProviderAddInput {
+    pub name: String,
+    pub base_url: String,
+    pub model_mapping: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProviderUpdateInput {
+    pub id: String,
+    pub name: Option<String>,
+    pub base_url: Option<String>,
+    pub model_mapping: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProviderRemoveInput {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSetActiveInput {
+    pub id: String,
+    pub is_active: bool,
+}
+
+// ── Skills ──
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRecord {
+    pub id: String,
+    pub name: String,
+    pub source: String,
+    pub directory: String,
+    pub version: String,
+    pub description: String,
+    pub r#type: String,
+    pub engines: Vec<String>,
+    pub tags: Vec<String>,
+    pub trigger: Option<String>,
+    pub check_prompt: Option<String>,
+    pub repo_owner: Option<String>,
+    pub repo_name: Option<String>,
+    pub repo_branch: Option<String>,
+    pub readme_url: Option<String>,
+    pub enabled_for_codex: bool,
+    pub enabled_for_claude: bool,
+    pub enabled_for_gemini: bool,
+    pub enabled_for_cursor: bool,
+    pub installed_at: String,
+    pub updated_at: String,
+    pub enforcement: Option<String>,
+    /// Input channel: `manual` | `conversation` | `pr_review` | `extracted`.
+    /// Conversation-channel rules get a lower base confidence (0.6 vs 0.7).
+    #[serde(default = "default_origin")]
+    pub origin: String,
+}
+
+fn default_origin() -> String {
+    "manual".to_owned()
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct InstallSkillInput {
+    pub owner: String,
+    pub repo: String,
+    pub branch: String,
+    pub directory: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RemoveSkillInput {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ToggleSkillEngineInput {
+    pub id: String,
+    pub engine: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DiscoverSkillsInput {
+    pub owner: String,
+    pub repo: String,
+    pub branch: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredSkillRecord {
+    pub name: String,
+    pub description: String,
+    pub r#type: String,
+    pub engines: Vec<String>,
+    pub tags: Vec<String>,
+    pub version: String,
+    pub directory: String,
+    pub repo_owner: String,
+    pub repo_name: String,
+    pub repo_branch: String,
+    pub installed: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CreateLocalSkillInput {
+    pub name: String,
+    pub engines: Option<Vec<String>>,
+    pub tags: Option<Vec<String>>,
+    pub description: Option<String>,
+    pub r#type: Option<String>,
+    pub trigger: Option<String>,
+    pub check_prompt: Option<String>,
+    pub content: Option<String>,
+}
+
+/// Input for `skills::remember()` — the 4th human-feedback channel.
+///
+/// Records a rule the user told an AI agent (or themselves via CLI) to
+/// remember during a coding conversation. Stored locally with
+/// `origin = 'conversation'`, base confidence 0.6 (slightly below `manual`
+/// since the agent transcribed free-text), and `published = false` so it
+/// stays on this device until the user explicitly publishes it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RememberRuleInput {
+    /// Short rule title (becomes skill name and the H1 in SKILL.md).
+    pub title: String,
+    /// What the rule is and why — full natural-language body. The agent
+    /// should transcribe the user's own words; not summarise them away.
+    pub body: String,
+    /// Optional glob patterns the rule applies to (e.g. `["**/*.ts"]`).
+    /// Empty = universal rule. Drives strict file-pattern cascade.
+    #[serde(default)]
+    pub file_patterns: Option<Vec<String>>,
+    /// Optional bad-code snippet the user pointed at (the offending pattern).
+    pub bad_code: Option<String>,
+    /// Optional good-code snippet the user proposed (the corrected version).
+    pub good_code: Option<String>,
+    /// Optional severity hint surfaced in the rule body. `low|medium|high`.
+    pub severity: Option<String>,
+    /// Channel that recorded this — defaults to `conversation`. Tests and
+    /// the CLI override to `manual` so the discount + audit-tag behaviour
+    /// can be exercised explicitly.
+    #[serde(default)]
+    pub origin: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRepoRecord {
+    pub id: String,
+    pub owner: String,
+    pub name: String,
+    pub branch: String,
+    pub enabled: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SkillRepoAddInput {
+    pub owner: String,
+    pub name: String,
+    pub branch: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SkillRepoRemoveInput {
+    pub id: String,
+}
+
+// ── Confidence & Examples ──
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateConfidenceInput {
+    pub skill_id: String,
+    /// "accept" (+0.05) or "reject" (-0.1)
+    pub signal: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddExampleInput {
+    pub skill_id: String,
+    pub bad_code: String,
+    pub good_code: String,
+    pub description: Option<String>,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListExamplesInput {
+    pub skill_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RemoveExampleInput {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleExampleRecord {
+    pub id: String,
+    pub skill_id: String,
+    pub bad_code: String,
+    pub good_code: String,
+    pub description: Option<String>,
+    pub source: String,
+    pub created_at: String,
+}
+
+// ── Git / Editor / Files ──
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatusInput {
+    pub project_path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatusRecord {
+    pub branch: Option<String>,
+    pub ahead: i32,
+    pub behind: i32,
+    pub files: Vec<GitFileStatusRecord>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitFileStatusRecord {
+    pub path: String,
+    pub status: String,
+    pub additions: i32,
+    pub deletions: i32,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranchesInput {
+    pub project_path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranchRecord {
+    pub name: String,
+    pub current: bool,
+    pub remote: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitDiffInput {
+    pub project_path: String,
+    pub staged: Option<bool>,
+    pub ref1: Option<String>,
+    pub ref2: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffHunkRecord {
+    pub header: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffContentRecord {
+    pub file_path: String,
+    pub hunks: Vec<DiffHunkRecord>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitInput {
+    pub project_path: String,
+    pub message: String,
+    /// Specific files to stage. If empty/None, stages all changes (`git add -A`).
+    pub files: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPushInput {
+    pub project_path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCreatePRInput {
+    pub project_path: String,
+    pub title: String,
+    pub body: Option<String>,
+    pub base: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCheckoutPRInput {
+    pub project_path: String,
+    pub pr_number: Option<i32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPRResult {
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorOpenInput {
+    pub project_path: String,
+    pub editor: Option<String>,
+    pub file_path: Option<String>,
+    pub line: Option<u32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesSearchInput {
+    pub project_path: String,
+    pub query: String,
+    pub limit: Option<i32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilesReadInput {
+    pub project_path: String,
+    pub relative_path: String,
+    pub start_line: Option<i32>,
+    pub end_line: Option<i32>,
+    pub max_bytes: Option<i32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSearchResult {
+    pub path: String,
+    pub relative_path: String,
+    pub is_directory: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileReadRecord {
+    pub absolute_path: String,
+    pub relative_path: String,
+    pub content: String,
+    pub language: Option<String>,
+    pub line_count: i32,
+    pub truncated: bool,
+    pub sha256: Option<String>,
+}
+
+impl crate::domain::rule_view::RuleView for SkillRecord {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn content(&self) -> &str {
+        &self.description
+    }
+    fn origin(&self) -> &str {
+        &self.origin
+    }
+    fn confidence(&self) -> Option<f64> {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::rule_view::RuleView;
+
+    #[test]
+    fn skill_record_implements_rule_view() {
+        let s = SkillRecord {
+            id: "id1".into(),
+            name: "n".into(),
+            source: "s".into(),
+            directory: "d".into(),
+            version: "0".into(),
+            description: "body".into(),
+            r#type: "review_standard".into(),
+            engines: vec![],
+            tags: vec![],
+            trigger: None,
+            check_prompt: None,
+            repo_owner: None,
+            repo_name: None,
+            repo_branch: None,
+            readme_url: None,
+            enabled_for_codex: false,
+            enabled_for_claude: false,
+            enabled_for_gemini: false,
+            enabled_for_cursor: false,
+            installed_at: String::new(),
+            updated_at: String::new(),
+            enforcement: None,
+            origin: "pr_review".into(),
+        };
+        assert_eq!(s.id(), "id1");
+        assert_eq!(s.content(), "body");
+        assert_eq!(s.origin(), "pr_review");
+        assert_eq!(s.confidence(), None);
+    }
+
+    #[test]
+    fn hunk_line_resolution_defaults_on() {
+        // Hunk-aware attribution must be ON by default so `difflore fix`
+        // patches anchor on the exact changed line, not a token-overlap guess.
+        assert!(ReviewEngineRecord::default().hunk_line_resolution);
+    }
+
+    #[test]
+    fn hunk_line_resolution_defaults_on_for_pre_phase4_configs() {
+        // Upgrade path: a persisted config that predates the flag (omits the
+        // key entirely) must deserialize with the feature ON via the serde
+        // default, not fall back to Rust's `bool::default()` (false).
+        let rec: ReviewEngineRecord = serde_json::from_str("{}").unwrap();
+        assert!(
+            rec.hunk_line_resolution,
+            "missing key must default to true (sharpens fix patches on upgrade)"
+        );
+        // And an explicit opt-out is still honoured.
+        let off: ReviewEngineRecord =
+            serde_json::from_str(r#"{"hunkLineResolution": false}"#).unwrap();
+        assert!(!off.hunk_line_resolution);
+    }
+
+    #[test]
+    fn rule_applicability_judge_defaults_off() {
+        // Opt-in feature: adds an extra LLM round-trip, so the default review
+        // path must stay byte-identical. Default + missing-key both = off.
+        assert!(!ReviewEngineRecord::default().rule_applicability_judge);
+        let rec: ReviewEngineRecord = serde_json::from_str("{}").unwrap();
+        assert!(
+            !rec.rule_applicability_judge,
+            "missing key must default to false (no extra LLM call unless opted in)"
+        );
+        // Explicit opt-in is honoured.
+        let on: ReviewEngineRecord =
+            serde_json::from_str(r#"{"ruleApplicabilityJudge": true}"#).unwrap();
+        assert!(on.rule_applicability_judge);
+    }
+}

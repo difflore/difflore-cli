@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT name, description, check_prompt, file_patterns, origin, confidence_score, COALESCE(source_repo, CASE WHEN repo_owner IS NOT NULL AND repo_name IS NOT NULL THEN repo_owner || '/' || repo_name ELSE NULL END) AS source_repo FROM skills WHERE status = 'active' AND type = 'review_standard' ORDER BY installed_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "name",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "description",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "check_prompt",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_patterns",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "origin",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "confidence_score",
+        "ordinal": 5,
+        "type_info": "Float"
+      },
+      {
+        "name": "source_repo",
+        "ordinal": 6,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "eac46779a175ce348b18f341ed89957f84da847a675740f0554e4992f2cb8797"
+}

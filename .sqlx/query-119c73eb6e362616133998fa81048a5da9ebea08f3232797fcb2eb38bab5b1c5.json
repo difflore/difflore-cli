@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO skills (id, name, source_repo, status)\n             VALUES (?, ?, ?, 'active')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "119c73eb6e362616133998fa81048a5da9ebea08f3232797fcb2eb38bab5b1c5"
+}

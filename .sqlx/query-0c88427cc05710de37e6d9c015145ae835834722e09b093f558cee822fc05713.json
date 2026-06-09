@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE skills\n             SET source_repo = CASE\n                 WHEN source_repo IS NULL OR trim(source_repo) = '' THEN ?1\n                 ELSE source_repo\n             END\n             WHERE id = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "0c88427cc05710de37e6d9c015145ae835834722e09b093f558cee822fc05713"
+}

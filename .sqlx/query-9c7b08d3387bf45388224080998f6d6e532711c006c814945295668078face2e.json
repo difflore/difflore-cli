@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO fix_outcomes (id, rule_id, rule_name, file_path, accepted, applied_ok, created_at) VALUES ('f1', 'g1', 'Return 413 for body size limit errors', 'binding/binding.go', 1, 1, '2026-05-05T10:00:00Z'), ('f2', 'g1', 'Return 413 for body size limit errors', 'binding/binding.go', 1, 1, '2026-05-05T11:00:00Z'), ('f3', 'g1', 'Return 413 for body size limit errors', 'binding/binding.go', 0, 1, '2026-05-05T12:00:00Z')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "9c7b08d3387bf45388224080998f6d6e532711c006c814945295668078face2e"
+}

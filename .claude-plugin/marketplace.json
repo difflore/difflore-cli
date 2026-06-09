@@ -1,0 +1,18 @@
+{
+  "name": "difflore",
+  "owner": {
+    "name": "Zachary"
+  },
+  "metadata": {
+    "description": "DiffLore — team knowledge injection for Claude Code via MCP + lifecycle hooks",
+    "homepage": "https://github.com/difflore/difflore-cli"
+  },
+  "plugins": [
+    {
+      "name": "difflore",
+      "version": "0.1.0",
+      "source": "./plugin",
+      "description": "Inject DiffLore team rules into Claude Code via lifecycle hooks + MCP server"
+    }
+  ]
+}

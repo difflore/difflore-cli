@@ -1,0 +1,80 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, name, description, type, tags, confidence_score, file_patterns, origin, source_repo, repo_owner, repo_name FROM skills WHERE id IN (SELECT value FROM json_each(?1)) AND status = 'active'",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "description",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "type",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "tags",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "confidence_score",
+        "ordinal": 5,
+        "type_info": "Float"
+      },
+      {
+        "name": "file_patterns",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "origin",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "source_repo",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "repo_owner",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "repo_name",
+        "ordinal": 10,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "82aab2d625f983e51865c1f559ef490fc7453991e08144e9235ca1ac8f8f2150"
+}

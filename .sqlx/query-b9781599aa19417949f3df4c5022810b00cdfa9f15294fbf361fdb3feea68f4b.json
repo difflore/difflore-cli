@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE mcp_rule_serves SET served_at = '2026-05-05 00:03:00'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "b9781599aa19417949f3df4c5022810b00cdfa9f15294fbf361fdb3feea68f4b"
+}

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT bad_code, good_code FROM rule_examples WHERE skill_id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "bad_code",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "good_code",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "0c34bac2b8afbaf0c334103b9c8507e849061fe923f176b68381d125c51a174d"
+}

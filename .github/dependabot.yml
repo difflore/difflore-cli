@@ -1,0 +1,48 @@
+# Dependabot — automated dependency updates.
+#
+# Cadence is weekly (not daily) so PR volume stays manageable for a solo
+# maintainer. Updates are grouped by ecosystem so you get one PR per
+# ecosystem per week, not one per dep.
+#
+# Docs: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  # Rust workspace deps (Cargo.toml across the workspace)
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    groups:
+      # Group all minor + patch updates into one PR per week. Keeps noise
+      # down. Major bumps still surface as individual PRs so they get
+      # proper review attention.
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+      - rust
+
+  # GitHub Actions in .github/workflows/*
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: UTC
+    open-pull-requests-limit: 3
+    groups:
+      gha-minor-patch:
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+      - github-actions

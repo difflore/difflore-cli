@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "CREATE TABLE IF NOT EXISTS rule_index_meta (\n            key TEXT PRIMARY KEY,\n            value TEXT NOT NULL\n        )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "cff189cf2b3ea3a4bddea3c3a02c6a3e92b5e6152180bc23fdfab9940c4c9e6f"
+}

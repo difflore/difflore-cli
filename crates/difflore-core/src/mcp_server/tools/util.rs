@@ -1,0 +1,1268 @@
+use globset::Glob;
+use serde_json::{Value, json};
+use sqlx::SqlitePool;
+use std::collections::{HashMap, HashSet};
+
+use crate::context::types::{EvidenceKind, EvidenceRecord};
+use crate::errors::CoreError;
+
+pub(crate) const MCP_TEXT_ARG_CHAR_LIMIT: usize = 16 * 1024;
+pub(crate) const MCP_EMBEDDING_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(1500);
+
+pub(crate) fn validate_mcp_text_arg(
+    name: &str,
+    value: &str,
+    limit: usize,
+) -> Result<(), (i32, String)> {
+    if value.chars().count() > limit {
+        return Err((-32602, format!("{name} must be {limit} chars or fewer")));
+    }
+    Ok(())
+}
+
+pub(crate) struct McpQueryOutboxEntry<'a> {
+    pub file: &'a str,
+    pub intent: &'a str,
+    pub rules_injected: usize,
+    pub strict_match_count: usize,
+    pub rule_titles: &'a [String],
+    pub rule_ids: &'a [String],
+    pub client_label: &'a str,
+    pub repo_full_name: Option<&'a str>,
+}
+
+pub(crate) async fn enqueue_mcp_query_outbox(db: &SqlitePool, entry: McpQueryOutboxEntry<'_>) {
+    let payload = json!({
+        "file": entry.file,
+        "intent": entry.intent,
+        "rules_injected": entry.rules_injected,
+        "strict_match_count": entry.strict_match_count,
+        "rule_titles": entry.rule_titles,
+        "rule_ids": entry.rule_ids,
+        "client_label": entry.client_label,
+        "repo_full_name": entry.repo_full_name,
+    });
+    match serde_json::to_string(&payload) {
+        Ok(payload_str) => {
+            let queue = crate::cloud::outbox::OutboxQueue::new(db.clone());
+            if let Err(e) = queue
+                .enqueue(crate::cloud::outbox::kind::MCP_QUERY, &payload_str)
+                .await
+            {
+                eprintln!("[difflore-mcp] enqueue mcp_query outbox failed: {e}");
+            }
+        }
+        Err(e) => eprintln!("[difflore-mcp] serialize mcp_query outbox failed: {e}"),
+    }
+}
+
+pub(crate) async fn drain_mcp_query_outbox(
+    db: &SqlitePool,
+    cloud: &crate::cloud::client::CloudClient,
+    max_items: usize,
+) -> (usize, usize) {
+    let queue = crate::cloud::outbox::OutboxQueue::new(db.clone());
+    match crate::cloud::outbox::drain_outbox(&queue, cloud, max_items).await {
+        Ok(summary) => summary,
+        Err(e) => {
+            eprintln!("[difflore-mcp] drain mcp_query outbox failed: {e}");
+            (0, 0)
+        }
+    }
+}
+
+/// Check whether rule injection should be suppressed for the current
+/// process. Two paths trigger a skip:
+///
+/// 1. Explicit kill-switch: `DIFFLORE_DISABLE_RULES=1` (any truthy value).
+/// 2. Auto-disable on haiku-class models: when the active agent model
+///    (read from `DIFFLORE_AGENT_MODEL` / `ANTHROPIC_MODEL` /
+///    `CLAUDE_MODEL`) contains "haiku". Override with
+///    `DIFFLORE_FORCE_RULES_ON_HAIKU=1` if you want to opt back in.
+///
+/// The Haiku auto-disable avoids injecting rules into models where extra
+/// context has shown poor precision. Users can opt back in explicitly.
+pub(crate) fn rule_injection_disabled() -> Option<&'static str> {
+    if is_disable_rules_env_set() {
+        return Some("rule injection disabled via DIFFLORE_DISABLE_RULES");
+    }
+    if haiku_auto_disable_active() {
+        return Some(
+            "rule injection auto-disabled on haiku (override: DIFFLORE_FORCE_RULES_ON_HAIKU=1)",
+        );
+    }
+    None
+}
+
+/// Truthy-value check shared by the explicit kill switch and the
+/// haiku override flag. Empty / `0` / `false` count as unset so users
+/// can leave the var defined but neutralised.
+fn env_truthy(key: &str) -> bool {
+    crate::env::truthy(key)
+}
+
+fn is_disable_rules_env_set() -> bool {
+    crate::env::truthy(crate::env::DIFFLORE_DISABLE_RULES)
+}
+
+/// Read the active agent model from the standard env vars Claude Code,
+/// Cursor and the Anthropic SDK populate. Returns the first non-empty
+/// match in priority order. Lower-cased so callers can do substring
+/// checks without re-normalising.
+pub fn detect_active_model() -> Option<String> {
+    for key in ["DIFFLORE_AGENT_MODEL", "ANTHROPIC_MODEL", "CLAUDE_MODEL"] {
+        if let Some(v) = crate::env::var(key) {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_ascii_lowercase());
+            }
+        }
+    }
+    None
+}
+
+/// True when the detected model id looks like a Haiku variant (any
+/// generation). Substring match keeps us forward-compatible with
+/// future haiku revs without a hard-coded list.
+pub fn is_haiku_model(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("haiku")
+}
+
+/// True when (a) the active model resolves to haiku and (b) the user
+/// hasn't opted back in via `DIFFLORE_FORCE_RULES_ON_HAIKU`. Exposed
+/// for `difflore doctor` so it can report "auto-applied" instead of
+/// "recommended".
+pub fn haiku_auto_disable_active() -> bool {
+    let Some(model) = detect_active_model() else {
+        return false;
+    };
+    if !is_haiku_model(&model) {
+        return false;
+    }
+    !env_truthy("DIFFLORE_FORCE_RULES_ON_HAIKU")
+}
+
+pub(crate) fn disabled_response(reason: &str) -> Value {
+    json!({
+        "content": [{
+            "type": "text",
+            "text": format!(
+                "DiffLore: {reason}.\n\n\
+                 No rules surfaced. Unset DIFFLORE_DISABLE_RULES to re-enable. \
+                 Rule injection is off by default on haiku-class models. \
+                 Sonnet+ users should leave the var unset."
+            )
+        }],
+        "_meta": {
+            "impact": { "rulesInjected": 0, "kind": "rules", "disabled": true },
+            "embedding": {
+                "activeProfile": null,
+                "indexProfile": null,
+                "profileMatch": false,
+                "degraded": false,
+                "degradedReason": "rules_disabled",
+                "vectorLaneAvailable": false
+            }
+        }
+    })
+}
+
+/// Row shape for the skills lookup used by `search_rules` / `get_rules`.
+/// Kept private to the MCP layer so the surface stays narrow — no other
+/// caller needs `origin+title+description+file_patterns` in one shot.
+#[derive(sqlx::FromRow)]
+pub(crate) struct SkillDetailRow {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) r#type: String,
+    /// JSON-encoded tag list. Selected so the row deserialises cleanly and the
+    /// column stays available to callers, but the item ⑥ code-spec body no
+    /// longer renders a `Tags:` line (tags are not an actionable obligation),
+    /// so the field is read only by the `FromRow` derive today.
+    #[allow(dead_code)]
+    pub(crate) tags: String,
+    pub(crate) confidence_score: f64,
+    pub(crate) file_patterns: Option<String>,
+    pub(crate) origin: String,
+    /// Source repo attribution column (mirrors `RuleRow` in
+    /// `context::rule_source`). Pulled so `render_full_rule_with_examples`
+    /// can emit a `Source: owner/repo` line. Without this the 2-stage
+    /// `search_rules` → `get_rules` path silently drops attribution and
+    /// the agent can't cite "(from acme/widgets)" downstream.
+    pub(crate) source_repo: Option<String>,
+    /// Free-text "when to apply" hint. The column already exists on `skills`
+    /// (and round-trips through cloud sync) but was historically dropped on
+    /// the MCP serve path; item ⑥ surfaces it as the code-spec `### Trigger`
+    /// slot when present. Nullable — most local rules carry none.
+    pub(crate) trigger: Option<String>,
+    /// Free-text self-check prompt. Same provenance/nullability as `trigger`;
+    /// rendered as the `### Self-check` slot when present (team/cloud rules
+    /// often carry one).
+    pub(crate) check_prompt: Option<String>,
+}
+
+/// Build the full markdown rule body for callers who pair
+/// `search_rules` → `get_rules`.
+///
+/// Item ⑥: this no longer emits a free-prose blob. It re-projects the row's
+/// already-stored fields into the concrete code-spec template (contract /
+/// validation matrix / cases / self-check / provenance) via the shared,
+/// DB-free `context::rule_render` helpers, which item ① also imports so a
+/// published pack renders identically. The signature is unchanged so
+/// `get_rules.rs` is untouched, and the structured `examples[]` JSON the tool
+/// also returns is unaffected (the richer text goes in `body` only).
+pub(crate) fn render_full_rule_with_examples(
+    row: &SkillDetailRow,
+    examples: Option<&Vec<crate::context::rule_source::RuleExample>>,
+) -> String {
+    let file_patterns = parse_file_patterns(row.file_patterns.as_deref());
+    let input = crate::context::rule_render::RuleRenderInput {
+        id: &row.id,
+        name: &row.name,
+        r#type: &row.r#type,
+        confidence: row.confidence_score,
+        origin: &row.origin,
+        source_repo: row.source_repo.as_deref(),
+        file_patterns: &file_patterns,
+        description: &row.description,
+        trigger: row.trigger.as_deref(),
+        check_prompt: row.check_prompt.as_deref(),
+        examples: examples.map(Vec::as_slice),
+    };
+    crate::context::rule_render::render_code_spec(&input)
+}
+
+/// Extract a short preview (<= 120 chars) of a rule body. Prefers the
+/// `description` field (skips the generated header). Strips leading
+/// whitespace and collapses inner newlines so the preview stays on one
+/// line in typical tool-call rendering.
+pub(crate) fn rule_preview(description: &str, limit: usize) -> String {
+    let flat: String = description
+        .trim()
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect();
+    let mut preview = String::with_capacity(limit.min(flat.len()));
+    for ch in flat.chars() {
+        if preview.chars().count() >= limit {
+            break;
+        }
+        preview.push(ch);
+    }
+    preview
+}
+
+/// Parse the JSON-encoded `file_patterns` column into a `Vec<String>`.
+/// Malformed / missing → empty vec. Matches the permissive behaviour of
+/// `retrieval::pattern_allows` — a rule with a broken pattern list never
+/// disappears silently, it just shows up with no patterns in the index.
+pub fn parse_file_patterns(raw: Option<&str>) -> Vec<String> {
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    serde_json::from_str::<Vec<String>>(trimmed).unwrap_or_default()
+}
+
+pub(crate) fn first_matching_pattern(patterns: &[String], target_file: &str) -> Option<String> {
+    let normalised = target_file.trim_start_matches('/').replace('\\', "/");
+    patterns.iter().find_map(|pattern| {
+        Glob::new(pattern).ok().and_then(|glob| {
+            glob.compile_matcher()
+                .is_match(&normalised)
+                .then(|| pattern.clone())
+        })
+    })
+}
+
+pub(crate) fn has_strict_file_patterns_match(file_patterns: &[String], target_file: &str) -> bool {
+    let target_file = target_file.trim();
+    if target_file.is_empty() || target_file == "unknown" {
+        return false;
+    }
+    first_matching_pattern(file_patterns, target_file).is_some()
+}
+
+/// Buyer-grade serve proof should mean "this rule's explicit file scope
+/// matched the file the agent was touching." Universal/no-pattern rules
+/// are still eligible for recall, but they are not strict file proof.
+pub(crate) fn has_strict_file_scope_match(
+    file_patterns_raw: Option<&str>,
+    target_file: &str,
+) -> bool {
+    let target_file = target_file.trim();
+    let patterns = parse_file_patterns(file_patterns_raw);
+    has_strict_file_patterns_match(&patterns, target_file)
+}
+
+pub(crate) fn strict_file_match_count_for_ids(
+    meta_map: &HashMap<String, SkillDetailRow>,
+    ids: &[String],
+    target_file: Option<&str>,
+) -> i64 {
+    let Some(target_file) = target_file else {
+        return 0;
+    };
+    let count = ids
+        .iter()
+        .filter(|id| {
+            meta_map.get(id.as_str()).is_some_and(|row| {
+                has_strict_file_scope_match(row.file_patterns.as_deref(), target_file)
+            })
+        })
+        .count();
+    i64::try_from(count).unwrap_or(i64::MAX)
+}
+
+pub(crate) fn strict_file_match_ids_for_rules(
+    rules: &[crate::context::rule_source::RuleDocument],
+    target_file: Option<&str>,
+) -> HashSet<String> {
+    let Some(target_file) = target_file else {
+        return HashSet::new();
+    };
+    rules
+        .iter()
+        .filter(|rule| has_strict_file_scope_match(rule.file_patterns.as_deref(), target_file))
+        .map(|rule| rule.skill_id.clone())
+        .collect()
+}
+
+pub(crate) fn strict_file_match_ids_for_meta(
+    meta_map: &HashMap<String, SkillDetailRow>,
+    target_file: Option<&str>,
+) -> HashSet<String> {
+    let Some(target_file) = target_file else {
+        return HashSet::new();
+    };
+    meta_map
+        .iter()
+        .filter(|(_, row)| has_strict_file_scope_match(row.file_patterns.as_deref(), target_file))
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+pub(crate) fn build_match_evidence(
+    file: &str,
+    similarity: f64,
+    file_patterns: &[String],
+    confidence: f64,
+) -> Vec<EvidenceRecord> {
+    let mut evidence = Vec::new();
+
+    if file != "unknown" {
+        if let Some(pattern) = first_matching_pattern(file_patterns, file) {
+            evidence.push(
+                EvidenceRecord::new(
+                    EvidenceKind::FilePatternMatch,
+                    format!("target file `{file}` matches file_patterns via `{pattern}`"),
+                )
+                .with_source("search_rules")
+                .with_target(file.to_owned())
+                .with_matched_value(pattern),
+            );
+        } else if file_patterns.is_empty() {
+            evidence.push(
+                EvidenceRecord::new(
+                    EvidenceKind::FilePatternMatch,
+                    format!(
+                        "target file `{file}` is eligible because the rule has no file_patterns"
+                    ),
+                )
+                .with_source("search_rules")
+                .with_target(file.to_owned())
+                .with_matched_value("universal"),
+            );
+        }
+    }
+
+    evidence.push(
+        EvidenceRecord::new(
+            EvidenceKind::RetrievalMatch,
+            format!("retrieval match score {similarity:.3} with confidence {confidence:.2}"),
+        )
+        .with_source("search_rules")
+        .with_score(similarity)
+        .with_target(file.to_owned()),
+    );
+
+    evidence
+}
+
+pub(crate) fn build_timeline_evidence(
+    kind: EvidenceKind,
+    source: &str,
+    ts: &str,
+    preview: &str,
+) -> EvidenceRecord {
+    let reason = match kind {
+        EvidenceKind::RuleCreated => format!("rule created from {source} at {ts}"),
+        EvidenceKind::RuleUpdated => format!("rule updated from {source} at {ts}"),
+        EvidenceKind::RuleExample => format!("example captured from {source} at {ts}"),
+        EvidenceKind::TriggerMatch => format!("trigger text carried forward from {source} at {ts}"),
+        EvidenceKind::FilePatternMatch => format!("file-pattern evidence at {ts}"),
+        EvidenceKind::RetrievalMatch => format!("retrieval evidence at {ts}"),
+        EvidenceKind::SemanticSimilarity => format!("semantic evidence at {ts}"),
+        EvidenceKind::PastVerdictRecall => format!("past verdict recall at {ts}"),
+    };
+
+    EvidenceRecord::new(kind, reason)
+        .with_source(source.to_owned())
+        .with_ts(ts.to_owned())
+        .with_matched_value(preview.to_owned())
+}
+
+/// Look up skills metadata for the given IDs in one query. Returns a
+/// `HashMap` so the caller can preserve the input order when rendering.
+pub(crate) async fn fetch_skills_by_ids(
+    db: &SqlitePool,
+    ids: &[String],
+) -> Result<HashMap<String, SkillDetailRow>, CoreError> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    // MCP-serve boundary: never hand a pending candidate back through
+    // get_rules / search_rules. Index chunks for these are filtered at
+    // load time, but a stale chunk could still resolve here.
+    let ids_json =
+        serde_json::to_string(ids).map_err(|e| CoreError::Internal(format!("encode ids: {e}")))?;
+    let rows = sqlx::query_as::<_, SkillDetailRow>(
+        "SELECT id, name, description, type, tags, confidence_score, file_patterns, origin, \
+                source_repo, `trigger`, check_prompt \
+         FROM skills WHERE id IN (SELECT value FROM json_each(?1)) AND status = 'active'",
+    )
+    .bind(ids_json)
+    .fetch_all(db)
+    .await
+    .map_err(|e| CoreError::Internal(format!("skills lookup failed: {e}")))?;
+    let mut map = HashMap::with_capacity(rows.len());
+    for row in rows {
+        map.insert(row.id.clone(), row);
+    }
+    Ok(map)
+}
+
+/// Truncate a string to at most `limit` chars without splitting inside a
+/// grapheme. Used for preview fallbacks in `rule_timeline`; the global
+/// `rule_preview` helper already handles the rule-description case but
+/// `names/bad_code` snippets need a tighter cap.
+pub(crate) fn truncate_chars(s: &str, limit: usize) -> String {
+    s.chars().take(limit).collect()
+}
+
+/// Classify a skill's `origin` column into a timeline `kind`. The mapping
+/// is the same one `rule_hits_by_origin` uses — one source of truth so the
+/// telemetry aggregate and the timeline stream stay aligned.
+pub fn origin_to_kind(origin: &str) -> &'static str {
+    match origin {
+        "conversation" => "remember",
+        "pr_review" => "pr_review",
+        "extracted" => "extracted",
+        "manual" => "manual",
+        "cloud" => "cloud",
+        "team" => "team",
+        _ => "created",
+    }
+}
+
+/// Build a `QueryFilter` from the file path the agent is working on
+/// plus an optional GitHub `owner/repo` for the calling project.
+/// `language` comes from the file extension so the SQL pre-filter drops
+/// rules tagged for other languages (e.g. tokio Rust rules don't
+/// pollute retrieval on a vite TypeScript file). `repo_scope` scopes
+/// retrieval to the current repo/project only; NULL scope is not a
+/// runtime global fallback.
+/// Language is conservative no-guess: when the path doesn't yield a known
+/// language, the filter falls through to NULL. Runtime callers still need
+/// a concrete repo scope before injecting rules.
+pub(crate) fn filter_from_file(
+    target_file: Option<&str>,
+    repo_scope: Option<&str>,
+) -> crate::context::index_db::QueryFilter {
+    crate::context::index_db::QueryFilter {
+        language: target_file.and_then(crate::context::retrieval::detect_language_from_path),
+        repo_scope: repo_scope.map(String::from),
+    }
+}
+
+fn unique_repo_scopes(repo_scopes: &[String]) -> Vec<String> {
+    let mut seen = HashSet::with_capacity(repo_scopes.len());
+    let mut unique = Vec::new();
+    for scope in repo_scopes {
+        if let Some(scope) = normalize_repo_scope(scope)
+            && seen.insert(scope.clone())
+        {
+            unique.push(scope);
+        }
+    }
+    unique
+}
+
+fn normalize_repo_scope(scope: &str) -> Option<String> {
+    let scope = scope.trim();
+    if scope.is_empty() {
+        return None;
+    }
+    Some(scope.to_ascii_lowercase())
+}
+
+// `merge_scored_rule_chunks` is the canonical helper at
+// `context::retrieval::merge_scored_rule_chunks` — see that module for
+// the shared implementation reused across the MCP tool helpers, the
+// orchestrator, and the CLI search path.
+use crate::context::retrieval::merge_scored_rule_chunks;
+
+/// Args for [`retrieve_rules_with_repo_scopes`]. Bundling ranking
+/// metadata (`confidence_map`, `age_days_map`) and tuning knobs
+/// (`ann_enabled`, `adaptive_prune`) here drops the function below the
+/// 7-arg clippy threshold and lets each call site name what it's
+/// passing instead of relying on positional booleans.
+pub(crate) struct RetrieveRulesArgs<'a> {
+    pub query: &'a str,
+    pub lexical_query: Option<&'a str>,
+    pub top_k: usize,
+    pub target_file: Option<&'a str>,
+    pub repo_scopes: &'a [String],
+    pub confidence_map: Option<&'a HashMap<String, f64>>,
+    pub age_days_map: Option<&'a HashMap<String, f32>>,
+    pub ann_enabled: bool,
+    pub embedding_timeout: Option<std::time::Duration>,
+    pub adaptive_prune: bool,
+}
+
+pub(crate) async fn retrieve_rules_with_repo_scopes(
+    index_pool: &SqlitePool,
+    args: RetrieveRulesArgs<'_>,
+) -> Result<Vec<crate::context::retrieval::ScoredRuleChunk>, CoreError> {
+    let RetrieveRulesArgs {
+        query,
+        lexical_query,
+        top_k,
+        target_file,
+        repo_scopes,
+        confidence_map,
+        age_days_map,
+        ann_enabled,
+        embedding_timeout,
+        adaptive_prune,
+    } = args;
+    if top_k == 0 {
+        return Ok(Vec::new());
+    }
+    let top_k = top_k.min(50);
+    // Multi-scope: when both `origin` and `upstream` are detected, query
+    // each scope independently, cap fan-out for latency, and merge by
+    // best-score dedup. This keeps MCP recall aligned with the CLI path.
+    let repo_scopes: Vec<String> = unique_repo_scopes(repo_scopes)
+        .into_iter()
+        .take(4)
+        .collect();
+    if repo_scopes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let scope_filters: Vec<Option<String>> = repo_scopes.into_iter().map(Some).collect();
+
+    let query_variants = retrieval_query_variants(query, lexical_query);
+    let mut groups = Vec::with_capacity(scope_filters.len() * query_variants.len());
+    for repo_scope in &scope_filters {
+        let filter = filter_from_file(target_file, repo_scope.as_deref());
+        for query_variant in &query_variants {
+            groups.push(
+                crate::context::retrieval::retrieve_rules_with_confidence(
+                    index_pool,
+                    query_variant,
+                    crate::context::retrieval::RetrievalOptions {
+                        top_k: Some(top_k),
+                        confidence_map,
+                        age_days_map,
+                        target_file,
+                        filter: Some(&filter),
+                        ann_enabled,
+                        embedding_timeout,
+                        adaptive_prune,
+                        ..Default::default()
+                    },
+                )
+                .await?,
+            );
+        }
+    }
+
+    Ok(merge_scored_rule_chunks(groups, top_k))
+}
+
+fn retrieval_query_variants<'a>(query: &'a str, lexical_query: Option<&'a str>) -> Vec<&'a str> {
+    let query = query.trim();
+    let lexical_query = lexical_query.unwrap_or("").trim();
+    let mut variants = Vec::with_capacity(2);
+    if !query.is_empty() {
+        variants.push(query);
+    }
+    if !lexical_query.is_empty()
+        && !normalized_query_key(lexical_query).is_empty()
+        && normalized_query_key(lexical_query) != normalized_query_key(query)
+    {
+        variants.push(lexical_query);
+    }
+    variants
+}
+
+fn normalized_query_key(query: &str) -> String {
+    split_query_tokens(query).join(" ")
+}
+
+pub(crate) fn rerank_scored_rule_chunks_for_mcp(
+    chunks: Vec<crate::context::retrieval::ScoredRuleChunk>,
+    lexical_query: &str,
+    limit: usize,
+) -> Vec<crate::context::retrieval::ScoredRuleChunk> {
+    crate::context::retrieval::rerank_scored_rule_chunks_by_lexical_query(
+        chunks,
+        lexical_query,
+        limit,
+    )
+}
+
+pub(crate) fn rerank_scored_rule_chunks_for_mcp_by_strict_file_matches(
+    chunks: Vec<crate::context::retrieval::ScoredRuleChunk>,
+    lexical_query: &str,
+    limit: usize,
+    strict_skill_ids: &HashSet<String>,
+) -> Vec<crate::context::retrieval::ScoredRuleChunk> {
+    let lexical_limit = chunks.len();
+    let mut reranked = rerank_scored_rule_chunks_for_mcp(chunks, lexical_query, lexical_limit);
+    if !strict_skill_ids.is_empty() {
+        reranked.sort_by(|a, b| {
+            strict_skill_ids
+                .contains(&b.skill_id)
+                .cmp(&strict_skill_ids.contains(&a.skill_id))
+        });
+    }
+    reranked.truncate(limit);
+    reranked
+}
+
+/// Cold-start helper shared by the hook and `search_rules`: fetch
+/// transferable rules whose `file_patterns` strict-match `target_file`.
+///
+/// Returns empty unless the starter index is already built. Callers must
+/// label results as cross-repo suggestions.
+pub(crate) async fn cross_repo_starter_scored(
+    db: &SqlitePool,
+    query: &str,
+    target_file: &str,
+    confidence_map: Option<&HashMap<String, f64>>,
+    age_days_map: Option<&HashMap<String, f32>>,
+    top_k: usize,
+) -> Vec<crate::context::retrieval::ScoredRuleChunk> {
+    let Ok(Some(starter_pool)) =
+        crate::context::orchestrator::cross_repo_starter_index_if_current(db).await
+    else {
+        return Vec::new();
+    };
+    let candidate_limit = top_k.saturating_mul(5).clamp(top_k.max(1), 50);
+    let Ok(candidates) = crate::context::retrieval::retrieve_rules_for_search(
+        &starter_pool,
+        crate::context::retrieval::RuleSearchRetrievalOptions {
+            query,
+            lexical_query: query,
+            top_k: candidate_limit,
+            confidence_map,
+            age_days_map,
+            target_file: Some(target_file),
+            // Every repo's rules are eligible; the strict file-pattern gate
+            // below keeps only the transferable ones.
+            repo_scopes: &[],
+            ann_enabled: false,
+            embedding_timeout: Some(MCP_EMBEDDING_TIMEOUT),
+            // Latency-critical MCP path: fast-degrade to lexical, never retry a
+            // cold embed (that would block the agent's tool call).
+            cold_start_retry: false,
+            adaptive_prune: true,
+        },
+    )
+    .await
+    else {
+        return Vec::new();
+    };
+    let ids: Vec<String> = candidates
+        .iter()
+        .map(|chunk| chunk.skill_id.clone())
+        .collect();
+    let meta = fetch_skills_by_ids(db, &ids).await.unwrap_or_default();
+    let strict = strict_file_match_ids_for_meta(&meta, Some(target_file));
+    let mut keep: Vec<_> = candidates
+        .into_iter()
+        .filter(|chunk| strict.contains(&chunk.skill_id))
+        .collect();
+    keep.truncate(top_k);
+    keep
+}
+
+#[cfg(test)]
+pub(crate) fn retain_only_strict_file_scoped_chunks(
+    chunks: &mut Vec<crate::context::retrieval::ScoredRuleChunk>,
+    target_file: Option<&str>,
+    strict_skill_ids: &HashSet<String>,
+) {
+    if target_file.is_some() {
+        chunks.retain(|chunk| strict_skill_ids.contains(&chunk.skill_id));
+    }
+}
+
+pub(crate) fn build_empty_recall_retry_query(file: &str, intent: &str) -> Option<String> {
+    let mut terms = Vec::new();
+    let mut seen = HashSet::new();
+
+    let file = file.trim();
+    if !file.is_empty() && file != "unknown" {
+        for component in file
+            .split(['/', '\\'])
+            .rev()
+            .take(3)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
+            push_query_tokens(component, &mut seen, &mut terms, true);
+        }
+        if let Some(ext) = file.rsplit_once('.').map(|(_, ext)| ext.trim()) {
+            match ext.to_ascii_lowercase().as_str() {
+                "ts" | "tsx" => push_unique_query_term("typescript", &mut seen, &mut terms),
+                "js" | "jsx" => push_unique_query_term("javascript", &mut seen, &mut terms),
+                "rs" => push_unique_query_term("rust", &mut seen, &mut terms),
+                "py" => push_unique_query_term("python", &mut seen, &mut terms),
+                "go" => push_unique_query_term("go", &mut seen, &mut terms),
+                _ => {}
+            }
+        }
+    }
+
+    for token in intent_tokens(intent).into_iter().take(12) {
+        push_unique_query_term(&token, &mut seen, &mut terms);
+    }
+
+    if terms.is_empty() {
+        return None;
+    }
+    let retry = terms.join(" ");
+    let original = normalize_retry_comparison(&format!("{file} {intent}"));
+    let normalized_retry = normalize_retry_comparison(&retry);
+    (!normalized_retry.is_empty() && normalized_retry != original).then_some(retry)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scored_rule(
+        id: &str,
+        title: &str,
+        body: &str,
+        score: f64,
+    ) -> crate::context::retrieval::ScoredRuleChunk {
+        crate::context::retrieval::ScoredRuleChunk {
+            skill_id: id.to_owned(),
+            content: format!("Rule ID: {id}\nRule Name: {title}\nType: review_standard\n\n{body}"),
+            score,
+            confidence: 0.7,
+        }
+    }
+
+    fn rule_doc(
+        id: &str,
+        title: &str,
+        body: &str,
+        confidence: f64,
+        repo_scope: &str,
+    ) -> crate::context::rule_source::RuleDocument {
+        crate::context::rule_source::RuleDocument {
+            skill_id: id.to_owned(),
+            title: title.to_owned(),
+            content: format!(
+                "Rule ID: {id}\nRule Name: {title}\nType: review_standard\nSource: {repo_scope}\nTags: [\"rust\"]\n\n{body}"
+            ),
+            confidence,
+            file_patterns: Some("[\"src/**/*.rs\"]".to_owned()),
+            language: Some("rust".to_owned()),
+            repo_scope: Some(repo_scope.to_owned()),
+        }
+    }
+
+    fn ids(chunks: &[crate::context::retrieval::ScoredRuleChunk]) -> Vec<&str> {
+        chunks.iter().map(|chunk| chunk.skill_id.as_str()).collect()
+    }
+
+    fn score_for(chunks: &[crate::context::retrieval::ScoredRuleChunk], id: &str) -> f64 {
+        chunks
+            .iter()
+            .find(|chunk| chunk.skill_id == id)
+            .map(|chunk| chunk.score)
+            .expect("expected score for rule id")
+    }
+
+    #[test]
+    fn repo_scopes_are_normalized_and_deduped_in_input_order() {
+        assert_eq!(
+            unique_repo_scopes(&[
+                "  HibrandOnevans/Vite  ".to_owned(),
+                "hibrandonevans/vite".to_owned(),
+                " ".to_owned(),
+                "ViteJS/Vite".to_owned(),
+                "vitejs/vite ".to_owned(),
+            ]),
+            vec!["hibrandonevans/vite".to_owned(), "vitejs/vite".to_owned()]
+        );
+    }
+
+    #[test]
+    fn mcp_intent_rerank_promotes_specific_reviewer_rule_over_generic_overview() {
+        let reranked = rerank_scored_rule_chunks_for_mcp(
+            vec![
+                scored_rule(
+                    "overview",
+                    "Review: preserve source PR regression coverage pattern",
+                    "When touching **/*.go, preserve broad regression coverage from the source PR.",
+                    0.0206,
+                ),
+                scored_rule(
+                    "specific",
+                    "Review: replace magic number 100 with http.StatusContinue",
+                    "When touching context.go, the PR only replaces magic number 100 with http.StatusContinue in bodyAllowedForStatus.",
+                    0.0180,
+                ),
+            ],
+            "test(context): use http.StatusContinue constant instead of magic number 100",
+            2,
+        );
+
+        assert_eq!(reranked[0].skill_id, "specific");
+    }
+
+    #[test]
+    fn mcp_strict_file_rerank_promotes_file_scoped_rule_before_universal_rule() {
+        let strict_skill_ids: HashSet<String> = ["strict-file".to_owned()].into();
+        let reranked = rerank_scored_rule_chunks_for_mcp_by_strict_file_matches(
+            vec![
+                scored_rule(
+                    "universal",
+                    "Review: general handler guidance",
+                    "When touching handlers, preserve the existing structure.",
+                    0.90,
+                ),
+                scored_rule(
+                    "strict-file",
+                    "Review: src/http/handler.rs unwrap guard",
+                    "When touching src/http/handler.rs, never unwrap request payloads.",
+                    0.20,
+                ),
+            ],
+            "general handler guidance",
+            2,
+            &strict_skill_ids,
+        );
+
+        assert_eq!(ids(&reranked), vec!["strict-file", "universal"]);
+    }
+
+    #[test]
+    fn mcp_file_scope_filter_drops_universal_and_wrong_file_hits() {
+        let strict_skill_ids: HashSet<String> = ["strict-file".to_owned()].into();
+        let mut chunks = vec![
+            scored_rule(
+                "universal",
+                "Review: general handler guidance",
+                "When touching handlers, preserve the existing structure.",
+                0.90,
+            ),
+            scored_rule(
+                "wrong-file",
+                "Review: docs guidance",
+                "When touching docs, keep examples current.",
+                0.80,
+            ),
+            scored_rule(
+                "strict-file",
+                "Review: src/http/handler.rs unwrap guard",
+                "When touching src/http/handler.rs, never unwrap request payloads.",
+                0.20,
+            ),
+        ];
+
+        retain_only_strict_file_scoped_chunks(
+            &mut chunks,
+            Some("src/http/handler.rs"),
+            &strict_skill_ids,
+        );
+
+        assert_eq!(ids(&chunks), vec!["strict-file"]);
+    }
+
+    #[test]
+    fn strict_file_match_ids_for_rules_only_counts_explicit_matching_globs() {
+        let repo_scope = "acme/widgets";
+        let mut strict = rule_doc(
+            "strict",
+            "Avoid unwrap in handlers",
+            "Never unwrap request handlers.",
+            0.7,
+            repo_scope,
+        );
+        strict.file_patterns = Some("[\"src/http/*.rs\"]".to_owned());
+        let mut universal = rule_doc(
+            "universal",
+            "General handler guidance",
+            "Preserve existing handler structure.",
+            0.9,
+            repo_scope,
+        );
+        universal.file_patterns = None;
+        let mut other_file = rule_doc(
+            "other-file",
+            "CLI guidance",
+            "Keep CLI parsing explicit.",
+            0.9,
+            repo_scope,
+        );
+        other_file.file_patterns = Some("[\"src/cli/*.rs\"]".to_owned());
+
+        let strict_ids = strict_file_match_ids_for_rules(
+            &[strict, universal, other_file],
+            Some("src/http/handler.rs"),
+        );
+
+        assert_eq!(strict_ids, ["strict".to_owned()].into());
+    }
+
+    #[tokio::test]
+    async fn cli_search_helper_and_mcp_helper_share_age_decay_ranking() {
+        let _home = crate::db::shared_test_home();
+        let index_path = std::env::temp_dir().join(format!(
+            "difflore-cli-mcp-age-parity-{}-{}.db",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let index_pool = crate::context::index_db::open_pool_at(&index_path)
+            .await
+            .unwrap();
+        let repo_scope = "acme/widgets";
+        let query = "src/http/handler.rs unwrap request handlers";
+        let intent = "unwrap request handlers";
+        let repo_scopes = vec![repo_scope.to_owned()];
+        let rules = vec![
+            rule_doc(
+                "old-style",
+                "Format unwrap request handlers",
+                "Format unwrap request handlers consistently; lint spacing before returning errors.",
+                1.0,
+                repo_scope,
+            ),
+            rule_doc(
+                "fresh-correction",
+                "Avoid unwrap in request handlers",
+                "Never unwrap request handlers; return a structured error instead.",
+                0.6,
+                repo_scope,
+            ),
+        ];
+        crate::context::index_db::upsert_rule_chunks(&index_pool, &rules)
+            .await
+            .unwrap();
+
+        let confidence_map: HashMap<String, f64> = [
+            ("old-style".to_owned(), 1.0),
+            ("fresh-correction".to_owned(), 0.6),
+        ]
+        .into();
+        let age_days_map: HashMap<String, f32> = [
+            ("old-style".to_owned(), 730.0),
+            ("fresh-correction".to_owned(), 1.0),
+        ]
+        .into();
+        let top_k = 2usize;
+
+        let cli_without_age = crate::context::retrieval::retrieve_rules_for_search(
+            &index_pool,
+            crate::context::retrieval::RuleSearchRetrievalOptions {
+                query,
+                lexical_query: intent,
+                top_k,
+                confidence_map: Some(&confidence_map),
+                age_days_map: None,
+                target_file: Some("src/http/handler.rs"),
+                repo_scopes: &repo_scopes,
+                ann_enabled: false,
+                embedding_timeout: Some(MCP_EMBEDDING_TIMEOUT),
+                cold_start_retry: false,
+                adaptive_prune: false,
+            },
+        )
+        .await
+        .unwrap();
+        let cli_with_age = crate::context::retrieval::retrieve_rules_for_search(
+            &index_pool,
+            crate::context::retrieval::RuleSearchRetrievalOptions {
+                query,
+                lexical_query: intent,
+                top_k,
+                confidence_map: Some(&confidence_map),
+                age_days_map: Some(&age_days_map),
+                target_file: Some("src/http/handler.rs"),
+                repo_scopes: &repo_scopes,
+                ann_enabled: false,
+                embedding_timeout: Some(MCP_EMBEDDING_TIMEOUT),
+                cold_start_retry: false,
+                adaptive_prune: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let candidate_limit = top_k.saturating_mul(5).clamp(top_k, 50);
+        let mcp_candidates = retrieve_rules_with_repo_scopes(
+            &index_pool,
+            RetrieveRulesArgs {
+                query,
+                lexical_query: Some(intent),
+                top_k: candidate_limit,
+                target_file: Some("src/http/handler.rs"),
+                repo_scopes: &repo_scopes,
+                confidence_map: Some(&confidence_map),
+                age_days_map: Some(&age_days_map),
+                ann_enabled: false,
+                embedding_timeout: Some(MCP_EMBEDDING_TIMEOUT),
+                adaptive_prune: false,
+            },
+        )
+        .await
+        .unwrap();
+        let mcp_with_age = rerank_scored_rule_chunks_for_mcp(mcp_candidates, intent, top_k);
+
+        assert_eq!(ids(&cli_with_age), ids(&mcp_with_age));
+        for id in ids(&cli_with_age) {
+            let cli_score = score_for(&cli_with_age, id);
+            let mcp_score = score_for(&mcp_with_age, id);
+            assert!(
+                (cli_score - mcp_score).abs() < 1e-12,
+                "score mismatch for {id}: cli={cli_score} mcp={mcp_score}"
+            );
+        }
+        assert!(
+            score_for(&cli_with_age, "old-style") < score_for(&cli_without_age, "old-style"),
+            "old style rule should decay when the shared age_days_map is supplied"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_retrieval_without_repo_scopes_does_not_inject_global_memory() {
+        let _home = crate::db::shared_test_home();
+        let index_path = std::env::temp_dir().join(format!(
+            "difflore-mcp-empty-scope-{}-{}.db",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let index_pool = crate::context::index_db::open_pool_at(&index_path)
+            .await
+            .unwrap();
+        let rules = vec![rule_doc(
+            "signal",
+            "Avoid unwrap in request handlers",
+            "Avoid unwrap in request handlers; return structured errors",
+            0.8,
+            "acme/widgets",
+        )];
+        crate::context::index_db::upsert_rule_chunks(&index_pool, &rules)
+            .await
+            .unwrap();
+
+        let hits = retrieve_rules_with_repo_scopes(
+            &index_pool,
+            RetrieveRulesArgs {
+                query: "src/http/handler.rs Avoid unwrap in request handlers",
+                lexical_query: Some("Avoid unwrap in request handlers"),
+                top_k: 5,
+                target_file: Some("src/http/handler.rs"),
+                repo_scopes: &[],
+                confidence_map: None,
+                age_days_map: None,
+                ann_enabled: false,
+                embedding_timeout: Some(MCP_EMBEDDING_TIMEOUT),
+                adaptive_prune: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            hits.is_empty(),
+            "MCP recall must not fall back to global memory when no repo scope is available"
+        );
+    }
+}
+
+fn push_query_tokens(
+    value: &str,
+    seen: &mut HashSet<String>,
+    terms: &mut Vec<String>,
+    allow_short: bool,
+) {
+    for token in split_query_tokens(value) {
+        if allow_short || token.chars().count() >= 3 {
+            push_unique_query_term(&token, seen, terms);
+        }
+    }
+}
+
+fn intent_tokens(intent: &str) -> Vec<String> {
+    split_query_tokens(intent)
+        .into_iter()
+        .filter(|token| token.chars().count() >= 3)
+        .filter(|token| !MCP_RETRY_STOPWORDS.contains(&token.as_str()))
+        .collect()
+}
+
+fn split_query_tokens(value: &str) -> Vec<String> {
+    value
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .map(|token| token.trim().to_ascii_lowercase())
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn push_unique_query_term(token: &str, seen: &mut HashSet<String>, terms: &mut Vec<String>) {
+    if seen.insert(token.to_owned()) {
+        terms.push(token.to_owned());
+    }
+}
+
+fn normalize_retry_comparison(value: &str) -> String {
+    split_query_tokens(value).join(" ")
+}
+
+const MCP_RETRY_STOPWORDS: &[&str] = &[
+    "about",
+    "agent",
+    "against",
+    "apply",
+    "applicable",
+    "before",
+    "check",
+    "code",
+    "context",
+    "could",
+    "diff",
+    "does",
+    "file",
+    "find",
+    "from",
+    "give",
+    "have",
+    "help",
+    "here",
+    "into",
+    "memory",
+    "need",
+    "please",
+    "relevant",
+    "review",
+    "rules",
+    "search",
+    "should",
+    "this",
+    "that",
+    "what",
+    "when",
+    "with",
+];
+
+#[cfg(test)]
+mod filter_from_file_tests {
+    use super::{build_empty_recall_retry_query, filter_from_file};
+
+    #[test]
+    fn ts_file_yields_typescript_language() {
+        let f = filter_from_file(Some("packages/vite/src/node/plugins/resolve.ts"), None);
+        assert_eq!(f.language.as_deref(), Some("typescript"));
+        assert!(f.repo_scope.is_none());
+    }
+
+    #[test]
+    fn rs_file_yields_rust_language() {
+        let f = filter_from_file(Some("crates/difflore-core/src/lib.rs"), None);
+        assert_eq!(f.language.as_deref(), Some("rust"));
+    }
+
+    #[test]
+    fn unknown_extension_degrades_to_no_language_filter() {
+        let f = filter_from_file(Some(".gitignore"), None);
+        assert!(f.language.is_none());
+    }
+
+    #[test]
+    fn no_target_file_uses_default_filter() {
+        let f = filter_from_file(None, None);
+        assert!(f.is_empty());
+    }
+
+    #[test]
+    fn repo_scope_passes_through_when_provided() {
+        let f = filter_from_file(Some("src/foo.ts"), Some("vitejs/vite"));
+        assert_eq!(f.language.as_deref(), Some("typescript"));
+        assert_eq!(f.repo_scope.as_deref(), Some("vitejs/vite"));
+    }
+
+    #[test]
+    fn repo_scope_alone_with_no_file_still_scopes() {
+        let f = filter_from_file(None, Some("tokio-rs/tokio"));
+        assert!(f.language.is_none());
+        assert_eq!(f.repo_scope.as_deref(), Some("tokio-rs/tokio"));
+    }
+
+    #[test]
+    fn empty_recall_retry_query_keeps_file_and_distinctive_intent_terms() {
+        let retry = build_empty_recall_retry_query(
+            "packages/router/src/parser.ts",
+            "Please search review memory for deeply nested optional route parsing with no exact wording",
+        )
+        .expect("retry query");
+
+        assert!(retry.contains("parser"));
+        assert!(retry.contains("typescript"));
+        assert!(retry.contains("nested"));
+        assert!(retry.contains("route"));
+        assert!(!retry.contains("please"));
+        assert!(!retry.contains("review"));
+    }
+
+    #[test]
+    fn empty_recall_retry_query_returns_none_when_it_cannot_improve() {
+        assert!(build_empty_recall_retry_query("unknown", "please search rules").is_none());
+    }
+
+    #[test]
+    fn retrieval_query_variants_dedupes_path_and_intent_lanes() {
+        assert_eq!(
+            super::retrieval_query_variants(
+                "src/context.go Bind handlers must check returned error",
+                Some("Bind handlers must check returned error"),
+            ),
+            vec![
+                "src/context.go Bind handlers must check returned error",
+                "Bind handlers must check returned error",
+            ],
+        );
+        assert_eq!(
+            super::retrieval_query_variants("Bind handlers", Some("bind handlers")),
+            vec!["Bind handlers"],
+        );
+        assert_eq!(
+            super::retrieval_query_variants("", Some("please")),
+            vec!["please"],
+        );
+    }
+}

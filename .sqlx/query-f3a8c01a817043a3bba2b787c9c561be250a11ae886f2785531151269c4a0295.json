@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT kind, confidence_before, confidence_after FROM rule_events WHERE skill_id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "kind",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "confidence_before",
+        "ordinal": 1,
+        "type_info": "Float"
+      },
+      {
+        "name": "confidence_after",
+        "ordinal": 2,
+        "type_info": "Float"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "f3a8c01a817043a3bba2b787c9c561be250a11ae886f2785531151269c4a0295"
+}

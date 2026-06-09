@@ -1,0 +1,22 @@
+[alias]
+# `cargo t` runs the workspace test suite via cargo-nextest (faster + nicer
+# output than `cargo test`). Install with `cargo install cargo-nextest --locked`.
+# Falls through to a clear error message if nextest is not installed.
+# Note: nextest does not execute doctests — run `cargo test --doc` separately
+# when you've touched doc examples.
+t = "nextest run --workspace --all-targets"
+
+[env]
+# Use the sqlx offline cache (./.sqlx) so `cargo check` / `cargo build` do not
+# require a live SQLite database at compile time. Developers can still point
+# DATABASE_URL at a real DB and run `cargo sqlx prepare` to regenerate cache.
+SQLX_OFFLINE = "true"
+
+# Windows main-thread default stack is 1 MB — too small for `difflore dist
+# verify` and similar paths that recurse over the include_str!-bound skill
+# tree at startup. CI on windows-latest hit STATUS_STACK_BUFFER_OVERRUN
+# (0xC0000409) at exactly that point. Bump to 16 MB so deep static-data
+# walks don't blow the stack. Linux + macOS use 8 MB by default; this
+# only affects MSVC builds.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:16777216"]

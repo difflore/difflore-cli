@@ -1,0 +1,74 @@
+{
+  "description": "DiffLore lifecycle hooks — inject team rules into Claude Code as it writes code",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; command -v difflore-hook >/dev/null 2>&1 && difflore-hook --client claude-code || true",
+            "timeout": 2000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; command -v difflore-hook >/dev/null 2>&1 && difflore-hook --client claude-code || true",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; command -v difflore-hook >/dev/null 2>&1 && difflore-hook --client claude-code || true",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; command -v difflore-hook >/dev/null 2>&1 && difflore-hook --client claude-code || true",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; command -v difflore-hook >/dev/null 2>&1 && difflore-hook --client claude-code || true",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; command -v difflore-hook >/dev/null 2>&1 && difflore-hook --client claude-code || true",
+            "timeout": 10000
+          }
+        ]
+      }
+    ]
+  }
+}

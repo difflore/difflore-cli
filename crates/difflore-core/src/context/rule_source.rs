@@ -1,0 +1,696 @@
+use sqlx::SqlitePool;
+
+use crate::errors::CoreError;
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct RuleDocument {
+    pub skill_id: String,
+    pub title: String,
+    pub content: String,
+    pub confidence: f64,
+    /// JSON-serialised glob list (e.g. `["**/*.rs", "tokio/src/io/**"]`).
+    /// Empty / NULL = universal rule (cascade treats as always-matching).
+    pub file_patterns: Option<String>,
+    /// Derived from `tags` JSON. NULL means no language hint; SQL filters keep
+    /// NULL rows eligible unless an exact language match is required.
+    pub language: Option<String>,
+    /// Derived from canonical `source_repo`. NULL is unattributed metadata, not
+    /// a runtime global rule; recall must exact-match the current repo/project.
+    pub repo_scope: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleIndexState {
+    pub rule_count: i64,
+    pub max_updated_at: Option<String>,
+    pub embedding_profile: String,
+    /// Stable identity of the in-scope rule SET actually served for the
+    /// current git repo scope. `rule_count` + `max_updated_at` alone cannot
+    /// detect a scope swap (e.g. the git remote changes so a different but
+    /// equally-sized set of rules becomes in-scope with the same max
+    /// timestamp); the freshness check would then wrongly skip a re-index and
+    /// serve the wrong scope's chunks. `None` means "scope-agnostic" — used by
+    /// `load_rule_index_state`, which describes the whole active corpus rather
+    /// than a filtered scope — and is ignored by the freshness comparison.
+    pub scope_signature: Option<String>,
+}
+
+/// Derive a stable signature for an in-scope rule SET from its skill ids.
+/// Order-independent: ids are sorted before hashing so the signature depends
+/// only on membership, not on retrieval/iteration order. Returns `None` for
+/// an empty set so the freshness check stays scope-agnostic when nothing is
+/// filtered.
+pub fn scope_signature_from_skill_ids<'a>(
+    skill_ids: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
+    use sha1::{Digest, Sha1};
+    let mut ids: Vec<&str> = skill_ids.into_iter().collect();
+    if ids.is_empty() {
+        return None;
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    let mut hasher = Sha1::new();
+    for id in ids {
+        hasher.update(id.as_bytes());
+        // Length-delimit so ["ab", "c"] and ["a", "bc"] cannot collide.
+        hasher.update(b"\0");
+    }
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    Some(hex)
+}
+
+#[derive(sqlx::FromRow)]
+struct RuleRow {
+    id: String,
+    name: String,
+    description: String,
+    r#type: String,
+    tags: String,
+    confidence_score: f64,
+    file_patterns: Option<String>,
+    source_repo: Option<String>,
+}
+
+/// Well-known language tags we recognise inside a skill's `tags` JSON.
+/// Matched case-insensitively against each tag. The first hit wins, so the
+/// order below controls priority — put the most common languages first to
+/// keep the hot path cheap.
+const LANGUAGE_TAGS: &[&str] = &[
+    "rust",
+    "typescript",
+    "javascript",
+    "python",
+    "go",
+    "java",
+    "kotlin",
+    "swift",
+    "ruby",
+    "php",
+    "cpp",
+    "c++",
+    "csharp",
+    "c#",
+    "c",
+];
+
+/// Extract a language string from a skill's `tags` JSON (a stringified
+/// array like `["rust", "async"]`). Returns the first recognised language
+/// tag (normalised to lower-case), or `None` if the tags are unparseable,
+/// empty, or carry no language hint.
+///
+/// Kept public so tests can exercise the mapping without building a full
+/// `SqliteRow`. Conservative-by-default: unknown tags are ignored rather
+/// than guessed at — a false `language` hint would silently drop real hits
+/// at retrieval time.
+pub fn language_from_tags(tags_json: &str) -> Option<String> {
+    let trimmed = tags_json.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let tags: Vec<String> = serde_json::from_str(trimmed).ok()?;
+    for tag in tags {
+        let lower = tag.trim().to_ascii_lowercase();
+        if LANGUAGE_TAGS.iter().any(|known| *known == lower) {
+            // Normalise "c++" -> "cpp", "c#" -> "csharp" so downstream
+            // filters can match on a single canonical spelling.
+            let canonical = match lower.as_str() {
+                "c++" => "cpp".to_owned(),
+                "c#" => "csharp".to_owned(),
+                other => other.to_owned(),
+            };
+            return Some(canonical);
+        }
+    }
+    None
+}
+
+/// Derive a confidence multiplier from a rule's tags. Tags carry two
+/// orthogonal evidence signals on extracted rules:
+///   - `cluster-size:N` — how many distinct review extractions clustered
+///     into this rule. N=1 is a singleton (weakest evidence: one
+///     reviewer wrote it once); N>=3 is corroborated.
+///   - `severity:{error,warning,info}` — informational severity
+///     attached during extraction.
+///
+/// Returns a value in `[0.4, 0.95]`, intended to multiply against the
+/// retrieval score in `retrieve_rules_with_confidence`. Returns `None`
+/// when neither tag is present so the caller can keep the default 0.7
+/// default.
+pub fn confidence_from_tags(tags_json: &str) -> Option<f64> {
+    let trimmed = tags_json.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let tags: Vec<String> = serde_json::from_str(trimmed).ok()?;
+    let mut cluster_size: Option<u32> = None;
+    let mut severity: Option<String> = None;
+    for tag in &tags {
+        let lower = tag.trim().to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("cluster-size:") {
+            if let Ok(n) = rest.parse::<u32>() {
+                cluster_size = Some(n);
+            }
+        } else if let Some(rest) = lower.strip_prefix("severity:") {
+            severity = Some(rest.to_owned());
+        }
+    }
+    if cluster_size.is_none() && severity.is_none() {
+        return None;
+    }
+    let base_score = if let Some(n) = cluster_size {
+        match n {
+            0 | 1 => 0.55, // singleton — downweight, but not under the 0.2 floor
+            2 => 0.7,
+            3..=4 => 0.8,
+            _ => 0.9, // 5+ corroborating extractions — strongest evidence
+        }
+    } else {
+        0.7
+    };
+    let score = if let Some(sev) = severity.as_deref() {
+        match sev {
+            "error" => f64::min(base_score + 0.05, 0.95),
+            "info" => f64::max(base_score - 0.05, 0.4),
+            _ => base_score, // warning is the neutral default
+        }
+    } else {
+        base_score
+    };
+    Some(score)
+}
+
+/// Map a single glob pattern to a canonical language tag if it
+/// uniquely identifies one. Patterns like `"**/*.rs"` or
+/// `"src/**/*.ts"` resolve cleanly. Patterns that span multiple
+/// languages (`"**/*"`, `"**/test*"`) return None.
+fn language_from_pattern(p: &str) -> Option<&'static str> {
+    let lower = p.to_ascii_lowercase();
+    let ext = lower.rsplit('.').next()?;
+    if ext == lower || ext.contains('/') || ext.contains('*') {
+        return None;
+    }
+    Some(match ext {
+        "rs" => "rust",
+        "ts" | "tsx" => "typescript",
+        "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "py" | "pyi" => "python",
+        "go" => "go",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "swift" => "swift",
+        "rb" => "ruby",
+        "php" => "php",
+        "cpp" | "cc" | "cxx" | "hpp" => "cpp",
+        "cs" => "csharp",
+        _ => return None,
+    })
+}
+
+/// Fallback for `language_from_tags` when tags carry no language hint:
+/// scan a rule's `file_patterns`. If every parseable language-bearing
+/// pattern resolves to the same canonical language, return it.
+/// Mixed-language pattern lists (`["**/*.rs", "**/*.go"]`) and universal
+/// patterns (`["**/*"]`) return None, matching `language_from_tags`.
+pub fn language_from_file_patterns(file_patterns_json: Option<&str>) -> Option<String> {
+    let raw = file_patterns_json?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let patterns: Vec<String> = serde_json::from_str(raw).ok()?;
+    let mut seen: Option<&'static str> = None;
+    for p in &patterns {
+        if let Some(lang) = language_from_pattern(p) {
+            match seen {
+                None => seen = Some(lang),
+                Some(existing) if existing == lang => {}
+                Some(_) => return None,
+            }
+        }
+    }
+    seen.map(String::from)
+}
+
+pub fn repo_scope_from_source_repo(source_repo: Option<&str>) -> Option<String> {
+    if let Some(repo) = source_repo.map(str::trim)
+        && let Some((owner, name)) = repo.split_once('/')
+        && !owner.trim().is_empty()
+        && !name.trim().is_empty()
+    {
+        return Some(format!("{}/{}", owner.trim(), name.trim()).to_ascii_lowercase());
+    }
+    None
+}
+
+impl From<RuleRow> for RuleDocument {
+    fn from(r: RuleRow) -> Self {
+        let language = language_from_tags(&r.tags)
+            .or_else(|| language_from_file_patterns(r.file_patterns.as_deref()));
+        let repo_scope = repo_scope_from_source_repo(r.source_repo.as_deref());
+        // Include source repo attribution in indexed content so displayed rule
+        // bodies can cite it and repo-specific queries get a small embedding
+        // bias. Universal rules skip the line.
+        let content = match repo_scope.as_deref() {
+            Some(scope) => format!(
+                "Rule ID: {}\nRule Name: {}\nType: {}\nSource: {}\nTags: {}\n\n{}",
+                r.id, r.name, r.r#type, scope, r.tags, r.description
+            ),
+            None => format!(
+                "Rule ID: {}\nRule Name: {}\nType: {}\nTags: {}\n\n{}",
+                r.id, r.name, r.r#type, r.tags, r.description
+            ),
+        };
+        Self {
+            skill_id: r.id,
+            title: r.name,
+            content,
+            confidence: r.confidence_score,
+            file_patterns: r.file_patterns,
+            language,
+            repo_scope,
+        }
+    }
+}
+
+pub async fn load_rules_from_db(pool: &SqlitePool) -> Result<Vec<RuleDocument>, CoreError> {
+    load_rules_from_db_for_engine(pool, None).await
+}
+
+pub async fn load_rule_index_state(pool: &SqlitePool) -> Result<RuleIndexState, CoreError> {
+    // Mirror `load_rules_from_db_for_engine`: pending candidates are not
+    // served, so the index-state hash must ignore them too. Otherwise a
+    // pending insert would invalidate the rule index without changing
+    // any served document.
+    let row = sqlx::query!(
+        "SELECT COUNT(*) AS rule_count, MAX(updated_at) AS max_updated_at FROM skills WHERE status = 'active'"
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(RuleIndexState {
+        rule_count: row.rule_count,
+        max_updated_at: row.max_updated_at,
+        embedding_profile: crate::context::embedding::active_embedding_profile().await,
+        // Base state describes the whole active corpus, not a repo-filtered
+        // scope, so it carries no scope signature; the orchestrator fills this
+        // in after filtering for the current git repo scope.
+        scope_signature: None,
+    })
+}
+
+pub async fn load_rules_from_db_for_engine(
+    pool: &SqlitePool,
+    engine: Option<&str>,
+) -> Result<Vec<RuleDocument>, CoreError> {
+    // SELECT list pulls canonical `source_repo` so `RuleDocument` can carry the
+    // denormalised `repo_scope` used by retrieval filters.
+    // Boundary: pending candidates (e.g. ingested agent memory) MUST NOT
+    // surface here — they exist for team review on the dashboard, not for
+    // injection into agent context.
+    let rows = match engine {
+        Some("codex") => {
+            sqlx::query_as::<_, RuleRow>(
+                "SELECT id, name, description, type as \"type\", tags, confidence_score, \
+             file_patterns, source_repo FROM skills \
+             WHERE enabled_for_codex = 1 AND status = 'active'",
+            )
+            .fetch_all(pool)
+            .await?
+        }
+        Some("claude") => {
+            sqlx::query_as::<_, RuleRow>(
+                "SELECT id, name, description, type as \"type\", tags, confidence_score, \
+             file_patterns, source_repo FROM skills \
+             WHERE enabled_for_claude = 1 AND status = 'active'",
+            )
+            .fetch_all(pool)
+            .await?
+        }
+        Some("gemini") => {
+            sqlx::query_as::<_, RuleRow>(
+                "SELECT id, name, description, type as \"type\", tags, confidence_score, \
+             file_patterns, source_repo FROM skills \
+             WHERE enabled_for_gemini = 1 AND status = 'active'",
+            )
+            .fetch_all(pool)
+            .await?
+        }
+        Some("cursor") => {
+            sqlx::query_as::<_, RuleRow>(
+                "SELECT id, name, description, type as \"type\", tags, confidence_score, \
+             file_patterns, source_repo FROM skills \
+             WHERE enabled_for_cursor = 1 AND status = 'active'",
+            )
+            .fetch_all(pool)
+            .await?
+        }
+        _ => {
+            sqlx::query_as::<_, RuleRow>(
+                "SELECT id, name, description, type as \"type\", tags, confidence_score, \
+             file_patterns, source_repo FROM skills \
+             WHERE status = 'active'",
+            )
+            .fetch_all(pool)
+            .await?
+        }
+    };
+
+    Ok(rows.into_iter().map(RuleDocument::from).collect())
+}
+
+/// Build a `skill_id -> confidence_score` map used by retrieval to
+/// boost or dampen rules at ranking time. Mirrors the SELECT shape of
+/// `load_rules_from_db` but skips the heavy text columns since the
+/// caller only needs the score; this stays a tight key/value query
+/// so calling it on every hook fire stays cheap.
+///
+/// Confidence semantics (from the local rule-ranking contract and
+/// `skills.confidence_score` defaults):
+///   - manual / cloud-extracted base: 0.7
+///   - conversation-channel base: 0.6 (fidelity discount on agent
+///     transcription)
+///   - dedup-bump: +0.05 per re-capture
+///   - feedback dismiss: -0.10
+///
+/// Retrieval uses these to weight RRF scores so a high-confidence
+/// rule outranks a fresh capture with the same lexical signal.
+pub async fn load_rule_confidence_map(
+    pool: &SqlitePool,
+) -> Result<std::collections::HashMap<String, f64>, CoreError> {
+    let rows = sqlx::query!("SELECT id, confidence_score FROM skills WHERE status = 'active'")
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.id, row.confidence_score))
+        .collect())
+}
+
+/// Best-effort ranking metadata shared by CLI search/recall and MCP
+/// runtime recall. Keeping confidence and age maps behind one loader makes
+/// it harder for a callsite to apply confidence boosts while accidentally
+/// skipping the half-life decay input.
+#[derive(Debug, Clone, Default)]
+pub struct RuleRankingInputs {
+    pub confidence_map: Option<std::collections::HashMap<String, f64>>,
+    pub age_days_map: Option<std::collections::HashMap<String, f32>>,
+}
+
+pub async fn load_rule_ranking_inputs(pool: &SqlitePool) -> RuleRankingInputs {
+    RuleRankingInputs {
+        confidence_map: load_rule_confidence_map(pool).await.ok(),
+        age_days_map: load_rule_age_days_map(pool).await.ok(),
+    }
+}
+
+/// Build `skill_id -> age_in_days` map for the half-life decay applied at
+/// retrieval time (`effective_confidence`). Age uses `created_at` when
+/// present, falls back to `updated_at` so rules backfilled without a
+/// `created_at` still get a sane age. Skills with neither column set
+/// (shouldn't happen in practice — both have NOT NULL defaults) are
+/// omitted; the retrieval path treats absence as `age_days = 0` so
+/// behaviour matches the pre-plumbing default.
+///
+/// Uses runtime `sqlx::query()` because this query is optional ranking metadata
+/// and should not depend on offline SQLx metadata.
+pub async fn load_rule_age_days_map(
+    pool: &SqlitePool,
+) -> Result<std::collections::HashMap<String, f32>, CoreError> {
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT id, COALESCE(created_at, updated_at) AS ts \
+         FROM skills WHERE status = 'active'",
+    )
+    .fetch_all(pool)
+    .await?;
+    let now = chrono::Utc::now();
+    let mut out = std::collections::HashMap::with_capacity(rows.len());
+    for row in rows {
+        let id: String = row.try_get("id").unwrap_or_default();
+        if id.is_empty() {
+            continue;
+        }
+        let ts: Option<String> = row.try_get("ts").ok();
+        let Some(ts) = ts else { continue };
+        // SQLite stores timestamps as ISO-8601 strings. Try RFC3339 first
+        // (the canonical write path), then a few common SQLite shapes
+        // before giving up. A parse failure means we omit the entry —
+        // retrieval defaults age to 0, so a malformed timestamp degrades
+        // to "no decay" rather than mis-aging the rule.
+        let parsed = chrono::DateTime::parse_from_rfc3339(&ts)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .ok()
+            .or_else(|| {
+                chrono::NaiveDateTime::parse_from_str(&ts, "%Y-%m-%d %H:%M:%S")
+                    .ok()
+                    .map(|n| n.and_utc())
+            })
+            .or_else(|| {
+                chrono::NaiveDateTime::parse_from_str(&ts, "%Y-%m-%dT%H:%M:%S%.f")
+                    .ok()
+                    .map(|n| n.and_utc())
+            });
+        if let Some(created) = parsed {
+            let age_days = (now - created).num_seconds().max(0) as f32 / 86_400.0;
+            out.insert(id, age_days);
+        }
+    }
+    Ok(out)
+}
+
+/// Load few-shot code examples for a given skill
+pub async fn load_rule_examples(
+    pool: &SqlitePool,
+    skill_id: &str,
+) -> Result<Vec<RuleExample>, CoreError> {
+    let rows = sqlx::query_as!(
+        RuleExampleRow,
+        "SELECT id, skill_id, bad_code, good_code, description, source \
+         FROM rule_examples WHERE skill_id = ?1 ORDER BY created_at DESC LIMIT 3",
+        skill_id
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(RuleExample::from).collect())
+}
+
+/// Load examples for multiple skills in one batch
+pub async fn load_rule_examples_batch(
+    pool: &SqlitePool,
+    skill_ids: &[String],
+) -> Result<std::collections::HashMap<String, Vec<RuleExample>>, CoreError> {
+    if skill_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let ids_json = serde_json::to_string(skill_ids)
+        .map_err(|e| CoreError::Internal(format!("serialize skill_ids: {e}")))?;
+    let rows = sqlx::query_as!(
+        RuleExampleRow,
+        "SELECT id, skill_id, bad_code, good_code, description, source \
+         FROM rule_examples \
+         WHERE skill_id IN (SELECT value FROM json_each(?1)) \
+         ORDER BY created_at DESC",
+        ids_json,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut map: std::collections::HashMap<String, Vec<RuleExample>> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let skill_id = row.skill_id.clone();
+        let example = RuleExample::from(row);
+        map.entry(skill_id).or_default().push(example);
+    }
+    // Limit to 3 examples per skill
+    for examples in map.values_mut() {
+        examples.truncate(3);
+    }
+    Ok(map)
+}
+
+#[derive(Debug, Clone)]
+pub struct RuleExample {
+    pub id: String,
+    pub skill_id: String,
+    pub bad_code: String,
+    pub good_code: String,
+    pub description: Option<String>,
+    pub source: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct RuleExampleRow {
+    id: String,
+    skill_id: String,
+    bad_code: String,
+    good_code: String,
+    description: Option<String>,
+    source: String,
+}
+
+impl From<RuleExampleRow> for RuleExample {
+    fn from(r: RuleExampleRow) -> Self {
+        Self {
+            id: r.id,
+            skill_id: r.skill_id,
+            bad_code: r.bad_code,
+            good_code: r.good_code,
+            description: r.description,
+            source: r.source,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confidence_from_tags_singleton_downweighted() {
+        let c = confidence_from_tags(r#"["auto-from-extractions","cluster-size:1"]"#).unwrap();
+        assert!((c - 0.55).abs() < 1e-9, "got {c}");
+    }
+
+    #[test]
+    fn confidence_from_tags_large_cluster_strongest() {
+        let c = confidence_from_tags(r#"["cluster-size:8","severity:warning"]"#).unwrap();
+        assert!((c - 0.9).abs() < 1e-9, "got {c}");
+    }
+
+    #[test]
+    fn confidence_from_tags_severity_error_boosts() {
+        let c = confidence_from_tags(r#"["cluster-size:3","severity:error"]"#).unwrap();
+        assert!((c - 0.85).abs() < 1e-9, "got {c}");
+    }
+
+    #[test]
+    fn confidence_from_tags_severity_info_dampens() {
+        let c = confidence_from_tags(r#"["cluster-size:1","severity:info"]"#).unwrap();
+        assert!((c - 0.50).abs() < 1e-9, "got {c}");
+    }
+
+    #[test]
+    fn confidence_from_tags_missing_evidence_returns_none() {
+        assert_eq!(
+            confidence_from_tags(r#"["auto-from-extractions","origin:review-extraction"]"#),
+            None
+        );
+        assert_eq!(confidence_from_tags("[]"), None);
+        assert_eq!(confidence_from_tags(""), None);
+        assert_eq!(confidence_from_tags("not-json"), None);
+    }
+
+    #[test]
+    fn language_from_tags_table() {
+        let cases: &[(&str, Option<&str>)] = &[
+            (r#"["async", "rust", "concurrency"]"#, Some("rust")),
+            (r#"["typescript", "react"]"#, Some("typescript")),
+            // Normalised aliases.
+            (r#"["c++"]"#, Some("cpp")),
+            (r#"["C#"]"#, Some("csharp")),
+            // No known language tag — fall through to None.
+            ("[]", None),
+            ("", None),
+            ("not-json", None),
+            (r#"["lint", "performance"]"#, None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                language_from_tags(input).as_deref(),
+                *expected,
+                "input: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn language_from_file_patterns_resolves_single_language() {
+        assert_eq!(
+            language_from_file_patterns(Some(r#"["**/*.rs"]"#)).as_deref(),
+            Some("rust")
+        );
+        assert_eq!(
+            language_from_file_patterns(Some(r#"["**/*.ts","**/*.tsx"]"#)).as_deref(),
+            Some("typescript")
+        );
+        assert_eq!(
+            language_from_file_patterns(Some(r#"["src/**/*.go","tests/**/*.go"]"#)).as_deref(),
+            Some("go")
+        );
+    }
+
+    #[test]
+    fn language_from_file_patterns_returns_none_for_mixed_or_universal() {
+        // Mixed languages → can't pick one without guessing.
+        assert_eq!(
+            language_from_file_patterns(Some(r#"["**/*.rs","**/*.go"]"#)),
+            None
+        );
+        // Universal pattern → applies everywhere.
+        assert_eq!(language_from_file_patterns(Some(r#"["**/*"]"#)), None);
+        // Test glob without language extension.
+        assert_eq!(language_from_file_patterns(Some(r#"["**/*test*"]"#)), None);
+    }
+
+    #[test]
+    fn language_from_file_patterns_handles_missing_or_empty_input() {
+        assert_eq!(language_from_file_patterns(None), None);
+        assert_eq!(language_from_file_patterns(Some("")), None);
+        assert_eq!(language_from_file_patterns(Some("[]")), None);
+        assert_eq!(language_from_file_patterns(Some("not-json")), None);
+    }
+
+    #[test]
+    fn repo_scope_uses_canonical_source_repo_only() {
+        assert_eq!(
+            repo_scope_from_source_repo(Some("vitejs/vite")).as_deref(),
+            Some("vitejs/vite")
+        );
+        assert!(repo_scope_from_source_repo(None).is_none());
+        assert!(repo_scope_from_source_repo(Some("vitejs")).is_none());
+        assert!(repo_scope_from_source_repo(Some(" /vite")).is_none());
+    }
+
+    #[test]
+    fn scope_signature_depends_only_on_membership() {
+        // Order-independent: same set, different iteration order → same sig.
+        // If this broke, recall with a different rule iteration order would
+        // spuriously invalidate freshness and re-embed the whole corpus on
+        // every call.
+        assert_eq!(
+            scope_signature_from_skill_ids(["a", "b", "c"]),
+            scope_signature_from_skill_ids(["c", "a", "b"]),
+        );
+        // Dedup: repeated ids do not change the signature (membership-only).
+        assert_eq!(
+            scope_signature_from_skill_ids(["a", "a", "b"]),
+            scope_signature_from_skill_ids(["a", "b"]),
+        );
+        // Empty set → scope-agnostic `None` (freshness check ignores scope).
+        assert_eq!(scope_signature_from_skill_ids(Vec::<&str>::new()), None);
+        // A genuine membership change MUST change the signature — this is what
+        // lets the index-freshness check catch a scope change even when the
+        // rule count is unchanged.
+        assert_ne!(
+            scope_signature_from_skill_ids(["a", "b"]),
+            scope_signature_from_skill_ids(["a", "c"]),
+        );
+    }
+
+    #[test]
+    fn scope_signature_length_delimits_to_avoid_collision() {
+        // Without the NUL length-delimiter between ids, ["ab","c"] and
+        // ["a","bc"] would hash the same concatenated bytes ("abc") and
+        // collide — a real scope change would then be silently missed and
+        // stale chunks served.
+        assert_ne!(
+            scope_signature_from_skill_ids(["ab", "c"]),
+            scope_signature_from_skill_ids(["a", "bc"]),
+        );
+    }
+}

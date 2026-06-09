@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO rule_events\n             (id, skill_id, kind, source, reason, metadata)\n             VALUES (?1, ?2, 'source_proof', 'candidate_promotion',\n                     'Promoted review-memory candidate', ?3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "4ef3a8281629d7637da28dff1c5a063c8102684a74bddcfaa28e2809dec29a4f"
+}

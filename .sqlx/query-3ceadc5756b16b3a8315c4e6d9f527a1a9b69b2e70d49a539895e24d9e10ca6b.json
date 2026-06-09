@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO fix_outcomes\n             (id, rule_id, rule_name, file_path, diff_signature, accepted, applied_ok, created_at)\n             VALUES ('fix-1', 'rule-1', 'Prefer structured API parsing', 'src/parser.rs',\n                     'sha256:abc', 1, 1, '2026-05-05 00:02:00')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "3ceadc5756b16b3a8315c4e6d9f527a1a9b69b2e70d49a539895e24d9e10ca6b"
+}

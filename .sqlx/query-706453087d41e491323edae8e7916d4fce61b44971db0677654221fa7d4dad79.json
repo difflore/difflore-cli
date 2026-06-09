@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT failed_reason AS \"reason!: String\", COUNT(*) AS \"count!: i64\"\n         FROM fix_outcomes\n         WHERE accepted = 1\n           AND applied_ok = 0\n           AND failed_reason IS NOT NULL\n           AND TRIM(failed_reason) <> ''\n           AND datetime(created_at) >= datetime('now', ?1)\n         GROUP BY failed_reason\n         ORDER BY COUNT(*) DESC, failed_reason ASC\n         LIMIT ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "reason!: String",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "count!: i64",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "706453087d41e491323edae8e7916d4fce61b44971db0677654221fa7d4dad79"
+}

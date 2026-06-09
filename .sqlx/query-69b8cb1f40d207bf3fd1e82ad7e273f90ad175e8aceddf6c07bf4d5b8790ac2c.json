@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO rule_outcomes (rule_id, kind) VALUES (?1, ?2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "69b8cb1f40d207bf3fd1e82ad7e273f90ad175e8aceddf6c07bf4d5b8790ac2c"
+}

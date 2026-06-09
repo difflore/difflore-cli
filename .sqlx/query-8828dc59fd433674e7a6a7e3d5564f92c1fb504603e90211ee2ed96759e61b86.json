@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT metadata AS \"metadata!: String\"\n         FROM rule_events\n         WHERE skill_id = ?1\n           AND kind = 'source_proof'\n           AND metadata IS NOT NULL\n         ORDER BY datetime(created_at) DESC, id DESC\n         LIMIT 5",
+  "describe": {
+    "columns": [
+      {
+        "name": "metadata!: String",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "8828dc59fd433674e7a6a7e3d5564f92c1fb504603e90211ee2ed96759e61b86"
+}

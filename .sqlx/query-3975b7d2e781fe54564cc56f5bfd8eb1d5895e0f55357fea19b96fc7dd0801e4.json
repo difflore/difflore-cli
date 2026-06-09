@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO skills (id, name, source, directory, version, cloud_id) VALUES (?1, 'n', 's', 'd', '1.0.0', ?2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "3975b7d2e781fe54564cc56f5bfd8eb1d5895e0f55357fea19b96fc7dd0801e4"
+}

@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n            COUNT(*) AS \"calls!: i64\",\n            COALESCE(SUM(was_empty), 0) AS \"empty_calls!: i64\",\n            COALESCE(SUM(rule_count), 0) AS \"rules_served!: i64\",\n            COALESCE(SUM(strict_match_count), 0) AS \"strict_matches!: i64\",\n            COALESCE(SUM(estimated_tokens), 0) AS \"estimated_tokens!: i64\"\n         FROM mcp_rule_serves\n         WHERE datetime(served_at) >= datetime('now', ?1)",
+  "describe": {
+    "columns": [
+      {
+        "name": "calls!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "empty_calls!: i64",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "rules_served!: i64",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "strict_matches!: i64",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "estimated_tokens!: i64",
+        "ordinal": 4,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6373f367d1189a010e2789398fae4c7c8640354a690f475a544fd79c7399de12"
+}

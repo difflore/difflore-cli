@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO rule_outcomes\n             (rule_id, kind, session_id, repo_full_name, file_path, query_hash,\n              rank, top_k, strict_file_match)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "cfde346cff6e5fa3573356075df2bbd08e7cd237357bb98ade87682c3da2b9c4"
+}

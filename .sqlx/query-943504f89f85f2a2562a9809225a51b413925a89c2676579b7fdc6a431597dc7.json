@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT name, type as rule_type, description, version,\n           engines as engines_json, tags as tags_json, trigger, check_prompt,\n           file_patterns as file_patterns_json, origin\n           FROM skills WHERE id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "name",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "rule_type",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "description",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "version",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "engines_json",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "tags_json",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "trigger",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "check_prompt",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_patterns_json",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "origin",
+        "ordinal": 9,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "943504f89f85f2a2562a9809225a51b413925a89c2676579b7fdc6a431597dc7"
+}
