@@ -1,12 +1,11 @@
-//! `DiffLore` TUI theme.
+//! `DiffLore` TUI theme palette.
 //!
 //! Dark mode uses the pewter + emerald brand palette. Light mode is
 //! opt-in via `~/.difflore/config.toml` `theme = "light"` and shifts
 //! brand/status colors to text-safe variants for light terminals.
+//! Config-file IO and the mtime-debounced cache live in [`source`].
 
-use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime};
+mod source;
 
 use ratatui::style::{Color, Style};
 
@@ -128,7 +127,7 @@ impl Theme {
     /// draw path can call this freely without re-reading and re-parsing
     /// `~/.difflore/config.toml` dozens of times per frame.
     pub fn current() -> Self {
-        cached_current_theme()
+        source::cached_current_theme()
     }
 }
 
@@ -145,76 +144,11 @@ pub fn hex_to_color(hex: &str) -> Color {
     }
 }
 
-const THEME_CACHE_TTL: Duration = Duration::from_millis(250);
-
-static THEME_CACHE: OnceLock<Mutex<ThemeCache>> = OnceLock::new();
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ConfigSignature {
-    path: Option<PathBuf>,
-    modified: Option<SystemTime>,
-    len: Option<u64>,
-}
-
-impl ConfigSignature {
-    fn read() -> Self {
-        let path = difflore_core::infra::paths::config_file().ok();
-        let metadata = path.as_ref().and_then(|p| std::fs::metadata(p).ok());
-        Self {
-            path,
-            modified: metadata.as_ref().and_then(|m| m.modified().ok()),
-            len: metadata.map(|m| m.len()),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct ThemeCache {
-    checked_at: Instant,
-    signature: ConfigSignature,
-    theme: Theme,
-}
-
-impl ThemeCache {
-    fn fresh(now: Instant, signature: ConfigSignature) -> Self {
-        Self {
-            checked_at: now,
-            signature,
-            theme: load_current_theme(),
-        }
-    }
-
-    fn is_fresh(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.checked_at) < THEME_CACHE_TTL
-    }
-}
-
-fn cached_current_theme() -> Theme {
-    let now = Instant::now();
-    let cache =
-        THEME_CACHE.get_or_init(|| Mutex::new(ThemeCache::fresh(now, ConfigSignature::read())));
-    let Ok(mut cache) = cache.lock() else {
-        return load_current_theme();
-    };
-
-    if cache.is_fresh(now) {
-        return cache.theme;
-    }
-
-    let signature = ConfigSignature::read();
-    if signature == cache.signature {
-        cache.checked_at = now;
-        return cache.theme;
-    }
-
-    *cache = ThemeCache::fresh(now, signature);
-    cache.theme
-}
-
-fn load_current_theme() -> Theme {
-    match difflore_core::infra::config::load().theme {
-        difflore_core::infra::config::ThemeMode::Light => Theme::LIGHT,
-        difflore_core::infra::config::ThemeMode::Dark => Theme::DARK,
+/// Shared origin-to-color mapping through the bundled origin taxonomy.
+pub(crate) fn origin_color(origin: &str) -> Color {
+    match difflore_core::domain::origins::color_hex_for(origin) {
+        Some(hex) => hex_to_color(hex),
+        None => Theme::current().muted,
     }
 }
 
@@ -245,18 +179,27 @@ mod tests {
     }
 
     #[test]
-    fn theme_cache_is_fresh_inside_ttl() {
-        let now = Instant::now();
-        let cache = ThemeCache::fresh(
-            now,
-            ConfigSignature {
-                path: None,
-                modified: None,
-                len: None,
-            },
-        );
+    fn origin_color_round_trips_through_registry() {
+        let muted = Theme::current().muted;
+        for id in [
+            "manual",
+            "conversation",
+            "pr_review",
+            "extracted",
+            "cloud",
+            "team",
+        ] {
+            #[allow(clippy::panic)] // reason: test invariant — taxonomy must list every id
+            let hex = difflore_core::domain::origins::color_hex_for(id)
+                .unwrap_or_else(|| panic!("missing {id}"));
+            let expected = hex_to_color(hex);
+            assert_eq!(origin_color(id), expected, "round-trip failed for {id}");
+            assert_ne!(origin_color(id), muted, "{id} fell back to muted");
+        }
+    }
 
-        assert!(cache.is_fresh(now + Duration::from_millis(1)));
-        assert!(!cache.is_fresh(now + THEME_CACHE_TTL + Duration::from_millis(1)));
+    #[test]
+    fn unknown_origin_falls_back_to_muted() {
+        assert_eq!(origin_color("not-a-real-origin"), Theme::current().muted);
     }
 }

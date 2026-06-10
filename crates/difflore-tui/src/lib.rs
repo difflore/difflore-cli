@@ -1,7 +1,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 //! `DiffLore` TUI — terminal dashboard for the rule library.
 //!
-//! Four tabs: Rules · Activity · Team ↗ · Settings.
+//! Four tabs: Memory · Fixes · Cloud ↗ · Setup.
 //!
 //! All editorial intent (edit rule body, publish to team, accept / dismiss
 //! extraction) deep-links to difflore.dev. The TUI is read-only beyond pane
@@ -9,9 +9,8 @@
 
 mod app;
 mod error;
-mod layout;
 pub mod modals;
-pub mod state;
+pub mod plan;
 mod tabs;
 pub mod theme;
 pub mod widgets;

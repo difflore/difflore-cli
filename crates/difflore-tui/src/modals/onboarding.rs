@@ -6,14 +6,17 @@
 //! copy, and CLI command in a highlighted box. Footer: `[Enter]` do
 //! step / `[s]` skip / step N of 5.
 
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-use crate::layout::centered_rect_abs;
 use crate::theme::Theme;
+use crate::widgets::center::centered_rect_abs;
+
+use super::dispatch::ModalAction;
 
 /// 5-step onboarding wizard. Steps are 1-indexed; `current = 6`
 /// means the wizard is complete and `App` should dismiss the modal.
@@ -27,6 +30,26 @@ impl OnboardingState {
         Self {
             current: step.clamp(1, 5),
         }
+    }
+}
+
+/// Keymap matching the footer: `[Enter]` do step, `[s]` skip.
+pub(crate) const fn action_for_key(step: u8, code: KeyCode) -> Option<ModalAction> {
+    match code {
+        KeyCode::Enter => Some(enter_action(step)),
+        KeyCode::Char('s') => Some(ModalAction::Notice("Onboarding skipped for this launch.")),
+        _ => None,
+    }
+}
+
+const fn enter_action(step: u8) -> ModalAction {
+    match step {
+        1 => ModalAction::Exit(crate::TuiExit::RunInit),
+        2 => ModalAction::Exit(crate::TuiExit::RunProvidersAdd),
+        3 => ModalAction::Exit(crate::TuiExit::RunCloudLogin),
+        4 => ModalAction::Notice("Run `difflore recall --diff` after closing the TUI."),
+        5 => ModalAction::Notice("Run `difflore fix --preview` after closing the TUI."),
+        _ => ModalAction::Dismiss,
     }
 }
 

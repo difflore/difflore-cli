@@ -4,22 +4,35 @@
 //! ASCII art and the `[s] sync · 14d trial   [l] keep local   [esc] dismiss`
 //! footer.
 
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-use crate::layout::centered_rect_abs;
 use crate::theme::Theme;
+use crate::widgets::center::centered_rect_abs;
 use crate::widgets::truncate;
 
-/// View-model for the cross-machine modal. Built by `draw_modal` from the
-/// `CrossMachine { other_host }` event; only the source host is shown.
+use super::dispatch::ModalAction;
+
+/// View-model for the cross-machine modal. Built by the modal dispatcher
+/// from the `CrossMachine { other_host }` event; only the source host is
+/// shown.
 #[derive(Clone, Debug)]
 pub struct CrossMachineState {
     /// Hostname of the source machine where rules already live.
     pub source_host: String,
+}
+
+/// Keymap matching the footer: `[s] sync · 14d trial`, `[l] keep local`.
+pub(crate) const fn action_for_key(code: KeyCode) -> Option<ModalAction> {
+    match code {
+        KeyCode::Char('s') => Some(ModalAction::Exit(crate::TuiExit::RunCloudLogin)),
+        KeyCode::Char('l') => Some(ModalAction::Notice("Kept this machine local for now.")),
+        _ => None,
+    }
 }
 
 /// Render the modal centered inside `area`, using `theme.info` as the accent.

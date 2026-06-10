@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::WiringSnapshot;
-use crate::state::{PlanState, Tier};
+use crate::plan::{PlanState, Tier};
 
 pub fn render(
     frame: &mut ratatui::Frame<'_>,

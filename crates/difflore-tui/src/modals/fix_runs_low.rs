@@ -4,20 +4,32 @@
 //! `ascii_bar_counts` progress bar, usage display, and pitch. Footer
 //! keys: `[u]` upgrade Team Plus / `[b]` BYOK / `[esc]` dismiss.
 
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-use crate::layout::centered_rect_abs;
 use crate::theme::Theme;
 use crate::widgets::ascii_bar::ascii_bar_counts;
+use crate::widgets::center::centered_rect_abs;
+
+use super::dispatch::ModalAction;
 
 #[derive(Clone, Debug)]
 pub struct FixRunsLowState {
     pub used: u32,
     pub quota: u32,
+}
+
+/// Keymap matching the footer: `[u]` upgrade Team Plus, `[b]` BYOK.
+pub(crate) const fn action_for_key(code: KeyCode) -> Option<ModalAction> {
+    match code {
+        KeyCode::Char('u') => Some(ModalAction::OpenCloud("pricing?from=tui&intent=upgrade")),
+        KeyCode::Char('b') => Some(ModalAction::Exit(crate::TuiExit::RunProvidersAdd)),
+        _ => None,
+    }
 }
 
 impl FixRunsLowState {

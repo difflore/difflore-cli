@@ -4,19 +4,20 @@ use difflore_core::domain::models::SkillRecord;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::widgets::ListState;
 
-use crate::app::{RulesFocus, RulesOriginFilter, RulesRepoFilter, RulesSearch};
-use crate::state::PlanState;
+use crate::plan::PlanState;
 
-mod filter;
+pub(crate) mod filter;
 mod preview;
 mod search;
+
+pub use filter::{RulesFocus, RulesOriginFilter, RulesRepoFilter, RulesSearch};
 
 use preview::{
     draw_detail, draw_embedder_status_bar, draw_origin_summary, render_empty, render_error,
 };
 use search::{draw_filter_no_results, draw_list};
 
-/// Project-scope context for the rules tab. Owned by `AppState` and passed
+/// Project-scope context for the Memory tab. Owned by `AppState` and passed
 /// by reference each frame so the tab can decide which rows to show
 /// (current repo / all / global) and label the origins panel header.
 pub struct RepoScope<'a> {

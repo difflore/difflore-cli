@@ -1,8 +1,8 @@
 use difflore_core::domain::models::SkillRecord;
 
-use crate::tabs::rules::{RepoScope, ordered_filtered_rules};
+use crate::tabs::memory::{RepoScope, RulesOriginFilter, RulesRepoFilter, ordered_filtered_rules};
 
-use super::{App, RulesOriginFilter, RulesRepoFilter};
+use super::App;
 
 impl App {
     /// Snap the list selection to the first visible row when the filter
@@ -16,7 +16,7 @@ impl App {
     }
 
     /// `RepoScope` for the active repo filter. Must mirror the scope `render`
-    /// passes into `tabs::rules::render` so the visible list and the
+    /// passes into `tabs::memory::render` so the visible list and the
     /// selection-derived state share identical inputs.
     fn rules_scope(&self) -> RepoScope<'_> {
         RepoScope {
@@ -28,7 +28,7 @@ impl App {
     }
 
     /// Sorted + filtered rule slice shared with the rendered list (see
-    /// `tabs::rules::ordered_filtered_rules`). The cursor indexes into this
+    /// `tabs::memory::ordered_filtered_rules`). The cursor indexes into this
     /// order, so `selected_rule` and the cursor clamp must too.
     fn ordered_filtered_rules(&self) -> Vec<&SkillRecord> {
         ordered_filtered_rules(

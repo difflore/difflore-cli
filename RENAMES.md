@@ -126,3 +126,30 @@ no published API surface changes):
 | `difflore_cli::agent_cli` | `difflore_cli::agent_exec` |
 | `difflore_cli::commands::{util,review_text,impact_payload}` | `difflore_cli::support::{util,review_text,impact_payload}` |
 | `difflore_cli::commands::welcome` | `difflore_cli::onboarding` |
+
+## R3 — difflore-tui reorg + TUI entry wiring
+
+| Old | New |
+| --- | --- |
+| `crates/difflore-tui/src/state.rs` | `crates/difflore-tui/src/plan.rs` |
+| `crates/difflore-tui/src/app/state.rs` | `crates/difflore-tui/src/app/selectors.rs` |
+| `crates/difflore-tui/src/app/mod.rs` (terminal lifecycle) | `crates/difflore-tui/src/app/terminal.rs` |
+| `crates/difflore-tui/src/app/mod.rs` (plan build / cloud mapping) | `crates/difflore-tui/src/app/plan_state.rs` |
+| `crates/difflore-tui/src/app/mod.rs` (Rules filter enums + origin counts) | `crates/difflore-tui/src/tabs/memory/filter.rs` |
+| `crates/difflore-tui/src/app/mod.rs` (`origin_color`) | `crates/difflore-tui/src/theme/mod.rs` |
+| `crates/difflore-tui/src/app/modals.rs` | `crates/difflore-tui/src/modals/dispatch.rs` (per-modal keymaps live in each `modals/<name>.rs`) |
+| `crates/difflore-tui/src/layout.rs` | `crates/difflore-tui/src/widgets/center.rs` |
+| `crates/difflore-tui/src/widgets/mod.rs` (`truncate`) | `crates/difflore-tui/src/widgets/text.rs` |
+| `crates/difflore-tui/src/theme.rs` | `crates/difflore-tui/src/theme/{mod.rs,source.rs}` (palette vs config IO + mtime cache) |
+| `crates/difflore-tui/src/tabs/rules/` | `crates/difflore-tui/src/tabs/memory/` |
+| `crates/difflore-tui/src/tabs/activity.rs` | `crates/difflore-tui/src/tabs/fixes.rs` |
+| `crates/difflore-tui/src/tabs/team.rs` | `crates/difflore-tui/src/tabs/cloud.rs` |
+| `crates/difflore-tui/src/tabs/settings.rs` | `crates/difflore-tui/src/tabs/setup.rs` |
+
+Tab enum variants follow the product vocabulary: `Tab::{Rules,Activity,Team,Settings}`
+→ `Tab::{Memory,Fixes,Cloud,Setup}`. Published-API module path changes
+(`difflore-tui` 0.2.0, unreleased): `difflore_tui::state` → `difflore_tui::plan`.
+
+New (no old path): `crates/difflore-cli/src/tui_entry.rs` — bare `difflore`
+glue that builds the `WiringSnapshot`, launches the dashboard after the
+welcome flow, and maps `TuiExit` back onto the dispatch table.

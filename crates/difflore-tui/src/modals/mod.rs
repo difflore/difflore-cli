@@ -2,9 +2,11 @@
 //!
 //! `ModalStack` keeps one current modal plus a priority-sorted queue.
 //! `try_show` is idempotent by modal kind, and `dismiss` advances to
-//! the next pending modal.
+//! the next pending modal. Key → action routing and render fan-out live
+//! in [`dispatch`]; each modal file owns its copy and keymap.
 
 pub mod cross_machine;
+pub(crate) mod dispatch;
 pub mod fix_runs_low;
 pub mod onboarding;
 pub mod teammate_caught;

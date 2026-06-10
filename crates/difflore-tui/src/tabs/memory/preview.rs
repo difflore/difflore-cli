@@ -8,8 +8,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use crate::app::{RulesFocus, RulesOriginFilter, RulesRepoFilter, origin_color};
-use crate::state::{PlanState, Tier};
+use crate::theme::origin_color;
+use super::{RulesFocus, RulesOriginFilter, RulesRepoFilter};
+use crate::plan::{PlanState, Tier};
 
 use crate::widgets::truncate;
 
