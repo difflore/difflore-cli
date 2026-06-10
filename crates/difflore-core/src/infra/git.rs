@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::errors::CoreError;
-use crate::models::{
+use crate::error::CoreError;
+use crate::domain::models::{
     DiffContentRecord, DiffHunkRecord, GitBranchRecord, GitBranchesInput, GitCheckoutPRInput,
     GitCommitInput, GitCreatePRInput, GitDiffInput, GitFileStatusRecord, GitPRResult, GitPushInput,
     GitStatusInput, GitStatusRecord,

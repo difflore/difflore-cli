@@ -68,7 +68,7 @@ pub async fn render_since_last_session_banner(ctx: &BannerContext) -> Option<Str
 
 async fn render_inner(ctx: &BannerContext) -> Option<String> {
     let project_root = resolve_project_root(&ctx.cwd);
-    let project_hash = difflore_core::db::project_hash_from_root(&project_root);
+    let project_hash = difflore_core::infra::db::project_hash_from_root(&project_root);
 
     let repo_aliases = repo_aliases_for(&project_root);
     if repo_aliases.is_empty() {
@@ -79,7 +79,7 @@ async fn render_inner(ctx: &BannerContext) -> Option<String> {
 
     let prev_ts = watermark::read_watermark(&project_hash).map(|w| w.ts_ms);
 
-    let Ok(db) = difflore_core::db::init_db().await else {
+    let Ok(db) = difflore_core::infra::db::init_db().await else {
         return None;
     };
 
@@ -115,7 +115,7 @@ async fn render_inner(ctx: &BannerContext) -> Option<String> {
 /// available.
 fn resolve_project_root(cwd: &str) -> std::path::PathBuf {
     if cwd.is_empty() {
-        return difflore_core::db::current_project_root();
+        return difflore_core::infra::db::current_project_root();
     }
     let output = std::process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
@@ -136,7 +136,7 @@ fn resolve_project_root(cwd: &str) -> std::path::PathBuf {
 /// `commands::status::queries::normalized_repo_aliases` so the SQL filter joins
 /// cleanly with `source_repo` values (also lowercased on write).
 fn repo_aliases_for(project_root: &std::path::Path) -> Vec<String> {
-    let raw = difflore_core::git::detect_github_repo_full_names(&project_root.to_string_lossy());
+    let raw = difflore_core::infra::git::detect_github_repo_full_names(&project_root.to_string_lossy());
     raw.into_iter()
         .map(|r| r.trim().to_ascii_lowercase())
         .filter(|r| !r.is_empty())

@@ -3,8 +3,8 @@ use sha1::{Digest, Sha1};
 use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::crypto;
-use crate::errors::CoreError;
+use crate::infra::crypto;
+use crate::error::CoreError;
 
 mod cloud;
 mod openai;
@@ -73,7 +73,7 @@ pub trait Embedder: Send + Sync {
 /// identifier that should be persisted in settings (`embedding_provider_key`).
 ///
 /// Under the hood this uses the AES-GCM master key stored in the OS keyring
-/// (see `crate::crypto`). The returned string is ciphertext hex — it is safe
+/// (see `crate::infra::crypto`). The returned string is ciphertext hex — it is safe
 /// to store on disk. Callers must round-trip through [`load_embedding_key`]
 /// before using the key with an embedding provider.
 pub fn store_embedding_key(api_key: &str) -> Result<String, CoreError> {
@@ -115,7 +115,7 @@ fn retryable_embedding_status(status: reqwest::StatusCode) -> bool {
 pub async fn get_embedder() -> Box<dyn Embedder> {
     // The cloud-managed sentinel is not a real URL, so it is excluded here and
     // handled by the cloud branch below.
-    if let Ok(settings) = crate::settings::get().await {
+    if let Ok(settings) = crate::infra::settings::get().await {
         let ce = &settings.context_engine;
         let byok_url = ce
             .embedding_provider_url
@@ -207,7 +207,7 @@ impl ActiveEmbedderKind {
 /// [`probe_active_embedder`] can defer the async cloud-token load until BYOK is
 /// ruled out.
 fn byok_from_settings(
-    ce: Option<&crate::models::ContextEngineRecord>,
+    ce: Option<&crate::domain::models::ContextEngineRecord>,
 ) -> Option<ActiveEmbedderKind> {
     let ce = ce?;
     if !ce.semantic_embedding {
@@ -248,7 +248,7 @@ fn byok_from_settings(
 /// in `get_embedder` (explicit BYOK → cloud → SHA1) without allocating the
 /// actual embedder.
 pub async fn probe_active_embedder() -> ActiveEmbedderKind {
-    let settings = crate::settings::get().await.ok();
+    let settings = crate::infra::settings::get().await.ok();
     if let Some(byok) = byok_from_settings(settings.as_ref().map(|s| &s.context_engine)) {
         return byok;
     }
@@ -445,7 +445,7 @@ fn warn_embedding_fallback_once(reason: &str) {
     use std::sync::Mutex;
     static SEEN: Mutex<Option<HashSet<String>>> = Mutex::new(None);
     let key = classify_reason(reason);
-    crate::activity_stream::record(crate::activity_stream::ActivityPayload::EmbeddingFallback {
+    crate::observability::activity_stream::record(crate::observability::activity_stream::ActivityPayload::EmbeddingFallback {
         reason: key.clone(),
     });
     let Ok(mut guard) = SEEN.lock() else {

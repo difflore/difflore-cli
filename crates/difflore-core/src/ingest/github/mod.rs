@@ -1,7 +1,7 @@
 use sqlx::SqlitePool;
 use std::time::Duration;
 
-use crate::errors::CoreError;
+use crate::error::CoreError;
 use crate::review_store::{AddCommentInput, EnsureItemInput};
 
 mod parse;

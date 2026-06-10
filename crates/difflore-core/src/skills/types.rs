@@ -1,4 +1,4 @@
-use crate::models::{SkillRecord, SkillRepoRecord};
+use crate::domain::models::{SkillRecord, SkillRepoRecord};
 
 #[allow(clippy::many_single_char_names)] // reason: base64 nibbles a/b/c/d are conventional
 pub(crate) fn decode_base64_lossy(input: &str) -> String {
@@ -115,12 +115,12 @@ fn parse_engines_column(raw: &str) -> Vec<String> {
                 .collect();
             if fallback.is_empty() {
                 eprintln!("warning: DiffLore could not read skills.engines; using claude.");
-                if crate::env::debug_telemetry() {
+                if crate::infra::env::debug_telemetry() {
                     eprintln!("[difflore] malformed skills.engines JSON: {e}");
                 }
                 vec!["claude".to_owned()]
             } else {
-                if crate::env::debug_telemetry() {
+                if crate::infra::env::debug_telemetry() {
                     eprintln!(
                         "[difflore] malformed skills.engines JSON ({e}); parsed legacy list syntax"
                     );

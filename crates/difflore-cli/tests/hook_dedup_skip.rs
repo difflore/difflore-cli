@@ -47,8 +47,8 @@ struct CacheEntry {
 /// it by hand to avoid having to actually run a successful
 /// injection just to set up the test.
 fn seed_skip_cache(home: &Path, file_path: &str) {
-    let project_root = difflore_core::db::current_project_root();
-    let project_hash = difflore_core::db::project_hash_from_root(&project_root);
+    let project_root = difflore_core::infra::db::current_project_root();
+    let project_hash = difflore_core::infra::db::project_hash_from_root(&project_root);
     let normalized = file_path.trim().replace('\\', "/");
     let key = format!("{project_hash}:post-edit:{normalized}");
 

@@ -244,7 +244,7 @@ pub(crate) async fn handle_setup(
         )
     };
 
-    let mut settings = difflore_core::settings::get()
+    let mut settings = difflore_core::infra::settings::get()
         .await
         .unwrap_or_else(|e| exit_err(&format!("failed to load settings: {e}")));
 
@@ -254,7 +254,7 @@ pub(crate) async fn handle_setup(
     settings.context_engine.embedding_model = Some(model.clone());
     settings.context_engine.embedding_dim = Some(dim);
 
-    difflore_core::settings::update(settings)
+    difflore_core::infra::settings::update(settings)
         .await
         .unwrap_or_else(|e| exit_err(&format!("failed to save settings: {e}")));
 
@@ -287,13 +287,13 @@ pub(crate) async fn handle_setup(
 // ── disable ────────────────────────────────────────────────────────────────
 
 pub(crate) async fn handle_disable() {
-    let mut settings = difflore_core::settings::get()
+    let mut settings = difflore_core::infra::settings::get()
         .await
         .unwrap_or_else(|e| exit_err(&format!("failed to load settings: {e}")));
 
     settings.context_engine.semantic_embedding = false;
 
-    difflore_core::settings::update(settings)
+    difflore_core::infra::settings::update(settings)
         .await
         .unwrap_or_else(|e| exit_err(&format!("failed to save settings: {e}")));
 
@@ -333,7 +333,7 @@ pub(crate) async fn handle_rebuild(json: bool) {
     // fork->source alias expansion). The per-project index is the scope
     // boundary, so an unscoped checkout has nothing to rebuild.
     let detected =
-        difflore_core::git::detect_github_repo_full_names(&crate::commands::util::project_path());
+        difflore_core::infra::git::detect_github_repo_full_names(&crate::commands::util::project_path());
     let repo_scopes = difflore_core::skills::expand_repo_scopes_with_source_aliases(&db, &detected)
         .await
         .unwrap_or(detected);

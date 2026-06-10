@@ -1,5 +1,7 @@
 //! Per-tool MCP handlers. Each submodule owns one `tool_*` entry point;
-//! shared helpers used by 2+ tools live in `util`.
+//! shared helpers used by 2+ tools live in `validate` (argument checks +
+//! injection gating), `evidence` (serve-proof records + rule rendering),
+//! and `serve_stats` (serve telemetry + retrieval pipeline).
 //!
 //! Error contract: malformed JSON-RPC requests and real handler failures
 //! return JSON-RPC errors (`Err((code, message))`). Intentional policy
@@ -11,13 +13,15 @@ use serde_json::{Value, json};
 
 use super::McpState;
 
+pub(super) mod evidence;
 pub(super) mod get_rules;
 pub(super) mod past_verdicts;
 pub(super) mod plan_pr;
 pub(super) mod remember_rule;
 pub(super) mod rule_timeline;
 pub(super) mod search_rules;
-pub(super) mod util;
+pub(super) mod serve_stats;
+pub(super) mod validate;
 
 pub(super) use get_rules::tool_get_rules;
 pub(super) use past_verdicts::tool_get_past_verdicts;
@@ -27,13 +31,11 @@ pub(super) use remember_rule::tool_remember_rule;
 pub(super) use rule_timeline::tool_rule_timeline;
 pub(super) use search_rules::tool_search_rules;
 #[cfg(test)]
-pub(crate) use util::{disabled_response, rule_injection_disabled};
+pub(crate) use validate::{disabled_response, rule_injection_disabled};
 // Public surface for `difflore doctor`: lets the CLI report whether
 // rule injection is currently auto-suppressed by the haiku detector.
-pub use util::{
-    detect_active_model, haiku_auto_disable_active, is_haiku_model, origin_to_kind,
-    parse_file_patterns,
-};
+pub use evidence::{origin_to_kind, parse_file_patterns};
+pub use validate::{detect_active_model, haiku_auto_disable_active, is_haiku_model};
 
 pub(super) async fn handle_tools_call(
     state: &McpState,

@@ -15,7 +15,7 @@ use sqlx::SqlitePool;
 
 use crate::context::rule_render::{RuleRenderInput, render_code_spec};
 use crate::context::rule_source::{RuleExample, load_rule_examples_batch};
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 /// A single bad/good example pair surfaced on a recalled rule. Mirrors the
 /// `rule_examples` row shape the MCP `get_rules` tool returns, keeping the
@@ -228,7 +228,7 @@ mod tests {
 
     async fn test_db() -> SqlitePool {
         use std::str::FromStr;
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let opts = sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:")
             .unwrap()
             .foreign_keys(true);
@@ -237,7 +237,7 @@ mod tests {
             .connect_with(opts)
             .await
             .unwrap();
-        crate::db::run_migrations(&pool).await.unwrap();
+        crate::infra::db::run_migrations(&pool).await.unwrap();
         pool
     }
 

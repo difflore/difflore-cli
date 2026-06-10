@@ -118,7 +118,7 @@ const MAX_WRAP_WIDTH: usize = 160;
 const ANSI_RESET: &str = "\x1b[0m";
 
 pub(crate) fn terminal_width() -> usize {
-    use difflore_core::env;
+    use difflore_core::infra::env;
     env::var(env::COLUMNS)
         .and_then(|raw| raw.trim().parse::<usize>().ok())
         .filter(|width| *width >= MIN_WRAP_WIDTH)
@@ -338,7 +338,7 @@ fn background() -> Background {
 }
 
 fn detect_background_uncached() -> Background {
-    use difflore_core::env;
+    use difflore_core::infra::env;
     // Explicit override always wins.
     if let Some(theme) = env::var(env::DIFFLORE_THEME) {
         match theme.trim().to_ascii_lowercase().as_str() {
@@ -363,7 +363,7 @@ fn detect_background_uncached() -> Background {
 }
 
 fn detect_color_support_uncached() -> ColorSupport {
-    use difflore_core::env;
+    use difflore_core::infra::env;
     if env::flag_set(env::NO_COLOR) {
         return ColorSupport::None;
     }

@@ -37,7 +37,7 @@ pub async fn run() {
     };
     // Cached startup gate: provider/cloud checks are best-effort and never
     // block command execution.
-    let _ = difflore_core::startup::ensure_ready(false).await;
+    let _ = difflore_core::infra::startup::ensure_ready(false).await;
 
     // Legacy layout migration guard. If an old global `context-index.db` is
     // present, the guard fails closed and leaves the file untouched; kept

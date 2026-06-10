@@ -53,7 +53,7 @@ pub(super) async fn recall_local_rules(
     // history from either remote. `repo_full_name` is the display label;
     // `repo_scopes` carries the full list into retrieval.
     let detected_repo_full_names =
-        difflore_core::git::detect_github_repo_full_names(&project_path());
+        difflore_core::infra::git::detect_github_repo_full_names(&project_path());
     let repo_full_names = difflore_core::skills::expand_repo_scopes_with_source_aliases(
         db,
         &detected_repo_full_names,
@@ -607,7 +607,7 @@ pub(super) async fn record_local_recall(
         .iter()
         .enumerate()
         .map(
-            |(index, hit)| difflore_core::rule_outcomes::RuleRecallInput {
+            |(index, hit)| difflore_core::observability::rule_outcomes::RuleRecallInput {
                 rule_id: hit.id.as_str(),
                 session_id: Some(session_id),
                 repo_full_name: local.repo_full_name.as_deref(),
@@ -619,7 +619,7 @@ pub(super) async fn record_local_recall(
             },
         )
         .collect();
-    let _ = difflore_core::rule_outcomes::record_recalled_with_context(db, &recalls).await;
+    let _ = difflore_core::observability::rule_outcomes::record_recalled_with_context(db, &recalls).await;
     let ids: Vec<String> = local.matches.iter().map(|hit| hit.id.clone()).collect();
     emit_rule_fired_observation(ctx, &ids, intent, file, session_id).await;
 }
@@ -789,7 +789,7 @@ pub(super) async fn recall_cloud_review_memory(
     let client = ctx.cloud().await;
     let has_saved_token = client.is_logged_in();
     let detected_repo_full_names =
-        difflore_core::git::detect_github_repo_full_names(&project_path());
+        difflore_core::infra::git::detect_github_repo_full_names(&project_path());
     let repo_full_names = difflore_core::skills::expand_repo_scopes_with_source_aliases(
         &ctx.db,
         &detected_repo_full_names,

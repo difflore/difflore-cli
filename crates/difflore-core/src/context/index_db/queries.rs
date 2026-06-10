@@ -4,7 +4,7 @@ use crate::context::embedding::{
     EMBEDDING_DIM, active_embedding_profile, embed_text, embed_texts_async_with_timeout,
 };
 use crate::context::rule_source::RuleDocument;
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 use super::schema::{
     IndexedRuleChunk, QueryFilter, blob_to_embedding, embedding_to_blob, read_meta, write_meta,
@@ -233,7 +233,7 @@ pub async fn upsert_rule_chunks_with_profile_and_timeout(
     // swallowed because retrieval has a linear fallback.
     if !ann_updates.is_empty() {
         let dim = ann_updates[0].1.len();
-        let project_hash = crate::db::project_hash_from_root(&crate::db::current_project_root());
+        let project_hash = crate::infra::db::project_hash_from_root(&crate::infra::db::current_project_root());
         match crate::context::ann::get_ann_for_project(&project_hash, dim).await {
             Ok(ann_arc) => {
                 let mut ann_guard = ann_arc.lock().await;
@@ -241,13 +241,13 @@ pub async fn upsert_rule_chunks_with_profile_and_timeout(
                     ann_guard.upsert(id, emb);
                 }
                 if let Err(e) = ann_guard.save().await {
-                    if crate::env::debug_telemetry() {
+                    if crate::infra::env::debug_telemetry() {
                         eprintln!("[upsert_rule_chunks] ann save failed: {e}");
                     }
                 }
             }
             Err(e) => {
-                if crate::env::debug_telemetry() {
+                if crate::infra::env::debug_telemetry() {
                     eprintln!("[upsert_rule_chunks] ann cache lookup failed: {e}");
                 }
             }
@@ -425,7 +425,7 @@ pub async fn fts_search(
             // FTS5 can raise syntax errors on unexpected query shapes.
             // We downgrade to "no hits" rather than failing retrieval —
             // the embedding path is always available as fallback.
-            if crate::env::debug_telemetry() {
+            if crate::infra::env::debug_telemetry() {
                 eprintln!("[fts_search] query failed ({e}); returning empty hit set");
             }
             return Ok(Vec::new());

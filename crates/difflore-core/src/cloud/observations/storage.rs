@@ -51,7 +51,7 @@ impl ObservationEmitter {
     }
 
     pub async fn open_default() -> Result<Self, String> {
-        let path = crate::paths::data_home()?.join(OUTBOX_DB_NAME);
+        let path = crate::infra::paths::data_home()?.join(OUTBOX_DB_NAME);
         Self::open_at(&path).await
     }
 

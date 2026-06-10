@@ -1,6 +1,6 @@
 use sqlx::SqlitePool;
 
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]

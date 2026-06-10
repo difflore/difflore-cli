@@ -1,4 +1,4 @@
-use difflore_core::cloud::api_types::{
+use difflore_core::contract::{
     ImportedCommentUpload, ImportedReviewUpload, UploadImportedReviewsRequest,
 };
 use difflore_core::ingest::github::ImportProgress;

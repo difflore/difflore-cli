@@ -62,7 +62,7 @@ mod remember_tool_tests {
     }
 
     async fn build_state() -> McpState {
-        let _ = crate::db::shared_test_home();
+        let _ = crate::infra::db::shared_test_home();
         let opts = SqliteConnectOptions::from_str("sqlite::memory:")
             .unwrap()
             .foreign_keys(true);
@@ -71,7 +71,7 @@ mod remember_tool_tests {
             .connect_with(opts)
             .await
             .unwrap();
-        crate::db::run_migrations(&db).await.unwrap();
+        crate::infra::db::run_migrations(&db).await.unwrap();
         let index_path = std::env::temp_dir().join(format!(
             "difflore-mcp-test-index-{}-{}.db",
             std::process::id(),
@@ -545,7 +545,7 @@ mod remember_tool_tests {
                 }
             }
         }
-        let serve_summary = crate::mcp_rule_serves::summary(&state.db, 30)
+        let serve_summary = crate::observability::mcp_rule_serves::summary(&state.db, 30)
             .await
             .expect("mcp serve summary");
         assert_eq!(serve_summary.calls, 1);
@@ -586,7 +586,7 @@ mod remember_tool_tests {
         )
         .await;
 
-        let rule_summary = crate::mcp_rule_serves::summary_for_rule(&state.db, &rule_id, 30)
+        let rule_summary = crate::observability::mcp_rule_serves::summary_for_rule(&state.db, &rule_id, 30)
             .await
             .expect("rule serve summary");
         assert_eq!(rule_summary.calls, 1);
@@ -745,14 +745,14 @@ mod remember_tool_tests {
             "detail tool should not claim savings: {cost}"
         );
 
-        let serve_summary = crate::mcp_rule_serves::summary(&state.db, 30)
+        let serve_summary = crate::observability::mcp_rule_serves::summary(&state.db, 30)
             .await
             .expect("mcp serve summary");
         assert_eq!(serve_summary.calls, 1);
         assert_eq!(serve_summary.empty_calls, 0);
         assert_eq!(serve_summary.rules_served, 1);
 
-        let rule_summary = crate::mcp_rule_serves::summary_for_rule(&state.db, &ids[0], 30)
+        let rule_summary = crate::observability::mcp_rule_serves::summary_for_rule(&state.db, &ids[0], 30)
             .await
             .expect("rule serve summary");
         assert_eq!(rule_summary.calls, 1);
@@ -809,7 +809,7 @@ mod remember_tool_tests {
         )
         .await;
 
-        let rule_summary = crate::mcp_rule_serves::summary_for_rule(&state.db, &rule_id, 30)
+        let rule_summary = crate::observability::mcp_rule_serves::summary_for_rule(&state.db, &rule_id, 30)
             .await
             .expect("rule serve summary");
         assert_eq!(rule_summary.calls, 1);
@@ -845,7 +845,7 @@ mod remember_tool_tests {
         )
         .await;
 
-        let rule_summary = crate::mcp_rule_serves::summary_for_rule(&state.db, &rule_id, 30)
+        let rule_summary = crate::observability::mcp_rule_serves::summary_for_rule(&state.db, &rule_id, 30)
             .await
             .expect("rule serve summary");
         assert_eq!(rule_summary.calls, 1);
@@ -883,7 +883,7 @@ mod remember_tool_tests {
             "hook should inject the matching rule, got {:?}",
             ctx.rule_ids
         );
-        let rule_summary = crate::mcp_rule_serves::summary_for_rule(&state.db, &rule_id, 30)
+        let rule_summary = crate::observability::mcp_rule_serves::summary_for_rule(&state.db, &rule_id, 30)
             .await
             .expect("hook serve summary");
         assert_eq!(rule_summary.calls, 1);
@@ -1098,7 +1098,7 @@ mod remember_tool_tests {
             .to_owned();
 
         // Attach an example, producing the `extracted` event.
-        let example_input = crate::models::AddExampleInput {
+        let example_input = crate::domain::models::AddExampleInput {
             skill_id: rule_id.clone(),
             bad_code: "let x = unwrap();".into(),
             good_code: "let x = result?;".into(),
@@ -1123,7 +1123,7 @@ mod remember_tool_tests {
         // rule_events rather than guessing from skills.updated_at.
         crate::skills::update_confidence(
             &state.db,
-            crate::models::UpdateConfidenceInput {
+            crate::domain::models::UpdateConfidenceInput {
                 skill_id: rule_id.clone(),
                 signal: "accept".into(),
             },

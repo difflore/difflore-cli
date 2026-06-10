@@ -1,11 +1,11 @@
 use serde_json::{Value, json};
 
-use crate::models::RememberRuleInput;
-use crate::review_trajectory::TrajectoryStep;
+use crate::domain::models::RememberRuleInput;
+use crate::observability::trajectory::TrajectoryStep;
 use crate::skills;
 
 use super::super::{McpState, build_cost_meta, emit_trajectory_step, estimate_tokens};
-use super::util::{MCP_EMBEDDING_TIMEOUT, drain_mcp_query_outbox, enqueue_mcp_query_outbox};
+use super::serve_stats::{MCP_EMBEDDING_TIMEOUT, drain_mcp_query_outbox, enqueue_mcp_query_outbox};
 
 const MAX_REMEMBER_TITLE_CHARS: usize = 200;
 
@@ -151,7 +151,7 @@ pub(crate) async fn tool_remember_rule(
         .execute(&state.db)
         .await
         {
-            if crate::env::debug_telemetry() {
+            if crate::infra::env::debug_telemetry() {
                 eprintln!("[difflore-mcp] remember_rule source_repo update failed: {e}");
             }
         }
@@ -168,7 +168,7 @@ pub(crate) async fn tool_remember_rule(
         )
         .await
         {
-            if crate::env::debug_telemetry() {
+            if crate::infra::env::debug_telemetry() {
                 eprintln!("[difflore-mcp] remember_rule index refresh failed: {e}");
             }
         }
@@ -242,7 +242,7 @@ pub(crate) async fn tool_remember_rule(
         let repo_full_name: Option<String> = detected_repos.first().cloned();
         enqueue_mcp_query_outbox(
             &state.db,
-            super::util::McpQueryOutboxEntry {
+            super::serve_stats::McpQueryOutboxEntry {
                 file: "remember_rule",
                 intent: &rule_name,
                 rules_injected: 1,

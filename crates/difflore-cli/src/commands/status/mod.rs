@@ -141,7 +141,7 @@ async fn compute_status_payload(
         .await
         .unwrap_or_default();
 
-    let detected_repo_remotes = difflore_core::git::detect_github_repo_full_names(project);
+    let detected_repo_remotes = difflore_core::infra::git::detect_github_repo_full_names(project);
     let repo_remotes =
         difflore_core::skills::expand_repo_scopes_with_source_aliases(db, &detected_repo_remotes)
             .await
@@ -270,7 +270,7 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect("open pool");
-        difflore_core::db::run_migrations(&pool)
+        difflore_core::infra::db::run_migrations(&pool)
             .await
             .expect("apply migrations");
 
@@ -390,7 +390,7 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect("open pool");
-        difflore_core::db::run_migrations(&pool)
+        difflore_core::infra::db::run_migrations(&pool)
             .await
             .expect("apply migrations");
 

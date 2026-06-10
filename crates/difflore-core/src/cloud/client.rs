@@ -9,7 +9,7 @@ use std::path::PathBuf;
 /// raw reqwest error would only confuse users who already see a friendlier
 /// top-level message. Devs flip it on to trace transport issues.
 fn cloud_debug_enabled() -> bool {
-    crate::env::debug_cloud()
+    crate::infra::env::debug_cloud()
 }
 
 static AUTH_POOL_CACHE: tokio::sync::Mutex<Option<HashMap<PathBuf, SqlitePool>>> =
@@ -136,11 +136,11 @@ pub(crate) fn normalize_body_snippet(body: &str, max_chars: usize) -> String {
 }
 
 use crate::context::types::PastVerdict;
-use crate::crypto::{decrypt_secret, encrypt_secret};
+use crate::infra::crypto::{decrypt_secret, encrypt_secret};
 
 use super::endpoints::pricing_url;
 
-use super::api_types::{
+use crate::contract::{
     GetTrajectoryResponse, ImpactBannerDto, ImpactCoverageDto, ImpactFixScorecardDto,
     ImpactTopRulesDto, ImpactWeeklyDto, PastVerdictDto, RecallPastVerdictsRequest,
     RecordAcceptedEditRequest, RecordAcceptedEditResponse, RecordReviewMetricsRequest,
@@ -190,7 +190,7 @@ impl CloudClient {
     fn auth_db_path() -> Result<PathBuf, String> {
         // Route through `paths::data_home()` so `DIFFLORE_HOME` controls
         // tests and self-host setups.
-        Ok(crate::paths::data_home()?.join("cloud-auth.db"))
+        Ok(crate::infra::paths::data_home()?.join("cloud-auth.db"))
     }
 
     pub async fn auth_pool() -> Result<SqlitePool, String> {
@@ -316,7 +316,7 @@ impl CloudClient {
 
     pub async fn load_token() -> Option<String> {
         // An explicit env token is the user's own intent for the current URL.
-        if let Some(token) = crate::env::non_empty(crate::env::DIFFLORE_TOKEN) {
+        if let Some(token) = crate::infra::env::non_empty(crate::infra::env::DIFFLORE_TOKEN) {
             return Some(token);
         }
 
@@ -330,7 +330,7 @@ impl CloudClient {
     /// Use from read-only diagnostics / render loops (e.g. the embedder status
     /// probe) where a corrupt token must not spam the terminal.
     pub async fn load_token_quiet() -> Option<String> {
-        if let Some(token) = crate::env::non_empty(crate::env::DIFFLORE_TOKEN) {
+        if let Some(token) = crate::infra::env::non_empty(crate::infra::env::DIFFLORE_TOKEN) {
             return Some(token);
         }
 
@@ -846,7 +846,7 @@ impl CloudClient {
     /// Outbox-friendly wrapper around [`post_observations`].
     pub(crate) async fn post_observations_outcome(
         &self,
-        batch: &[super::api_types::Observation],
+        batch: &[crate::contract::Observation],
     ) -> Result<(), OutboxFailure> {
         self.post_fire_and_forget_outcome("/cloud/observations", &batch, "post_observations")
             .await
@@ -964,7 +964,7 @@ impl CloudClient {
             .await
     }
 
-    pub async fn post_observations(&self, batch: &[super::api_types::Observation]) -> bool {
+    pub async fn post_observations(&self, batch: &[crate::contract::Observation]) -> bool {
         self.post_fire_and_forget("/cloud/observations", &batch, "post_observations")
             .await
     }
@@ -1095,8 +1095,8 @@ impl CloudClient {
     /// extractions into a new corpus.
     pub async fn build_corpus(
         &self,
-        req: &super::api_types::BuildCorpusRequest,
-    ) -> Result<super::api_types::BuildCorpusResult, String> {
+        req: &crate::contract::BuildCorpusRequest,
+    ) -> Result<crate::contract::BuildCorpusResult, String> {
         self.post_json("/knowledge/corpus", req, "build_corpus")
             .await
     }
@@ -1106,7 +1106,7 @@ impl CloudClient {
     pub async fn prime_corpus(
         &self,
         corpus_id: &str,
-    ) -> Result<super::api_types::PrimeCorpusResult, String> {
+    ) -> Result<crate::contract::PrimeCorpusResult, String> {
         let path = format!("/knowledge/corpus/{corpus_id}/prime");
         self.post_json(&path, &serde_json::json!({}), "prime_corpus")
             .await
@@ -1119,9 +1119,9 @@ impl CloudClient {
         &self,
         corpus_id: &str,
         question: &str,
-    ) -> Result<super::api_types::QueryCorpusResult, String> {
+    ) -> Result<crate::contract::QueryCorpusResult, String> {
         let path = format!("/knowledge/corpus/{corpus_id}/query");
-        let body = super::api_types::QueryCorpusRequest {
+        let body = crate::contract::QueryCorpusRequest {
             question: question.to_owned(),
         };
         self.post_json(&path, &body, "query_corpus").await
@@ -1129,7 +1129,7 @@ impl CloudClient {
 
     /// GET `/knowledge/corpora` — list this team's corpora with item
     /// counts and prime/query timestamps.
-    pub async fn list_corpora(&self) -> Result<Vec<super::api_types::CorpusSummary>, String> {
+    pub async fn list_corpora(&self) -> Result<Vec<crate::contract::CorpusSummary>, String> {
         self.get_json("/knowledge/corpora", "list_corpora").await
     }
 
@@ -1257,7 +1257,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_pool_public_reopens_same_token_store() {
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let pool = CloudClient::auth_pool_public()
             .await
             .expect("auth pool opens");

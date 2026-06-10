@@ -4,13 +4,13 @@ use std::process;
 
 use colored::Colorize;
 
-use difflore_core::models::{AddProjectInput, ProjectRecord};
+use difflore_core::domain::models::{AddProjectInput, ProjectRecord};
 
 pub(crate) async fn ensure_project(db: &difflore_core::SqlitePool, path: &str) -> ProjectRecord {
     let input = AddProjectInput {
         path: path.to_owned(),
     };
-    match difflore_core::projects::add(db, input).await {
+    match difflore_core::domain::projects::add(db, input).await {
         Ok(p) => p,
         Err(e) => exit_err(&format!("Failed to register project: {e}")),
     }
@@ -38,9 +38,9 @@ pub(crate) fn git_str_in(cwd: &str, args: &[&str]) -> Option<String> {
 }
 
 /// Resolve the active project root for CLI commands: the git toplevel, with
-/// cwd as fallback (via `difflore_core::paths::current_project_root`).
+/// cwd as fallback (via `difflore_core::infra::paths::current_project_root`).
 pub(crate) fn project_path() -> String {
-    difflore_core::paths::current_project_root()
+    difflore_core::infra::paths::current_project_root()
         .to_string_lossy()
         .into_owned()
 }
@@ -137,7 +137,7 @@ pub(crate) fn confirm_destructive(yes: bool, prompt: &str) {
 }
 
 pub(crate) async fn init_db() -> difflore_core::SqlitePool {
-    match difflore_core::db::init_db().await {
+    match difflore_core::infra::db::init_db().await {
         Ok(pool) => pool,
         Err(e) => {
             // Stale-DB-across-versions case: sqlx surfaces an opaque
@@ -192,7 +192,7 @@ pub(crate) fn json_compact_or(value: &impl serde::Serialize, fallback: &'static 
 /// Flatten `DiffContentRecord` into unified-diff text shared by `fix`
 /// and `rules audit`.
 pub(crate) fn diff_records_to_string(
-    records: &[difflore_core::models::DiffContentRecord],
+    records: &[difflore_core::domain::models::DiffContentRecord],
 ) -> String {
     let mut out = String::new();
     for file in records {
@@ -216,7 +216,7 @@ mod project_path_tests {
     #[test]
     fn project_path_matches_core_resolver() {
         let got = project_path();
-        let expected = difflore_core::paths::current_project_root()
+        let expected = difflore_core::infra::paths::current_project_root()
             .to_string_lossy()
             .into_owned();
         assert_eq!(got, expected);

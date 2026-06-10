@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use crate::models::*;
+    use crate::domain::models::*;
 
     #[test]
     fn decode_base64_table() {
@@ -175,7 +175,7 @@ body text";
 
     impl DedupTestEnv {
         async fn db() -> sqlx::SqlitePool {
-            let _home = crate::db::shared_test_home();
+            let _home = crate::infra::db::shared_test_home();
             let opts = SqliteConnectOptions::from_str("sqlite::memory:")
                 .unwrap()
                 .foreign_keys(true);
@@ -184,7 +184,7 @@ body text";
                 .connect_with(opts)
                 .await
                 .unwrap();
-            crate::db::run_migrations(&pool).await.unwrap();
+            crate::infra::db::run_migrations(&pool).await.unwrap();
             pool
         }
     }
@@ -553,7 +553,7 @@ body text";
             "repo_owner/repo_name must not be reconstructed as source_repo"
         );
 
-        let health = crate::db::corpus_health(&db).await.unwrap();
+        let health = crate::infra::db::corpus_health(&db).await.unwrap();
         assert!(
             health
                 .by_source_repo
@@ -1581,7 +1581,7 @@ body text";
         // corpus_health (the doctor / rules-explain stats helper) must
         // also exclude pending — the dashboard's "growth" view leaked
         // candidates before this fix.
-        let h = crate::db::corpus_health(&db).await.unwrap();
+        let h = crate::infra::db::corpus_health(&db).await.unwrap();
         assert_eq!(h.total, 1, "corpus_health.total must exclude pending");
         let conv_corpus = h
             .by_origin

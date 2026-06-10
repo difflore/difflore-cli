@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 use sqlx::SqlitePool;
 
 use super::super::{McpState, build_cost_meta, estimate_tokens};
-use super::util::{MCP_TEXT_ARG_CHAR_LIMIT, validate_mcp_text_arg};
+use super::validate::{MCP_TEXT_ARG_CHAR_LIMIT, validate_mcp_text_arg};
 
 // plan_pr (Layer 1 plan-time predictor): given an issue/PR description,
 // predict likely file categories, median file count, and closest historical

@@ -32,7 +32,7 @@ pub(crate) fn difflore_dir() -> Result<PathBuf, String> {
     // `DIFFLORE_HOME` lets integration tests redirect the data dir to a
     // tempdir without modifying $HOME / $USERPROFILE. Honoured first; falls
     // back to the standard ~/.difflore in production.
-    if let Some(custom) = crate::env::difflore_home() {
+    if let Some(custom) = crate::infra::env::difflore_home() {
         return Ok(PathBuf::from(custom));
     }
     // In test binaries, route to the crate-wide `shared_test_home()` rather

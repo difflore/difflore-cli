@@ -43,7 +43,7 @@ pub fn run_worker_detached(
             run_worker_inner(&client_name, transcript_path.as_deref(), session_id.as_deref(), cwd.as_deref())
                 .await
         {
-            if difflore_core::env::debug_telemetry() {
+            if difflore_core::infra::env::debug_telemetry() {
                 eprintln!("[difflore.session_mine] worker failed: {e}");
             }
         }
@@ -60,7 +60,7 @@ pub fn run_worker_detached(
             {
                 Ok(rt) => rt,
                 Err(e) => {
-                    if difflore_core::env::debug_telemetry() {
+                    if difflore_core::infra::env::debug_telemetry() {
                         eprintln!("[difflore.session_mine] cannot build fallback runtime: {e}");
                     }
                     return;
@@ -98,10 +98,10 @@ async fn run_worker_inner(
 
     // One DB handle for both reading existing rules and enqueuing on
     // Keep. Best-effort: log and drop the session on failure.
-    let db = match difflore_core::db::init_db().await {
+    let db = match difflore_core::infra::db::init_db().await {
         Ok(p) => p,
         Err(e) => {
-            if difflore_core::env::debug_telemetry() {
+            if difflore_core::infra::env::debug_telemetry() {
                 eprintln!("[difflore.session_mine] DB open failed: {e}");
             }
             return Ok(());
@@ -123,7 +123,7 @@ async fn run_worker_inner(
     let verdict = match run_gate(args).await {
         Ok(v) => v,
         Err(e) => {
-            if difflore_core::env::debug_telemetry() {
+            if difflore_core::infra::env::debug_telemetry() {
                 eprintln!("[difflore.session_mine] gate failed: {e}");
             }
             return Ok(());
@@ -134,7 +134,7 @@ async fn run_worker_inner(
         GateVerdict::Keep { candidate } => match enqueue_candidate(&db, &candidate).await {
             Ok(_) => Ok(()),
             Err(e) => {
-                if difflore_core::env::debug_telemetry() {
+                if difflore_core::infra::env::debug_telemetry() {
                     eprintln!("[difflore.session_mine] enqueue failed: {e}");
                 }
                 Ok(())
@@ -144,13 +144,13 @@ async fn run_worker_inner(
             // Merge handling is deferred: the worker doesn't yet have
             // the existing rule's file_patterns needed to build a
             // complete `SessionMinedCandidate`. Log and drop.
-            if difflore_core::env::debug_telemetry() {
+            if difflore_core::infra::env::debug_telemetry() {
                 eprintln!("[difflore.session_mine] gate MERGE for {rule_id}; handling deferred");
             }
             Ok(())
         }
         GateVerdict::Skip { reason } => {
-            if difflore_core::env::debug_telemetry() {
+            if difflore_core::infra::env::debug_telemetry() {
                 eprintln!("[difflore.session_mine] gate SKIP: {reason}");
             }
             Ok(())
@@ -206,7 +206,7 @@ fn resolve_source_repo(cwd: Option<&str>) -> Option<String> {
     let path_str = path.to_string_lossy().to_string();
 
     if let Some(repo) =
-        difflore_core::git::detect_github_repo_full_names(&path_str).into_iter().next()
+        difflore_core::infra::git::detect_github_repo_full_names(&path_str).into_iter().next()
     {
         let trimmed = repo.trim();
         if !trimmed.is_empty() {

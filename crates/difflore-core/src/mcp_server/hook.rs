@@ -7,8 +7,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::cloud::client::CloudClient;
 use crate::context::{EmbeddingDiagnostics, gather_embedding_diagnostics_with_activity};
-use crate::errors::CoreError;
-use crate::review_trajectory::TrajectoryStep;
+use crate::error::CoreError;
+use crate::observability::trajectory::TrajectoryStep;
 
 /// Run the MCP server event loop. Reads JSON-RPC messages line-by-line
 /// from stdin and writes responses to stdout. Runs until stdin is closed.
@@ -67,7 +67,7 @@ fn jsonrpc_line_bytes(value: &Value) -> Vec<u8> {
             out
         }
         Err(e) => {
-            if crate::env::debug_telemetry() {
+            if crate::infra::env::debug_telemetry() {
                 eprintln!("[difflore-mcp] failed to serialize JSON-RPC response: {e}");
             }
             b"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"serialize failed\"}}\n".to_vec()
@@ -124,7 +124,7 @@ pub async fn fetch_relevant_rules_for_hook(
     intent: &str,
     session_id: Option<&str>,
 ) -> Result<HookRuleContext, CoreError> {
-    let trace = crate::env::trace_hook();
+    let trace = crate::infra::env::trace_hook();
     let started = std::time::Instant::now();
     let mut last = started;
     let mut mark = |label: &str| {
@@ -142,15 +142,15 @@ pub async fn fetch_relevant_rules_for_hook(
     // Short-circuit empty-prone post-edit extensions before the index
     // round-trip; pre-read stays on the full path.
     let ext_key = super::hook_short_circuit::extension_key(file);
-    let short_circuit_mode = crate::env::hook_short_circuit_mode();
+    let short_circuit_mode = crate::infra::env::hook_short_circuit_mode();
     let short_circuit_cache = super::hook_short_circuit::global_cache();
     let is_post_edit_path = intent != "pre-read";
     let short_circuit_now = is_post_edit_path
         && !ext_key.is_empty()
         && match short_circuit_mode {
-            crate::env::HookShortCircuitMode::Off => false,
-            crate::env::HookShortCircuitMode::Force => true,
-            crate::env::HookShortCircuitMode::Auto => {
+            crate::infra::env::HookShortCircuitMode::Off => false,
+            crate::infra::env::HookShortCircuitMode::Force => true,
+            crate::infra::env::HookShortCircuitMode::Auto => {
                 short_circuit_cache.should_short_circuit(&ext_key)
             }
         };
@@ -201,11 +201,11 @@ pub async fn fetch_relevant_rules_for_hook(
     // low-rate sampler occasionally widens the candidate window so deeper
     // ranks get measured without changing normal hook behavior.
     let hook_top_k =
-        super::recall_sampler::maybe_bump_top_k(5usize, crate::env::deep_recall_sample_rate());
+        super::recall_sampler::maybe_bump_top_k(5usize, crate::infra::env::deep_recall_sample_rate());
     let candidate_limit = hook_top_k.saturating_mul(5).clamp(hook_top_k, 50);
-    let mut scored = tools::util::retrieve_rules_with_repo_scopes(
+    let mut scored = tools::serve_stats::retrieve_rules_with_repo_scopes(
         index_pool,
-        tools::util::RetrieveRulesArgs {
+        tools::serve_stats::RetrieveRulesArgs {
             query: &query,
             lexical_query: None,
             top_k: candidate_limit,
@@ -227,11 +227,11 @@ pub async fn fetch_relevant_rules_for_hook(
     const HOOK_MIN_RAW_SCORE: f64 = 0.005;
     scored.retain(|r| r.score >= HOOK_MIN_RAW_SCORE);
     let candidate_ids: Vec<String> = scored.iter().map(|s| s.skill_id.clone()).collect();
-    let meta_map = tools::util::fetch_skills_by_ids(db, &candidate_ids)
+    let meta_map = tools::evidence::fetch_skills_by_ids(db, &candidate_ids)
         .await
         .unwrap_or_default();
-    let strict_skill_ids = tools::util::strict_file_match_ids_for_meta(&meta_map, target_file);
-    scored = tools::util::rerank_scored_rule_chunks_for_mcp_by_strict_file_matches(
+    let strict_skill_ids = tools::evidence::strict_file_match_ids_for_meta(&meta_map, target_file);
+    scored = tools::serve_stats::rerank_scored_rule_chunks_for_mcp_by_strict_file_matches(
         scored,
         intent,
         hook_top_k,
@@ -244,10 +244,10 @@ pub async fn fetch_relevant_rules_for_hook(
     let mut cross_repo_starter = false;
     if scored.is_empty()
         && scoped_count == 0
-        && crate::env::hook_cross_repo_starter_enabled()
+        && crate::infra::env::hook_cross_repo_starter_enabled()
         && let Some(tf) = target_file
     {
-        let cross = tools::util::cross_repo_starter_scored(
+        let cross = tools::serve_stats::cross_repo_starter_scored(
             db,
             &query,
             tf,
@@ -375,7 +375,7 @@ pub async fn fetch_relevant_rules_for_hook(
     let origin_step = rule_hits_by_origin(db, &skill_ids).await;
     emit_trajectory_step(&origin_step);
     let strict_match_count =
-        tools::util::strict_file_match_count_for_ids(&meta_map, &skill_ids, target_file);
+        tools::evidence::strict_file_match_count_for_ids(&meta_map, &skill_ids, target_file);
     // Record the non-empty serve and enqueue the matching event.
     let served_event = serve_and_record(
         db,
@@ -485,7 +485,7 @@ fn detect_git_remote_owner_repos_uncached() -> Vec<String> {
 /// `Some("owner/repo")` for GitHub-hosted SSH/HTTPS remotes (with or without
 /// `.git`); `None` otherwise.
 pub(crate) fn parse_github_owner_repo(url: &str) -> Option<String> {
-    crate::git::parse_github_remote_url(url)
+    crate::infra::git::parse_github_remote_url(url)
 }
 
 #[cfg(test)]

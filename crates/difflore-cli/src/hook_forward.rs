@@ -6,7 +6,7 @@ use interprocess::local_socket::{GenericFilePath, ListenerOptions, ToFsName};
 use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 
-pub const ENV: &str = difflore_core::env::DIFFLORE_HOOK_FORWARD;
+pub const ENV: &str = difflore_core::infra::env::DIFFLORE_HOOK_FORWARD;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -17,7 +17,7 @@ pub enum Mode {
 
 impl Mode {
     fn from_env() -> Self {
-        match difflore_core::env::var(ENV)
+        match difflore_core::infra::env::var(ENV)
             .unwrap_or_else(|| "auto".to_owned())
             .to_ascii_lowercase()
             .as_str()
@@ -108,7 +108,7 @@ async fn roundtrip(req: &Request) -> anyhow::Result<String> {
 }
 
 pub async fn run_server() -> anyhow::Result<()> {
-    let db = difflore_core::db::init_db()
+    let db = difflore_core::infra::db::init_db()
         .await
         .map_err(anyhow::Error::msg)?;
     let index_pool = difflore_core::context::index_db::get_pool_for_cwd().await?;
@@ -117,7 +117,7 @@ pub async fn run_server() -> anyhow::Result<()> {
 }
 
 async fn handle_request(state: &State, line: &str) -> Response {
-    let trace = difflore_core::env::trace_hook();
+    let trace = difflore_core::infra::env::trace_hook();
     let started = std::time::Instant::now();
     let req: Request = match serde_json::from_str(line.trim()) {
         Ok(req) => req,
@@ -179,7 +179,7 @@ async fn handle_request(state: &State, line: &str) -> Response {
 /// Cross-platform local-socket endpoint: `interprocess` treats the same path as
 /// a Unix-domain socket on Unix and a named-pipe-equivalent on Windows.
 fn endpoint() -> anyhow::Result<std::path::PathBuf> {
-    Ok(difflore_core::paths::data_home()
+    Ok(difflore_core::infra::paths::data_home()
         .map_err(anyhow::Error::msg)?
         .join("hook-forward.sock"))
 }
@@ -218,7 +218,7 @@ async fn run_ipc_server(state: Arc<State>) -> anyhow::Result<()> {
         let stream = listener.accept().await?;
         let state = Arc::<State>::clone(&state);
         tokio::spawn(async move {
-            let trace = difflore_core::env::trace_hook();
+            let trace = difflore_core::infra::env::trace_hook();
             let started = std::time::Instant::now();
             let (reader, mut writer) = stream.split();
             let mut reader = BufReader::new(reader);

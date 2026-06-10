@@ -61,15 +61,15 @@ pub(super) async fn doctor_command_version(cmd: &str) -> String {
 }
 
 pub(super) fn daemon_section(s: &mut String) {
-    let daemon_status = difflore_core::daemon::status();
+    let daemon_status = difflore_core::infra::daemon::status();
     let daemon_mark = match &daemon_status {
-        difflore_core::daemon::DaemonStatus::Running { .. } => "✓",
-        difflore_core::daemon::DaemonStatus::Stale { .. } => "✗",
-        difflore_core::daemon::DaemonStatus::NotRunning => "⚠",
+        difflore_core::infra::daemon::DaemonStatus::Running { .. } => "✓",
+        difflore_core::infra::daemon::DaemonStatus::Stale { .. } => "✗",
+        difflore_core::infra::daemon::DaemonStatus::NotRunning => "⚠",
     };
     sw!(s, "\n## {daemon_mark} Daemon\n");
     sw!(s, "- status: `{}`", daemon_status.short());
-    if let Ok(pid_path) = difflore_core::daemon::pid_path() {
+    if let Ok(pid_path) = difflore_core::infra::daemon::pid_path() {
         sw!(s, "- pid path: `{}`", pid_path.display());
     }
     sw!(
@@ -247,7 +247,7 @@ async fn load_mcp_value_proof(
     if let Ok(stats) = difflore_core::skills::stats(pool).await {
         proof.active_rules = Some(stats.total);
     }
-    let counts = difflore_core::db::table_counts(pool, &["review_items"]).await;
+    let counts = difflore_core::infra::db::table_counts(pool, &["review_items"]).await;
     for (table, result) in counts {
         if table == "review_items"
             && let Ok(n) = result
@@ -255,7 +255,7 @@ async fn load_mcp_value_proof(
             proof.imported_prs = Some(n);
         }
     }
-    if let Ok(summary) = difflore_core::fix_outcomes::summary(pool, 30).await {
+    if let Ok(summary) = difflore_core::observability::fix_outcomes::summary(pool, 30).await {
         let total = summary.applied + summary.failed + summary.rejected;
         proof.local_accepted_edits_last30 = Some(summary.applied);
         proof.local_total_outcomes_last30 = Some(total);
@@ -583,7 +583,7 @@ const fn doctor_runtime_probe_mark(state: mcp_install::RuntimeProbeState) -> &'s
 
 pub(super) fn settings_section(s: &mut String) {
     sw!(s, "\n## ⚠ Settings (redacted)\n");
-    let Ok(config) = difflore_core::paths::config_file() else {
+    let Ok(config) = difflore_core::infra::paths::config_file() else {
         return;
     };
     if config.exists() {
@@ -724,15 +724,15 @@ impl EmbeddingActivitySummary {
 
 fn embedding_activity_summary() -> EmbeddingActivitySummary {
     let mut summary = EmbeddingActivitySummary::default();
-    for event in difflore_core::activity_stream::tail(200) {
+    for event in difflore_core::observability::activity_stream::tail(200) {
         match event.payload {
-            difflore_core::activity_stream::ActivityPayload::EmbeddingFallback { reason } => {
+            difflore_core::observability::activity_stream::ActivityPayload::EmbeddingFallback { reason } => {
                 summary.fallback_count += 1;
                 if summary.latest_reason.is_none() {
                     summary.latest_reason = Some(reason);
                 }
             }
-            difflore_core::activity_stream::ActivityPayload::EmbedCapReached { cap, used } => {
+            difflore_core::observability::activity_stream::ActivityPayload::EmbedCapReached { cap, used } => {
                 summary.cap_hits += 1;
                 summary.latest_cap.get_or_insert((cap, used));
             }

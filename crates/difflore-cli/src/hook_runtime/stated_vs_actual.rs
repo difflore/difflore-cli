@@ -1,5 +1,5 @@
 #[cfg(test)]
-use difflore_core::stated_vs_actual;
+use difflore_core::observability::stated_vs_actual;
 #[cfg(test)]
 use std::path::PathBuf;
 

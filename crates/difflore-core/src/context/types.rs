@@ -1,6 +1,6 @@
 //! Context engine record types.
 
-use crate::models::SkillRecord;
+use crate::domain::models::SkillRecord;
 
 /// A past review verdict recalled from the cloud review-memory store.
 ///

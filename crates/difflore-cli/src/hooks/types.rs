@@ -101,7 +101,7 @@ pub enum HookEvent {
         session_id: Option<String>,
         /// Optional absolute path to the platform-native transcript JSONL.
         /// Reserved for the stated-vs-actual validator (see
-        /// `difflore_core::stated_vs_actual`).
+        /// `difflore_core::observability::stated_vs_actual`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         transcript_path: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -4,7 +4,7 @@
 //! This module owns that shape; per-handler quirks (e.g. `loggedIn` /
 //! `team` vs `hasData` / `windowDays`) stay in the callers.
 
-use difflore_core::cloud::api_types::{
+use difflore_core::contract::{
     ImpactBannerDto, ImpactCoverageDto, ImpactFixScorecardDto, ImpactTopRulesDto, ImpactWeeklyDto,
 };
 use serde_json::{Map, Value, json};
@@ -304,7 +304,7 @@ pub(crate) fn saved_review_time_label(minutes: i64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use difflore_core::cloud::api_types::{
+    use difflore_core::contract::{
         ImpactBannerDto, ImpactCoverageDto, ImpactFixScorecardDto, ImpactFixWindowDto,
         ImpactPromotionProgressDto, ImpactRoiDto, ImpactTopRuleDto, ImpactTopRulesDto,
         ImpactWeeklyDto,

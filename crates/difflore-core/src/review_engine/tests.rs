@@ -13,8 +13,8 @@ use super::pipeline::{collect_diff_files, count_blocking, run_review_summary, ve
 use super::prompts::{build_system_prompt, build_user_prompt};
 use super::*;
 use crate::context::types::PastVerdict;
-use crate::errors::CoreError;
-use crate::review_trajectory::{TrajectoryBuilder, TrajectoryStep};
+use crate::error::CoreError;
+use crate::observability::trajectory::{TrajectoryBuilder, TrajectoryStep};
 
 // Prompt builders
 

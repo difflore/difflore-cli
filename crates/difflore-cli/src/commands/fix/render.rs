@@ -2,7 +2,7 @@ use core::fmt::Write as _;
 use std::collections::HashMap;
 use std::path::Path;
 
-use difflore_core::models::DiffContentRecord;
+use difflore_core::domain::models::DiffContentRecord;
 use difflore_core::review_engine::ReviewIssueRecord;
 
 use crate::commands::util::exit_err;

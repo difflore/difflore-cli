@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use std::time::Duration;
 
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 use super::{
     DEFAULT_OPENAI_EMBEDDING_DIM, EMBEDDING_RETRY_DELAYS_MS, Embedder, embedding_http_client,
@@ -163,8 +163,8 @@ impl Embedder for CloudEmbedder {
                         .unwrap_or(0),
                 )
                 .unwrap_or(u32::MAX);
-                crate::activity_stream::record(
-                    crate::activity_stream::ActivityPayload::EmbedCapReached { cap, used },
+                crate::observability::activity_stream::record(
+                    crate::observability::activity_stream::ActivityPayload::EmbedCapReached { cap, used },
                 );
                 return Err(CoreError::EmbedCapReached { cap, used });
             }

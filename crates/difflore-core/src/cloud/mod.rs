@@ -1,4 +1,3 @@
-pub mod api_types;
 pub mod capture;
 pub mod client;
 pub mod endpoints;

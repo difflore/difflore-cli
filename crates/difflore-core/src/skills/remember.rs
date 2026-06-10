@@ -1,8 +1,8 @@
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::errors::CoreError;
-use crate::models::{AddExampleInput, RememberRuleInput, SkillRecord};
+use crate::error::CoreError;
+use crate::domain::models::{AddExampleInput, RememberRuleInput, SkillRecord};
 use crate::observability::privacy::{redact_secretish_tokens, strip_private_tagged_regions};
 
 use super::{SkillRow, add_example, count_captures_today};

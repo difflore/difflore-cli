@@ -26,7 +26,7 @@ pub struct Watermark {
 /// Watermark file path under `~/.difflore/projects/{hash}/`. Does not create
 /// the parent directory (the write helper handles that).
 fn watermark_path(project_hash: &str) -> PathBuf {
-    difflore_core::db::project_index_dir(project_hash).join("last-session-start.json")
+    difflore_core::infra::db::project_index_dir(project_hash).join("last-session-start.json")
 }
 
 /// Read the watermark for the given project hash. Returns `None` if the file

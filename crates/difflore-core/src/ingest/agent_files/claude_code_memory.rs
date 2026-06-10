@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 use super::{MemoryDoc, Source, read_file_doc};
 
@@ -40,7 +40,7 @@ fn memory_dir(repo_root: &Path) -> Option<PathBuf> {
 }
 
 fn claude_home_dir() -> Option<PathBuf> {
-    if let Some(home) = crate::env::var_os(crate::env::DIFFLORE_CLAUDE_HOME)
+    if let Some(home) = crate::infra::env::var_os(crate::infra::env::DIFFLORE_CLAUDE_HOME)
         && !home.is_empty()
     {
         return Some(PathBuf::from(home));

@@ -33,7 +33,7 @@ pub struct RuleRenderInput<'a> {
     pub origin: &'a str,
     /// `owner/repo` attribution column, if any.
     pub source_repo: Option<&'a str>,
-    /// Already-parsed `file_patterns` (use [`crate::mcp_server::tools::util::parse_file_patterns`]
+    /// Already-parsed `file_patterns` (use [`crate::mcp_server::tools::evidence::parse_file_patterns`]
     /// or the candidate parser at the call site).
     pub file_patterns: &'a [String],
     /// The rule body prose. For mined rules this is the structured

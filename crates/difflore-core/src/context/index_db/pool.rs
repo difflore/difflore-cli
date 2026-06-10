@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 use tokio::sync::Mutex;
 
 use crate::context::rule_source::RuleIndexState;
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 use super::schema::{
     RULE_INDEX_META_VERSION, index_db_path_for_project, open_pool_at, read_meta, write_meta,
@@ -108,7 +108,7 @@ pub async fn open_index_pool_at(path: &std::path::Path) -> Result<SqlitePool, Co
 /// Resolve the per-project pool for the current working directory. Callers
 /// that already hold a hash should call `get_pool_for_project` directly.
 pub async fn get_pool_for_cwd() -> Result<SqlitePool, CoreError> {
-    let root = crate::db::current_project_root();
-    let hash = crate::db::project_hash_from_root(&root);
+    let root = crate::infra::db::current_project_root();
+    let hash = crate::infra::db::project_hash_from_root(&root);
     get_pool_for_project(&hash).await
 }

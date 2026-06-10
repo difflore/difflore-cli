@@ -1,12 +1,12 @@
 use serde_json::{Value, json};
 
 use crate::context::types::{EvidenceKind, EvidenceRecord};
-use crate::review_trajectory::TrajectoryStep;
+use crate::observability::trajectory::TrajectoryStep;
 
 use super::super::{
     AVG_FULL_RULE_TOKENS, McpState, build_cost_meta, emit_trajectory_step, estimate_tokens,
 };
-use super::util::{build_timeline_evidence, origin_to_kind, rule_preview, truncate_chars};
+use super::evidence::{build_timeline_evidence, origin_to_kind, rule_preview, truncate_chars};
 
 /// Max `depth_before` / `depth_after` a caller can request.
 pub(crate) const RULE_TIMELINE_MAX_DEPTH: u32 = 20;

@@ -26,7 +26,7 @@ pub struct CommandContext {
 impl CommandContext {
     pub async fn new(mode: OutputMode) -> Self {
         let db = crate::commands::util::init_db().await;
-        let project = difflore_core::paths::current_project_root();
+        let project = difflore_core::infra::paths::current_project_root();
         Self {
             db,
             project,
@@ -79,7 +79,7 @@ mod tests {
             .await
             .expect("trivial select must succeed");
         assert_eq!(row.0, 1);
-        let expected = difflore_core::paths::current_project_root();
+        let expected = difflore_core::infra::paths::current_project_root();
         assert_eq!(ctx.project, expected);
         assert!(!ctx.json());
     }

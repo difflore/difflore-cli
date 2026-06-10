@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 
-use crate::cloud::api_types::RecallPastVerdictsRequest;
+use crate::contract::RecallPastVerdictsRequest;
 use crate::cloud::client::CloudClient;
 use crate::context::types::{PastVerdict, PastVerdictScope};
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 /// Async seam so tests can substitute a fake cloud recall without hitting the
 /// network. Implemented for `CloudClient` so real call sites use it directly.
@@ -58,7 +58,7 @@ pub async fn retrieve_past_verdicts_with_team<R: PastVerdictRecaller + ?Sized>(
     match cloud.recall(req).await {
         Ok(v) => v,
         Err(e) => {
-            if crate::env::debug_cloud() {
+            if crate::infra::env::debug_cloud() {
                 eprintln!("[retrieve_past_verdicts] recall failed: {e:?}");
             }
             Vec::new()
@@ -142,7 +142,7 @@ pub async fn retrieve_past_verdicts_by_text_with_team<R: PastVerdictRecaller + ?
     match cloud.recall(req).await {
         Ok(v) => v,
         Err(e) => {
-            if crate::env::debug_cloud() {
+            if crate::infra::env::debug_cloud() {
                 eprintln!("[retrieve_past_verdicts_by_text] recall failed: {e:?}");
             }
             Vec::new()

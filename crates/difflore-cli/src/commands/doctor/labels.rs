@@ -53,7 +53,7 @@ pub(crate) fn doctor_probe_freshness(
     timestamp: Option<chrono::DateTime<chrono::Utc>>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> &'static str {
-    let ttl = chrono::Duration::minutes(difflore_core::startup::STARTUP_TTL_MINUTES);
+    let ttl = chrono::Duration::minutes(difflore_core::infra::startup::STARTUP_TTL_MINUTES);
     match timestamp {
         Some(ts) if (now - ts) < ttl => "fresh",
         Some(_) => "stale",
@@ -73,7 +73,7 @@ mod tests {
             doctor_probe_freshness(
                 Some(
                     now - chrono::Duration::minutes(
-                        difflore_core::startup::STARTUP_TTL_MINUTES + 1,
+                        difflore_core::infra::startup::STARTUP_TTL_MINUTES + 1,
                     ),
                 ),
                 now,

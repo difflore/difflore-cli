@@ -222,8 +222,8 @@ async fn fetch_recent_for(
 
 #[cfg(test)]
 fn current_repo_aliases() -> Vec<String> {
-    let root = difflore_core::db::current_project_root();
-    difflore_core::git::detect_github_repo_full_names(&root.to_string_lossy())
+    let root = difflore_core::infra::db::current_project_root();
+    difflore_core::infra::git::detect_github_repo_full_names(&root.to_string_lossy())
 }
 
 #[cfg(test)]

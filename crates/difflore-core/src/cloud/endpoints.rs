@@ -6,10 +6,10 @@
 pub const DEFAULT_API_BASE: &str = "https://difflore.dev/api";
 
 /// Canonical environment variable that overrides the default base.
-pub const ENV_CLOUD_URL: &str = crate::env::DIFFLORE_CLOUD_URL;
+pub const ENV_CLOUD_URL: &str = crate::infra::env::DIFFLORE_CLOUD_URL;
 
 /// Legacy spelling accepted as a compatibility fallback.
-pub const LEGACY_ENV_CLOUD_URL: &str = crate::env::DIFF_LORE_CLOUD_URL;
+pub const LEGACY_ENV_CLOUD_URL: &str = crate::infra::env::DIFF_LORE_CLOUD_URL;
 
 /// Read the configured API base, falling back to `DEFAULT_API_BASE`. Empty
 /// values are treated as unset so an empty env var doesn't break clients.
@@ -20,7 +20,7 @@ pub fn api_base() -> String {
 }
 
 fn env_api_base(name: &str) -> Option<String> {
-    crate::env::var(name)
+    crate::infra::env::var(name)
         .map(|v| v.trim().to_owned())
         .filter(|v| !v.is_empty())
 }
@@ -120,7 +120,7 @@ pub fn github_release_tag_url(version: &str) -> String {
 
 use openapi_contract::api;
 
-use super::api_types::RegisterDeviceResult;
+use crate::contract::RegisterDeviceResult;
 use super::client::CloudClient;
 
 pub async fn register(
@@ -147,7 +147,7 @@ pub const fn detect_platform() -> &'static str {
 
 pub fn detect_hostname() -> String {
     for key in ["COMPUTERNAME", "HOSTNAME", "HOST"] {
-        if let Some(name) = crate::env::var(key) {
+        if let Some(name) = crate::infra::env::var(key) {
             return name;
         }
     }

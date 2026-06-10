@@ -1,0 +1,20 @@
+# Provenance for crates/difflore-core/contracts/openapi-spec.json
+#
+# The spec is vendored from the difflore-cloud repository's contract export
+# (cloud batch C0b: `pnpm contract:export` writes src/contracts/openapi/*.json).
+# Sync via scripts/sync-contract.sh once the R4 contract pipeline lands;
+# until then update these fields by hand whenever the spec is refreshed.
+
+source-repo:   difflore-cloud
+source-path:   src/contracts/openapi/api.json
+source-commit: f08eb8ca1e84dae95fe1e9ac99a298af0badf54b
+
+# sha256 of the vendored openapi-spec.json currently checked in here.
+spec-sha256:   4b2dfcd3790ac4cdf9dfa4cb8e0d0d6877c1779b880534ba9db1a8366a30fc22
+
+# NOTE: the cloud export at source-commit hashes to
+# 91eaa1b9cfef5e7512b4c9d254fe55f6a40d524d1cd4805140a1fc8407b078b0 — the
+# vendored copy predates that export (drift in reviewer trajectory schema,
+# e.g. the new `nextStep` field). Re-vendoring is deliberately NOT part of
+# the R1b module reorg because it changes generated types; it is tracked
+# for the R4 contract-pipeline batch.

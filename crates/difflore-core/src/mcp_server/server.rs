@@ -3,8 +3,8 @@ use sqlx::SqlitePool;
 
 use crate::cloud::client::CloudClient;
 use crate::context::index_db;
-use crate::errors::CoreError;
-use crate::review_trajectory::TrajectoryStep;
+use crate::error::CoreError;
+use crate::observability::trajectory::TrajectoryStep;
 use crate::skills;
 
 use super::schemas::{
@@ -60,7 +60,7 @@ pub(crate) fn build_cost_meta(tokens_used: usize, tokens_if_full: Option<usize>)
 /// Fire-and-forget structured log of a trajectory step. Debug telemetry
 /// prints JSON when `DIFFLORE_DEBUG_TELEMETRY=1`.
 pub(crate) fn emit_trajectory_step(step: &TrajectoryStep) {
-    if crate::env::debug_telemetry()
+    if crate::infra::env::debug_telemetry()
         && let Ok(json) = serde_json::to_string(step)
     {
         eprintln!("[difflore.trajectory] {json}");

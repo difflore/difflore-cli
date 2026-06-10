@@ -24,8 +24,8 @@ use std::time::Duration;
 
 use crate::cloud::client::CloudClient;
 use crate::cloud::outbox::{DEFAULT_STALE_SECONDS, OutboxQueue, drain_outbox};
-use crate::db::init_db;
-use crate::paths;
+use crate::infra::db::init_db;
+use crate::infra::paths;
 
 pub fn pid_path() -> Result<PathBuf, String> {
     Ok(paths::data_home()?.join("daemon.pid"))
@@ -251,7 +251,7 @@ pub async fn run(tick_interval_secs: u64, batch_size: usize) -> Result<(), Strin
                 // retry + circuit-breaker state, so logging them here
                 // would be noisy.
                 if let Err(e) = drain_outbox(&queue, &client, batch_size).await {
-                    if crate::env::debug_cloud() {
+                    if crate::infra::env::debug_cloud() {
                         eprintln!("[difflore.daemon] drain error: {e}");
                     }
                 }
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn status_reports_not_running_when_pid_file_missing() {
         let _g = TEST_SERIAL.blocking_lock();
-        let _ = crate::db::shared_test_home();
+        let _ = crate::infra::db::shared_test_home();
         let path = pid_path().expect("pid path");
         let _ = fs::remove_file(&path);
         assert_eq!(status(), DaemonStatus::NotRunning);
@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn status_detects_stale_pid_file() {
         let _g = TEST_SERIAL.blocking_lock();
-        let _ = crate::db::shared_test_home();
+        let _ = crate::infra::db::shared_test_home();
         let path = pid_path().expect("pid path");
         let dead_pid = spawn_dead_pid();
         fs::write(&path, dead_pid.to_string()).unwrap();
@@ -347,7 +347,7 @@ mod tests {
     #[tokio::test]
     async fn stop_is_noop_when_not_running() {
         let _g = TEST_SERIAL.lock().await;
-        let _ = crate::db::shared_test_home();
+        let _ = crate::infra::db::shared_test_home();
         let path = pid_path().unwrap();
         let _ = fs::remove_file(&path);
         let outcome = stop(1).await.unwrap();
@@ -357,7 +357,7 @@ mod tests {
     #[tokio::test]
     async fn stop_cleans_stale_pid_file_without_signalling() {
         let _g = TEST_SERIAL.lock().await;
-        let _ = crate::db::shared_test_home();
+        let _ = crate::infra::db::shared_test_home();
         let path = pid_path().unwrap();
         let dead_pid = spawn_dead_pid();
         fs::write(&path, dead_pid.to_string()).unwrap();

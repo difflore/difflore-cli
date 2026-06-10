@@ -57,7 +57,7 @@ pub(crate) fn format_github_import_err(label: &str, e: &str) -> String {
     }
     // Network/timeout/generic fallback: delegate to the product-agnostic core
     // helper. Domain-specific GitHub hints are handled above.
-    difflore_core::origins::format_api_error(label, e)
+    difflore_core::domain::origins::format_api_error(label, e)
 }
 
 pub(super) fn verify_source_repo_access(source_repo: &str) -> Result<(), String> {

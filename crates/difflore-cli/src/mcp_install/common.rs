@@ -53,7 +53,7 @@ pub(super) fn write_atomic(
 }
 
 pub(super) fn difflore_mcp_record_path() -> Result<PathBuf, String> {
-    let dir = difflore_core::paths::data_home()?;
+    let dir = difflore_core::infra::paths::data_home()?;
     fs::create_dir_all(&dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
     Ok(dir.join("mcp.json"))
 }
@@ -119,7 +119,7 @@ pub(super) fn resolve_difflore_binary() -> Result<String, String> {
 }
 
 pub(super) fn home_path(suffix: &[&str]) -> Result<PathBuf, String> {
-    let mut p = difflore_core::env::var_os(difflore_core::env::DIFFLORE_MCP_HOME)
+    let mut p = difflore_core::infra::env::var_os(difflore_core::infra::env::DIFFLORE_MCP_HOME)
         .map(PathBuf::from)
         .or_else(dirs::home_dir)
         .ok_or("could not resolve home directory")?;

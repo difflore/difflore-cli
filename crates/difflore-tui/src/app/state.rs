@@ -1,4 +1,4 @@
-use difflore_core::models::SkillRecord;
+use difflore_core::domain::models::SkillRecord;
 
 use crate::tabs::rules::{RepoScope, ordered_filtered_rules};
 

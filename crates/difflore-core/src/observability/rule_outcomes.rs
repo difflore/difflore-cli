@@ -56,7 +56,7 @@ pub async fn record_recalled_with_context(
     }
     let mut tx = pool.begin().await?;
     for recall in recalls {
-        let query_hash = crate::mcp_rule_serves::query_hash(recall.query_text);
+        let query_hash = crate::observability::mcp_rule_serves::query_hash(recall.query_text);
         let rank = recall.rank.max(1);
         let top_k = recall.top_k.max(1);
         let strict = i64::from(recall.strict_file_match);

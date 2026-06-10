@@ -1,4 +1,4 @@
-use difflore_core::domain::CoreError;
+use difflore_core::error::CoreError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

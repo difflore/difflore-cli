@@ -1,9 +1,9 @@
 use openapi_contract::api;
 use uuid::Uuid;
 
-use crate::cloud::api_types::RuleDetail;
+use crate::contract::RuleDetail;
 use crate::cloud::client::CloudClient;
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 use super::types::LocalRuleUploadRow;
 

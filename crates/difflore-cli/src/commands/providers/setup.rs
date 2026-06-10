@@ -12,7 +12,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use colored::Colorize;
 use gate4agent::CliTool;
 
-use difflore_core::models::{ProviderAddInput, ProviderSetActiveInput};
+use difflore_core::domain::models::{ProviderAddInput, ProviderSetActiveInput};
 
 /// Default model per tool. Empty string means "let the CLI pick its own
 /// default", used for tools whose CLI default already tracks the latest
@@ -203,7 +203,7 @@ async fn save_provider(
     model_mapping: HashMap<String, String>,
     human_summary: String,
 ) {
-    let added = match difflore_core::providers::add(
+    let added = match difflore_core::domain::providers::add(
         db,
         ProviderAddInput {
             name: name.to_owned(),
@@ -223,7 +223,7 @@ async fn save_provider(
         }
     };
 
-    if let Err(e) = difflore_core::providers::set_active(
+    if let Err(e) = difflore_core::domain::providers::set_active(
         db,
         ProviderSetActiveInput {
             id: added.id.clone(),

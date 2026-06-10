@@ -1,5 +1,5 @@
 use super::{ReviewIssueRecord, default_confidence};
-use crate::models::FileIntent;
+use crate::domain::models::FileIntent;
 
 /// Numeric rank of a severity string. Higher = more severe.
 /// Unknown severities fall below `info`.

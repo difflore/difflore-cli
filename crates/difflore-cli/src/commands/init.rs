@@ -55,7 +55,7 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
     // [fork, upstream(s)…] — the same alias chain `fix --preview` uses, so the
     // memory preview resolves to upstream for a fork the user hasn't imported
     // reviews under yet.
-    let repo_aliases = difflore_core::git::detect_github_repo_full_names(&cwd.to_string_lossy());
+    let repo_aliases = difflore_core::infra::git::detect_github_repo_full_names(&cwd.to_string_lossy());
 
     let db = &ctx.db;
     // Called for its side effect: registering the cwd in the projects table so
@@ -77,7 +77,7 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
         mcp_install::install_all(false);
     }
     if opts.run_provider() {
-        let has_active = difflore_core::providers::list(db)
+        let has_active = difflore_core::domain::providers::list(db)
             .await
             .is_ok_and(|ps| ps.iter().any(|p| p.is_active));
         if !has_active {
@@ -176,7 +176,7 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
         }
     );
 
-    let providers = difflore_core::providers::list(db).await.unwrap_or_default();
+    let providers = difflore_core::domain::providers::list(db).await.unwrap_or_default();
     let active = providers.iter().find(|p| p.is_active);
     let provider_value = match active {
         Some(p) => style::title(&format!("{} active", p.name)).to_string(),

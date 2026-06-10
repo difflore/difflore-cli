@@ -34,7 +34,7 @@ pub(super) async fn fetch_rule_source_repos(
             }
         }
         Err(e) => {
-            if difflore_core::env::debug_telemetry() {
+            if difflore_core::infra::env::debug_telemetry() {
                 eprintln!("[attribution] source_repo lookup failed: {e}");
             }
         }

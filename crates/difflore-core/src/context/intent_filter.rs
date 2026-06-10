@@ -340,7 +340,7 @@ fn push_hint(hints: &mut Vec<&'static str>, seen: &mut HashSet<&'static str>, hi
 /// cheaper than injecting every candidate. Users who want the full pack can
 /// set `DIFFLORE_INTENT_RERANK=0`.
 pub fn rerank_review_top_n_from_env() -> Option<usize> {
-    let Some(raw) = crate::env::var(crate::env::DIFFLORE_INTENT_RERANK) else {
+    let Some(raw) = crate::infra::env::var(crate::infra::env::DIFFLORE_INTENT_RERANK) else {
         return Some(DEFAULT_RERANK_TOP_N);
     };
     let trimmed = raw.trim();

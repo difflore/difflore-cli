@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use difflore_core::activity_stream::{self, ActivityEvent, ActivityPayload};
+use difflore_core::observability::activity_stream::{self, ActivityEvent, ActivityPayload};
 use difflore_core::observability::fix_outcomes::{FixOutcomeDaily, FixOutcomeSummary};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -526,7 +526,7 @@ struct ActivityLogSignature {
 
 impl ActivityLogSignature {
     fn read() -> Self {
-        let path = difflore_core::paths::data_home()
+        let path = difflore_core::infra::paths::data_home()
             .ok()
             .map(|dir| dir.join("activity.jsonl"));
         let metadata = path.as_ref().and_then(|p| std::fs::metadata(p).ok());

@@ -115,7 +115,7 @@ fn collect_actions() -> Vec<Action> {
 // 1. ~/.difflore/ directory
 
 fn difflore_dir_path() -> Option<PathBuf> {
-    difflore_core::paths::data_home().ok()
+    difflore_core::infra::paths::data_home().ok()
 }
 
 fn difflore_dir_exists() -> bool {
@@ -206,7 +206,7 @@ fn hook_shim_for_cli(cli: &std::path::Path) -> Option<PathBuf> {
 
 fn which_hook_shim() -> Option<PathBuf> {
     let exe_name = format!("difflore-hook{}", std::env::consts::EXE_SUFFIX);
-    let path = difflore_core::env::var_os(difflore_core::env::PATH)?;
+    let path = difflore_core::infra::env::var_os(difflore_core::infra::env::PATH)?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(&exe_name);
         if candidate.is_file() {

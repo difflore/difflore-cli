@@ -56,10 +56,10 @@ fn profile_dim(profile: &str) -> Option<u32> {
 /// degradation: a provider can fail at query time while the persisted corpus
 /// profile still looks semantic. Any miss yields `false`, so it never blocks.
 fn recent_embedding_fallback_from_events(
-    events: &[crate::activity_stream::ActivityEvent],
+    events: &[crate::observability::activity_stream::ActivityEvent],
     now_ms: i64,
 ) -> bool {
-    use crate::activity_stream::ActivityPayload;
+    use crate::observability::activity_stream::ActivityPayload;
 
     events
         .iter()
@@ -74,7 +74,7 @@ fn recent_embedding_fallback_from_events(
 }
 
 fn recent_embedding_fallback() -> bool {
-    use crate::activity_stream::tail;
+    use crate::observability::activity_stream::tail;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let now_ms = SystemTime::now()
@@ -95,10 +95,10 @@ fn recent_embedding_fallback() -> bool {
 /// must not be fooled by that trailing event (e.g. "is the remote embedder down,
 /// so skip a futile corpus re-embed?") use this strict scan.
 fn recent_embedding_fallback_strict_from_events(
-    events: &[crate::activity_stream::ActivityEvent],
+    events: &[crate::observability::activity_stream::ActivityEvent],
     now_ms: i64,
 ) -> bool {
-    use crate::activity_stream::ActivityPayload;
+    use crate::observability::activity_stream::ActivityPayload;
     events.iter().any(|event| {
         matches!(event.payload, ActivityPayload::EmbeddingFallback { .. })
             && now_ms.saturating_sub(event.ts_ms) <= RECENT_EMBEDDING_FALLBACK_WINDOW_MS
@@ -106,7 +106,7 @@ fn recent_embedding_fallback_strict_from_events(
 }
 
 fn recent_embedding_fallback_strict() -> bool {
-    use crate::activity_stream::{MAX_EVENTS, tail};
+    use crate::observability::activity_stream::{MAX_EVENTS, tail};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let now_ms = SystemTime::now()
@@ -134,10 +134,10 @@ fn is_persistent_failure_reason(reason: &str) -> bool {
 const SUSTAINED_TRANSIENT_FALLBACK_THRESHOLD: usize = 5;
 
 fn cloud_embed_outage_active_from_events(
-    events: &[crate::activity_stream::ActivityEvent],
+    events: &[crate::observability::activity_stream::ActivityEvent],
     now_ms: i64,
 ) -> bool {
-    use crate::activity_stream::ActivityPayload;
+    use crate::observability::activity_stream::ActivityPayload;
     let mut transient = 0usize;
     for event in events {
         let ActivityPayload::EmbeddingFallback { reason } = &event.payload else {
@@ -164,7 +164,7 @@ fn cloud_embed_outage_active_from_events(
 /// next query. Cross-process by design: it reads the on-disk log so short-lived
 /// per-fire hook invocations honour it (an in-process flag would reset).
 pub(crate) fn cloud_embed_outage_active() -> bool {
-    use crate::activity_stream::{MAX_EVENTS, tail};
+    use crate::observability::activity_stream::{MAX_EVENTS, tail};
     use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -356,7 +356,7 @@ pub async fn effective_embedding_profile_for_freshness(
 
 #[cfg(test)]
 mod tests {
-    use crate::activity_stream::{ActivityEvent, ActivityPayload};
+    use crate::observability::activity_stream::{ActivityEvent, ActivityPayload};
 
     use super::super::schema::{open_pool_at, write_meta};
     use super::*;

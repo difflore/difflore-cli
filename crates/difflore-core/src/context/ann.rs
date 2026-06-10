@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 type AnnCacheKey = (String, usize);
 type SharedAnnIndex = Arc<Mutex<AnnIndex>>;
@@ -107,7 +107,7 @@ impl AnnIndex {
     /// case the caller gets an empty index and retrieval falls through
     /// to the linear path.
     pub async fn load_or_empty(project_hash: &str, dim: usize) -> Result<Self, CoreError> {
-        let dir = crate::db::project_index_dir(project_hash);
+        let dir = crate::infra::db::project_index_dir(project_hash);
         let meta_path = dir.join(META_FILENAME);
         let graph_path = dir.join(format!("{HNSW_BASENAME}.hnsw.graph"));
         let data_path = dir.join(format!("{HNSW_BASENAME}.hnsw.data"));
@@ -344,13 +344,13 @@ impl AnnIndex {
         let Some(hnsw) = self.inner.as_ref() else {
             // Empty index => nothing to persist, but still write a meta
             // file so `load_or_empty` sees a consistent state.
-            let dir = crate::db::project_index_dir(&self.project_hash);
+            let dir = crate::infra::db::project_index_dir(&self.project_hash);
             std::fs::create_dir_all(&dir)?;
             self.write_meta(&dir)?;
             self.dirty = false;
             return Ok(());
         };
-        let dir = crate::db::project_index_dir(&self.project_hash);
+        let dir = crate::infra::db::project_index_dir(&self.project_hash);
         std::fs::create_dir_all(&dir)?;
         hnsw.file_dump(&dir, HNSW_BASENAME)
             .map_err(|e| CoreError::Internal(format!("hnsw file_dump failed: {e}")))?;
@@ -459,7 +459,7 @@ pub fn invalidate_cache(project_hash: &str) {
 
 /// Convenience helper for the on-disk files belonging to a project index.
 pub fn ann_files_for_project(project_hash: &str) -> (PathBuf, PathBuf, PathBuf) {
-    let dir = crate::db::project_index_dir(project_hash);
+    let dir = crate::infra::db::project_index_dir(project_hash);
     (
         dir.join(format!("{HNSW_BASENAME}.hnsw.graph")),
         dir.join(format!("{HNSW_BASENAME}.hnsw.data")),
@@ -506,7 +506,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_index_search_returns_empty() {
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let hash = unique_hash("empty-search");
         let idx = AnnIndex::load_or_empty(&hash, 16).await.unwrap();
         assert_eq!(idx.total_size(), 0);
@@ -516,7 +516,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_and_search_returns_nearest() {
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let hash = unique_hash("build-search");
         let dim = 32;
         // Seed 50 random vectors, then append a "target" that we'll
@@ -546,7 +546,7 @@ mod tests {
 
     #[tokio::test]
     async fn save_and_load_roundtrip() {
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let hash = unique_hash("roundtrip");
         let dim = 24;
         let mut chunks: Vec<(String, Vec<f32>)> = Vec::new();
@@ -571,7 +571,7 @@ mod tests {
 
     #[tokio::test]
     async fn upsert_replaces_existing_chunk_embedding() {
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let hash = unique_hash("upsert");
         let dim = 8;
         let vec_a = random_vec(1, dim);
@@ -614,7 +614,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_drops_from_search_results() {
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let hash = unique_hash("remove");
         let dim = 12;
         let vec_a = random_vec(10, dim);
@@ -641,7 +641,7 @@ mod tests {
 
     #[tokio::test]
     async fn dim_mismatch_triggers_fallback() {
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let hash = unique_hash("dim-mismatch");
         let dim = 16;
         let mut chunks: Vec<(String, Vec<f32>)> = Vec::new();
@@ -668,7 +668,7 @@ mod tests {
         // overwhelming majority of runs — we assert "within top 10"
         // as a recall smoke-check rather than top-1 because HNSW is
         // approximate.
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let hash = unique_hash("recall10");
         let dim = 32;
         let mut chunks: Vec<(String, Vec<f32>)> = Vec::new();
@@ -701,7 +701,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_caps_large_top_k_requests() {
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let hash = unique_hash("cap-top-k");
         let chunks: Vec<(String, Vec<f32>)> = (0..80)
             .map(|i| (format!("id-{i:02}"), vec![i as f32, 1.0]))
@@ -717,7 +717,7 @@ mod tests {
 
     #[tokio::test]
     async fn persistence_meta_version_bump_invalidates() {
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let hash = unique_hash("meta-bump");
         let dim = 8;
         let chunks = vec![
@@ -745,7 +745,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_ann_for_project_caches_across_calls() {
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let hash = unique_hash("cache");
         let a = get_ann_for_project(&hash, 16).await.unwrap();
         let b = get_ann_for_project(&hash, 16).await.unwrap();
@@ -757,7 +757,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_ann_for_project_keys_cache_by_dim() {
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let hash = unique_hash("cache-dim");
         let a = get_ann_for_project(&hash, 16).await.unwrap();
         let b = get_ann_for_project(&hash, 32).await.unwrap();

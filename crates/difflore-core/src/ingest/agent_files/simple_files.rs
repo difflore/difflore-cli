@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 use super::{MemoryDoc, Source, read_file_doc};
 

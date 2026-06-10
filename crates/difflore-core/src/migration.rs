@@ -6,7 +6,7 @@
 //! not copy or reinterpret historical index contents.
 
 use crate::context::index_db;
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 /// Startup guard for retired local index layouts.
 ///

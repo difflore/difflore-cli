@@ -38,7 +38,7 @@ struct CloudGithubLoginResponse {
 }
 
 fn device_registration_state_path() -> Result<PathBuf, String> {
-    Ok(difflore_core::paths::data_home()?.join(DEVICE_REGISTRATION_FILE))
+    Ok(difflore_core::infra::paths::data_home()?.join(DEVICE_REGISTRATION_FILE))
 }
 
 pub(super) fn load_device_registration_state() -> Option<DeviceRegistrationState> {
@@ -144,7 +144,7 @@ pub(super) async fn try_login_dispatch_with_github(
     }
 
     let has_flag = token_flag.as_ref().is_some_and(|s| !s.trim().is_empty());
-    let has_env = difflore_core::env::var(difflore_core::env::DIFFLORE_CLOUD_TOKEN)
+    let has_env = difflore_core::infra::env::var(difflore_core::infra::env::DIFFLORE_CLOUD_TOKEN)
         .is_some_and(|v| !v.trim().is_empty());
     let stdin_piped = !std::io::stdin().is_terminal();
     let stdout_tty = std::io::stdout().is_terminal();
@@ -521,7 +521,7 @@ impl BrowserLoginSignals {
 }
 
 fn env_nonempty(key: &str) -> bool {
-    difflore_core::env::var(key).is_some_and(|value| !value.trim().is_empty())
+    difflore_core::infra::env::var(key).is_some_and(|value| !value.trim().is_empty())
 }
 
 const fn browser_login_blocker(

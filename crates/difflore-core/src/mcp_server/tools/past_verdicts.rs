@@ -2,12 +2,12 @@ use serde_json::{Value, json};
 
 use crate::context::retrieval;
 use crate::context::types::{PastVerdict, PastVerdictScope};
-use crate::review_trajectory::TrajectoryStep;
+use crate::observability::trajectory::TrajectoryStep;
 
 use super::super::{
     McpState, build_cost_meta, detect_git_remote_owner_repos, emit_trajectory_step, estimate_tokens,
 };
-use super::util::{MCP_TEXT_ARG_CHAR_LIMIT, validate_mcp_text_arg};
+use super::validate::{MCP_TEXT_ARG_CHAR_LIMIT, validate_mcp_text_arg};
 
 pub(crate) async fn tool_get_past_verdicts(
     state: &McpState,

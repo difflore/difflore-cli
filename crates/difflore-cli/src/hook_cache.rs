@@ -23,8 +23,8 @@ struct CacheEntry {
 }
 
 pub fn should_skip_recent(file_path: &str, purpose: &str) -> bool {
-    let project_root = difflore_core::db::current_project_root();
-    let project_hash = difflore_core::db::project_hash_from_root(&project_root);
+    let project_root = difflore_core::infra::db::current_project_root();
+    let project_hash = difflore_core::infra::db::project_hash_from_root(&project_root);
     should_skip_recent_for_project_hash(file_path, purpose, &project_hash)
 }
 
@@ -85,8 +85,8 @@ pub fn remember_injection(file_path: &str, purpose: &str, rules_injected: usize)
 }
 
 fn cache_key(file_path: &str, purpose: &str) -> String {
-    let project_root = difflore_core::db::current_project_root();
-    let project_hash = difflore_core::db::project_hash_from_root(&project_root);
+    let project_root = difflore_core::infra::db::current_project_root();
+    let project_hash = difflore_core::infra::db::project_hash_from_root(&project_root);
     cache_key_for_project_hash(file_path, purpose, &project_hash)
 }
 
@@ -96,13 +96,13 @@ fn cache_key_for_project_hash(file_path: &str, purpose: &str, project_hash: &str
 }
 
 fn cache_path() -> Option<PathBuf> {
-    difflore_core::paths::data_home()
+    difflore_core::infra::paths::data_home()
         .ok()
         .map(|dir| dir.join("hook-cache.json"))
 }
 
 fn ttl_ms() -> i64 {
-    difflore_core::env::var(difflore_core::env::DIFFLORE_HOOK_CACHE_TTL_MS)
+    difflore_core::infra::env::var(difflore_core::infra::env::DIFFLORE_HOOK_CACHE_TTL_MS)
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(DEFAULT_TTL_MS)
 }

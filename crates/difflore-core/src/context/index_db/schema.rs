@@ -1,7 +1,7 @@
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 use std::path::PathBuf;
 
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 pub(super) const INDEX_DB_NAME: &str = "context-index.db";
 
@@ -44,13 +44,13 @@ impl QueryFilter {
 /// Per-project path: `~/.difflore/projects/{hash}/context-index.db`.
 /// Public so supporting tools can target the same file the runtime opens.
 pub fn index_db_path_for_project(project_hash: &str) -> PathBuf {
-    crate::db::project_index_dir(project_hash).join(INDEX_DB_NAME)
+    crate::infra::db::project_index_dir(project_hash).join(INDEX_DB_NAME)
 }
 
 /// Retired global path: `~/.difflore/context-index.db`. Used only by the
 /// startup guard to fail closed when a pre-split DB is present.
 pub(crate) fn retired_global_index_db_path() -> Result<PathBuf, CoreError> {
-    Ok(crate::paths::data_home()
+    Ok(crate::infra::paths::data_home()
         .map_err(CoreError::Internal)?
         .join(INDEX_DB_NAME))
 }

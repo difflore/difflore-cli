@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
 
-use crate::errors::CoreError;
-use crate::paths;
+use crate::error::CoreError;
+use crate::infra::paths;
 
 /// Five minutes — balances "skip the probe on the next N commands after a
 /// fresh one" (common case) with "surface real drift within seconds" (when
@@ -99,20 +99,20 @@ async fn run_full_check() -> Result<StartupStatus, CoreError> {
 
     // Migrations — re-running is a no-op when everything is already
     // applied, so the cost is a single metadata query.
-    let _pool = crate::db::init_db().await.map_err(CoreError::Internal)?;
+    let _pool = crate::infra::db::init_db().await.map_err(CoreError::Internal)?;
 
     // Recover any cloud-outbox rows that got stuck in 'processing' after
     // a crashed drain (e.g. SIGKILL'd hook). Anything older than 60 s is
     // bounced back to 'pending' so the next drain can retry. Failures
     // are logged but never block startup — a stale outbox row costs at
     // most one retry's worth of duplicate work on the cloud side.
-    if let Ok(pool) = crate::db::init_db().await {
+    if let Ok(pool) = crate::infra::db::init_db().await {
         let queue = crate::cloud::outbox::OutboxQueue::new(pool);
         if let Err(e) = queue
             .reset_stale(crate::cloud::outbox::DEFAULT_STALE_SECONDS)
             .await
         {
-            if crate::env::debug_cloud() {
+            if crate::infra::env::debug_cloud() {
                 eprintln!("[difflore] cloud_outbox reset_stale skipped: {e}");
             }
         }
@@ -122,8 +122,8 @@ async fn run_full_check() -> Result<StartupStatus, CoreError> {
     // provider table?" — the `list()` query walks the same rows as the
     // CLI would. Failures are recorded as `None` so the next invocation
     // retries.
-    let db = crate::db::init_db().await.map_err(CoreError::Internal)?;
-    let provider_ok_at = match crate::providers::list(&db).await {
+    let db = crate::infra::db::init_db().await.map_err(CoreError::Internal)?;
+    let provider_ok_at = match crate::domain::providers::list(&db).await {
         Ok(_) => Some(now),
         Err(_) => None,
     };
@@ -138,7 +138,7 @@ async fn run_full_check() -> Result<StartupStatus, CoreError> {
             // logged-in call we have. The `"_ping_"` sentinel satisfies
             // the server's `min(1)` validation on `queryText`; only the
             // round-trip succeeding matters, not the response body.
-            let req = crate::cloud::api_types::RecallPastVerdictsRequest {
+            let req = crate::contract::RecallPastVerdictsRequest {
                 embedding: Vec::new(),
                 query_text: Some("_ping_".to_owned()),
                 repo_id: None,
@@ -249,7 +249,7 @@ mod tests {
     #[tokio::test]
     async fn ensure_ready_caches_between_calls() {
         let _guard = CACHE_SERIAL.lock().await;
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
 
         // Force one fresh probe so we're comparing against a known
         // baseline rather than whatever the previous test left in the
@@ -268,7 +268,7 @@ mod tests {
     #[tokio::test]
     async fn ensure_ready_force_refreshes_cache() {
         let _guard = CACHE_SERIAL.lock().await;
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
 
         let first = ensure_ready(false).await.expect("first call");
         let first_ts = first.migrations_applied_at;

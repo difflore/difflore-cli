@@ -5,7 +5,7 @@ use super::super::prompts::{
 };
 use super::super::{ReviewIssueRecord, ReviewLlm};
 use super::{collect_diff_files, count_blocking};
-use crate::models::ReviewSummary;
+use crate::domain::models::ReviewSummary;
 
 /// Self-check: re-run a cheap LLM pass over merged issues to score
 /// confidence and drop obvious false positives.
@@ -31,7 +31,7 @@ pub(in super::super) async fn verify_pass(
     let response = match llm.chat(VERIFY_SYSTEM_PROMPT, &user_prompt).await {
         Ok(r) => r,
         Err(e) => {
-            if crate::env::fix_debug() {
+            if crate::infra::env::fix_debug() {
                 eprintln!("[verify_pass] cheap-model call failed: {e:?}");
             }
             return issues;
@@ -41,7 +41,7 @@ pub(in super::super) async fn verify_pass(
     let map = match parse_verify_response(&response) {
         Some(m) if !m.is_empty() => m,
         _ => {
-            if crate::env::fix_debug() {
+            if crate::infra::env::fix_debug() {
                 eprintln!(
                     "[verify_pass] could not parse verify response; keeping issues unchanged"
                 );
@@ -68,7 +68,7 @@ pub(in super::super) async fn verify_pass(
     }
 
     if out.is_empty() && !original_issues.is_empty() {
-        if crate::env::fix_debug() {
+        if crate::infra::env::fix_debug() {
             eprintln!(
                 "[verify_pass] verifier dropped every candidate issue; keeping original issues to avoid a false-negative review"
             );
@@ -99,7 +99,7 @@ pub(in super::super) async fn run_review_summary(
     let response = match llm.chat(SUMMARY_SYSTEM_PROMPT, &user_prompt).await {
         Ok(r) => r,
         Err(e) => {
-            if crate::env::fix_debug() {
+            if crate::infra::env::fix_debug() {
                 eprintln!("[run_review_summary] cheap-model call failed: {e:?}");
             }
             return None;

@@ -2,8 +2,8 @@ use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::errors::CoreError;
-use crate::models::{FileReadRecord, FileSearchResult, FilesReadInput, FilesSearchInput};
+use crate::error::CoreError;
+use crate::domain::models::{FileReadRecord, FileSearchResult, FilesReadInput, FilesSearchInput};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

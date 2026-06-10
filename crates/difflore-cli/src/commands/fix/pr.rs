@@ -4,7 +4,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
-use difflore_core::models::{DiffContentRecord, GitDiffInput};
+use difflore_core::domain::models::{DiffContentRecord, GitDiffInput};
 use serde::Deserialize;
 
 use crate::commands::util::validate_owner_repo;
@@ -182,7 +182,7 @@ pub(super) fn parse_pr_spec(
             .map(str::to_owned)
             .or_else(|| repo_from_remote(cwd, "upstream"))
             .or_else(|| {
-                difflore_core::git::detect_github_repo_full_names(&cwd.to_string_lossy())
+                difflore_core::infra::git::detect_github_repo_full_names(&cwd.to_string_lossy())
                     .into_iter()
                     .next()
             })
@@ -224,7 +224,7 @@ fn normalize_repo(repo: &str) -> anyhow::Result<String> {
 
 fn repo_from_remote(repo_root: &Path, remote: &str) -> Option<String> {
     let url = git_stdout(repo_root, &["remote", "get-url", remote], None).ok()?;
-    difflore_core::git::parse_github_remote_url(&url)
+    difflore_core::infra::git::parse_github_remote_url(&url)
 }
 
 fn head_repo_full_name(view: &GhPrView) -> Option<String> {
@@ -537,7 +537,7 @@ fn prepared_from_meta(
     if !aliases.iter().any(|repo| repo == &meta.head_repo_full_name) {
         aliases.push(meta.head_repo_full_name.clone());
     }
-    for repo in difflore_core::git::detect_github_repo_full_names(&project_path) {
+    for repo in difflore_core::infra::git::detect_github_repo_full_names(&project_path) {
         if !aliases.iter().any(|existing| existing == &repo) {
             aliases.push(repo);
         }
@@ -565,7 +565,7 @@ async fn collect_pr_diff(
     repo_root: &Path,
     prepared: &PreparedPrFix,
 ) -> anyhow::Result<Vec<DiffContentRecord>> {
-    difflore_core::git::diff(GitDiffInput {
+    difflore_core::infra::git::diff(GitDiffInput {
         project_path: repo_root.to_string_lossy().to_string(),
         staged: None,
         ref1: Some(prepared.merge_base.clone()),
@@ -620,7 +620,7 @@ fn remote_for_repo(repo_root: &Path, repo_full_name: &str) -> anyhow::Result<Opt
         let Ok(url) = git_stdout(repo_root, &["remote", "get-url", remote], None) else {
             continue;
         };
-        let Some(remote_repo) = difflore_core::git::parse_github_remote_url(&url) else {
+        let Some(remote_repo) = difflore_core::infra::git::parse_github_remote_url(&url) else {
             continue;
         };
         if remote_repo == repo_full_name {

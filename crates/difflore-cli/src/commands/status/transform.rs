@@ -461,7 +461,7 @@ fn production_ga_lane_readiness() -> LaneReadiness {
 }
 
 pub(super) fn count_rules_for_repo(
-    rules: &[difflore_core::models::SkillRecord],
+    rules: &[difflore_core::domain::models::SkillRecord],
     source_repos: &HashMap<String, Option<String>>,
     repo: Option<&str>,
 ) -> i64 {
@@ -482,7 +482,7 @@ pub(super) fn count_rules_for_repo(
 }
 
 fn rule_repo_scope(
-    rule: &difflore_core::models::SkillRecord,
+    rule: &difflore_core::domain::models::SkillRecord,
     source_repos: &HashMap<String, Option<String>>,
 ) -> Option<String> {
     source_repos
@@ -803,8 +803,8 @@ mod tests {
         id: &str,
         owner: Option<&str>,
         repo: Option<&str>,
-    ) -> difflore_core::models::SkillRecord {
-        difflore_core::models::SkillRecord {
+    ) -> difflore_core::domain::models::SkillRecord {
+        difflore_core::domain::models::SkillRecord {
             id: id.to_owned(),
             name: "Rule".to_owned(),
             source: "local".to_owned(),

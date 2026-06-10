@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used)]
 #![allow(unsafe_code)]
 
-use difflore_core::cloud::api_types::{ImportedCommentUpload, ImportedReviewUpload};
+use difflore_core::contract::{ImportedCommentUpload, ImportedReviewUpload};
 use difflore_core::review_store::{
     AddCommentInput, EnsureItemInput, ReviewCommentRecord, ReviewItemRecord, ReviewItemWithComments,
 };
@@ -33,7 +33,7 @@ pub(super) async fn fresh_import_pool() -> sqlx::SqlitePool {
         .connect_with(opts)
         .await
         .expect("open in-memory db");
-    difflore_core::db::run_migrations(&pool)
+    difflore_core::infra::db::run_migrations(&pool)
         .await
         .expect("apply migrations");
     pool
@@ -60,9 +60,9 @@ pub(super) async fn seed_imported_review_comments_with_resolution(
         .join("fixtures")
         .join("acme-widgets");
     std::fs::create_dir_all(&project_path).expect("create project fixture dir");
-    let project = difflore_core::projects::add(
+    let project = difflore_core::domain::projects::add(
         db,
-        difflore_core::models::AddProjectInput {
+        difflore_core::domain::models::AddProjectInput {
             path: project_path.to_string_lossy().to_string(),
         },
     )
@@ -144,9 +144,9 @@ pub(super) async fn seed_pr_with_directive(
         .join("fixtures")
         .join(format!("{repo}-{pr_number}").replace('/', "-"));
     std::fs::create_dir_all(&project_path).expect("create project fixture dir");
-    let project = difflore_core::projects::add(
+    let project = difflore_core::domain::projects::add(
         db,
-        difflore_core::models::AddProjectInput {
+        difflore_core::domain::models::AddProjectInput {
             path: project_path.to_string_lossy().to_string(),
         },
     )

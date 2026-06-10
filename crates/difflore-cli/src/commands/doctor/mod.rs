@@ -56,7 +56,7 @@ pub(crate) async fn handle_doctor(ctx: &crate::runtime::CommandContext, args: Do
         let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
         // Park reports under `~/.difflore/reports/` so they don't accumulate
         // in the project root; fall back to cwd if that path is unavailable.
-        let dir = match difflore_core::paths::data_home() {
+        let dir = match difflore_core::infra::paths::data_home() {
             Ok(d) => d.join("reports"),
             Err(_) => std::path::PathBuf::from("."),
         };

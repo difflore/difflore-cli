@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use difflore_core::models::SkillRecord;
+use difflore_core::domain::models::SkillRecord;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};

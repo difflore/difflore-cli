@@ -532,12 +532,12 @@ const INTENT_ALIGNMENT_EXEMPT_SCORE: f64 = 0.6;
 mod tests {
     use super::rules::pattern_allows;
     use super::*;
-    use crate::cloud::api_types::RecallPastVerdictsRequest;
+    use crate::contract::RecallPastVerdictsRequest;
     use crate::context::index_db::{QueryFilter, open_pool_at, upsert_rule_chunks};
     use crate::context::rule_source::RuleDocument;
     use crate::context::types::{PastVerdict, PastVerdictScope};
-    use crate::errors::CoreError;
-    use crate::review_trajectory::{TrajectoryBuilder, TrajectoryStep};
+    use crate::error::CoreError;
+    use crate::observability::trajectory::{TrajectoryBuilder, TrajectoryStep};
     use async_trait::async_trait;
     use tempfile::TempDir;
 

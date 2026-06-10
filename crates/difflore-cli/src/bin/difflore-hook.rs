@@ -5,7 +5,7 @@ use interprocess::local_socket::traits::Stream;
 use interprocess::local_socket::{GenericFilePath, Stream as LocalStream, ToFsName};
 use serde::{Deserialize, Serialize};
 
-const HOOK_FORWARD_ENV: &str = difflore_core::env::DIFFLORE_HOOK_FORWARD;
+const HOOK_FORWARD_ENV: &str = difflore_core::infra::env::DIFFLORE_HOOK_FORWARD;
 
 #[derive(Debug, Serialize)]
 struct HookForwardRequest {
@@ -29,7 +29,7 @@ enum ForwardMode {
 
 impl ForwardMode {
     fn from_env() -> Self {
-        match difflore_core::env::var(HOOK_FORWARD_ENV)
+        match difflore_core::infra::env::var(HOOK_FORWARD_ENV)
             .unwrap_or_else(|| "auto".to_owned())
             .to_ascii_lowercase()
             .as_str()
@@ -45,7 +45,7 @@ impl ForwardMode {
 async fn main() -> ExitCode {
     let mode = ForwardMode::from_env();
     let client = parse_client_arg().unwrap_or_else(|| {
-        difflore_core::env::var(difflore_core::env::DIFFLORE_HOOK_CLIENT)
+        difflore_core::infra::env::var(difflore_core::infra::env::DIFFLORE_HOOK_CLIENT)
             .unwrap_or_else(|| "claude-code".to_owned())
     });
 
@@ -94,7 +94,7 @@ fn parse_client_arg() -> Option<String> {
 }
 
 fn forward_once(client: &str, raw: &str) -> Result<String, String> {
-    let trace = difflore_core::env::flag_set(difflore_core::env::DIFFLORE_HOOK_SHIM_TRACE);
+    let trace = difflore_core::infra::env::flag_set(difflore_core::infra::env::DIFFLORE_HOOK_SHIM_TRACE);
     let started = std::time::Instant::now();
     let req = HookForwardRequest {
         client: client.to_owned(),
@@ -168,7 +168,7 @@ fn hook_forward_endpoint() -> Result<std::path::PathBuf, String> {
 }
 
 fn difflore_home() -> Result<std::path::PathBuf, String> {
-    if let Some(custom) = difflore_core::env::difflore_home() {
+    if let Some(custom) = difflore_core::infra::env::difflore_home() {
         return Ok(std::path::PathBuf::from(custom));
     }
     dirs::home_dir()
@@ -177,7 +177,7 @@ fn difflore_home() -> Result<std::path::PathBuf, String> {
 }
 
 async fn fallback_to_runtime(client: &str, raw: &str) {
-    let debug = difflore_core::env::flag_set(difflore_core::env::DIFFLORE_DEBUG_HOOKS);
+    let debug = difflore_core::infra::env::flag_set(difflore_core::infra::env::DIFFLORE_DEBUG_HOOKS);
     match difflore_cli::hook_runtime::output_for_raw(client, raw, debug).await {
         Ok(output) => println!("{output}"),
         Err(e) => {

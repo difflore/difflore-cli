@@ -555,18 +555,18 @@ impl RecentEmbeddingDegradation {
 }
 
 fn recent_embedding_degradation(
-    events: &[difflore_core::activity_stream::ActivityEvent],
+    events: &[difflore_core::observability::activity_stream::ActivityEvent],
 ) -> RecentEmbeddingDegradation {
     let mut summary = RecentEmbeddingDegradation::default();
     for event in events {
         match &event.payload {
-            difflore_core::activity_stream::ActivityPayload::EmbeddingFallback { reason } => {
+            difflore_core::observability::activity_stream::ActivityPayload::EmbeddingFallback { reason } => {
                 summary.fallback_count += 1;
                 if summary.latest_reason.is_none() {
                     summary.latest_reason = Some(reason.clone());
                 }
             }
-            difflore_core::activity_stream::ActivityPayload::EmbedCapReached { .. } => {
+            difflore_core::observability::activity_stream::ActivityPayload::EmbedCapReached { .. } => {
                 summary.cap_count += 1;
             }
             _ => {}
@@ -854,7 +854,7 @@ mod tests {
         Severity, Status, embedder_row_from_diagnostics, embedder_row_from_kind,
         recent_embedding_degradation,
     };
-    use difflore_core::activity_stream::{ActivityEvent, ActivityPayload};
+    use difflore_core::observability::activity_stream::{ActivityEvent, ActivityPayload};
     use difflore_core::context::EmbeddingDiagnostics;
     use difflore_core::context::embedding::ActiveEmbedderKind;
 

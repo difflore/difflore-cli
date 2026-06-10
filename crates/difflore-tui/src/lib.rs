@@ -68,7 +68,7 @@ pub async fn run(project_dir: Option<PathBuf>, wiring: WiringSnapshot) -> Result
                difflore doctor          · status snapshot",
         )));
     }
-    let root = project_dir.unwrap_or_else(difflore_core::db::current_project_root);
+    let root = project_dir.unwrap_or_else(difflore_core::infra::db::current_project_root);
     let app = app::App::new(root, wiring).await;
     app.run().await
 }

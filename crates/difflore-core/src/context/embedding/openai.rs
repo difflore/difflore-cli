@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 use super::{Embedder, embedding_http_client};
 

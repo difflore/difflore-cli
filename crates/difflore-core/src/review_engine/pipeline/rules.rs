@@ -1,5 +1,5 @@
 use crate::context::types::PastVerdict;
-use crate::review_trajectory::RecalledVerdict;
+use crate::observability::trajectory::RecalledVerdict;
 
 /// Convert recalled `PastVerdict`s into the `RecalledVerdict` trajectory shape.
 /// `excerpt` is truncated to ~200 characters (with a trailing `…`) to keep the
@@ -36,7 +36,7 @@ pub(super) fn build_recalled_verdicts(past_verdicts: &[PastVerdict]) -> Vec<Reca
 }
 
 pub(super) async fn recall_past_verdicts_for_review(
-    settings: &crate::models::AppSettingsRecord,
+    settings: &crate::domain::models::AppSettingsRecord,
     diff_content: &str,
     _project_id: Option<&str>,
     repo_full_names: &[String],

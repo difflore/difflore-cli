@@ -77,7 +77,7 @@ pub struct ReviewExplainabilityMetadataRecord {
     pub trace_id: String,
     pub issue_count: usize,
     #[serde(default)]
-    pub summary: Option<crate::models::ReviewSummary>,
+    pub summary: Option<crate::domain::models::ReviewSummary>,
     #[serde(default)]
     pub top_issues: Vec<ReviewIssueSnippetRecord>,
 }

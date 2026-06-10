@@ -5,7 +5,7 @@ use super::types::{
     ContextPackMetadataRecord, ContextPackRecord, ContextPackSectionsRecord,
     ContextSourceItemRecord,
 };
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 use super::assembler;
 use super::index_db;
@@ -79,9 +79,9 @@ pub async fn ensure_rules_indexed_with_embedding_timeout(
     index_pool: &SqlitePool,
     embedding_timeout: Option<std::time::Duration>,
 ) -> Result<usize, CoreError> {
-    let project_root = crate::db::current_project_root();
+    let project_root = crate::infra::db::current_project_root();
     let repo_scopes =
-        crate::git::detect_github_repo_full_names(project_root.to_string_lossy().as_ref());
+        crate::infra::git::detect_github_repo_full_names(project_root.to_string_lossy().as_ref());
     ensure_rules_indexed_for_repo_scopes_with_embedding_timeout(
         app_pool,
         index_pool,
@@ -289,12 +289,12 @@ async fn project_hash_for(app_pool: &SqlitePool, project_id: &str) -> String {
         .fetch_optional(app_pool)
         .await
     {
-        return crate::db::project_hash_from_root(std::path::Path::new(&row));
+        return crate::infra::db::project_hash_from_root(std::path::Path::new(&row));
     }
     // Fallback: derive from the current working directory when project_id
     // isn't known.
-    let root = crate::db::current_project_root();
-    crate::db::project_hash_from_root(&root)
+    let root = crate::infra::db::current_project_root();
+    crate::infra::db::project_hash_from_root(&root)
 }
 
 /// Detect every GitHub `owner/repo` scope reachable from the project's
@@ -310,11 +310,11 @@ async fn repo_scopes_for(app_pool: &SqlitePool, project_id: &str) -> Vec<String>
         .fetch_optional(app_pool)
         .await
     {
-        return crate::git::detect_github_repo_full_names(&row);
+        return crate::infra::git::detect_github_repo_full_names(&row);
     }
 
-    let root = crate::db::current_project_root();
-    crate::git::detect_github_repo_full_names(&root.to_string_lossy())
+    let root = crate::infra::db::current_project_root();
+    crate::infra::git::detect_github_repo_full_names(&root.to_string_lossy())
 }
 
 fn rule_title(content: &str) -> Option<String> {
@@ -502,7 +502,7 @@ pub async fn prepare_with_hint_and_repo_scopes_with_top_k(
     // Token budgets from app settings, falling back to compile-time defaults.
     // Best-effort: a missing or unreadable settings file must not block
     // context preparation.
-    let budgets = match crate::settings::get().await {
+    let budgets = match crate::infra::settings::get().await {
         Ok(s) => assembler::TokenBudgets::from_overrides(Some(s.context_engine.rule_token_budget)),
         Err(_) => assembler::TokenBudgets::default(),
     };
@@ -766,7 +766,7 @@ mod tests {
         use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
         use std::str::FromStr;
 
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let opts = SqliteConnectOptions::from_str("sqlite::memory:")
             .unwrap()
             .foreign_keys(true);
@@ -775,7 +775,7 @@ mod tests {
             .connect_with(opts)
             .await
             .unwrap();
-        crate::db::run_migrations(&app).await.unwrap();
+        crate::infra::db::run_migrations(&app).await.unwrap();
 
         let pool = ensure_cross_repo_starter_indexed(&app).await.unwrap();
         let chunks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rule_chunks")

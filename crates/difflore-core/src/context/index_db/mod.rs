@@ -79,7 +79,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_pool_for_project_creates_dir_and_db_on_first_call() {
-        let home = crate::db::shared_test_home();
+        let home = crate::infra::db::shared_test_home();
         let hash = unique_hash("testhashcreate");
         let pool = get_pool_for_project(&hash).await.unwrap();
         // A trivial query succeeding proves the table was created.
@@ -96,7 +96,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_pool_for_project_reuses_pool_on_second_call() {
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let hash = unique_hash("testhashreuse");
         let p1 = get_pool_for_project(&hash).await.unwrap();
         let p2 = get_pool_for_project(&hash).await.unwrap();

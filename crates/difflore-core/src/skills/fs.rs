@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::paths;
+use crate::infra::paths;
 
 pub fn skills_base_dir() -> Result<PathBuf, String> {
     Ok(paths::data_home()?.join("skills"))
@@ -19,7 +19,7 @@ pub fn get_engine_skills_dir(engine: &str) -> Option<PathBuf> {
     // When DIFFLORE_HOME is set (see db.rs), point engine dirs into that
     // sandbox so integration tests don't create real ~/.claude/skills
     // symlinks in the user's dotfiles.
-    let home = if let Some(custom) = crate::env::difflore_home() {
+    let home = if let Some(custom) = crate::infra::env::difflore_home() {
         PathBuf::from(custom)
     } else {
         dirs::home_dir()?

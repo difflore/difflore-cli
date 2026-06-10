@@ -139,7 +139,7 @@ pub fn box_title(t: &Theme) -> Style {
 // Convert a `#RRGGBB` hex into a ratatui `Color`, falling back to
 // the active theme's `muted` on malformed input.
 pub fn hex_to_color(hex: &str) -> Color {
-    match difflore_core::origins::parse_hex_rgb(hex) {
+    match difflore_core::domain::origins::parse_hex_rgb(hex) {
         Some((r, g, b)) => Color::Rgb(r, g, b),
         None => Theme::current().muted,
     }
@@ -158,7 +158,7 @@ struct ConfigSignature {
 
 impl ConfigSignature {
     fn read() -> Self {
-        let path = difflore_core::paths::config_file().ok();
+        let path = difflore_core::infra::paths::config_file().ok();
         let metadata = path.as_ref().and_then(|p| std::fs::metadata(p).ok());
         Self {
             path,
@@ -212,9 +212,9 @@ fn cached_current_theme() -> Theme {
 }
 
 fn load_current_theme() -> Theme {
-    match difflore_core::config::load().theme {
-        difflore_core::config::ThemeMode::Light => Theme::LIGHT,
-        difflore_core::config::ThemeMode::Dark => Theme::DARK,
+    match difflore_core::infra::config::load().theme {
+        difflore_core::infra::config::ThemeMode::Light => Theme::LIGHT,
+        difflore_core::infra::config::ThemeMode::Dark => Theme::DARK,
     }
 }
 

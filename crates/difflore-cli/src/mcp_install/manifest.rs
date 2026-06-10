@@ -93,7 +93,7 @@ pub(super) struct InstallManifest {
 
 /// Hash a rendered block's bytes into `"sha256:<hex>"`.
 pub(super) fn hash_block(bytes: &[u8]) -> String {
-    difflore_core::crypto::sha256_block_hex(bytes)
+    difflore_core::infra::crypto::sha256_block_hex(bytes)
 }
 
 /// Canonical bytes for a single `Value` block (mcp_json), built with the same

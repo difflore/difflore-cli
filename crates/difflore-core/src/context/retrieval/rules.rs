@@ -3,8 +3,8 @@ use crate::context::ann;
 use crate::context::embedding::cosine_similarity;
 use crate::context::index_db::{self, IndexedRuleChunk, QueryFilter};
 use crate::domain::glob_match::{GlobErrorPolicy, glob_match};
-use crate::errors::CoreError;
-use crate::review_trajectory::{TrajectoryBuilder, TrajectoryStep};
+use crate::error::CoreError;
+use crate::observability::trajectory::{TrajectoryBuilder, TrajectoryStep};
 use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -415,8 +415,8 @@ pub async fn retrieve_rules_with_confidence(
     // Memory-pipeline event: surfaces the ANN/embedding pass to the TUI
     // Activity tab so users can see retrieval running. Best-effort —
     // never blocks recall.
-    crate::activity_stream::record(
-        crate::activity_stream::ActivityPayload::RetrievalEmbedding {
+    crate::observability::activity_stream::record(
+        crate::observability::activity_stream::ActivityPayload::RetrievalEmbedding {
             hits: u32::try_from(scored.len()).unwrap_or(u32::MAX),
             took_ms: u64::try_from(retrieval_start.elapsed().as_millis()).unwrap_or(u64::MAX),
         },
@@ -535,8 +535,8 @@ async fn try_ann_rank<'a>(
     // get a valid hash — they just won't have a persisted graph to
     // reload, which is fine: `load_or_empty` returns an empty index and
     // we fall through to the linear scan.
-    let project_root = crate::db::current_project_root();
-    let project_hash = crate::db::project_hash_from_root(&project_root);
+    let project_root = crate::infra::db::current_project_root();
+    let project_hash = crate::infra::db::project_hash_from_root(&project_root);
 
     let ann_arc = ann::get_ann_for_project(&project_hash, query_emb.len())
         .await

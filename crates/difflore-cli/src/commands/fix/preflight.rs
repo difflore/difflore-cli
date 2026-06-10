@@ -77,7 +77,7 @@ pub(super) async fn preflight_provider_backend(
     db: &difflore_core::SqlitePool,
     require_configured_provider: bool,
 ) -> Result<(), String> {
-    let providers = difflore_core::providers::list(db)
+    let providers = difflore_core::domain::providers::list(db)
         .await
         .map_err(|e| format!("failed to read provider configuration: {e}"))?;
     let has_active_provider = providers.iter().any(|provider| provider.is_active);
@@ -102,7 +102,7 @@ pub(super) fn review_timeout_for_args_with_env<'a>(
     env_var: impl Fn(&'a str) -> Option<String>,
 ) -> Duration {
     if args.preview {
-        let override_secs = env_var(difflore_core::env::DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS)
+        let override_secs = env_var(difflore_core::infra::env::DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS)
             .and_then(|value| parse_review_timeout_override(Some(&value)));
         Duration::from_secs(override_secs.unwrap_or(PREVIEW_REVIEW_TIMEOUT_SECS))
     } else {
@@ -111,7 +111,7 @@ pub(super) fn review_timeout_for_args_with_env<'a>(
 }
 
 pub(super) fn review_timeout_for_args(args: &FixArgs) -> Duration {
-    review_timeout_for_args_with_env(args, difflore_core::env::var)
+    review_timeout_for_args_with_env(args, difflore_core::infra::env::var)
 }
 
 pub(super) fn review_id_for_provider_run(review_id: Option<&str>, preview: bool) -> Option<String> {
@@ -155,7 +155,7 @@ mod tests {
 
         assert_eq!(
             review_timeout_for_args_with_env(&args, |key| {
-                (key == difflore_core::env::DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS)
+                (key == difflore_core::infra::env::DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS)
                     .then(|| "75".to_owned())
             }),
             Duration::from_secs(75)

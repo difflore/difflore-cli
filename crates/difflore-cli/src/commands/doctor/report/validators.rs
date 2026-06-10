@@ -282,7 +282,7 @@ fn self_recall_mrr_mark(mrr: f64) -> &'static str {
 // Counts rules with empty file_patterns, a recall-killing signature.
 pub(super) async fn corpus_health_subsection(pool: &difflore_core::SqlitePool, s: &mut String) {
     sw!(s, "\n## Local memory\n");
-    match difflore_core::db::corpus_health(pool).await {
+    match difflore_core::infra::db::corpus_health(pool).await {
         Ok(h) => {
             sw!(s, "- total rules: {}", h.total);
             if !h.by_origin.is_empty() {

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use difflore_core::models::SkillRecord;
+use difflore_core::domain::models::SkillRecord;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::widgets::ListState;
 
@@ -77,8 +77,8 @@ pub(crate) fn ordered_filtered_rules<'a>(
             .get(&b.id)
             .and_then(|v| v.as_deref())
             .unwrap_or("");
-        difflore_core::origins::distribution_sort_key(&a.origin)
-            .cmp(&difflore_core::origins::distribution_sort_key(&b.origin))
+        difflore_core::domain::origins::distribution_sort_key(&a.origin)
+            .cmp(&difflore_core::domain::origins::distribution_sort_key(&b.origin))
             .then_with(|| a_repo.cmp(b_repo))
             .then_with(|| a.name.cmp(&b.name))
     });
@@ -174,7 +174,7 @@ pub(super) fn focus_border_color(focus: RulesFocus, pane: RulesFocus) -> ratatui
 mod tests {
     use super::filter::origin_distribution;
     use super::preview::{EmbedderMode, EmbedderModeSnapshot, format_embedder_status_bar};
-    use difflore_core::models::SkillRecord;
+    use difflore_core::domain::models::SkillRecord;
 
     fn sample_rule(origin: &str) -> SkillRecord {
         SkillRecord {

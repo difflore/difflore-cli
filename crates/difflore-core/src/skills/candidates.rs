@@ -1,5 +1,5 @@
-use crate::errors::CoreError;
-use crate::models::SkillRecord;
+use crate::error::CoreError;
+use crate::domain::models::SkillRecord;
 use uuid::Uuid;
 
 use super::SkillRow;

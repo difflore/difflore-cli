@@ -1,11 +1,11 @@
 use serde_json::{Value, json};
 
-use crate::review_trajectory::TrajectoryStep;
+use crate::observability::trajectory::TrajectoryStep;
 
 use super::super::{
     McpState, build_cost_meta, emit_trajectory_step, estimate_tokens, rule_hits_by_origin,
 };
-use super::util::{
+use super::evidence::{
     fetch_skills_by_ids, parse_file_patterns, render_full_rule_with_examples,
     strict_file_match_count_for_ids,
 };
@@ -127,9 +127,9 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
     let detected_repos = crate::mcp_server::hook::detect_git_remote_owner_repos();
     let detail_query = format!("get_rules:{}", ids.join(","));
     let strict_match_count = strict_file_match_count_for_ids(&meta_map, &present_ids, file);
-    if let Err(e) = crate::mcp_rule_serves::record(
+    if let Err(e) = crate::observability::mcp_rule_serves::record(
         &state.db,
-        &crate::mcp_rule_serves::McpRuleServeInput {
+        &crate::observability::mcp_rule_serves::McpRuleServeInput {
             tool: "get_rules",
             session_id: Some(session_id),
             repo_full_name: detected_repos.first().map(String::as_str),
@@ -143,7 +143,7 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
     )
     .await
     {
-        if crate::env::debug_telemetry() {
+        if crate::infra::env::debug_telemetry() {
             eprintln!("[difflore-mcp] get_rules serve record failed: {e}");
         }
     }
@@ -154,7 +154,7 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
             session_id: session_id.to_owned(),
             repo_full_name: detected_repos.first().cloned(),
             file_path: file.map(ToOwned::to_owned),
-            query_hash: crate::mcp_rule_serves::query_hash(&detail_query),
+            query_hash: crate::observability::mcp_rule_serves::query_hash(&detail_query),
             rule_ids: present_ids.clone(),
             top_k: i64::try_from(ids.len()).unwrap_or(i64::MAX),
             was_empty: present_ids.is_empty(),
@@ -166,7 +166,7 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
             if let Err(e) =
                 crate::cloud::observations::enqueue_and_flush_default(served_event, &cloud).await
             {
-                if crate::env::debug_telemetry() {
+                if crate::infra::env::debug_telemetry() {
                     eprintln!("[difflore-mcp] get_rules served event failed: {e}");
                 }
             }

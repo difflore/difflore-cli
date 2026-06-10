@@ -1,7 +1,7 @@
 use uuid::Uuid;
 
-use crate::errors::CoreError;
-use crate::models::{
+use crate::error::CoreError;
+use crate::domain::models::{
     ProviderAddInput, ProviderRecord, ProviderRemoveInput, ProviderSetActiveInput,
     ProviderUpdateInput,
 };
@@ -34,10 +34,10 @@ struct ProviderRow {
 
 impl ProviderRow {
     fn decrypt_api_key(&self) -> String {
-        match crate::crypto::decrypt_secret(&self.api_key) {
+        match crate::infra::crypto::decrypt_secret(&self.api_key) {
             Ok(plaintext) => plaintext,
             Err(e) => {
-                if crate::env::debug_providers() {
+                if crate::infra::env::debug_providers() {
                     eprintln!(
                         "[providers] failed to decrypt API key for provider {}: {e}",
                         self.id
@@ -122,7 +122,7 @@ pub async fn add(db: &sqlx::SqlitePool, input: ProviderAddInput) -> crate::Resul
     // BYOK has been removed from the local CLI. Provider rows now only
     // describe an agent-cli sentinel (`agent-cli://<tool>`); the column
     // stays for back-compat with older DBs but is always written empty.
-    let encrypted_key = crate::crypto::encrypt_secret("").map_err(CoreError::Internal)?;
+    let encrypted_key = crate::infra::crypto::encrypt_secret("").map_err(CoreError::Internal)?;
 
     sqlx::query!(
         "INSERT INTO providers (id, name, base_url, api_key, model_mapping, is_active, created_at, updated_at)
@@ -183,7 +183,7 @@ pub async fn update(
     let mapping_json = serde_json::to_string(&provider.model_mapping)?;
     // BYOK has been removed; the api_key column is left in place for
     // older schemas but always overwritten with an encrypted empty string.
-    let encrypted_secret = crate::crypto::encrypt_secret("").map_err(CoreError::Internal)?;
+    let encrypted_secret = crate::infra::crypto::encrypt_secret("").map_err(CoreError::Internal)?;
 
     let result = sqlx::query!(
         "UPDATE providers SET name=?1, base_url=?2, api_key=?3, model_mapping=?4, updated_at=?5 WHERE id=?6",
@@ -270,7 +270,7 @@ pub async fn check_auth(input: CheckAuthInput) -> crate::Result<CheckAuthResult>
             )
         }
         "codex" => {
-            let found = crate::env::var(crate::env::OPENAI_API_KEY).is_some();
+            let found = crate::infra::env::var(crate::infra::env::OPENAI_API_KEY).is_some();
             (
                 found,
                 "env_var".to_owned(),

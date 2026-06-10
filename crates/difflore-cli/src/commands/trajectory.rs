@@ -3,7 +3,7 @@
 //!
 //! Fetches one review's trajectory via [`CloudClient::get_trajectory`] (the
 //! cloud's `getTrajectory` oRPC GET, mirroring the Rust enum in
-//! `difflore_core::review_trajectory`) and renders it as a readable step
+//! `difflore_core::observability::trajectory`) and renders it as a readable step
 //! ladder so every emitted issue traces back to its memory evidence: chunks
 //! retrieved, rules applied (with `← learned from <repo>` provenance from the
 //! local `skills` table), past verdicts recalled, each `llm_call`, the
@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use difflore_core::review_trajectory::{RuleSource, TrajectoryStep};
+use difflore_core::observability::trajectory::{RuleSource, TrajectoryStep};
 
 use crate::runtime::CommandContext;
 use crate::style;
@@ -243,7 +243,7 @@ fn join_scores_capped(scores: &[f32], n: usize) -> String {
 /// block instead of a bare header.
 pub(crate) fn render_trajectory(
     review_id: &str,
-    doc: &difflore_core::cloud::api_types::GetTrajectoryResponse,
+    doc: &difflore_core::contract::GetTrajectoryResponse,
     provenance: &HashMap<String, Option<String>>,
 ) -> Vec<String> {
     let mut out = Vec::new();
@@ -445,8 +445,8 @@ fn render_step(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use difflore_core::cloud::api_types::GetTrajectoryResponse;
-    use difflore_core::review_trajectory::RecalledVerdict;
+    use difflore_core::contract::GetTrajectoryResponse;
+    use difflore_core::observability::trajectory::RecalledVerdict;
 
     fn doc(steps: Vec<TrajectoryStep>) -> GetTrajectoryResponse {
         GetTrajectoryResponse {

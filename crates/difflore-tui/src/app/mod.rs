@@ -14,9 +14,9 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use difflore_core::activity_stream::{ActivityEvent, ActivityPayload};
+use difflore_core::observability::activity_stream::{ActivityEvent, ActivityPayload};
 use difflore_core::cloud::sync::CloudStatus;
-use difflore_core::models::SkillRecord;
+use difflore_core::domain::models::SkillRecord;
 use difflore_core::observability::fix_outcomes::{FixOutcomeDaily, FixOutcomeSummary};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -185,7 +185,7 @@ pub struct App {
 impl App {
     pub(crate) async fn new(project_root: PathBuf, wiring: crate::WiringSnapshot) -> Self {
         let (rules_result, rules_source_repos_result, fix_activity_result) =
-            match difflore_core::db::init_db().await {
+            match difflore_core::infra::db::init_db().await {
                 Ok(pool) => {
                     let rules_pool = pool.clone();
                     let repos_pool = pool.clone();
@@ -219,7 +219,7 @@ impl App {
         // non-github remotes; the filter then defaults to All.
         let current_repo = project_root
             .to_str()
-            .and_then(difflore_core::git::detect_github_repo_full_name);
+            .and_then(difflore_core::infra::git::detect_github_repo_full_name);
         let rules_repo_filter = if current_repo.is_some() {
             RulesRepoFilter::ThisRepo
         } else {
@@ -234,7 +234,7 @@ impl App {
         let rules_empty = rules.is_empty();
         let mut plan_state = load_plan_state(&rules, &wiring).await;
         derive_event_strip_from_plan(&mut plan_state);
-        derive_event_strip_from_events(&mut plan_state, &difflore_core::activity_stream::tail(20));
+        derive_event_strip_from_events(&mut plan_state, &difflore_core::observability::activity_stream::tail(20));
         let modal_stack = modal_stack_for_launch(&plan_state, rules_empty, &wiring);
         let rules_origin_filter = default_origin_filter(&rules);
 
@@ -791,10 +791,10 @@ async fn load_rule_source_repos(
 async fn load_fix_activity(
     pool: &difflore_core::SqlitePool,
 ) -> Result<(FixOutcomeSummary, Vec<FixOutcomeDaily>), String> {
-    let summary = difflore_core::fix_outcomes::summary(pool, 30)
+    let summary = difflore_core::observability::fix_outcomes::summary(pool, 30)
         .await
         .map_err(|e| format!("failed to load fix activity: {e}"))?;
-    let daily = difflore_core::fix_outcomes::daily(pool, 30)
+    let daily = difflore_core::observability::fix_outcomes::daily(pool, 30)
         .await
         .map_err(|e| format!("failed to load fix activity: {e}"))?;
     Ok((summary, daily))
@@ -866,7 +866,7 @@ pub(crate) fn is_cloud_memory_origin(origin: &str) -> bool {
 
 /// Shared origin-to-color mapping through the bundled origin taxonomy.
 pub(crate) fn origin_color(origin: &str) -> Color {
-    match difflore_core::origins::color_hex_for(origin) {
+    match difflore_core::domain::origins::color_hex_for(origin) {
         Some(hex) => theme::hex_to_color(hex),
         None => Theme::current().muted,
     }
@@ -918,7 +918,7 @@ mod tests {
         ] {
             #[allow(clippy::panic)] // reason: test invariant — taxonomy must list every id
             let hex =
-                difflore_core::origins::color_hex_for(id).unwrap_or_else(|| panic!("missing {id}"));
+                difflore_core::domain::origins::color_hex_for(id).unwrap_or_else(|| panic!("missing {id}"));
             let expected = theme::hex_to_color(hex);
             assert_eq!(origin_color(id), expected, "round-trip failed for {id}");
             assert_ne!(origin_color(id), muted, "{id} fell back to muted");

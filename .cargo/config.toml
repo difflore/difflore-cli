@@ -12,6 +12,15 @@ t = "nextest run --workspace --all-targets"
 # DATABASE_URL at a real DB and run `cargo sqlx prepare` to regenerate cache.
 SQLX_OFFLINE = "true"
 
+# The OpenAPI spec moved from the difflore-core crate root to
+# contracts/openapi-spec.json. `openapi_contract::generate_types!` takes the
+# path as an argument, but the companion `api!` macro hard-codes a lookup of
+# "openapi-spec.json" relative to CARGO_MANIFEST_DIR (walking up parent
+# dirs); this env var is the only way to redirect it. The relative path is
+# joined to each compiling crate's manifest dir — only difflore-core invokes
+# these macros, so it resolves to crates/difflore-core/contracts/.
+OPENAPI_SPEC_PATH = "contracts/openapi-spec.json"
+
 # Windows main-thread default stack is 1 MB — too small for `difflore dist
 # verify` and similar paths that recurse over the include_str!-bound skill
 # tree at startup. CI on windows-latest hit STATUS_STACK_BUFFER_OVERRUN

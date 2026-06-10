@@ -297,7 +297,7 @@ fn emit_dry_run(json: bool, direction: SyncDirection) {
 
 async fn prepare_excluded_ids(
     db: &difflore_core::SqlitePool,
-    local_skills: &[difflore_core::models::SkillRecord],
+    local_skills: &[difflore_core::domain::models::SkillRecord],
 ) -> Vec<String> {
     // TODO(launch+1): wire candidate sync — see crates/difflore-core/src/cloud/sync.rs
     // (candidateRules cloud table not yet wired). Until then keep pending
@@ -359,9 +359,9 @@ async fn run_settings_phase(
         match difflore_core::cloud::sync::pull_settings(client).await {
             Ok(Some((cloud_settings, _updated_at))) => {
                 if let Ok(merged_input) = serde_json::from_value::<
-                    difflore_core::models::AppSettingsRecord,
+                    difflore_core::domain::models::AppSettingsRecord,
                 >(cloud_settings.clone())
-                    && difflore_core::settings::update(merged_input).await.is_ok()
+                    && difflore_core::infra::settings::update(merged_input).await.is_ok()
                 {
                     applied = cloud_settings.as_object().map_or(0, serde_json::Map::len);
                 }
@@ -375,7 +375,7 @@ async fn run_settings_phase(
     }
 
     if do_push {
-        let settings_value = match difflore_core::settings::get().await {
+        let settings_value = match difflore_core::infra::settings::get().await {
             Ok(s) => match serde_json::to_value(&s) {
                 Ok(v) => v,
                 Err(e) => {
@@ -429,7 +429,7 @@ async fn run_providers_phase(
     }
 
     if do_push {
-        let provider_entries = match difflore_core::providers::list(db).await {
+        let provider_entries = match difflore_core::domain::providers::list(db).await {
             Ok(providers) => difflore_core::cloud::sync::build_provider_sync_entries(&providers),
             Err(_) => Vec::new(),
         };
@@ -534,7 +534,7 @@ async fn apply_cloud_providers(
     cloud_providers: &serde_json::Value,
 ) -> usize {
     let mut added = 0usize;
-    let Ok(local_providers) = difflore_core::providers::list(db).await else {
+    let Ok(local_providers) = difflore_core::domain::providers::list(db).await else {
         return 0;
     };
     let existing: std::collections::HashSet<(String, String)> = local_providers
@@ -578,12 +578,12 @@ async fn apply_cloud_providers(
                 continue;
             }
         };
-        let input = difflore_core::models::ProviderAddInput {
+        let input = difflore_core::domain::models::ProviderAddInput {
             name: name.clone(),
             base_url,
             model_mapping,
         };
-        if difflore_core::providers::add(db, input).await.is_ok() {
+        if difflore_core::domain::providers::add(db, input).await.is_ok() {
             added += 1;
         }
     }
@@ -863,7 +863,7 @@ pub(crate) fn format_cloud_err(label: &str, e: &str) -> String {
     }
     // Generic HTTP / network / timeout / fallback all share shape with
     // the github-import path — delegate to the core helper.
-    difflore_core::origins::format_api_error(label, e)
+    difflore_core::domain::origins::format_api_error(label, e)
 }
 
 #[cfg(test)]

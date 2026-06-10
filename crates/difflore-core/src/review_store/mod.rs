@@ -46,7 +46,7 @@ struct ReviewExplainabilityRef<'a> {
     prompt_tokens_estimate: i32,
     trace_id: &'a str,
     issue_count: usize,
-    summary: Option<&'a crate::models::ReviewSummary>,
+    summary: Option<&'a crate::domain::models::ReviewSummary>,
     top_issues: Vec<ReviewIssueSnippetRef<'a>>,
 }
 
@@ -265,7 +265,7 @@ mod tests {
             matched_rule_titles: vec!["Avoid foo".into()],
             prompt_tokens_estimate: 123,
             trace_id: "trace-1".into(),
-            summary: Some(crate::models::ReviewSummary {
+            summary: Some(crate::domain::models::ReviewSummary {
                 one_line_summary: "Touches validation.".into(),
                 walkthrough_by_file: vec![],
                 blocking_count: 0,

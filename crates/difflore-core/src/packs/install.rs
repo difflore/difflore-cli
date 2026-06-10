@@ -14,7 +14,7 @@ use sqlx::SqlitePool;
 
 use crate::context::rule_render::{RuleRenderInput, render_code_spec};
 use crate::context::rule_source::RuleExample;
-use crate::errors::CoreError;
+use crate::error::CoreError;
 use crate::observability::privacy::{redact_secretish_tokens, strip_private_tagged_regions};
 use crate::packs::manifest::{PackManifest, PackRule};
 use crate::packs::{

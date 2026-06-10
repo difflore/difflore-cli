@@ -199,7 +199,7 @@ pub(super) async fn run_applicability_judge(
     let response = match llm.chat(JUDGE_SYSTEM_PROMPT, &user_prompt).await {
         Ok(r) => r,
         Err(e) => {
-            if crate::env::fix_debug() {
+            if crate::infra::env::fix_debug() {
                 eprintln!("[applicability_judge] judge call failed: {e:?}; keeping all rules");
             }
             return rules;
@@ -209,7 +209,7 @@ pub(super) async fn run_applicability_judge(
     let verdicts = match parse_judge_response(&response) {
         Some(map) if !map.is_empty() => map,
         _ => {
-            if crate::env::fix_debug() {
+            if crate::infra::env::fix_debug() {
                 eprintln!(
                     "[applicability_judge] could not parse judge response; keeping all rules unchanged"
                 );
@@ -220,7 +220,7 @@ pub(super) async fn run_applicability_judge(
 
     let before = rules.len();
     let filtered = judge_filter_rules(rules, &verdicts);
-    if crate::env::fix_debug() {
+    if crate::infra::env::fix_debug() {
         eprintln!(
             "[applicability_judge] pool {before} -> {} after judge filter",
             filtered.len(),
@@ -292,7 +292,7 @@ mod tests {
                 .push((system.to_owned(), user.to_owned()));
             self.response
                 .clone()
-                .map_err(|()| crate::errors::CoreError::Internal("mock failure".into()))
+                .map_err(|()| crate::error::CoreError::Internal("mock failure".into()))
         }
     }
 

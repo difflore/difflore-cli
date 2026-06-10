@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use difflore_core::models::DiffContentRecord;
+use difflore_core::domain::models::DiffContentRecord;
 
 use crate::commands::util::{ensure_project, project_path};
 use crate::runtime::CommandContext;
@@ -85,7 +85,7 @@ pub(super) async fn prepare_fix_context(
             let requested_scope = parse_diff_scope(diff_scope_arg)?;
             let (diff_records, diff_scope) = collect_diff(&path, requested_scope).await?;
             let repo_full_name_aliases =
-                difflore_core::git::detect_github_repo_full_names(&path_str);
+                difflore_core::infra::git::detect_github_repo_full_names(&path_str);
             let repo_full_name = repo_full_name_aliases.first().cloned();
             (
                 diff_records,

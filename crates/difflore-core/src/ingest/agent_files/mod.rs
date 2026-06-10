@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 mod claude_code_memory;
 mod simple_files;

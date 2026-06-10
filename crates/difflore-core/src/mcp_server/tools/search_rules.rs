@@ -5,18 +5,22 @@ use crate::context::retrieval::ScoredRuleChunk;
 use crate::context::rule_source::RuleDocument;
 use crate::context::types::RuleMatchEvidenceRecord;
 use crate::context::{EmbeddingDiagnostics, gather_embedding_diagnostics_with_activity};
-use crate::review_trajectory::TrajectoryStep;
+use crate::observability::trajectory::TrajectoryStep;
 
 use super::super::{
     AVG_FULL_RULE_TOKENS, McpState, build_cost_meta, emit_trajectory_step, estimate_tokens,
     rule_hits_by_origin,
 };
-use super::util::{
-    MCP_EMBEDDING_TIMEOUT, MCP_TEXT_ARG_CHAR_LIMIT, build_empty_recall_retry_query,
-    build_match_evidence, disabled_response, drain_mcp_query_outbox, enqueue_mcp_query_outbox,
-    fetch_skills_by_ids, has_strict_file_patterns_match, parse_file_patterns,
-    rerank_scored_rule_chunks_for_mcp_by_strict_file_matches, rule_injection_disabled,
-    rule_preview, strict_file_match_ids_for_rules, validate_mcp_text_arg,
+use super::evidence::{
+    build_match_evidence, fetch_skills_by_ids, has_strict_file_patterns_match,
+    parse_file_patterns, rule_preview, strict_file_match_ids_for_rules,
+};
+use super::serve_stats::{
+    MCP_EMBEDDING_TIMEOUT, build_empty_recall_retry_query, drain_mcp_query_outbox,
+    enqueue_mcp_query_outbox, rerank_scored_rule_chunks_for_mcp_by_strict_file_matches,
+};
+use super::validate::{
+    MCP_TEXT_ARG_CHAR_LIMIT, disabled_response, rule_injection_disabled, validate_mcp_text_arg,
 };
 
 pub(crate) async fn tool_search_rules(
@@ -49,7 +53,7 @@ pub(crate) async fn tool_search_rules(
     // ranks get measured. Explicit caller choices pass through.
     let top_k = super::super::recall_sampler::maybe_bump_top_k(
         requested_top_k,
-        crate::env::deep_recall_sample_rate(),
+        crate::infra::env::deep_recall_sample_rate(),
     );
     let repo_scopes = repo_scopes_for_search_rules(&state.db, args).await?;
 
@@ -75,7 +79,7 @@ pub(crate) async fn tool_search_rules(
         {
             Ok(count) => count,
             Err(e) => {
-                if crate::env::debug_telemetry() {
+                if crate::infra::env::debug_telemetry() {
                     eprintln!("[difflore-mcp] search_rules index freshness check failed: {e}");
                 }
                 0
@@ -90,9 +94,9 @@ pub(crate) async fn tool_search_rules(
     let target_file = if file == "unknown" { None } else { Some(file) };
     let ranking_inputs = crate::context::rule_source::load_rule_ranking_inputs(&state.db).await;
     let candidate_limit = top_k.saturating_mul(5).clamp(top_k, 50);
-    let mut scored = super::util::retrieve_rules_with_repo_scopes(
+    let mut scored = super::serve_stats::retrieve_rules_with_repo_scopes(
         &index_pool,
-        super::util::RetrieveRulesArgs {
+        super::serve_stats::RetrieveRulesArgs {
             query: &query,
             lexical_query: Some(intent),
             top_k: candidate_limit,
@@ -114,9 +118,9 @@ pub(crate) async fn tool_search_rules(
     {
         retrieval_attempts = 2;
         retry_kind = Some("deterministic_empty_retry");
-        let retry_scored = super::util::retrieve_rules_with_repo_scopes(
+        let retry_scored = super::serve_stats::retrieve_rules_with_repo_scopes(
             &index_pool,
-            super::util::RetrieveRulesArgs {
+            super::serve_stats::RetrieveRulesArgs {
                 query: &retry_query,
                 lexical_query: None,
                 top_k: candidate_limit,
@@ -161,7 +165,7 @@ pub(crate) async fn tool_search_rules(
         && rules_indexed == 0
         && let Some(tf) = target_file
     {
-        let cross = super::util::cross_repo_starter_scored(
+        let cross = super::serve_stats::cross_repo_starter_scored(
             &state.db,
             &query,
             tf,
@@ -177,7 +181,7 @@ pub(crate) async fn tool_search_rules(
     }
 
     if scored.is_empty() {
-        crate::injection_log::record("mcp_tool", 0, target_file);
+        crate::observability::injection_log::record("mcp_tool", 0, target_file);
         // Track empty results without blocking the response.
         {
             let file = file.to_owned();
@@ -187,7 +191,7 @@ pub(crate) async fn tool_search_rules(
             let db = state.db.clone();
             enqueue_mcp_query_outbox(
                 &state.db,
-                super::util::McpQueryOutboxEntry {
+                super::serve_stats::McpQueryOutboxEntry {
                     file: &file,
                     intent: &intent,
                     rules_injected: 0,
@@ -222,9 +226,9 @@ pub(crate) async fn tool_search_rules(
         let text = serde_json::to_string(&body)
             .unwrap_or_else(|_| "{\"results\":[],\"message\":\"No rules found.\"}".to_owned());
         let tokens_used = estimate_tokens(&text);
-        if let Err(e) = crate::mcp_rule_serves::record(
+        if let Err(e) = crate::observability::mcp_rule_serves::record(
             &state.db,
-            &crate::mcp_rule_serves::McpRuleServeInput {
+            &crate::observability::mcp_rule_serves::McpRuleServeInput {
                 tool: "search_rules",
                 session_id: Some(session_id),
                 repo_full_name: repo_scopes.first().map(String::as_str),
@@ -238,7 +242,7 @@ pub(crate) async fn tool_search_rules(
         )
         .await
         {
-            if crate::env::debug_telemetry() {
+            if crate::infra::env::debug_telemetry() {
                 eprintln!("[difflore-mcp] search_rules serve record failed: {e}");
             }
         }
@@ -249,7 +253,7 @@ pub(crate) async fn tool_search_rules(
                 session_id: session_id.to_owned(),
                 repo_full_name: repo_scopes.first().cloned(),
                 file_path: target_file.map(ToOwned::to_owned),
-                query_hash: crate::mcp_rule_serves::query_hash(&query),
+                query_hash: crate::observability::mcp_rule_serves::query_hash(&query),
                 rule_ids: Vec::new(),
                 top_k: i64::try_from(top_k).unwrap_or(i64::MAX),
                 was_empty: true,
@@ -262,7 +266,7 @@ pub(crate) async fn tool_search_rules(
                     crate::cloud::observations::enqueue_and_flush_default(served_event, &cloud)
                         .await
                 {
-                    if crate::env::debug_telemetry() {
+                    if crate::infra::env::debug_telemetry() {
                         eprintln!("[difflore-mcp] search_rules served event failed: {e}");
                     }
                 }
@@ -358,9 +362,9 @@ pub(crate) async fn tool_search_rules(
             .filter(|entry| has_strict_file_patterns_match(&entry.file_patterns, target_file))
             .count() as i64
     });
-    if let Err(e) = crate::mcp_rule_serves::record(
+    if let Err(e) = crate::observability::mcp_rule_serves::record(
         &state.db,
-        &crate::mcp_rule_serves::McpRuleServeInput {
+        &crate::observability::mcp_rule_serves::McpRuleServeInput {
             tool: "search_rules",
             session_id: Some(session_id),
             repo_full_name: repo_scopes.first().map(String::as_str),
@@ -374,7 +378,7 @@ pub(crate) async fn tool_search_rules(
     )
     .await
     {
-        if crate::env::debug_telemetry() {
+        if crate::infra::env::debug_telemetry() {
             eprintln!("[difflore-mcp] search_rules serve record failed: {e}");
         }
     }
@@ -385,7 +389,7 @@ pub(crate) async fn tool_search_rules(
             session_id: session_id.to_owned(),
             repo_full_name: repo_scopes.first().cloned(),
             file_path: target_file.map(ToOwned::to_owned),
-            query_hash: crate::mcp_rule_serves::query_hash(&query),
+            query_hash: crate::observability::mcp_rule_serves::query_hash(&query),
             rule_ids: serve_rule_ids.clone(),
             top_k: i64::try_from(top_k).unwrap_or(i64::MAX),
             was_empty: serve_rule_ids.is_empty(),
@@ -397,24 +401,24 @@ pub(crate) async fn tool_search_rules(
             if let Err(e) =
                 crate::cloud::observations::enqueue_and_flush_default(served_event, &cloud).await
             {
-                if crate::env::debug_telemetry() {
+                if crate::infra::env::debug_telemetry() {
                     eprintln!("[difflore-mcp] search_rules served event failed: {e}");
                 }
             }
         });
     }
-    crate::injection_log::record("mcp_tool", entries.len(), target_file);
+    crate::observability::injection_log::record("mcp_tool", entries.len(), target_file);
 
     // Memory-pipeline stream for the lightweight index hit.
     for e in &entries {
-        crate::activity_stream::record(crate::activity_stream::ActivityPayload::RuleRecalled {
+        crate::observability::activity_stream::record(crate::observability::activity_stream::ActivityPayload::RuleRecalled {
             rule_id: e.id.clone(),
             rule_title: e.title.clone(),
             score: e.similarity as f32,
             took_ms: 0,
         });
     }
-    crate::activity_stream::record(crate::activity_stream::ActivityPayload::RuleInjected {
+    crate::observability::activity_stream::record(crate::observability::activity_stream::ActivityPayload::RuleInjected {
         rule_count: u32::try_from(entries.len()).unwrap_or(u32::MAX),
         prompt_chars: u32::try_from(text.chars().count()).unwrap_or(u32::MAX),
         intent_summary: format!("{file} | {intent}"),
@@ -449,7 +453,7 @@ pub(crate) async fn tool_search_rules(
         };
         enqueue_mcp_query_outbox(
             &state.db,
-            super::util::McpQueryOutboxEntry {
+            super::serve_stats::McpQueryOutboxEntry {
                 file: &file,
                 intent: &intent,
                 rules_injected,
@@ -465,7 +469,7 @@ pub(crate) async fn tool_search_rules(
             if let Err(e) =
                 crate::cloud::observations::enqueue_and_flush_default(fired_event, &cloud).await
             {
-                if crate::env::debug_telemetry() {
+                if crate::infra::env::debug_telemetry() {
                     eprintln!("[difflore-mcp] search_rules fired event failed: {e}");
                 }
             }
@@ -503,7 +507,7 @@ async fn repo_scopes_for_search_rules(
         .filter(|value| !value.is_empty())
     {
         validate_mcp_text_arg("repo_full_name", raw, MCP_TEXT_ARG_CHAR_LIMIT)?;
-        let Some(repo) = crate::git::normalize_github_repo_full_name(raw) else {
+        let Some(repo) = crate::infra::git::normalize_github_repo_full_name(raw) else {
             return Err((
                 -32602,
                 "Invalid repo_full_name; expected GitHub owner/repo or GitHub remote URL"

@@ -1,5 +1,5 @@
-use crate::cloud::api_types;
-use crate::models::SkillRecord;
+use crate::contract;
+use crate::domain::models::SkillRecord;
 
 /// Local row fields needed to seed a fresh cloud rule when uploading a
 /// local-only capture (conversation/manual) for the first time. Mirrors
@@ -29,8 +29,8 @@ pub struct TeamMemberRecord {
     pub joined_at: String,
 }
 
-impl From<api_types::TeamMember> for TeamMemberRecord {
-    fn from(m: api_types::TeamMember) -> Self {
+impl From<contract::TeamMember> for TeamMemberRecord {
+    fn from(m: contract::TeamMember) -> Self {
         Self {
             user_id: m.user_id,
             name: Some(m.name),

@@ -37,7 +37,7 @@ pub(crate) async fn hook_output_for_raw(
     let event_name = event.wire_name();
 
     let trace_started = std::time::Instant::now();
-    let trace = difflore_core::env::trace_hook();
+    let trace = difflore_core::infra::env::trace_hook();
     match dispatch_hook_event_with_state(event, hot_state).await {
         Ok(mut result) => {
             if trace {
@@ -128,7 +128,7 @@ async fn dispatch_hook_event_with_state(
             let db = if let Some(state) = hot_state {
                 state.db.clone()
             } else {
-                match difflore_core::db::init_db().await {
+                match difflore_core::infra::db::init_db().await {
                     Ok(p) => p,
                     Err(_) => return Ok(HookResult::noop()),
                 }
@@ -170,13 +170,13 @@ async fn dispatch_hook_event_with_state(
                             .enqueue(difflore_core::cloud::outbox::kind::OBSERVATION, &payload)
                             .await
                         {
-                            if difflore_core::env::debug_telemetry() {
+                            if difflore_core::infra::env::debug_telemetry() {
                                 eprintln!("[difflore.hook] observation enqueue failed: {e}");
                             }
                         }
                     }
                     Err(e) => {
-                        if difflore_core::env::debug_telemetry() {
+                        if difflore_core::infra::env::debug_telemetry() {
                             eprintln!("[difflore.hook] observation serialize failed: {e}");
                         }
                     }
@@ -236,7 +236,7 @@ async fn dispatch_hook_event_with_state(
             let db = if let Some(state) = hot_state {
                 state.db.clone()
             } else {
-                match difflore_core::db::init_db().await {
+                match difflore_core::infra::db::init_db().await {
                     Ok(p) => p,
                     Err(_) => return Ok(HookResult::noop()),
                 }
@@ -328,7 +328,7 @@ async fn maybe_emit_rule_actual_citations(session_id: Option<&str>, transcript_p
     }
 
     let mut rule_ids = rule_ids_for_citation_numbers(&rule_fire.rule_ids, &cited_numbers);
-    if mentions_learned_from && let Ok(db) = difflore_core::db::init_db().await {
+    if mentions_learned_from && let Ok(db) = difflore_core::infra::db::init_db().await {
         for id in rule_ids_for_learned_sources(&db, &rule_fire.rule_ids, &text).await {
             rule_ids.insert(id);
         }
@@ -500,7 +500,7 @@ async fn maybe_emit_fix_outcomes(session_id: Option<&str>, cwd: Option<&str>) ->
             .push(edit.file_path);
     }
 
-    let detected_repos = difflore_core::git::detect_github_repo_full_names(cwd.unwrap_or("."));
+    let detected_repos = difflore_core::infra::git::detect_github_repo_full_names(cwd.unwrap_or("."));
     let repo_full_name = detected_repos.first().map(String::as_str);
     // 30-minute cross-link window: the accepted edit must follow the MCP serve
     // closely enough that the agent context still plausibly included the rule.

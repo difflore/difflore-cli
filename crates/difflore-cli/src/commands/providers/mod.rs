@@ -6,7 +6,7 @@ use crate::style;
 use colored::Colorize;
 use gate4agent::CliTool;
 
-use difflore_core::models::{ProviderAddInput, ProviderRemoveInput, ProviderSetActiveInput};
+use difflore_core::domain::models::{ProviderAddInput, ProviderRemoveInput, ProviderSetActiveInput};
 
 use crate::commands::util::{confirm_destructive, exit_err};
 use crate::runtime::CommandContext;
@@ -22,7 +22,7 @@ pub(crate) fn resolve_secret_input(
     if let Some(v) = flag_value.filter(|s| !s.trim().is_empty()) {
         return v;
     }
-    if let Some(v) = difflore_core::env::var(env_var)
+    if let Some(v) = difflore_core::infra::env::var(env_var)
         && !v.trim().is_empty()
     {
         return v;
@@ -78,7 +78,7 @@ const fn default_model_for(tool: CliTool) -> &'static str {
 pub(crate) async fn handle_providers_list(ctx: &CommandContext, json: bool) {
     let db = &ctx.db;
 
-    let providers = match difflore_core::providers::list(db).await {
+    let providers = match difflore_core::domain::providers::list(db).await {
         Ok(p) => p,
         Err(e) => exit_err(&format!("Failed to list providers: {e}")),
     };
@@ -166,10 +166,10 @@ pub(crate) async fn handle_providers_add(
     };
 
     let db = &ctx.db;
-    let had_active = difflore_core::providers::list(db)
+    let had_active = difflore_core::domain::providers::list(db)
         .await
         .is_ok_and(|ps| ps.iter().any(|p| p.is_active));
-    match difflore_core::providers::add(db, input).await {
+    match difflore_core::domain::providers::add(db, input).await {
         Ok(provider) => {
             if had_active {
                 println!(
@@ -186,7 +186,7 @@ pub(crate) async fn handle_providers_add(
                     style::cmd(&format!("difflore providers set-active {}", provider.name)),
                 );
             } else {
-                if let Err(e) = difflore_core::providers::set_active(
+                if let Err(e) = difflore_core::domain::providers::set_active(
                     db,
                     ProviderSetActiveInput {
                         id: provider.id.clone(),
@@ -223,7 +223,7 @@ pub(crate) async fn handle_providers_set_active(ctx: &CommandContext, id: &str) 
         is_active: true,
     };
 
-    match difflore_core::providers::set_active(db, input).await {
+    match difflore_core::domain::providers::set_active(db, input).await {
         Ok(()) => {
             println!("{} Active provider set: {}", style::ok(style::sym::OK), id);
             println!();
@@ -243,10 +243,10 @@ pub(crate) async fn handle_providers_remove(ctx: &CommandContext, id: &str, yes:
     let db = &ctx.db;
     let input = ProviderRemoveInput { id: id.clone() };
 
-    match difflore_core::providers::remove(db, input).await {
+    match difflore_core::domain::providers::remove(db, input).await {
         Ok(()) => {
             println!("{} Provider removed: {}", style::ok(style::sym::OK), id);
-            let remaining = difflore_core::providers::list(db).await.unwrap_or_default();
+            let remaining = difflore_core::domain::providers::list(db).await.unwrap_or_default();
             let any_active = remaining.iter().any(|p| p.is_active);
             if !any_active && !remaining.is_empty() {
                 println!();
@@ -274,7 +274,7 @@ async fn resolve_provider_id(ctx: &CommandContext, input: &str) -> String {
     if needle.is_empty() {
         exit_err("Provider id or name is required.");
     }
-    let providers = difflore_core::providers::list(&ctx.db)
+    let providers = difflore_core::domain::providers::list(&ctx.db)
         .await
         .unwrap_or_else(|e| exit_err(&format!("Failed to list providers: {e}")));
 

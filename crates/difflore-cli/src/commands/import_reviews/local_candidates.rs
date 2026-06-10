@@ -1,4 +1,4 @@
-use difflore_core::models::RememberRuleInput;
+use difflore_core::domain::models::RememberRuleInput;
 use difflore_core::review_store::{ReviewCommentRecord, ReviewItemWithComments};
 use sqlx::SqlitePool;
 
@@ -1188,8 +1188,8 @@ pub(super) fn local_candidate_input(
     // BEFORE the candidate is written to the local SQLite skills store (and
     // lazily embedded), mirroring the cloud's pre-persist `redactSecrets`.
     let input = RememberRuleInput {
-        title: difflore_core::privacy::redact_secrets(&candidate_title(&comment.content, &path)),
-        body: difflore_core::privacy::redact_secrets(&body),
+        title: difflore_core::observability::privacy::redact_secrets(&candidate_title(&comment.content, &path)),
+        body: difflore_core::observability::privacy::redact_secrets(&body),
         file_patterns,
         bad_code: None,
         good_code: None,

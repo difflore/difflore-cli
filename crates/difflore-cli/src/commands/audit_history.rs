@@ -36,7 +36,7 @@ pub(crate) fn load_audit_history(
 }
 
 fn audit_history_path() -> Option<std::path::PathBuf> {
-    difflore_core::paths::data_home()
+    difflore_core::infra::paths::data_home()
         .ok()
         .map(|dir| dir.join("audit-history.jsonl"))
 }

@@ -65,7 +65,7 @@ pub(crate) enum CloudProbe {
 /// pick the final row.
 pub(crate) struct EmbedderProbe {
     pub(crate) kind: difflore_core::context::embedding::ActiveEmbedderKind,
-    pub(crate) activity_tail: Vec<difflore_core::activity_stream::ActivityEvent>,
+    pub(crate) activity_tail: Vec<difflore_core::observability::activity_stream::ActivityEvent>,
     /// `None` when the per-project index DB could not be opened.
     pub(crate) diagnostics: Option<difflore_core::context::EmbeddingDiagnostics>,
 }
@@ -156,7 +156,7 @@ async fn probe_project_db(
         Ok(s) => s.total,
         Err(_) => 0,
     };
-    let counts = difflore_core::db::table_counts(pool, &["review_items"]).await;
+    let counts = difflore_core::infra::db::table_counts(pool, &["review_items"]).await;
     let mut prs_imported: i64 = 0;
     for (_, result) in counts {
         if let Ok(n) = result {
@@ -181,7 +181,7 @@ async fn probe_project_db(
     }
 
     let detected_repo_remotes =
-        difflore_core::git::detect_github_repo_full_names(&project.to_string_lossy());
+        difflore_core::infra::git::detect_github_repo_full_names(&project.to_string_lossy());
     let repo_remotes =
         difflore_core::skills::expand_repo_scopes_with_source_aliases(pool, &detected_repo_remotes)
             .await
@@ -218,7 +218,7 @@ async fn probe_project_db(
 }
 
 fn count_rules_for_repo(
-    rules: &[difflore_core::models::SkillRecord],
+    rules: &[difflore_core::domain::models::SkillRecord],
     source_repos: &HashMap<String, Option<String>>,
     repo: Option<&str>,
 ) -> i64 {
@@ -247,7 +247,7 @@ async fn probe_provider(pool: Option<&difflore_core::SqlitePool>) -> ProviderPro
     let Some(pool) = pool else {
         return ProviderProbe::DbUnavailable;
     };
-    match difflore_core::providers::list(pool).await {
+    match difflore_core::domain::providers::list(pool).await {
         Ok(providers) if providers.is_empty() => ProviderProbe::NoneConfigured,
         Ok(providers) => {
             let active = providers
@@ -283,7 +283,7 @@ async fn probe_cloud(ctx: &crate::runtime::CommandContext) -> CloudProbe {
 /// (`doctor --report` owns the measured self-recall number).
 async fn probe_embedder() -> EmbedderProbe {
     let kind = difflore_core::context::embedding::probe_active_embedder().await;
-    let activity_tail = difflore_core::activity_stream::tail(200);
+    let activity_tail = difflore_core::observability::activity_stream::tail(200);
     let diagnostics = match difflore_core::context::index_db::get_pool_for_cwd().await {
         Ok(index_pool) => Some(
             difflore_core::context::gather_embedding_diagnostics_with_activity(&index_pool).await,
@@ -302,23 +302,23 @@ fn probe_daemon() -> DaemonProbe {
     // there's nothing for the user to debug, so we clean it on read
     // and report "off" with an informational status instead of a
     // permanent Warn that just trains users to ignore Optional hints.
-    let mut daemon_status = difflore_core::daemon::status();
-    if let difflore_core::daemon::DaemonStatus::Stale { .. } = daemon_status
-        && let Ok(pid_path) = difflore_core::daemon::pid_path()
+    let mut daemon_status = difflore_core::infra::daemon::status();
+    if let difflore_core::infra::daemon::DaemonStatus::Stale { .. } = daemon_status
+        && let Ok(pid_path) = difflore_core::infra::daemon::pid_path()
         && std::fs::remove_file(&pid_path).is_ok()
     {
-        daemon_status = difflore_core::daemon::DaemonStatus::NotRunning;
+        daemon_status = difflore_core::infra::daemon::DaemonStatus::NotRunning;
     }
     match daemon_status {
-        difflore_core::daemon::DaemonStatus::Running { .. } => DaemonProbe::Running,
+        difflore_core::infra::daemon::DaemonStatus::Running { .. } => DaemonProbe::Running,
         // Only reached when the cleanup attempt failed (locked file etc.).
-        difflore_core::daemon::DaemonStatus::Stale { .. } => DaemonProbe::StaleCleanupFailed,
-        difflore_core::daemon::DaemonStatus::NotRunning => DaemonProbe::NotRunning,
+        difflore_core::infra::daemon::DaemonStatus::Stale { .. } => DaemonProbe::StaleCleanupFailed,
+        difflore_core::infra::daemon::DaemonStatus::NotRunning => DaemonProbe::NotRunning,
     }
 }
 
 fn probe_git_hook_state() -> GitHookState {
-    let cwd = difflore_core::paths::current_project_root();
+    let cwd = difflore_core::infra::paths::current_project_root();
     // Resolve the git dir via `git rev-parse --git-dir` so worktrees (where
     // `.git` is a file, not a dir) find the right hooks/ location. A naive
     // `cwd.join(".git/hooks")` would dead-end and report "no hook".

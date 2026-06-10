@@ -123,9 +123,9 @@ pub(in crate::commands::status) async fn local_accepted_proof(
     let accepted_outcomes_linked_to_prior_recall = accepted_link_summary.linked_to_prior_recall;
     // This split is whole-machine on purpose; degrade to zero if the
     // auxiliary query fails so the repo-scoped proof still renders.
-    let split = difflore_core::fix_outcomes::split_summary(db, LOCAL_PROOF_WINDOW_DAYS)
+    let split = difflore_core::observability::fix_outcomes::split_summary(db, LOCAL_PROOF_WINDOW_DAYS)
         .await
-        .unwrap_or(difflore_core::fix_outcomes::FixOutcomeSplitSummary {
+        .unwrap_or(difflore_core::observability::fix_outcomes::FixOutcomeSplitSummary {
             accepted_and_applied: 0,
             accepted_but_failed: 0,
         });
@@ -221,7 +221,7 @@ pub(in crate::commands::status) async fn local_mcp_rule_serves(
     if normalized_repo_aliases(repo_aliases).is_empty() {
         return LocalMcpRuleServe::empty();
     }
-    let summary = difflore_core::mcp_rule_serves::summary_for_repos(
+    let summary = difflore_core::observability::mcp_rule_serves::summary_for_repos(
         db,
         repo_aliases,
         LOCAL_PROOF_WINDOW_DAYS,

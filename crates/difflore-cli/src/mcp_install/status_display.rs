@@ -222,7 +222,7 @@ pub fn detect_install_repair_targets() -> Vec<String> {
 }
 
 pub async fn maybe_print_mcp_hint() {
-    match difflore_core::settings::get().await {
+    match difflore_core::infra::settings::get().await {
         Ok(s) if !s.hints_mcp => return,
         _ => {}
     }

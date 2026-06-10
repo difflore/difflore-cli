@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use difflore_core::context::index_db;
-use difflore_core::db;
+use difflore_core::infra::db;
 use difflore_core::migration;
 use tempfile::TempDir;
 

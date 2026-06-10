@@ -17,7 +17,7 @@ pub(super) async fn fetch_comments_for_items(
 
     let ids: Vec<String> = items.iter().map(|i| i.id.clone()).collect();
     let ids_json = serde_json::to_string(&ids).map_err(|e| {
-        crate::errors::CoreError::Internal(format!("failed to encode review item ids: {e}"))
+        crate::error::CoreError::Internal(format!("failed to encode review item ids: {e}"))
     })?;
     let comments: Vec<ReviewCommentRecord> = sqlx::query_as!(
         ReviewCommentRow,
@@ -273,7 +273,7 @@ pub async fn update_item_status(
     .execute(db)
     .await?;
     if result.rows_affected() == 0 {
-        return Err(crate::errors::CoreError::NotFound(format!(
+        return Err(crate::error::CoreError::NotFound(format!(
             "review item '{}' not found.",
             input.id
         )));
@@ -294,7 +294,7 @@ pub async fn remove_item(db: &sqlx::SqlitePool, input: ReviewItemIdInput) -> cra
         .execute(db)
         .await?;
     if result.rows_affected() == 0 {
-        return Err(crate::errors::CoreError::NotFound(format!(
+        return Err(crate::error::CoreError::NotFound(format!(
             "review item '{}' not found.",
             input.id
         )));
@@ -310,7 +310,7 @@ pub async fn remove_comment(
         .execute(db)
         .await?;
     if result.rows_affected() == 0 {
-        return Err(crate::errors::CoreError::NotFound(format!(
+        return Err(crate::error::CoreError::NotFound(format!(
             "review comment '{}' not found.",
             input.id
         )));

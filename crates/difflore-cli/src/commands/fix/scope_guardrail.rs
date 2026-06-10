@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use difflore_core::models::DiffContentRecord;
+use difflore_core::domain::models::DiffContentRecord;
 
 use crate::commands::path_hints::missing_file_hints_from_prediction;
 use crate::commands::util::project_path;

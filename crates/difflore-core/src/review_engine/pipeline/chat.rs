@@ -6,7 +6,7 @@ use super::super::{
 };
 use super::ReviewEngine;
 use crate::context::types::PastVerdict;
-use crate::errors::CoreError;
+use crate::error::CoreError;
 use gate4agent::CliTool;
 
 #[derive(sqlx::FromRow)]
@@ -148,7 +148,7 @@ pub(super) async fn get_active_provider(
     .await?
     .ok_or_else(|| CoreError::Validation("No active AI provider configured. Run `difflore providers setup` to add one.".into()))?;
 
-    let api_key = crate::crypto::decrypt_secret(&row.api_key)
+    let api_key = crate::infra::crypto::decrypt_secret(&row.api_key)
         .map_err(|e| CoreError::Internal(format!("Failed to decrypt API key: {e}")))?;
 
     let mapping: std::collections::HashMap<String, String> =
@@ -216,7 +216,7 @@ pub(super) async fn run_one_perspective(run: PerspectiveRun<'_>) -> Vec<ReviewIs
     {
         Ok(ai_response) => {
             let parsed = parse_issues(&ai_response);
-            if crate::env::fix_debug() {
+            if crate::infra::env::fix_debug() {
                 eprintln!(
                     "[fix-debug] perspective={} raw_response_len={} parsed_issues={}",
                     run.perspective.name(),
@@ -230,7 +230,7 @@ pub(super) async fn run_one_perspective(run: PerspectiveRun<'_>) -> Vec<ReviewIs
             parsed
         }
         Err(e) => {
-            if crate::env::fix_debug() {
+            if crate::infra::env::fix_debug() {
                 eprintln!(
                     "[review_check_multi] perspective {} failed: {:?}",
                     run.perspective.name(),

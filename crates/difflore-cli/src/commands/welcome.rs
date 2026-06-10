@@ -140,11 +140,11 @@ pub(crate) async fn first_run_path(no_interactive_flag: bool) -> FirstRunPath {
     if !stdout_tty || no_interactive_flag {
         return FirstRunPath::Skip;
     }
-    let no_welcome_env = difflore_core::env::flag_set(difflore_core::env::DIFFLORE_NO_WELCOME);
+    let no_welcome_env = difflore_core::infra::env::flag_set(difflore_core::infra::env::DIFFLORE_NO_WELCOME);
     if no_welcome_env {
         return FirstRunPath::Skip;
     }
-    let Ok(dir) = difflore_core::paths::data_home() else {
+    let Ok(dir) = difflore_core::infra::paths::data_home() else {
         return FirstRunPath::Skip;
     };
     let sentinel_exists = sentinel_version_current(&dir.join(SENTINEL), SENTINEL_VERSION);
@@ -277,7 +277,7 @@ const fn static_welcome_import_command(cloud_logged_in: bool) -> &'static str {
 /// Each step is skippable (`n` bails out cleanly with a `difflore init`
 /// bridge) so a user is never trapped mid-flow.
 pub(crate) async fn run_wizard() -> WelcomeFlow {
-    let resume = difflore_core::paths::data_home().ok().is_some_and(|dir| {
+    let resume = difflore_core::infra::paths::data_home().ok().is_some_and(|dir| {
         sentinel_version_current(&dir.join(RESUME_SENTINEL), RESUME_SENTINEL_VERSION)
     });
     run_wizard_with_interrupt(resume).await
@@ -741,7 +741,7 @@ const fn heartbeat_mode(stdout_is_tty: bool, term_is_dumb: bool) -> HeartbeatMod
 }
 
 fn current_heartbeat_mode() -> HeartbeatMode {
-    let term_is_dumb = difflore_core::env::var(difflore_core::env::TERM)
+    let term_is_dumb = difflore_core::infra::env::var(difflore_core::infra::env::TERM)
         .is_some_and(|term| term.eq_ignore_ascii_case("dumb"));
     heartbeat_mode(io::stdout().is_terminal(), term_is_dumb)
 }
@@ -913,7 +913,7 @@ fn parse_import_depth_answer(answer: &str, default: usize) -> Result<usize, Stri
 fn detect_repo_label() -> Option<String> {
     if let Ok(cwd) = std::env::current_dir() {
         if let Some(repo) =
-            difflore_core::git::detect_github_repo_full_names(&cwd.to_string_lossy())
+            difflore_core::infra::git::detect_github_repo_full_names(&cwd.to_string_lossy())
                 .into_iter()
                 .next()
         {
@@ -980,7 +980,7 @@ fn finish_with_bridge(msg: &str) {
 /// clear any pending resume marker. Failures are silent (worst case the
 /// welcome shows a second time).
 fn mark_welcomed() {
-    let Ok(dir) = difflore_core::paths::data_home() else {
+    let Ok(dir) = difflore_core::infra::paths::data_home() else {
         return;
     };
     let _ = std::fs::create_dir_all(&dir);
@@ -993,7 +993,7 @@ fn mark_welcomed() {
 /// silent (re-running the full wizard is idempotent for steps 1-3 since
 /// login + import dedupe).
 fn write_resume_marker() {
-    let Ok(dir) = difflore_core::paths::data_home() else {
+    let Ok(dir) = difflore_core::infra::paths::data_home() else {
         return;
     };
     let _ = std::fs::create_dir_all(&dir);
@@ -1007,7 +1007,7 @@ fn write_resume_marker() {
 /// doesn't re-enter the wizard. `mark_welcomed` also clears it; doing it
 /// here keeps the success path correct independently.
 fn clear_resume_marker() {
-    let Ok(dir) = difflore_core::paths::data_home() else {
+    let Ok(dir) = difflore_core::infra::paths::data_home() else {
         return;
     };
     let _ = std::fs::remove_file(dir.join(RESUME_SENTINEL));

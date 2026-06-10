@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 use std::process::Command;
 
-use difflore_core::cloud::api_types::{RecordAcceptedEditRequest, RecordAcceptedEditResponse};
+use difflore_core::contract::{RecordAcceptedEditRequest, RecordAcceptedEditResponse};
 use difflore_core::context::retrieval::detect_language_from_path;
 use difflore_core::observability::fix_outcomes::FixOutcomeInput;
 use difflore_core::review_engine::ReviewIssueRecord;
@@ -226,7 +226,7 @@ pub(super) async fn record_fix_outcomes(
         failed_reason: None,
     }));
 
-    if let Err(e) = difflore_core::fix_outcomes::record_many(db, &rows).await {
+    if let Err(e) = difflore_core::observability::fix_outcomes::record_many(db, &rows).await {
         eprintln!(
             "{} could not record local fix outcomes: {e}",
             style::warn(sym::WARN)
@@ -287,14 +287,14 @@ async fn reinforce_rule(
     signal: &str,
     reason: &str,
 ) {
-    let input = difflore_core::models::UpdateConfidenceInput {
+    let input = difflore_core::domain::models::UpdateConfidenceInput {
         skill_id: rule_id.to_owned(),
         signal: signal.to_owned(),
     };
     match difflore_core::skills::update_confidence(db, input).await {
         Ok(change) => {
-            difflore_core::activity_stream::record(
-                difflore_core::activity_stream::ActivityPayload::RuleReinforced {
+            difflore_core::observability::activity_stream::record(
+                difflore_core::observability::activity_stream::ActivityPayload::RuleReinforced {
                     rule_id: rule_id.to_owned(),
                     rule_title: rule_title.to_owned(),
                     prev_strength: change.before as f32,
@@ -628,7 +628,7 @@ pub(super) async fn apply_accepted_patches(
         } else {
             batched_patch_user_prompt(file_path, &file_content, issues)
         };
-        if let Some(path) = difflore_core::env::fix_dump_dir() {
+        if let Some(path) = difflore_core::infra::env::fix_dump_dir() {
             std::fs::write(format!("{path}/last_patch_prompt.txt"), &prompt).ok();
             std::fs::write(
                 format!("{path}/last_patch_system.txt"),
@@ -673,7 +673,7 @@ pub(super) async fn apply_accepted_patches(
                 break;
             }
         };
-        if let Some(path) = difflore_core::env::fix_dump_dir() {
+        if let Some(path) = difflore_core::infra::env::fix_dump_dir() {
             std::fs::write(format!("{path}/last_patch_raw.txt"), &raw).ok();
         }
 
@@ -692,7 +692,7 @@ pub(super) async fn apply_accepted_patches(
         };
 
         fix_debug!("generated patch:\n{diff}\n[fix-debug] end patch");
-        if let Some(path) = difflore_core::env::fix_dump_dir() {
+        if let Some(path) = difflore_core::infra::env::fix_dump_dir() {
             std::fs::write(format!("{path}/last_patch.diff"), &diff).ok();
         }
 
@@ -775,7 +775,7 @@ fn apply_diff_transactionally(
 
         let accepted_edit = match std::fs::read_to_string(abs_path) {
             Ok(after_content) => {
-                let diff_signature = difflore_core::cloud::api_types::accepted_edit_diff_signature(
+                let diff_signature = difflore_core::contract::accepted_edit_diff_signature(
                     before_content,
                     &after_content,
                 );
@@ -1348,7 +1348,7 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        difflore_core::db::run_migrations(&pool).await.unwrap();
+        difflore_core::infra::db::run_migrations(&pool).await.unwrap();
         pool
     }
 

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::errors::CoreError;
-use crate::models::{
+use crate::error::CoreError;
+use crate::domain::models::{
     DiscoverSkillsInput, DiscoveredSkillRecord, InstallSkillInput, RemoveSkillInput, SkillRecord,
     ToggleSkillEngineInput,
 };
@@ -40,7 +40,7 @@ pub async fn expand_repo_scopes_with_source_aliases(
     let mut repo_names = Vec::new();
 
     for raw in repo_full_names {
-        let Some(repo) = crate::git::normalize_github_repo_full_name(raw) else {
+        let Some(repo) = crate::infra::git::normalize_github_repo_full_name(raw) else {
             continue;
         };
         if seen.insert(repo.clone()) {
@@ -70,7 +70,7 @@ pub async fn expand_repo_scopes_with_source_aliases(
 
         let candidates: Vec<String> = rows
             .into_iter()
-            .filter_map(|repo| crate::git::normalize_github_repo_full_name(&repo))
+            .filter_map(|repo| crate::infra::git::normalize_github_repo_full_name(&repo))
             .filter(|repo| {
                 repo.rsplit_once('/')
                     .is_some_and(|(_, name)| name == repo_name)

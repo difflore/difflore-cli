@@ -1,8 +1,8 @@
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::errors::CoreError;
-use crate::models::{
+use crate::error::CoreError;
+use crate::domain::models::{
     AddExampleInput, ListExamplesInput, RemoveExampleInput, RuleExampleRecord, SkillRecord,
     SkillRepoAddInput, SkillRepoRecord, SkillRepoRemoveInput, UpdateConfidenceInput,
 };
@@ -224,18 +224,18 @@ async fn apply_cloud_source_repo(
 }
 
 async fn refresh_rule_index_after_sync(db: &sqlx::SqlitePool) {
-    let project_hash = crate::db::project_hash_from_root(&crate::db::current_project_root());
+    let project_hash = crate::infra::db::project_hash_from_root(&crate::infra::db::current_project_root());
     let index_pool = match crate::context::index_db::get_pool_for_project(&project_hash).await {
         Ok(pool) => pool,
         Err(e) => {
-            if crate::env::debug_cloud() {
+            if crate::infra::env::debug_cloud() {
                 eprintln!("[difflore] cloud sync rule-index refresh skipped: {e}");
             }
             return;
         }
     };
     if let Err(e) = crate::context::orchestrator::ensure_rules_indexed(db, &index_pool).await {
-        if crate::env::debug_cloud() {
+        if crate::infra::env::debug_cloud() {
             eprintln!("[difflore] cloud sync rule-index refresh failed: {e}");
         }
     }

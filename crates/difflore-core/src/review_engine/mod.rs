@@ -235,7 +235,7 @@ pub struct ReviewCheckResult {
     pub trace_id: String,
     /// Optional one-line summary, per-file walkthrough, and blocking counts.
     #[serde(default)]
-    pub summary: Option<crate::models::ReviewSummary>,
+    pub summary: Option<crate::domain::models::ReviewSummary>,
     /// Per-review stats surfaced to the IDE.
     #[serde(default)]
     pub stats: Option<ReviewStats>,

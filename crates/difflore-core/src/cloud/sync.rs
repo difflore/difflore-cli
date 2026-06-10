@@ -2,11 +2,11 @@ use openapi_contract::{ApiClient, Method, api};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
-use super::api_types::{
+use crate::contract::{
     BillingCurrent, Success, SyncProviders, SyncSettings, Team, TeamRuleSummary, UserProfile,
 };
 use super::client::CloudClient;
-use crate::models::SkillRecord;
+use crate::domain::models::SkillRecord;
 use crate::skills::fs::skills_base_dir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -299,7 +299,7 @@ pub fn mask_api_key(key: &str) -> String {
 /// Used by `sync_providers`; exposed for callers that want to inspect what
 /// will be sent before pushing.
 pub fn build_provider_sync_entries(
-    providers: &[crate::models::ProviderRecord],
+    providers: &[crate::domain::models::ProviderRecord],
 ) -> Vec<serde_json::Value> {
     providers
         .iter()
@@ -551,7 +551,7 @@ fn extract_skill_content_body(markdown: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::ProviderRecord;
+    use crate::domain::models::ProviderRecord;
     use std::collections::HashMap;
 
     #[test]

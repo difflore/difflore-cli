@@ -1,7 +1,20 @@
-openapi_contract::generate_types!("openapi-spec.json");
-
-// Hand-written DTOs for fields and derives not provided by the generated
-// OpenAPI types.
+//! Hand-written DTOs for cloud endpoints not (yet) covered by the generated
+//! OpenAPI types in [`super::generated`].
+//!
+//! Registry — this list may only shrink; new endpoints belong in the spec
+//! (`contracts/openapi-spec.json`) and therefore in `generated.rs`:
+//!
+//! | Endpoint | Types |
+//! | --- | --- |
+//! | `POST /reviews/recallPastVerdicts` | `RecallPastVerdictsRequest`, `PastVerdictDto` |
+//! | `POST /reviews/{id}/metrics` | `RecordReviewMetricsRequest` |
+//! | `POST /reviews/{prReviewId}/trajectory` | `SaveTrajectoryRequest` |
+//! | `GET /reviews/{prReviewId}/trajectory` | `GetTrajectoryResponse` |
+//! | `POST /accepted-edits` (in spec; kept hand-written for serde derives until the R4 contract pipeline migrates it to `generated`) | `RecordAcceptedEditRequest`, `RecordAcceptedEditResponse`, `accepted_edit_diff_signature` |
+//! | `POST /reviews/uploadImported` | `UploadImportedReviewsRequest`, `ImportedReviewUpload`, `ImportedCommentUpload` |
+//! | `GET /impact/*` | `ImpactBannerDto`, `ImpactWeeklyDto`, `ImpactWeeklyPointDto`, `ImpactTopRuleDto`, `ImpactTopRulesDto`, `ImpactPromotionProgressDto`, `ImpactCoverageDto`, `ImpactFixWindowDto`, `ImpactRoiDto`, `ImpactFixScorecardDto` |
+//! | outbox `kind="observation"` wire payload | `Observation`, `ObservationScope` |
+//! | `POST /knowledge/corpus`, `POST /knowledge/corpus/{id}/prime`, `POST /knowledge/corpus/{id}/query`, `GET /knowledge/corpora` | `BuildCorpusFilters`, `BuildCorpusRequest`, `BuildCorpusResult`, `PrimeCorpusResult`, `QueryCorpusRequest`, `QueryCitation`, `QueryCorpusResult`, `CorpusSummary` |
 
 /// Request body for `POST /reviews/recallPastVerdicts`.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -111,7 +124,7 @@ pub struct SaveTrajectoryRequest {
 /// `difflore-cloud/src/orpc/reviews/trajectory.ts`.
 ///
 /// Outer envelope keys are camelCase; the `steps` array reuses the
-/// [`crate::review_trajectory::TrajectoryStep`] enum, whose `kind`-tagged
+/// [`crate::observability::trajectory::TrajectoryStep`] enum, whose `kind`-tagged
 /// snake_case fields match the cloud's Zod union so the nested deserialize
 /// round-trips without coercion.
 ///
@@ -124,7 +137,7 @@ pub struct GetTrajectoryResponse {
     pub id: String,
     pub pr_review_id: String,
     pub team_id: Option<String>,
-    pub steps: Vec<crate::review_trajectory::TrajectoryStep>,
+    pub steps: Vec<crate::observability::trajectory::TrajectoryStep>,
     pub created_at: String,
 }
 
@@ -238,7 +251,7 @@ mod tests {
         GetTrajectoryResponse, ImpactCoverageDto, ImpactFixScorecardDto, ImpactTopRulesDto,
         RecordAcceptedEditRequest, RecordAcceptedEditResponse, accepted_edit_diff_signature,
     };
-    use crate::review_trajectory::TrajectoryStep;
+    use crate::observability::trajectory::TrajectoryStep;
 
     /// The GET envelope is camelCase but `steps` uses the `kind`-tagged
     /// snake_case step shape; verify the DTO decodes both without coercion.
@@ -349,7 +362,7 @@ mod tests {
 
     #[test]
     fn openapi_contract_only_exposes_local_fix_acceptance_proof() {
-        let spec = include_str!("../../openapi-spec.json");
+        let spec = include_str!("../../contracts/openapi-spec.json");
 
         assert!(spec.contains("\"/accepted-edits\""));
         assert!(spec.contains("\"operationId\": \"acceptedEdits.record\""));

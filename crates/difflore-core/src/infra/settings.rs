@@ -1,8 +1,8 @@
-use crate::errors::CoreError;
-use crate::models::AppSettingsRecord;
+use crate::error::CoreError;
+use crate::domain::models::AppSettingsRecord;
 
 pub async fn get() -> crate::Result<AppSettingsRecord> {
-    let path = crate::paths::data_home()
+    let path = crate::infra::paths::data_home()
         .map_err(CoreError::Internal)?
         .join("settings.json");
     if !path.exists() {
@@ -21,7 +21,7 @@ pub async fn get() -> crate::Result<AppSettingsRecord> {
 }
 
 pub async fn update(input: AppSettingsRecord) -> crate::Result<AppSettingsRecord> {
-    let dir = crate::paths::data_home().map_err(CoreError::Internal)?;
+    let dir = crate::infra::paths::data_home().map_err(CoreError::Internal)?;
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("settings.json");
 

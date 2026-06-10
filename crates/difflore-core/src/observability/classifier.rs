@@ -17,7 +17,7 @@
 
 use sha2::{Digest, Sha256};
 
-pub use crate::cloud::api_types::{Observation, ObservationScope};
+pub use crate::contract::{Observation, ObservationScope};
 use crate::observability::privacy::strip_private_tagged_regions;
 
 /// Borrowed input payload for [`classify`].

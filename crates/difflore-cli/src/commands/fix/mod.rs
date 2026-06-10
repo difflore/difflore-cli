@@ -4,7 +4,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use difflore_core::models::DiffContentRecord;
+use difflore_core::domain::models::DiffContentRecord;
 use difflore_core::review_engine::{
     DiffContextFile, DiffContextMode, DiffContextOptions, PackedDiffContext, ReviewCheckResult,
     ReviewIssueRecord, pack_diff_context,
@@ -108,7 +108,7 @@ const PREVIEW_NOT_REVIEWED_EXIT_CODE: i32 = 2;
 
 macro_rules! fix_debug {
     ($($arg:tt)*) => {{
-        if difflore_core::env::fix_debug() {
+        if difflore_core::infra::env::fix_debug() {
             eprintln!("[fix-debug] {}", format!($($arg)*));
         }
     }};
@@ -1776,7 +1776,7 @@ mod tests {
     fn diff_record(file_path: &str, body: &str) -> DiffContentRecord {
         DiffContentRecord {
             file_path: file_path.to_owned(),
-            hunks: vec![difflore_core::models::DiffHunkRecord {
+            hunks: vec![difflore_core::domain::models::DiffHunkRecord {
                 header: "@@ -1,2 +1,2 @@".to_owned(),
                 body: body.to_owned(),
             }],

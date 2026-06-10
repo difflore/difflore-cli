@@ -79,7 +79,7 @@ fn now_ms() -> i64 {
 }
 
 fn log_path() -> Option<PathBuf> {
-    crate::paths::data_home()
+    crate::infra::paths::data_home()
         .ok()
         .map(|dir| dir.join("activity.jsonl"))
 }

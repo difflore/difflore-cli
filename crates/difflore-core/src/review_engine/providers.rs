@@ -1,4 +1,4 @@
-use crate::errors::CoreError;
+use crate::error::CoreError;
 use gate4agent::{
     AgentEvent, ClaudeOptions, CliTool, PipeProcessOptions, PipeSession, SessionConfig,
 };
@@ -379,7 +379,7 @@ pub(super) async fn call_agent_cli_provider(
     }
 
     if matches!(tool, CliTool::ClaudeCode)
-        && crate::env::var(crate::env::ANTHROPIC_API_KEY).is_some()
+        && crate::infra::env::var(crate::infra::env::ANTHROPIC_API_KEY).is_some()
     {
         extra_args.push("--bare".into());
     }
@@ -552,7 +552,7 @@ async fn call_anthropic_provider(
         .await
         .map_err(|e| CoreError::Internal(format!("Failed to parse Anthropic response: {e}")))?;
 
-    if crate::env::debug_providers()
+    if crate::infra::env::debug_providers()
         && let Some(ref usage) = resp.usage
         && let Some(read) = usage.cache_read_input_tokens
     {

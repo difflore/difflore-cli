@@ -497,7 +497,7 @@ impl DispatchOutcome {
 
 fn accepted_edit_attribution_summary(
     expected_rule_ids: usize,
-    response: &super::api_types::RecordAcceptedEditResponse,
+    response: &crate::contract::RecordAcceptedEditResponse,
 ) -> AcceptedEditAttributionSummary {
     let mut summary = AcceptedEditAttributionSummary {
         uploaded: usize::from(response.acceptance_recorded),
@@ -536,7 +536,7 @@ pub mod kind {
     pub const LEGACY_FIX_ACCEPTANCE: &str = "fix_acceptance";
     pub const MCP_QUERY: &str = "mcp_query";
     pub const IMPORTED_REVIEWS: &str = "imported_reviews";
-    /// `PostToolUse` observation; see `cloud::api_types::Observation`
+    /// `PostToolUse` observation; see `crate::contract::Observation`
     /// and `crate::observability::classifier` for the payload shape.
     pub const OBSERVATION: &str = "observation";
     /// Session-mined candidate rule (see
@@ -691,7 +691,7 @@ async fn dispatch(
     client: &super::client::CloudClient,
     item: &OutboxItem,
 ) -> Result<DispatchOutcome, String> {
-    use super::api_types::{
+    use crate::contract::{
         RecordAcceptedEditRequest, RecordReviewMetricsRequest, UploadImportedReviewsRequest,
     };
     use serde_json::Value;
@@ -842,7 +842,7 @@ async fn dispatch(
             })
         }
         kind::OBSERVATION => {
-            let obs: super::api_types::Observation = serde_json::from_str(&item.payload_json)
+            let obs: crate::contract::Observation = serde_json::from_str(&item.payload_json)
                 .map_err(|e| format!("observation parse: {e}"))?;
             Ok(
                 match client
@@ -861,7 +861,7 @@ async fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud::api_types::RecordAcceptedEditResponse;
+    use crate::contract::RecordAcceptedEditResponse;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
     async fn fresh_pool() -> SqlitePool {

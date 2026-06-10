@@ -19,7 +19,7 @@ fn get_or_create_master_key() -> Result<[u8; 32], String> {
         // keyring is broken (Windows Credential Manager rejecting the
         // Generic credential scope, CI sandboxes without a keyring, etc).
         // Accepts 64-char hex (32 bytes).
-        if let Some(hex) = crate::env::master_key_hex() {
+        if let Some(hex) = crate::infra::env::master_key_hex() {
             if let Ok(bytes) = from_hex(hex.trim())
                 && bytes.len() == 32 {
                     let mut key = [0u8; 32];
@@ -49,7 +49,7 @@ fn get_or_create_master_key() -> Result<[u8; 32], String> {
                 eprintln!(
                     "warning: OS keyring unavailable; DiffLore will use local fallback encryption for stored secrets."
                 );
-                if crate::env::debug_providers() {
+                if crate::infra::env::debug_providers() {
                     eprintln!("[crypto] keyring unavailable: {err}");
                 }
                 Ok(derive_local_fallback_key())
@@ -72,7 +72,7 @@ fn is_ci_environment() -> bool {
         "TEAMCITY_VERSION",
         "CODEBUILD_BUILD_ID",
     ];
-    CI_ENV_FLAGS.iter().any(|k| crate::env::truthy(k))
+    CI_ENV_FLAGS.iter().any(|k| crate::infra::env::truthy(k))
 }
 
 fn try_keyring_key() -> Result<[u8; 32], String> {
@@ -87,18 +87,18 @@ fn try_keyring_key() -> Result<[u8; 32], String> {
                     key.copy_from_slice(&bytes);
                     return Ok(key);
                 }
-                if crate::env::debug_providers() {
+                if crate::infra::env::debug_providers() {
                     eprintln!(
                         "[crypto] keyring: decoded bytes len={} (expected 32)",
                         bytes.len()
                     );
                 }
-            } else if crate::env::debug_providers() {
+            } else if crate::infra::env::debug_providers() {
                 eprintln!("[crypto] keyring: hex decode failed");
             }
         }
         Err(e) => {
-            if crate::env::debug_providers() {
+            if crate::infra::env::debug_providers() {
                 eprintln!("[crypto] keyring get_password failed: {e}");
             }
         }

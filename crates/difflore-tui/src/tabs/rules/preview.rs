@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use difflore_core::models::SkillRecord;
+use difflore_core::domain::models::SkillRecord;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -422,10 +422,10 @@ fn read_embedder_mode_snapshot_uncached() -> EmbedderModeSnapshot {
 }
 
 fn latest_embed_cap_from_activity() -> Option<(u32, u32)> {
-    difflore_core::activity_stream::tail(20)
+    difflore_core::observability::activity_stream::tail(20)
         .into_iter()
         .find_map(|event| match event.payload {
-            difflore_core::activity_stream::ActivityPayload::EmbedCapReached { cap, used } => {
+            difflore_core::observability::activity_stream::ActivityPayload::EmbedCapReached { cap, used } => {
                 Some((used, cap))
             }
             _ => None,

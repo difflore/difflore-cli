@@ -135,9 +135,9 @@ pub(crate) async fn serve_and_record(
     serve: RuleServe<'_>,
     record_err_prefix: Option<&str>,
 ) -> ObservationEvent {
-    let record_result = crate::mcp_rule_serves::record(
+    let record_result = crate::observability::mcp_rule_serves::record(
         db,
-        &crate::mcp_rule_serves::McpRuleServeInput {
+        &crate::observability::mcp_rule_serves::McpRuleServeInput {
             tool: serve.tool,
             session_id: serve.session_id,
             repo_full_name: serve.repo_full_name,
@@ -159,7 +159,7 @@ pub(crate) async fn serve_and_record(
         session_id: serve.event_session_id.to_owned(),
         repo_full_name: serve.repo_full_name.map(ToOwned::to_owned),
         file_path: serve.target_file.map(ToOwned::to_owned),
-        query_hash: crate::mcp_rule_serves::query_hash(serve.query),
+        query_hash: crate::observability::mcp_rule_serves::query_hash(serve.query),
         rule_ids: serve.rule_ids.to_vec(),
         top_k: serve.top_k,
         was_empty: serve.rule_ids.is_empty(),

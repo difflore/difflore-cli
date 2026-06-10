@@ -4,7 +4,7 @@ use super::{
     HttpReviewLlm, ReviewCheckInput, ReviewCheckResult, ReviewIssueRecord, ReviewLlm,
     ReviewPerspective, ReviewStats,
 };
-use crate::review_trajectory::{RuleSource, TrajectoryBuilder, TrajectoryStep};
+use crate::observability::trajectory::{RuleSource, TrajectoryBuilder, TrajectoryStep};
 use gate4agent::CliTool;
 
 mod chat;
@@ -98,7 +98,7 @@ async fn prepare_review_rules(
     retrieval_query: &str,
     repo_scopes: &[String],
     judge_llm: &dyn ReviewLlm,
-    review_engine: &crate::models::ReviewEngineRecord,
+    review_engine: &crate::domain::models::ReviewEngineRecord,
     log_tag: &str,
 ) -> PreparedReviewRules {
     if input.project_id.is_empty() {
@@ -128,7 +128,7 @@ async fn prepare_review_rules(
     {
         Ok(pack) => pack,
         Err(e) => {
-            if crate::env::debug_providers() {
+            if crate::infra::env::debug_providers() {
                 eprintln!("[{log_tag}] context prepare failed: {e:?}, proceeding without rules");
             }
             return PreparedReviewRules {
@@ -588,7 +588,7 @@ pub async fn run_review_multi_with_trajectory(
 
     // Settings gate the applicability judge below and the past-verdict recall
     // / self-check / summary steps further down.
-    let settings_for_recall = crate::settings::get().await.unwrap_or_default();
+    let settings_for_recall = crate::infra::settings::get().await.unwrap_or_default();
 
     // Matched rules, shared by all perspectives. The applicability judge, when
     // enabled, reuses the active provider through its own `HttpReviewLlm`.
@@ -1307,7 +1307,7 @@ pub async fn run_review_smart(
     db: &sqlx::SqlitePool,
     input: ReviewCheckInput,
 ) -> crate::Result<ReviewCheckResult> {
-    let settings = crate::settings::get().await.unwrap_or_default();
+    let settings = crate::infra::settings::get().await.unwrap_or_default();
     let review_id = input.review_id.clone();
     let multi_perspective = settings.review_engine.multi_perspective;
 
@@ -1362,7 +1362,7 @@ async fn upload_review_telemetry(
         _ => None,
     });
 
-    let metrics_req = crate::cloud::api_types::RecordReviewMetricsRequest {
+    let metrics_req = crate::contract::RecordReviewMetricsRequest {
         input_tokens: Some(u32::try_from(result.prompt_tokens_estimate.max(0)).unwrap_or(u32::MAX)),
         output_tokens: None,
         estimated_cost_usd: None,
@@ -1371,7 +1371,7 @@ async fn upload_review_telemetry(
         past_verdicts_used,
     };
 
-    let pool = crate::db::init_db().await.ok();
+    let pool = crate::infra::db::init_db().await.ok();
     if let Some(pool) = pool {
         let q = crate::cloud::outbox::OutboxQueue::new(pool);
         let metrics_payload = serde_json::json!({
@@ -1433,7 +1433,7 @@ pub async fn run_review_with_trajectory(
 
     // Gates the applicability judge below; reused for the recall / self-check
     // / summary steps.
-    let settings = crate::settings::get().await.unwrap_or_default();
+    let settings = crate::infra::settings::get().await.unwrap_or_default();
 
     // The judge reuses the resolved engine via its own `ReviewLlm`; clone here
     // since the main review call consumes `engine` later.
@@ -1517,7 +1517,7 @@ pub async fn run_review_with_trajectory(
         .saturating_add(3))
         / 4;
 
-    if let Some(path) = crate::env::fix_dump_dir() {
+    if let Some(path) = crate::infra::env::fix_dump_dir() {
         let _ = std::fs::create_dir_all(&path);
         let _ = std::fs::write(format!("{path}/last_user.txt"), &user_prompt);
         let _ = std::fs::write(
@@ -1527,7 +1527,7 @@ pub async fn run_review_with_trajectory(
     }
 
     let ai_response = call_review_engine(&engine, &seg, &user_prompt).await?;
-    if let Some(path) = crate::env::fix_dump_dir() {
+    if let Some(path) = crate::infra::env::fix_dump_dir() {
         let _ = std::fs::write(format!("{path}/last_response.txt"), &ai_response);
     }
 
@@ -1548,7 +1548,7 @@ pub async fn run_review_with_trajectory(
         apply_hunk_line_resolution(&mut issues, &snippets, &input.diff_content);
     }
     let issues = issues;
-    if crate::env::fix_debug() {
+    if crate::infra::env::fix_debug() {
         eprintln!(
             "[fix-debug] single-pass raw_response_len={} parsed_issues={}",
             ai_response.len(),
@@ -1568,7 +1568,7 @@ pub async fn run_review_with_trajectory(
         issues,
     )
     .await;
-    if crate::env::fix_debug() {
+    if crate::infra::env::fix_debug() {
         eprintln!(
             "[fix-debug] verify: pre={} post={} self_check_enabled={}",
             pre_verify_count,
