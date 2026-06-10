@@ -1,6 +1,6 @@
 [package]
 name = "difflore-tui"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.87"
 authors = ["Zachary <hello@difflore.dev>"]
@@ -24,7 +24,7 @@ serde = { version = "1", features = ["derive"] }
 # `cmd /c start` (Windows) in one call — replaces three `cfg(target_os)`
 # branches in `open_url`. Same crate already in difflore-cli.
 webbrowser = "1"
-difflore-core = { path = "../difflore-core", version = "0.1.0" }
+difflore-core = { path = "../difflore-core", version = "0.2.0" }
 
 [lints]
 workspace = true
