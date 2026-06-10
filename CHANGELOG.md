@@ -5,6 +5,39 @@ All notable changes to DiffLore are listed here. The project follows
 
 ## [Unreleased]
 
+### Changed
+
+- Reorg batches R2–R4 (no public CLI behavior change):
+  - **R2** — the three orphan source trees were mounted and wired, and the
+    hook code was collapsed into a single `difflore-cli/src/hook/` module tree
+    (`adapters/`, `runtime/`, `banner/`, `cache.rs`, `forward/`).
+    `hook/forward/protocol.rs` is now the single line-protocol definition the
+    `difflore` and `difflore-hook` binaries share.
+  - **R3** — TUI entry point connected; `app/` split, state collapsed.
+  - **R4** — contract pipeline landed; `mcp_server/tests.rs` and
+    `team/mod.rs` inline tests carved into sibling `tests/` modules (pure
+    positional moves, test counts unchanged).
+
+### Added
+
+- `scripts/sync-contract.sh`: one-command cross-repo OpenAPI sync. Adopts the
+  cloud spec directly when structurally compatible without shrinking generated
+  types, otherwise verifies the vendored sha256 against `SOURCE` and registers
+  the divergent cloud commit (`--check` mode is the CI sha256 gate).
+- Contract anti-double-tracking tests in `contract/dto.rs`: assert the DTO
+  registry's in-spec endpoints are explicitly marked, and that hand-written DTO
+  type names never collide with generated spec component-schema names.
+- CI now runs `scripts/layer-gate.sh` (structural lints) and
+  `scripts/sync-contract.sh --check` (vendored-spec sha256 gate) on Linux.
+
+### Documentation
+
+- `ARCHITECTURE.md` rewritten for the R1–R4 layout: module map, collapsed
+  `hook/` structure, contract-pipeline usage, rule/skill/memory/agent
+  vocabulary, the moving-files landmine checklist, and the known-unwired items
+  (`migration::run_if_needed` is a live guard; `hook::forward` server/client
+  paths are not yet wired).
+
 ## [0.2.0] - 2026-06-10
 
 ### Changed
