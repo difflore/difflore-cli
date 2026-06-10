@@ -110,7 +110,7 @@ pub(super) async fn run(agent: AgentKind, prompt: &str, time_budget: Duration) -
 ///
 /// INVARIANT: returns `true` iff `build_args` omits the prompt positional for
 /// that agent. Pinned by the `build_args_matches_prompt_via_stdin` test.
-fn prompt_via_stdin(agent: AgentKind) -> bool {
+const fn prompt_via_stdin(agent: AgentKind) -> bool {
     matches!(agent, AgentKind::ClaudeCode | AgentKind::Codex)
 }
 

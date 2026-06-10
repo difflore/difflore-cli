@@ -21,14 +21,9 @@ fail=0
 
 # ── Gate 1: orphan-module vaccine ────────────────────────────────────────
 #
-# Known exemptions: the three orphan trees in difflore-cli that the R0
-# decision gate deferred to R2 (mount as modules or delete). Remove each
-# line as R2 disposes of it; this list may only shrink.
-exemptions="
-difflore-cli:agent_cli
-difflore-cli:session_mine
-difflore-cli:post_install_scan
-"
+# Known exemptions (crate:module, one per line). Empty since R2 mounted the
+# three orphan trees in difflore-cli; this list may only shrink.
+exemptions=""
 
 for crate_dir in crates/*/; do
     crate=$(basename "$crate_dir")

@@ -38,7 +38,7 @@ pub(crate) async fn hook_output_for_raw(
 
     let trace_started = std::time::Instant::now();
     let trace = difflore_core::infra::env::trace_hook();
-    match dispatch_hook_event_with_state(event, hot_state).await {
+    match dispatch_hook_event_with_state(client_name, event, hot_state).await {
         Ok(mut result) => {
             if trace {
                 eprintln!(
@@ -86,8 +86,11 @@ pub(crate) async fn hook_output_for_raw(
 
 /// Translate a canonical `HookEvent` into the right `DiffLore` action and return
 /// an adapter-agnostic `HookResult`. A free function so the dispatch logic is
-/// unit-testable without threading stdio.
+/// unit-testable without threading stdio. `client_name` is the platform string
+/// the hook reports (`"claude-code"`, `"cursor"`, …); session-mine and the
+/// session banner use it for transcript-format dispatch and debug trails.
 async fn dispatch_hook_event_with_state(
+    client_name: &str,
     event: hooks::types::HookEvent,
     hot_state: Option<&hook_forward::State>,
 ) -> anyhow::Result<hooks::types::HookResult> {
@@ -221,6 +224,20 @@ async fn dispatch_hook_event_with_state(
                 .await;
             let _accepted_count =
                 maybe_emit_fix_outcomes(session_id.as_deref(), cwd.as_deref()).await;
+            // Session-mine: an expiring conversation forces the watermark
+            // (`force_session_end = true`) so its last few pairs get a chance
+            // to mine into a candidate rule. The worker is detached and
+            // best-effort — it must never delay or fail the hook output.
+            if let Ok(state_path) = crate::session_mine::trigger::state_file_for_cwd()
+                && crate::session_mine::trigger::should_trigger_now_with_force(&state_path, 0, true)
+            {
+                crate::session_mine::run_worker_detached(
+                    client_name.to_owned(),
+                    transcript_path,
+                    session_id,
+                    cwd,
+                );
+            }
             // Keep lifecycle hooks quiet: hosts render `systemMessage` as
             // event-name chatter that reads like an internal tool speaking.
             Ok(HookResult::noop())
@@ -247,12 +264,9 @@ async fn dispatch_hook_event_with_state(
             // Since-last-session recap: if this repo gained rules since the last
             // SessionStart, surface a short note via `additional_context`. The
             // helper is self-budgeted and returns `None` on quiet sessions.
-            //
-            // `client_name` isn't threaded into the dispatcher; the banner uses
-            // it only for the watermark's debug trail, so a generic label is fine.
             let banner_ctx = hooks::session_banner::BannerContext {
                 cwd,
-                client_name: "agent".to_owned(),
+                client_name: client_name.to_owned(),
             };
             if let Some(banner) =
                 hooks::session_banner::render_since_last_session_banner(&banner_ctx).await

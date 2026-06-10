@@ -10,6 +10,7 @@
 
 use clap::FromArgMatches;
 
+pub mod agent_cli;
 pub mod cli;
 pub mod commands;
 mod dispatch;
@@ -19,7 +20,9 @@ pub mod hook_forward;
 pub mod hook_runtime;
 pub mod hooks;
 pub mod mcp_install;
+pub mod post_install_scan;
 pub mod runtime;
+pub mod session_mine;
 pub mod style;
 
 use cli::{Cli, Commands, StatusLane};

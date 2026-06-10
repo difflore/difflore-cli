@@ -89,7 +89,11 @@ pub(super) const fn should_write_canonical_record(
     !dry_run && !installed.is_empty() && failed.is_empty()
 }
 
-pub fn install_all(dry_run: bool) {
+/// Install DiffLore into every detected agent. Returns `true` only when a
+/// real (non-dry-run) run freshly installed or updated at least one surface
+/// with zero failures — the signal the dispatch layer uses to follow up with
+/// the post-install import offer.
+pub fn install_all(dry_run: bool) -> bool {
     let cli_bin = match resolve_difflore_binary() {
         Ok(b) => b,
         Err(e) => crate::commands::util::exit_err(&e),
@@ -175,10 +179,11 @@ pub fn install_all(dry_run: bool) {
             "{} no agents were detected. Install a supported agent (Claude Code, Codex, Cursor, Gemini, Copilot CLI, Antigravity, Goose, Crush, Roo Code, Warp) and re-run.",
             style::warn("!")
         );
-        return;
+        return false;
     }
 
     print_post_install_help(dry_run, &outcomes);
+    !dry_run && !installed.is_empty() && failed.is_empty()
 }
 
 /// One row → one outcome, driven by the `AGENTS` table: adding an agent row

@@ -240,7 +240,20 @@ async fn dispatch_init(args: InitCliArgs) {
 
 async fn dispatch_agents(command: AgentsCommands) {
     match command {
-        AgentsCommands::Install { dry_run } => mcp_install::install_all(dry_run),
+        AgentsCommands::Install { dry_run } => {
+            let fresh_install = mcp_install::install_all(dry_run);
+            // Post-install touchpoint: offer to seed memory from the current
+            // repo's recent PRs. Only after a fresh, fully-successful real
+            // install; the helper's guards silently skip CI / non-tty /
+            // non-GitHub contexts and it never errors back into the install
+            // flow.
+            if fresh_install {
+                let cwd = std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let opts = crate::post_install_scan::PostInstallScanOpts::for_cwd(cwd);
+                let _outcome = crate::post_install_scan::maybe_offer_import_reviews(&opts);
+            }
+        }
         AgentsCommands::Uninstall { dry_run } => mcp_install::uninstall_all(dry_run),
         AgentsCommands::Status { json } => mcp_install::status(json),
         AgentsCommands::Update { dry_run, force } => mcp_install::update_all(dry_run, force),
