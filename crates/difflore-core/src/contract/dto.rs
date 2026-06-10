@@ -2,19 +2,28 @@
 //! OpenAPI types in [`super::generated`].
 //!
 //! Registry — this list may only shrink; new endpoints belong in the spec
-//! (`contracts/openapi-spec.json`) and therefore in `generated.rs`:
+//! (`contracts/openapi-spec.json`) and therefore in `generated.rs`.
+//!
+//! Convention enforced by [`tests::dto_registry_paths_not_overlapping_spec`]:
+//! every registered endpoint whose concrete `METHOD /path` is present in the
+//! vendored spec MUST carry the literal marker `(in spec` in its Endpoint cell.
+//! That marker means "the cloud spec now covers this route, but we keep a
+//! hand-written DTO on purpose (serde derives / shape the generated type does
+//! not yet express); migrating it to `generated.rs` is C1/C5 contract-pipeline
+//! debt". An unmarked row that turns out to be in the spec fails the test —
+//! that is undocumented generated/hand-written double-tracking.
 //!
 //! | Endpoint | Types |
 //! | --- | --- |
 //! | `POST /reviews/recallPastVerdicts` | `RecallPastVerdictsRequest`, `PastVerdictDto` |
-//! | `POST /reviews/{id}/metrics` | `RecordReviewMetricsRequest` |
-//! | `POST /reviews/{prReviewId}/trajectory` | `SaveTrajectoryRequest` |
-//! | `GET /reviews/{prReviewId}/trajectory` | `GetTrajectoryResponse` |
+//! | `POST /reviews/{id}/metrics` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `RecordReviewMetricsRequest` |
+//! | `POST /reviews/{prReviewId}/trajectory` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `SaveTrajectoryRequest` |
+//! | `GET /reviews/{prReviewId}/trajectory` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `GetTrajectoryResponse` |
 //! | `POST /accepted-edits` (in spec; kept hand-written for serde derives until the R4 contract pipeline migrates it to `generated`) | `RecordAcceptedEditRequest`, `RecordAcceptedEditResponse`, `accepted_edit_diff_signature` |
 //! | `POST /reviews/uploadImported` | `UploadImportedReviewsRequest`, `ImportedReviewUpload`, `ImportedCommentUpload` |
-//! | `GET /impact/*` | `ImpactBannerDto`, `ImpactWeeklyDto`, `ImpactWeeklyPointDto`, `ImpactTopRuleDto`, `ImpactTopRulesDto`, `ImpactPromotionProgressDto`, `ImpactCoverageDto`, `ImpactFixWindowDto`, `ImpactRoiDto`, `ImpactFixScorecardDto` |
-//! | outbox `kind="observation"` wire payload | `Observation`, `ObservationScope` |
-//! | `POST /knowledge/corpus`, `POST /knowledge/corpus/{id}/prime`, `POST /knowledge/corpus/{id}/query`, `GET /knowledge/corpora` | `BuildCorpusFilters`, `BuildCorpusRequest`, `BuildCorpusResult`, `PrimeCorpusResult`, `QueryCorpusRequest`, `QueryCitation`, `QueryCorpusResult`, `CorpusSummary` |
+//! | `GET /impact/*` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `ImpactBannerDto`, `ImpactWeeklyDto`, `ImpactWeeklyPointDto`, `ImpactTopRuleDto`, `ImpactTopRulesDto`, `ImpactPromotionProgressDto`, `ImpactCoverageDto`, `ImpactFixWindowDto`, `ImpactRoiDto`, `ImpactFixScorecardDto` |
+//! | outbox `kind="observation"` wire payload (not an HTTP endpoint) | `Observation`, `ObservationScope` |
+//! | `POST /knowledge/corpus` (in spec; hand-written for serde derives, migration is contract-pipeline debt), `POST /knowledge/corpus/{id}/prime`, `POST /knowledge/corpus/{id}/query`, `GET /knowledge/corpora` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `BuildCorpusFilters`, `BuildCorpusRequest`, `BuildCorpusResult`, `PrimeCorpusResult`, `QueryCorpusRequest`, `QueryCitation`, `QueryCorpusResult`, `CorpusSummary` |
 
 /// Request body for `POST /reviews/recallPastVerdicts`.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -513,6 +522,175 @@ mod tests {
         let scorecard: ImpactFixScorecardDto = serde_json::from_str(payload).unwrap();
         let roi = scorecard.roi.unwrap();
         assert_eq!(roi.saved_review_minutes, 12);
+    }
+
+    // ── Anti-double-tracking guards (blueprint section 5.3) ──────────────────
+    //
+    // Two invariants keep the generated track (`generated.rs`, produced by
+    // `generate_types!` from the vendored spec) and this hand-written track
+    // from silently overlapping:
+    //
+    //   1. Path honesty — any DTO-registry endpoint whose `METHOD /path` is in
+    //      the spec must be explicitly marked `(in spec` in its registry cell.
+    //   2. Name disjointness — no hand-written DTO type name collides with a
+    //      spec component-schema name (a collision would mean a generated type
+    //      and a hand-written type compete for the same `contract::Name`).
+
+    const DTO_SOURCE: &str = include_str!("dto.rs");
+    const SPEC_JSON: &str = include_str!("../../contracts/openapi-spec.json");
+
+    /// Parse the registry table rows out of the module doc-comment header.
+    /// A row is a `//! | … | … |` line; we only care about the Endpoint cell
+    /// (the text between the first and second `|`).
+    fn registry_endpoint_cells() -> Vec<String> {
+        DTO_SOURCE
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim_start();
+                let body = trimmed.strip_prefix("//!")?.trim_start();
+                let inner = body.strip_prefix('|')?;
+                // Skip the markdown header (`| Endpoint | Types |`) and the
+                // separator (`| --- | --- |`).
+                let first_cell = inner.split('|').next()?.trim();
+                if first_cell.is_empty() || first_cell == "Endpoint" || first_cell == "---" {
+                    return None;
+                }
+                Some(first_cell.to_owned())
+            })
+            .collect()
+    }
+
+    /// Extract every backtick-quoted `METHOD /path` token in a cell, paired
+    /// with the text immediately following its closing backtick (so we can
+    /// detect a per-path `(in spec` marker that sits right after the token).
+    fn method_paths_with_trailer(cell: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let bytes = cell.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'`' {
+                // Find the matching closing backtick.
+                if let Some(rel_end) = cell[i + 1..].find('`') {
+                    let token = &cell[i + 1..i + 1 + rel_end];
+                    let after = &cell[i + 1 + rel_end + 1..];
+                    let method_prefixes = ["GET ", "POST ", "PUT ", "PATCH ", "DELETE "];
+                    if method_prefixes.iter().any(|m| token.starts_with(m)) {
+                        out.push((token.to_owned(), after.to_owned()));
+                    }
+                    i = i + 1 + rel_end + 1;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// The set of concrete path keys declared in the vendored spec. Parsed
+    /// from JSON so a reformat of the spec cannot fool a substring match.
+    fn spec_paths() -> std::collections::BTreeSet<String> {
+        let doc: serde_json::Value = serde_json::from_str(SPEC_JSON).expect("spec is valid JSON");
+        doc.get("paths")
+            .and_then(serde_json::Value::as_object)
+            .map(|paths| paths.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Is the registered path (possibly a `/*` glob) present in the spec?
+    fn path_is_in_spec(path: &str, spec: &std::collections::BTreeSet<String>) -> bool {
+        if let Some(prefix) = path.strip_suffix('*') {
+            spec.iter().any(|p| p.starts_with(prefix))
+        } else {
+            spec.contains(path)
+        }
+    }
+
+    #[test]
+    fn dto_registry_paths_not_overlapping_spec() {
+        let spec = spec_paths();
+        assert!(
+            !spec.is_empty(),
+            "spec parsed to zero paths — include_str path or JSON shape changed"
+        );
+
+        let cells = registry_endpoint_cells();
+        assert!(
+            cells.len() >= 8,
+            "expected the DTO registry table to have several rows, found {}",
+            cells.len()
+        );
+
+        let mut unmarked_overlaps = Vec::new();
+        for cell in &cells {
+            for (token, trailer) in method_paths_with_trailer(cell) {
+                // token is e.g. "POST /reviews/{id}/metrics"; split off method.
+                let path = token
+                    .split_once(' ')
+                    .map_or(token.as_str(), |(_, p)| p);
+                if path_is_in_spec(path, &spec) {
+                    // Must be explicitly acknowledged. The marker may sit
+                    // immediately after this token, or anywhere in the cell
+                    // (covers the glob row where the marker trails the token).
+                    let marked = trailer.trim_start().starts_with("(in spec")
+                        || cell.contains("(in spec");
+                    if !marked {
+                        unmarked_overlaps.push(token.clone());
+                    }
+                }
+            }
+        }
+
+        assert!(
+            unmarked_overlaps.is_empty(),
+            "DTO registry has hand-written endpoints that ARE in the OpenAPI spec \
+             but are NOT marked `(in spec ...)` — this is undocumented \
+             generated/hand-written double-tracking. Either migrate them to \
+             generated.rs or mark the registry row: {unmarked_overlaps:?}"
+        );
+    }
+
+    #[test]
+    fn hand_written_dto_names_disjoint_from_spec_schema_names() {
+        // Collect hand-written public type names declared in this file.
+        let mut dto_names = std::collections::BTreeSet::new();
+        for line in DTO_SOURCE.lines() {
+            let t = line.trim_start();
+            for kw in ["pub struct ", "pub enum "] {
+                if let Some(rest) = t.strip_prefix(kw) {
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    if !name.is_empty() {
+                        dto_names.insert(name);
+                    }
+                }
+            }
+        }
+        assert!(
+            !dto_names.is_empty(),
+            "found no hand-written DTO type names — parser or file layout changed"
+        );
+
+        let doc: serde_json::Value = serde_json::from_str(SPEC_JSON).expect("spec is valid JSON");
+        let schema_names: std::collections::BTreeSet<String> = doc
+            .get("components")
+            .and_then(|c| c.get("schemas"))
+            .and_then(serde_json::Value::as_object)
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
+        assert!(
+            !schema_names.is_empty(),
+            "spec parsed to zero component schemas — include_str path or shape changed"
+        );
+
+        let collisions: Vec<&String> = dto_names.intersection(&schema_names).collect();
+        assert!(
+            collisions.is_empty(),
+            "hand-written DTO type name(s) collide with generated spec component-schema \
+             name(s): {collisions:?}. A generated type and a hand-written type would \
+             both want `contract::Name`. Rename the hand-written DTO or migrate it."
+        );
     }
 }
 

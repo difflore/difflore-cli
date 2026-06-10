@@ -1,20 +1,27 @@
 # Provenance for crates/difflore-core/contracts/openapi-spec.json
 #
 # The spec is vendored from the difflore-cloud repository's contract export
-# (cloud batch C0b: `pnpm contract:export` writes src/contracts/openapi/*.json).
-# Sync via scripts/sync-contract.sh once the R4 contract pipeline lands;
-# until then update these fields by hand whenever the spec is refreshed.
+# (cloud: `pnpm contract:export` writes src/contracts/openapi/*.json).
+# Sync via scripts/sync-contract.sh; do not hand-edit openapi-spec.json
+# without re-running it (the --check gate enforces the sha256 below).
 
 source-repo:   difflore-cloud
 source-path:   src/contracts/openapi/api.json
-source-commit: f08eb8ca1e84dae95fe1e9ac99a298af0badf54b
+source-commit: c059bbffd7de1fdb0cdd6ee4b7f5a09bf6f818de
 
 # sha256 of the vendored openapi-spec.json currently checked in here.
 spec-sha256:   4b2dfcd3790ac4cdf9dfa4cb8e0d0d6877c1779b880534ba9db1a8366a30fc22
 
-# NOTE: the cloud export at source-commit hashes to
-# 91eaa1b9cfef5e7512b4c9d254fe55f6a40d524d1cd4805140a1fc8407b078b0 — the
-# vendored copy predates that export (drift in reviewer trajectory schema,
-# e.g. the new `nextStep` field). Re-vendoring is deliberately NOT part of
-# the R1b module reorg because it changes generated types; it is tracked
-# for the R4 contract-pipeline batch.
+# sha256 of the divergent cloud export at source-commit (NOT vendored — see
+# DIVERGENCE below). Lets a future sync detect when cloud has moved.
+cloud-spec-sha256: 91eaa1b9cfef5e7512b4c9d254fe55f6a40d524d1cd4805140a1fc8407b078b0
+
+# DIVERGENCE: the cloud export at source-commit is structurally compatible
+# (identical top-level keys, path set, and component-schema names) but its
+# generated-type surface differs from the vendored copy by 4
+# field line(s) that exist only in the vendored spec. Adopting the cloud spec
+# directly would SHRINK the types produced by `generate_types!`, so
+# sync-contract.sh deliberately did NOT replace the vendored spec. The
+# vendored sha256 above was re-verified against this file before registering
+# the cloud commit. Convergence is tracked for the C1/C5 cloud batches
+# (export diff-empty gate) — see REORG-BLUEPRINT.md section 5.
