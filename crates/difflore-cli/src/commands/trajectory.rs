@@ -41,7 +41,7 @@ pub(crate) async fn handle_trajectory(ctx: &CommandContext, args: TrajectoryArgs
         if args.json {
             println!(
                 "{}",
-                crate::commands::util::json_compact_or(
+                crate::support::util::json_compact_or(
                     &serde_json::json!({ "error": "missing_review_id" }),
                     "{}"
                 )
@@ -79,7 +79,7 @@ pub(crate) async fn handle_trajectory(ctx: &CommandContext, args: TrajectoryArgs
             "stepCount": doc.steps.len(),
             "steps": doc.steps,
         });
-        println!("{}", crate::commands::util::json_or(&payload, "{}"));
+        println!("{}", crate::support::util::json_or(&payload, "{}"));
         return;
     }
 
@@ -104,7 +104,7 @@ fn render_fetch_error(review_id: &str, err: &str, json: bool) {
     if json {
         println!(
             "{}",
-            crate::commands::util::json_compact_or(
+            crate::support::util::json_compact_or(
                 &serde_json::json!({
                     "reviewId": review_id,
                     "error": classify_fetch_error(err).as_str(),

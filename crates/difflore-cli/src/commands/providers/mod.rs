@@ -8,7 +8,7 @@ use gate4agent::CliTool;
 
 use difflore_core::domain::models::{ProviderAddInput, ProviderRemoveInput, ProviderSetActiveInput};
 
-use crate::commands::util::{confirm_destructive, exit_err};
+use crate::support::util::{confirm_destructive, exit_err};
 use crate::runtime::CommandContext;
 
 /// Resolve a secret from, in order: explicit flag, env var, or piped stdin.
@@ -84,7 +84,7 @@ pub(crate) async fn handle_providers_list(ctx: &CommandContext, json: bool) {
     };
 
     if json {
-        let json_out = crate::commands::util::json_or(&providers, "[]");
+        let json_out = crate::support::util::json_or(&providers, "[]");
         println!("{json_out}");
         return;
     }

@@ -6,7 +6,7 @@
 //! workspace so accepted fixes can link to team review history. Those
 //! helpers are `pub(super)` so sibling cloud modules reuse the same state.
 
-use crate::commands::util::{exit_code, exit_err};
+use crate::support::util::{exit_code, exit_err};
 use crate::style;
 
 pub(super) const TEAM_WORKSPACE_URL: &str = "https://difflore.dev/team";
@@ -129,7 +129,7 @@ pub(crate) async fn handle_team(json: bool) {
     let status = difflore_core::cloud::sync::fetch_cloud_status(&client).await;
     if json {
         let payload = team_workspace_value(status.logged_in, status.team_name.as_deref());
-        println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+        println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
         return;
     }
 
@@ -188,7 +188,7 @@ pub(crate) async fn handle_publish(
                     "ruleId": published_rule_id,
                     "enforcement": enforcement,
                 });
-                println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+                println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
                 return;
             }
 
@@ -226,7 +226,7 @@ pub(crate) async fn handle_unpublish(rule_id: String, team_id: Option<String>, j
                     "success": true,
                     "ruleId": rule_id,
                 });
-                println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+                println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
                 return;
             }
 
@@ -257,7 +257,7 @@ fn cloud_command_error_value(action: &str, message: &str) -> serde_json::Value {
 
 fn exit_json_err(action: &str, message: &str) -> ! {
     let payload = cloud_command_error_value(action, message);
-    println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+    println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
     exit_code(1);
 }
 

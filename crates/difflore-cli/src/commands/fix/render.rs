@@ -5,7 +5,7 @@ use std::path::Path;
 use difflore_core::domain::models::DiffContentRecord;
 use difflore_core::review_engine::ReviewIssueRecord;
 
-use crate::commands::util::exit_err;
+use crate::support::util::exit_err;
 use crate::style::{self, sym};
 
 use super::pr::PreparedPrFix;
@@ -342,7 +342,7 @@ pub(super) fn emit_fix_json(
         attributions,
         outcome,
     );
-    println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+    println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
 }
 
 #[cfg(test)]

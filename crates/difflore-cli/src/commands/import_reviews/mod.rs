@@ -1,7 +1,7 @@
 use difflore_core::ingest::github::{ImportOptions, ImportProgress};
 use sqlx::SqlitePool;
 
-use crate::commands::util::{ensure_project, exit_err, project_path, validate_owner_repo};
+use crate::support::util::{ensure_project, exit_err, project_path, validate_owner_repo};
 use crate::runtime::CommandContext;
 use crate::style;
 
@@ -165,7 +165,7 @@ fn run_dry_run(v: &ValidatedArgs, local_repo: &str, source_repo: &str) {
     if v.json {
         println!(
             "{}",
-            crate::commands::util::json_or(&dry_run_payload(v, local_repo, source_repo), "{}")
+            crate::support::util::json_or(&dry_run_payload(v, local_repo, source_repo), "{}")
         );
         return;
     }
@@ -408,7 +408,7 @@ fn print_import_json(
         local_candidates,
         uploaded_reviews,
     );
-    println!("{}", crate::commands::util::json_or(&payload, "{}"));
+    println!("{}", crate::support::util::json_or(&payload, "{}"));
 }
 
 fn import_json_payload(
@@ -536,7 +536,7 @@ mod tests {
 
     use std::collections::HashSet;
 
-    use crate::commands::review_text::strip_review_markdown_noise;
+    use crate::support::review_text::strip_review_markdown_noise;
     use difflore_core::ingest::github::ImportProgress;
 
     use super::fixtures::{

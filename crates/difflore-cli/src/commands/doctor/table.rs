@@ -23,7 +23,7 @@ use super::probes::{
     self, CloudProbe, DaemonProbe, EmbedderProbe, Findings, GitHookState, ProjectDbProbe,
     ProviderProbe,
 };
-use crate::mcp_install;
+use crate::installer;
 use crate::style;
 
 const RULE: &str = "-----------------------------------------";
@@ -224,17 +224,17 @@ fn project_db_row(probe: &ProjectDbProbe) -> Row {
     }
 }
 
-fn mcp_row(snapshot: &mcp_install::McpStatusSnapshot) -> Row {
+fn mcp_row(snapshot: &installer::McpStatusSnapshot) -> Row {
     let installed: Vec<&str> = snapshot
         .clients
         .iter()
-        .filter(|c| matches!(c.state, mcp_install::InstallState::Installed))
+        .filter(|c| matches!(c.state, installer::InstallState::Installed))
         .map(|c| c.name)
         .collect();
     let conflicting_clients: Vec<&str> = snapshot
         .clients
         .iter()
-        .filter(|c| matches!(c.state, mcp_install::InstallState::Conflict))
+        .filter(|c| matches!(c.state, installer::InstallState::Conflict))
         .map(|c| c.name)
         .collect();
     let conflicts = conflicting_clients.len();
@@ -245,27 +245,27 @@ fn mcp_row(snapshot: &mcp_install::McpStatusSnapshot) -> Row {
             c.detected
                 && matches!(
                     c.state,
-                    mcp_install::InstallState::NotInstalled | mcp_install::InstallState::Unknown
+                    installer::InstallState::NotInstalled | installer::InstallState::Unknown
                 )
         })
         .map(|c| c.name.to_owned())
         .collect();
     let record_state = snapshot.canonical_record.state;
-    let record_ok = matches!(record_state, mcp_install::CanonicalRecordState::Present);
+    let record_ok = matches!(record_state, installer::CanonicalRecordState::Present);
     let diagnosis_hints = mcp_diagnosis_hints(snapshot.diagnosis.as_ref(), &installed);
     let runtime_state = snapshot.runtime_probe.as_ref().map(|probe| probe.state);
     if matches!(
         runtime_state,
-        Some(mcp_install::RuntimeProbeState::Failed | mcp_install::RuntimeProbeState::Timeout)
+        Some(installer::RuntimeProbeState::Failed | installer::RuntimeProbeState::Timeout)
     ) {
         let runtime_label = match runtime_state {
-            Some(mcp_install::RuntimeProbeState::Failed) => "runtime failed",
-            Some(mcp_install::RuntimeProbeState::Timeout) => "runtime timeout",
+            Some(installer::RuntimeProbeState::Failed) => "runtime failed",
+            Some(installer::RuntimeProbeState::Timeout) => "runtime timeout",
             _ => "runtime unavailable",
         };
         return Row {
             severity: Severity::Blocker,
-            status: if matches!(runtime_state, Some(mcp_install::RuntimeProbeState::Timeout)) {
+            status: if matches!(runtime_state, Some(installer::RuntimeProbeState::Timeout)) {
                 Status::Warn
             } else {
                 Status::Err
@@ -290,7 +290,7 @@ fn mcp_row(snapshot: &mcp_install::McpStatusSnapshot) -> Row {
         // gate), the agent path is still working for those clients —
         // demote to Optional/Warn so the header doesn't tell the user
         // their core value is blocked when it isn't.
-        let runtime_healthy = matches!(runtime_state, Some(mcp_install::RuntimeProbeState::Ok),);
+        let runtime_healthy = matches!(runtime_state, Some(installer::RuntimeProbeState::Ok),);
         let some_clients_ok = !installed.is_empty();
         let (severity, status) = if runtime_healthy && some_clients_ok {
             (Severity::Blocker, Status::Warn)
@@ -388,7 +388,7 @@ fn format_mcp_conflict_value(installed: &[&str], conflicting_clients: &[&str]) -
 }
 
 fn mcp_diagnosis_hints(
-    diagnosis: Option<&mcp_install::McpStatusDiagnosis>,
+    diagnosis: Option<&installer::McpStatusDiagnosis>,
     installed: &[&str],
 ) -> Vec<String> {
     let Some(diagnosis) = diagnosis else {
@@ -419,13 +419,13 @@ fn mcp_diagnosis_hints(
 }
 
 const fn mcp_canonical_record_state_label(
-    state: mcp_install::CanonicalRecordState,
+    state: installer::CanonicalRecordState,
 ) -> &'static str {
     match state {
-        mcp_install::CanonicalRecordState::Missing => "missing",
-        mcp_install::CanonicalRecordState::Present => "present",
-        mcp_install::CanonicalRecordState::Stale => "stale",
-        mcp_install::CanonicalRecordState::Conflict => "conflict",
+        installer::CanonicalRecordState::Missing => "missing",
+        installer::CanonicalRecordState::Present => "present",
+        installer::CanonicalRecordState::Stale => "stale",
+        installer::CanonicalRecordState::Conflict => "conflict",
     }
 }
 

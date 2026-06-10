@@ -2,8 +2,8 @@ use difflore_core::domain::models::RememberRuleInput;
 use difflore_core::review_store::{ReviewCommentRecord, ReviewItemWithComments};
 use sqlx::SqlitePool;
 
-use crate::commands::review_text::strip_review_markdown_noise;
-use crate::commands::util::exit_err;
+use crate::support::review_text::strip_review_markdown_noise;
+use crate::support::util::exit_err;
 use crate::style;
 
 use super::ValidatedArgs;

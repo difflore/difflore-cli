@@ -179,17 +179,35 @@ mod classifier_tests {
 /// Dispatch by client name. Unknown names fall through to the Claude Code
 /// adapter: most users are on Claude Code, and a wrong-but-compatible parse
 /// fails loudly via `parse_stdin` while a panic would kill the assistant
-/// session. The `"claude-code"`/`"claude_code"`/`"claude"` aliases all map to it.
+/// session. Name normalisation (case, separators, aliases) is owned by
+/// [`crate::clients::ClientId::from_wire`].
 pub fn get_platform_adapter(client_name: &str) -> Box<dyn PlatformAdapter> {
-    // Match case-insensitively and ignoring separator style so env-var typos and
-    // casing differences across hook configs all route correctly.
-    let normalized = client_name.to_ascii_lowercase();
-    match normalized.as_str() {
-        "cursor" => Box::new(cursor::CursorAdapter),
-        "gemini-cli" | "gemini_cli" | "gemini" => Box::new(gemini_cli::GeminiCliAdapter),
-        "windsurf" => Box::new(windsurf::WindsurfAdapter),
-        // claude aliases plus any unknown name route to Claude Code.
-        _ => Box::new(claude_code::ClaudeCodeAdapter),
+    match crate::clients::ClientId::from_wire(client_name) {
+        Some(id) => adapter_for(id),
+        // Unknown names route to Claude Code (see doc above).
+        None => Box::new(claude_code::ClaudeCodeAdapter),
+    }
+}
+
+/// The hook dialect each client speaks. Exhaustive over [`ClientId`] so a new
+/// client cannot be added without deciding its hook adapter here.
+fn adapter_for(id: crate::clients::ClientId) -> Box<dyn PlatformAdapter> {
+    use crate::clients::ClientId;
+    match id {
+        ClientId::Cursor => Box::new(cursor::CursorAdapter),
+        ClientId::GeminiCli => Box::new(gemini_cli::GeminiCliAdapter),
+        ClientId::Windsurf => Box::new(windsurf::WindsurfAdapter),
+        // Claude Code's hook dialect is the lingua franca: clients without a
+        // dedicated lifecycle-hook surface (or whose hooks we install in the
+        // Claude shape) parse with its adapter.
+        ClientId::ClaudeCode
+        | ClientId::Codex
+        | ClientId::CopilotCli
+        | ClientId::Antigravity
+        | ClientId::Goose
+        | ClientId::Crush
+        | ClientId::RooCode
+        | ClientId::Warp => Box::new(claude_code::ClaudeCodeAdapter),
     }
 }
 

@@ -96,7 +96,7 @@ pub(super) const fn should_write_canonical_record(
 pub fn install_all(dry_run: bool) -> bool {
     let cli_bin = match resolve_difflore_binary() {
         Ok(b) => b,
-        Err(e) => crate::commands::util::exit_err(&e),
+        Err(e) => crate::support::util::exit_err(&e),
     };
     let mcp_bin = cli_bin.clone();
 
@@ -463,7 +463,7 @@ pub(super) fn plan_update_target(
 pub fn update_all(dry_run: bool, force: bool) {
     let cli_bin = match resolve_difflore_binary() {
         Ok(b) => b,
-        Err(e) => crate::commands::util::exit_err(&e),
+        Err(e) => crate::support::util::exit_err(&e),
     };
     let mcp_bin = cli_bin.clone();
 

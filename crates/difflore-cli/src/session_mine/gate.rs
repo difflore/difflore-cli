@@ -1,7 +1,7 @@
 //! LLM gate for session-mined candidates.
 //!
 //! Calls the user's installed agent CLI (Claude Code / Codex / cursor-
-//! agent / Gemini) via [`crate::agent_cli::dispatch_gate`] to decide
+//! agent / Gemini) via [`crate::agent_exec::dispatch_gate`] to decide
 //! whether a session contains a reusable rule.
 //!
 //! ## Prompt shape
@@ -52,7 +52,7 @@
 use std::time::Duration;
 
 use super::extract::Pair;
-use crate::agent_cli::{AgentKind, GateResult, dispatch_gate};
+use crate::agent_exec::{AgentKind, GateResult, dispatch_gate};
 use difflore_core::cloud::session_mined::{
     SessionMinedCandidate, SessionMinedCandidateArgs,
 };
@@ -130,7 +130,7 @@ pub enum GateError {
     EmptyInput,
     /// Agent CLI dispatch failed (binary missing, timeout, non-zero
     /// exit, etc). `message` is the human-readable reason from
-    /// [`crate::agent_cli::GateResult::error_message`].
+    /// [`crate::agent_exec::GateResult::error_message`].
     #[error("session-mine gate dispatch failed: {message}")]
     Dispatch { message: String },
     /// Agent returned output we couldn't parse as the JSON contract.

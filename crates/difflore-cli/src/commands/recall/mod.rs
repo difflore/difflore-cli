@@ -19,13 +19,14 @@ use difflore_core::context::retrieval::RenderedRuleBody;
 use difflore_core::context::types::PastVerdict;
 use globset::Glob;
 
-use crate::commands::util::{exit_code, project_path};
-use crate::mcp_install;
+use crate::support::util::{exit_code, project_path};
+use crate::installer;
 use crate::runtime::CommandContext;
 use crate::style::{self, sym};
 
 mod presentation;
 mod retrieval;
+mod search;
 
 use presentation::{
     cross_repo_starter_json, local_rules_json, recall_diagnostics_json, render_cloud_recall_human,
@@ -234,7 +235,7 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
                 );
             }
         }
-        println!("{}", crate::commands::util::json_or(&payload, "{}"));
+        println!("{}", crate::support::util::json_or(&payload, "{}"));
         return;
     }
 
@@ -271,11 +272,11 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
     // Only fires when there is at least one match; the empty branch already
     // routes to import-reviews.
     if !local.matches.is_empty() {
-        let snapshot = mcp_install::collect_status_snapshot();
+        let snapshot = installer::collect_status_snapshot();
         let installed: Vec<&'static str> = snapshot
             .clients
             .iter()
-            .filter(|c| matches!(c.state, mcp_install::InstallState::Installed))
+            .filter(|c| matches!(c.state, installer::InstallState::Installed))
             .map(|c| c.name)
             .collect();
         if installed.is_empty() {
@@ -779,7 +780,7 @@ pub(super) fn strict_file_pattern_match(patterns: &[String], file: Option<&str>)
 }
 
 pub(super) fn local_rule_title(content: &str, fallback: &str) -> String {
-    crate::commands::search::rule_title(content, fallback)
+    search::rule_title(content, fallback)
 }
 
 pub(super) struct CloudRecallResult {

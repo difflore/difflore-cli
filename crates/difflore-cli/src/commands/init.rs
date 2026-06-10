@@ -1,6 +1,6 @@
 use crate::commands::providers::setup as providers_setup;
-use crate::commands::util::{ensure_project, exit_err};
-use crate::mcp_install;
+use crate::support::util::{ensure_project, exit_err};
+use crate::installer;
 use crate::runtime::CommandContext;
 use crate::style::{self, sym};
 
@@ -51,7 +51,7 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
         );
     }
 
-    let remote_url = crate::commands::util::git_str(&["config", "--get", "remote.origin.url"]);
+    let remote_url = crate::support::util::git_str(&["config", "--get", "remote.origin.url"]);
     // [fork, upstream(s)…] — the same alias chain `fix --preview` uses, so the
     // memory preview resolves to upstream for a fork the user hasn't imported
     // reviews under yet.
@@ -74,7 +74,7 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
     // Run setup steps before collecting snapshots so the readiness block
     // reflects the post-init state.
     if opts.run_agents() {
-        mcp_install::install_all(false);
+        installer::install_all(false);
     }
     if opts.run_provider() {
         let has_active = difflore_core::domain::providers::list(db)
@@ -157,11 +157,11 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
         }
     }
 
-    let snapshot = mcp_install::collect_status_snapshot();
+    let snapshot = installer::collect_status_snapshot();
     let installed = snapshot
         .clients
         .iter()
-        .filter(|c| matches!(c.state, mcp_install::InstallState::Installed))
+        .filter(|c| matches!(c.state, installer::InstallState::Installed))
         .count();
     let detected = snapshot.clients.iter().filter(|c| c.detected).count();
     // Denominator = detected agents on this machine, not the full probe list.

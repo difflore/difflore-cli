@@ -14,7 +14,7 @@
 //!
 //! ```rust,ignore
 //! use std::time::Duration;
-//! use difflore_cli::agent_cli::{AgentKind, dispatch_gate};
+//! use difflore_cli::agent_exec::{AgentKind, dispatch_gate};
 //!
 //! async fn example() {
 //!     let result = dispatch_gate(

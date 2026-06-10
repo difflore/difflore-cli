@@ -5,7 +5,7 @@ use difflore_core::ingest::github::ImportProgress;
 use difflore_core::review_store::{self, ReviewItemWithComments};
 use sqlx::SqlitePool;
 
-use crate::commands::util::exit_err;
+use crate::support::util::exit_err;
 use crate::runtime::CommandContext;
 use crate::style;
 

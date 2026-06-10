@@ -1,51 +1,51 @@
-use crate::mcp_install;
+use crate::installer;
 use crate::style;
 
 pub(crate) const fn doctor_install_state_label(
     detected: bool,
-    state: mcp_install::InstallState,
+    state: installer::InstallState,
 ) -> &'static str {
     match (detected, state) {
         (false, _) => "not detected",
-        (true, mcp_install::InstallState::Installed) => "installed",
-        (true, mcp_install::InstallState::NotInstalled) => "detected, not installed",
-        (true, mcp_install::InstallState::Conflict) => "detected, conflict",
-        (true, mcp_install::InstallState::Unknown) => "detected, install state unknown",
+        (true, installer::InstallState::Installed) => "installed",
+        (true, installer::InstallState::NotInstalled) => "detected, not installed",
+        (true, installer::InstallState::Conflict) => "detected, conflict",
+        (true, installer::InstallState::Unknown) => "detected, install state unknown",
     }
 }
 
 pub(crate) const fn doctor_canonical_record_state_label(
-    state: mcp_install::CanonicalRecordState,
+    state: installer::CanonicalRecordState,
 ) -> &'static str {
     match state {
-        mcp_install::CanonicalRecordState::Missing => "missing",
-        mcp_install::CanonicalRecordState::Present => "present",
-        mcp_install::CanonicalRecordState::Stale => "stale",
-        mcp_install::CanonicalRecordState::Conflict => "conflict",
+        installer::CanonicalRecordState::Missing => "missing",
+        installer::CanonicalRecordState::Present => "present",
+        installer::CanonicalRecordState::Stale => "stale",
+        installer::CanonicalRecordState::Conflict => "conflict",
     }
 }
 
 pub(crate) const fn doctor_install_mark(
     detected: bool,
-    state: mcp_install::InstallState,
+    state: installer::InstallState,
 ) -> &'static str {
     match (detected, state) {
-        (true, mcp_install::InstallState::Installed) => style::sym::OK,
-        (true, mcp_install::InstallState::Conflict) => style::sym::ERR,
-        (true, mcp_install::InstallState::Unknown | mcp_install::InstallState::NotInstalled)
+        (true, installer::InstallState::Installed) => style::sym::OK,
+        (true, installer::InstallState::Conflict) => style::sym::ERR,
+        (true, installer::InstallState::Unknown | installer::InstallState::NotInstalled)
         | (false, _) => style::sym::WARN,
     }
 }
 
 pub(crate) const fn doctor_canonical_mark(
-    state: mcp_install::CanonicalRecordState,
+    state: installer::CanonicalRecordState,
 ) -> &'static str {
     match state {
-        mcp_install::CanonicalRecordState::Present => style::sym::OK,
-        mcp_install::CanonicalRecordState::Missing | mcp_install::CanonicalRecordState::Stale => {
+        installer::CanonicalRecordState::Present => style::sym::OK,
+        installer::CanonicalRecordState::Missing | installer::CanonicalRecordState::Stale => {
             style::sym::WARN
         }
-        mcp_install::CanonicalRecordState::Conflict => style::sym::ERR,
+        installer::CanonicalRecordState::Conflict => style::sym::ERR,
     }
 }
 

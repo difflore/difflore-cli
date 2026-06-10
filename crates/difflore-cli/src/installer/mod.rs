@@ -96,7 +96,7 @@ mod tests {
             // The display client on the row must agree with the derived one.
             assert_eq!(
                 client_name_for_surface(spec.name),
-                spec.client,
+                spec.client.display_name(),
                 "surface {:?} client mismatch",
                 spec.name
             );

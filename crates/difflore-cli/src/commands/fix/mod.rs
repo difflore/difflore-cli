@@ -10,8 +10,8 @@ use difflore_core::review_engine::{
     ReviewIssueRecord, pack_diff_context,
 };
 
-use crate::commands::util::{diff_records_to_string, exit_err};
-use crate::mcp_install;
+use crate::support::util::{diff_records_to_string, exit_err};
+use crate::installer;
 use crate::runtime::CommandContext;
 use crate::style::{self, sym};
 
@@ -21,6 +21,7 @@ mod ci;
 mod context;
 mod errors;
 mod modes;
+mod path_hints;
 mod path_safety;
 mod pr;
 mod preflight;
@@ -973,7 +974,7 @@ fn emit_preview_diagnostic_json(
     diagnostic: &PreviewDiagnostic,
 ) {
     let payload = preview_diagnostic_json_value(scope_label, recalled, attributions, diagnostic);
-    println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+    println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
 }
 
 fn print_preview_diagnostic(
@@ -1096,7 +1097,7 @@ async fn handle_empty_diff(
     if io::stdout().is_terminal() {
         println!("{} Nothing to fix in {scope_label}.", style::ok(sym::OK));
         print_empty_state_hint(&ctx.db).await;
-        mcp_install::maybe_print_mcp_hint().await;
+        installer::maybe_print_mcp_hint().await;
     }
 }
 
@@ -1427,7 +1428,7 @@ fn emit_fix_yes_json(
             "acceptedEditProofs": accepted_edit_proofs,
         },
     });
-    println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+    println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
 }
 
 async fn flush_fix_outbox_before_exit(db: &difflore_core::SqlitePool) {

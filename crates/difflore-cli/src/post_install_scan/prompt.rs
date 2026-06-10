@@ -1,7 +1,7 @@
 //! Synchronous `[Y/n]` prompt for the post-install offer.
 //!
 //! Stays sync (unlike `commands/welcome.rs::prompt_yes`) so it slots into
-//! the sync `mcp_install::install_all` flow without forcing a tokio runtime
+//! the sync `installer::install_all` flow without forcing a tokio runtime
 //! up the call stack.
 
 use std::io::{self, BufRead, Write};

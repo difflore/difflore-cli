@@ -1,17 +1,29 @@
+//! Command dispatch: `Commands` variant in, handler call out.
+//!
+//! Module path = user command path (`commands/cloud/sync.rs` ↔
+//! `difflore cloud sync`). Registered deviations from that rule:
+//!
+//! | command | handler | why |
+//! |---|---|---|
+//! | `difflore try` | `commands/try_demo.rs` | `try` is a Rust keyword |
+//! | `difflore agents …` | `src/installer/` | one engine installs MCP + hooks across every agent; not a per-command module |
+//! | `difflore mcp-server` | `difflore_core::mcp_server` | hidden stdio transport; the server lives in core |
+//! | bare `difflore` | `src/onboarding.rs` + `commands/status/` | first-run wizard, then falls through to status |
+
 use crate::cli::{
     AgentsCommands, CloudCommands, Commands, DistCommands, EmbeddingsCommands, FixCliArgs,
     ImportReviewsCliArgs, InitCliArgs, PacksCommands, ProviderCommands, RecallCliArgs,
     SkillsCommands, SyncCliArgs,
 };
 use crate::commands;
+use crate::commands::cloud::sync::handle_sync;
 use crate::commands::doctor::handle_doctor;
 use crate::commands::init::handle_init;
 use crate::commands::providers::{
     handle_providers_add, handle_providers_list, handle_providers_remove,
     handle_providers_set_active,
 };
-use crate::commands::sync::handle_sync;
-use crate::{mcp_install, runtime};
+use crate::{installer, runtime};
 
 pub(crate) async fn dispatch(command: Commands) {
     match command {
@@ -241,7 +253,7 @@ async fn dispatch_init(args: InitCliArgs) {
 async fn dispatch_agents(command: AgentsCommands) {
     match command {
         AgentsCommands::Install { dry_run } => {
-            let fresh_install = mcp_install::install_all(dry_run);
+            let fresh_install = installer::install_all(dry_run);
             // Post-install touchpoint: offer to seed memory from the current
             // repo's recent PRs. Only after a fresh, fully-successful real
             // install; the helper's guards silently skip CI / non-tty /
@@ -254,9 +266,9 @@ async fn dispatch_agents(command: AgentsCommands) {
                 let _outcome = crate::post_install_scan::maybe_offer_import_reviews(&opts);
             }
         }
-        AgentsCommands::Uninstall { dry_run } => mcp_install::uninstall_all(dry_run),
-        AgentsCommands::Status { json } => mcp_install::status(json),
-        AgentsCommands::Update { dry_run, force } => mcp_install::update_all(dry_run, force),
+        AgentsCommands::Uninstall { dry_run } => installer::uninstall_all(dry_run),
+        AgentsCommands::Status { json } => installer::status(json),
+        AgentsCommands::Update { dry_run, force } => installer::update_all(dry_run, force),
     }
 }
 

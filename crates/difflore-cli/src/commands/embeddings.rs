@@ -8,7 +8,7 @@ use colored::Colorize;
 use difflore_core::context::embedding::{ActiveEmbedderKind, DEFAULT_OPENAI_EMBEDDING_DIM};
 
 use crate::commands::providers::resolve_secret_input;
-use crate::commands::util::exit_err;
+use crate::support::util::exit_err;
 use crate::style;
 
 const DEFAULT_PROVIDER_URL: &str = "https://api.openai.com/v1";
@@ -61,7 +61,7 @@ pub(crate) async fn handle_status(json: bool) {
                 "vectorLaneAvailable": diag.vector_lane_available,
             })),
         });
-        println!("{}", crate::commands::util::json_or(&value, "{}"));
+        println!("{}", crate::support::util::json_or(&value, "{}"));
         return;
     }
 
@@ -327,13 +327,13 @@ pub(crate) async fn handle_disable() {
 /// out-of-scope/orphaned chunks, bypassing the freshness short-circuit
 /// that recall/serve use. Safe to run anytime.
 pub(crate) async fn handle_rebuild(json: bool) {
-    let db = crate::commands::util::init_db().await;
+    let db = crate::support::util::init_db().await;
 
     // Detect repo scope like recall / the hook (origin + upstream, with
     // fork->source alias expansion). The per-project index is the scope
     // boundary, so an unscoped checkout has nothing to rebuild.
     let detected =
-        difflore_core::infra::git::detect_github_repo_full_names(&crate::commands::util::project_path());
+        difflore_core::infra::git::detect_github_repo_full_names(&crate::support::util::project_path());
     let repo_scopes = difflore_core::skills::expand_repo_scopes_with_source_aliases(&db, &detected)
         .await
         .unwrap_or(detected);
@@ -342,7 +342,7 @@ pub(crate) async fn handle_rebuild(json: bool) {
         if json {
             println!(
                 "{}",
-                crate::commands::util::json_or(
+                crate::support::util::json_or(
                     &serde_json::json!({ "rebuilt": false, "reason": "no_repo_scope", "chunks": 0 }),
                     "{}",
                 )
@@ -377,7 +377,7 @@ pub(crate) async fn handle_rebuild(json: bool) {
             if json {
                 println!(
                     "{}",
-                    crate::commands::util::json_or(
+                    crate::support::util::json_or(
                         &serde_json::json!({
                             "rebuilt": true,
                             "repoScopes": repo_scopes,

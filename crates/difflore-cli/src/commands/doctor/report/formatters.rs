@@ -2,8 +2,9 @@ use crate::commands::doctor::labels::{
     doctor_canonical_mark, doctor_canonical_record_state_label, doctor_install_mark,
     doctor_install_state_label,
 };
-use crate::commands::{dist, util::format_recall_edit_proof_breakdown};
-use crate::mcp_install;
+use crate::commands::dist;
+use crate::support::util::format_recall_edit_proof_breakdown;
+use crate::installer;
 
 /// Map the canonical language slug emitted by `language_from_tags` /
 /// `language_from_file_patterns` to a short display label suitable for
@@ -129,7 +130,7 @@ struct McpValueProof {
 }
 
 pub(super) async fn mcp_section(ctx: &crate::runtime::CommandContext, s: &mut String) {
-    let snapshot = mcp_install::collect_status_snapshot_with_runtime_probe();
+    let snapshot = installer::collect_status_snapshot_with_runtime_probe();
     let value_proof = load_mcp_value_proof(ctx, &snapshot).await;
     mcp_installed_subsection(s, &snapshot, &value_proof);
     mcp_per_tool_subsection(s, &snapshot);
@@ -137,7 +138,7 @@ pub(super) async fn mcp_section(ctx: &crate::runtime::CommandContext, s: &mut St
 
 fn mcp_installed_subsection(
     s: &mut String,
-    snapshot: &mcp_install::McpStatusSnapshot,
+    snapshot: &installer::McpStatusSnapshot,
     value_proof: &McpValueProof,
 ) {
     sw!(
@@ -153,17 +154,17 @@ fn mcp_installed_subsection(
     let installed_count = snapshot
         .agents
         .iter()
-        .filter(|a| matches!(a.state, mcp_install::InstallState::Installed))
+        .filter(|a| matches!(a.state, installer::InstallState::Installed))
         .count();
     let conflict_count = snapshot
         .agents
         .iter()
-        .filter(|a| matches!(a.state, mcp_install::InstallState::Conflict))
+        .filter(|a| matches!(a.state, installer::InstallState::Conflict))
         .count();
     let unknown_count = snapshot
         .agents
         .iter()
-        .filter(|a| matches!(a.state, mcp_install::InstallState::Unknown))
+        .filter(|a| matches!(a.state, installer::InstallState::Unknown))
         .count();
     sw!(s, "- binary: `{}`", snapshot.binary);
     sw!(
@@ -232,7 +233,7 @@ fn mcp_installed_subsection(
 
 async fn load_mcp_value_proof(
     ctx: &crate::runtime::CommandContext,
-    snapshot: &mcp_install::McpStatusSnapshot,
+    snapshot: &installer::McpStatusSnapshot,
 ) -> McpValueProof {
     let mut proof = McpValueProof {
         installed_clients: report_installed_clients(snapshot).len(),
@@ -260,7 +261,7 @@ async fn load_mcp_value_proof(
         proof.local_accepted_edits_last30 = Some(summary.applied);
         proof.local_total_outcomes_last30 = Some(total);
         proof.local_saved_review_time =
-            crate::commands::impact_payload::saved_review_time_label(summary.applied * 4);
+            crate::support::impact_payload::saved_review_time_label(summary.applied * 4);
     }
     if let Ok(emitter) =
         difflore_core::cloud::observations::ObservationEmitter::open_default().await
@@ -273,7 +274,7 @@ async fn load_mcp_value_proof(
                 Some(proof.local_total_outcomes_last30.unwrap_or(0) + hook_outcomes);
             let accepted_total = local_accepted_proof_total(&proof);
             proof.local_saved_review_time =
-                crate::commands::impact_payload::saved_review_time_label(accepted_total * 4);
+                crate::support::impact_payload::saved_review_time_label(accepted_total * 4);
         }
         if let Ok(summary) = emitter.accepted_recall_link_summary(30, 7).await {
             proof.local_accepted_outcomes_linked_to_prior_recall_last30 =
@@ -292,9 +293,9 @@ async fn load_mcp_value_proof(
         proof.accepted_fixes_last30 = Some(scorecard.last30.accepted);
         proof.total_fixes_last30 = Some(scorecard.last30.total);
         let saved_minutes =
-            crate::commands::impact_payload::saved_review_minutes_for_scorecard(&scorecard);
+            crate::support::impact_payload::saved_review_minutes_for_scorecard(&scorecard);
         proof.saved_review_time =
-            crate::commands::impact_payload::saved_review_time_label(saved_minutes);
+            crate::support::impact_payload::saved_review_time_label(saved_minutes);
     }
 
     proof
@@ -302,7 +303,7 @@ async fn load_mcp_value_proof(
 
 fn mcp_support_bundle_subsection(
     s: &mut String,
-    snapshot: &mcp_install::McpStatusSnapshot,
+    snapshot: &installer::McpStatusSnapshot,
     value_proof: &McpValueProof,
 ) {
     sw!(s, "\n### MCP support bundle\n");
@@ -508,24 +509,24 @@ const fn plural_usize(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-fn report_installed_clients(snapshot: &mcp_install::McpStatusSnapshot) -> Vec<String> {
+fn report_installed_clients(snapshot: &installer::McpStatusSnapshot) -> Vec<String> {
     snapshot
         .clients
         .iter()
         .filter(|client| {
-            client.detected && matches!(client.state, mcp_install::InstallState::Installed)
+            client.detected && matches!(client.state, installer::InstallState::Installed)
         })
         .map(|client| client.name.to_owned())
         .collect()
 }
 
-fn report_installed_surfaces(snapshot: &mcp_install::McpStatusSnapshot) -> Vec<String> {
+fn report_installed_surfaces(snapshot: &installer::McpStatusSnapshot) -> Vec<String> {
     snapshot
         .clients
         .iter()
         .flat_map(|client| &client.surfaces)
         .filter(|surface| {
-            surface.detected && matches!(surface.state, mcp_install::InstallState::Installed)
+            surface.detected && matches!(surface.state, installer::InstallState::Installed)
         })
         .map(|surface| {
             let detail = surface.detail.as_deref().unwrap_or("installed");
@@ -546,10 +547,10 @@ fn one_line(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn mcp_per_tool_subsection(s: &mut String, snapshot: &mcp_install::McpStatusSnapshot) {
+fn mcp_per_tool_subsection(s: &mut String, snapshot: &installer::McpStatusSnapshot) {
     sw!(s, "\n## ✓ MCP raw surfaces\n");
     for agent in &snapshot.agents {
-        if !agent.detected && matches!(agent.state, mcp_install::InstallState::NotInstalled) {
+        if !agent.detected && matches!(agent.state, installer::InstallState::NotInstalled) {
             continue;
         }
         sw!(
@@ -565,19 +566,19 @@ fn mcp_per_tool_subsection(s: &mut String, snapshot: &mcp_install::McpStatusSnap
     }
 }
 
-const fn doctor_runtime_probe_state_label(state: mcp_install::RuntimeProbeState) -> &'static str {
+const fn doctor_runtime_probe_state_label(state: installer::RuntimeProbeState) -> &'static str {
     match state {
-        mcp_install::RuntimeProbeState::Ok => "ok",
-        mcp_install::RuntimeProbeState::Failed => "failed",
-        mcp_install::RuntimeProbeState::Timeout => "timeout",
+        installer::RuntimeProbeState::Ok => "ok",
+        installer::RuntimeProbeState::Failed => "failed",
+        installer::RuntimeProbeState::Timeout => "timeout",
     }
 }
 
-const fn doctor_runtime_probe_mark(state: mcp_install::RuntimeProbeState) -> &'static str {
+const fn doctor_runtime_probe_mark(state: installer::RuntimeProbeState) -> &'static str {
     match state {
-        mcp_install::RuntimeProbeState::Ok => "✓",
-        mcp_install::RuntimeProbeState::Failed => "✗",
-        mcp_install::RuntimeProbeState::Timeout => "⚠",
+        installer::RuntimeProbeState::Ok => "✓",
+        installer::RuntimeProbeState::Failed => "✗",
+        installer::RuntimeProbeState::Timeout => "⚠",
     }
 }
 
@@ -795,7 +796,7 @@ mod tests {
     use super::{
         McpValueProof, mcp_support_bundle_subsection, mcp_value_proof_lines, redact_secrets,
     };
-    use crate::mcp_install::{
+    use crate::installer::{
         CanonicalRecordState, CanonicalRecordStatus, InstallState, McpClientStatus,
         McpRuntimeProbe, McpStatusDiagnosis, McpStatusSnapshot, RuntimeProbeState, TargetStatus,
     };

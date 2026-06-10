@@ -10,7 +10,7 @@ use difflore_core::context::retrieval::ScoredRuleChunk;
 use difflore_core::context::types::{PastVerdict, PastVerdictScope};
 use difflore_core::skills::SearchSkillMeta;
 
-use crate::commands::util::project_path;
+use crate::support::util::project_path;
 use crate::style::{self, sym};
 
 use super::{
@@ -31,7 +31,7 @@ pub(super) async fn recall_local_rules(
     file: Option<&str>,
     top_k: usize,
 ) -> LocalRecallResult {
-    let top_k = crate::commands::util::clamp_with_warn("--top-k", top_k, 1, 50, false);
+    let top_k = crate::support::util::clamp_with_warn("--top-k", top_k, 1, 50, false);
     let db = &ctx.db;
     let rules = match difflore_core::context::rule_source::load_rules_from_db(db).await {
         Ok(rules) => rules,
@@ -116,7 +116,7 @@ pub(super) async fn recall_local_rules(
     // below has room to surface file-pattern matches the content-only
     // retriever would drop; truncated back to top_k after the sort.
     let pool_k = candidate_pool_size(top_k);
-    let scored = match crate::commands::search::retrieve_rules_for_search(
+    let scored = match crate::commands::recall::search::retrieve_rules_for_search(
         &index_pool,
         &query,
         intent,
@@ -137,7 +137,7 @@ pub(super) async fn recall_local_rules(
             Vec::new()
         }
     };
-    let mut scored = crate::commands::search::merge_exact_title_matches(
+    let mut scored = crate::commands::recall::search::merge_exact_title_matches(
         &rules,
         intent,
         repo_scopes.as_slice(),
@@ -559,7 +559,7 @@ pub(super) async fn cross_repo_starter_hits(
     let query = format!("{file} {intent}");
     let ranking_inputs = difflore_core::context::rule_source::load_rule_ranking_inputs(db).await;
     let pool_k = candidate_pool_size(top_k);
-    let Ok(scored) = crate::commands::search::retrieve_rules_for_search(
+    let Ok(scored) = crate::commands::recall::search::retrieve_rules_for_search(
         &starter_pool,
         &query,
         intent,
@@ -825,7 +825,7 @@ pub(super) async fn recall_cloud_review_memory(
         PastVerdictScope::Personal
     };
 
-    let top_k = crate::commands::util::clamp_with_warn("--top-k", top_k, 1, 10, false);
+    let top_k = crate::support::util::clamp_with_warn("--top-k", top_k, 1, 10, false);
     if repo_full_names.is_empty() {
         return CloudRecallResult {
             logged_in: true,

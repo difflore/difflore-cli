@@ -1,4 +1,5 @@
 pub(crate) mod login;
+pub(crate) mod sync;
 
 mod auth;
 mod impact;
@@ -6,7 +7,7 @@ mod team;
 
 use crate::style;
 
-use crate::commands::util::{exit_code, exit_err};
+use crate::support::util::{exit_code, exit_err};
 use difflore_core::cloud::observations::{ActualCitationSummary, ObservationUploadIssue};
 
 use auth::DeviceRegistrationState;
@@ -36,7 +37,7 @@ pub(crate) async fn handle_status(json: bool) {
     if json {
         let payload =
             cloud_status_value(&status, agent_usage.as_ref(), device_registration.as_ref());
-        println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+        println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
         return;
     }
 

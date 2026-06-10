@@ -6,7 +6,7 @@
 //! through so users can scope the question to one file's diff.
 
 use crate::commands::recall::{RecallArgs, handle_recall};
-use crate::commands::util::exit_code;
+use crate::support::util::exit_code;
 use crate::runtime::CommandContext;
 use crate::style::{self, sym};
 

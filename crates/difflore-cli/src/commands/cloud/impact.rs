@@ -14,7 +14,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
     if !client.is_logged_in() {
         if json {
             let payload = impact_logged_out_value();
-            println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+            println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
         } else {
             println!(
                 "{} Not logged in to DiffLore Cloud.",
@@ -34,7 +34,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
     if !cloud_status.logged_in {
         if json {
             let payload = impact_unverified_session_value();
-            println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+            println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
         } else {
             println!(
                 "{} Cloud session could not be verified.",
@@ -59,15 +59,15 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
 
     if json {
         let accepted_proof_sources =
-            crate::commands::impact_payload::fetch_accepted_proof_sources_for_top_rules(
+            crate::support::impact_payload::fetch_accepted_proof_sources_for_top_rules(
                 ctx,
                 &top_rules,
                 usize::MAX,
             )
             .await;
         let mut payload =
-            crate::commands::impact_payload::shared_sections_with_accepted_proof_sources(
-                &crate::commands::impact_payload::ImpactPayloadInputs {
+            crate::support::impact_payload::shared_sections_with_accepted_proof_sources(
+                &crate::support::impact_payload::ImpactPayloadInputs {
                     banner: &banner,
                     weekly: &weekly,
                     top_rules: &top_rules,
@@ -94,7 +94,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
             super::agent_usage_value(agent_usage.as_ref()),
         );
         let payload = serde_json::Value::Object(payload);
-        println!("{}", crate::commands::util::json_or(&payload, "{}"));
+        println!("{}", crate::support::util::json_or(&payload, "{}"));
         return;
     }
 
@@ -190,7 +190,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                 .any(|rule| rule.accepted_proof_source.is_none())
             {
                 let ids: Vec<String> = r.rules.iter().map(|x| x.id.clone()).collect();
-                crate::commands::impact_payload::fetch_accepted_proof_sources(&ctx.db, &ids).await
+                crate::support::impact_payload::fetch_accepted_proof_sources(&ctx.db, &ids).await
             } else {
                 std::collections::HashMap::new()
             };
@@ -209,18 +209,18 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                         format!(" | trust {pct}%")
                     }
                 });
-                let proof = crate::commands::impact_payload::accepted_proof_source_label(
+                let proof = crate::support::impact_payload::accepted_proof_source_label(
                     rule.accepted_proof_source
                         .as_deref()
                         .or_else(|| local_proof_sources.get(&rule.id).map(String::as_str)),
                 )
                 .map_or_else(String::new, |label| format!(" | {}", style::pewter(label)));
-                let agent_ready = crate::commands::impact_payload::agent_ready_proof_label(
+                let agent_ready = crate::support::impact_payload::agent_ready_proof_label(
                     rule.reviewer_proof_ready_count,
                 )
                 .map_or_else(String::new, |label| format!(" | {}", style::pewter(&label)));
                 let reviewer_context =
-                    crate::commands::impact_payload::reviewer_context_proof_label(
+                    crate::support::impact_payload::reviewer_context_proof_label(
                         rule.reviewer_context_serves,
                         rule.reviewer_mentions,
                     )
@@ -319,8 +319,8 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                 f.last30.accepted,
                 f.last30.total
             );
-            if let Some(label) = crate::commands::impact_payload::saved_review_time_label(
-                crate::commands::impact_payload::saved_review_minutes_for_scorecard(f),
+            if let Some(label) = crate::support::impact_payload::saved_review_time_label(
+                crate::support::impact_payload::saved_review_minutes_for_scorecard(f),
             ) {
                 line.push_str(&format!(" {}", style::pewter(&format!("| {label}"))));
             }

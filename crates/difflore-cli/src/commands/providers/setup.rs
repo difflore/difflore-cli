@@ -110,7 +110,7 @@ pub async fn run_setup(db: &difflore_core::SqlitePool) -> SetupOutcome {
         .position(|(_, present)| *present)
         .map(|i| i + 1);
     let Some(default) = default else {
-        crate::commands::util::exit_err(
+        crate::support::util::exit_err(
             "no agent CLI detected on PATH. Install one of `claude`, `codex`, `gemini`, or `opencode`, then re-run setup.",
         );
     };
@@ -125,14 +125,14 @@ pub async fn run_setup(db: &difflore_core::SqlitePool) -> SetupOutcome {
     let parsed: usize = if let Ok(n) = choice.parse() {
         n
     } else {
-        crate::commands::util::exit_err(&format!(
+        crate::support::util::exit_err(&format!(
             "{choice:?} is not a valid choice. Expected 1..={}.",
             ALL_AGENT_TOOLS.len()
         ));
     };
 
     if !(1..=ALL_AGENT_TOOLS.len()).contains(&parsed) {
-        crate::commands::util::exit_err(&format!(
+        crate::support::util::exit_err(&format!(
             "{parsed} is out of range. Expected 1..={}.",
             ALL_AGENT_TOOLS.len()
         ));
@@ -140,7 +140,7 @@ pub async fn run_setup(db: &difflore_core::SqlitePool) -> SetupOutcome {
 
     let (tool, present) = detected[parsed - 1];
     if !present {
-        crate::commands::util::exit_err(&format!(
+        crate::support::util::exit_err(&format!(
             "{tool} CLI not detected. Install `{}` first.",
             binary_for(tool)
         ));
@@ -215,7 +215,7 @@ async fn save_provider(
     {
         Ok(p) => p,
         Err(e) => {
-            crate::commands::util::exit_err(&format!(
+            crate::support::util::exit_err(&format!(
                 "failed to save provider: {e}\n  Run {} to inspect local DB / migration state.\n  Local data lives at {} — back up before any recovery action.",
                 style::cmd("difflore doctor"),
                 style::pewter("~/.difflore/data.db")

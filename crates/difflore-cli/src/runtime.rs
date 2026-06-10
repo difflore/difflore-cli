@@ -25,7 +25,7 @@ pub struct CommandContext {
 
 impl CommandContext {
     pub async fn new(mode: OutputMode) -> Self {
-        let db = crate::commands::util::init_db().await;
+        let db = crate::support::util::init_db().await;
         let project = difflore_core::infra::paths::current_project_root();
         Self {
             db,

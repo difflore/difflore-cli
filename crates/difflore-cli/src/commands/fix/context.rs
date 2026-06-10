@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use difflore_core::domain::models::DiffContentRecord;
 
-use crate::commands::util::{ensure_project, project_path};
+use crate::support::util::{ensure_project, project_path};
 use crate::runtime::CommandContext;
 
 use super::pr::{PreparePrOptions, PreparedPrFix, prepare_pr_fix};

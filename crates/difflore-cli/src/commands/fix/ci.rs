@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use difflore_core::review_engine::ReviewIssueRecord;
 
-use crate::commands::util::exit_code;
+use crate::support::util::exit_code;
 use crate::style::{self, sym};
 
 use super::{CONFIDENCE_THRESHOLD, file_loc, issue_rule_label};

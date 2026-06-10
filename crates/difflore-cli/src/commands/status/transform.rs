@@ -281,7 +281,7 @@ pub(super) fn local_value_loop_status(
             ),
         )
     } else if accepted_edit_proof_ready {
-        let recall_breakdown = crate::commands::util::format_recall_edit_proof_breakdown(
+        let recall_breakdown = crate::support::util::format_recall_edit_proof_breakdown(
             accepted.accepted_outcomes_linked_to_rule_recall,
             accepted.accepted_outcomes_linked_to_mcp_rule_serve,
             accepted.accepted_outcomes_linked_to_edit_attribution,

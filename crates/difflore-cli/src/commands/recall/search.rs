@@ -104,7 +104,7 @@ pub(crate) fn rule_title(content: &str, fallback: &str) -> String {
     // Display-time cleanup so titles minted by older binaries (which captured
     // CodeRabbit emphasis/banners verbatim) render cleanly without a DB
     // migration. Idempotent for already-clean titles.
-    crate::commands::review_text::clean_display_title(&raw, fallback)
+    crate::support::review_text::clean_display_title(&raw, fallback)
 }
 
 #[cfg(test)]

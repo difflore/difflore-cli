@@ -83,3 +83,46 @@ this batch — the old paths below no longer resolve; bumped to 0.2.0):
 Kept at the crate root (type re-exports, not module aliases):
 `difflore_core::CoreError`, `difflore_core::Result`,
 `difflore_core::SqlitePool`.
+
+## R2 — difflore-cli crate moves
+
+| Old | New |
+| --- | --- |
+| `crates/difflore-cli/src/hooks/` (adapter trait + per-client adapters) | `crates/difflore-cli/src/hook/adapters/` |
+| `crates/difflore-cli/src/hooks/session_banner/` | `crates/difflore-cli/src/hook/banner/` |
+| `crates/difflore-cli/src/hook_runtime/` | `crates/difflore-cli/src/hook/runtime/` |
+| `crates/difflore-cli/src/hook_runtime/stated_vs_actual.rs` | `crates/difflore-cli/src/hook/runtime/drift_report.rs` |
+| `crates/difflore-cli/src/hook_cache.rs` | `crates/difflore-cli/src/hook/cache.rs` |
+| `crates/difflore-cli/src/hook_forward.rs` | `crates/difflore-cli/src/hook/forward/mod.rs` (+ new `protocol.rs`, wire shapes the `difflore-hook` bin now reuses) |
+| `crates/difflore-cli/src/mcp_install/` | `crates/difflore-cli/src/installer/` |
+| `crates/difflore-cli/src/agent_cli/` | `crates/difflore-cli/src/agent_exec/` |
+| `crates/difflore-cli/src/dispatch/mod.rs` | `crates/difflore-cli/src/dispatch.rs` |
+| `crates/difflore-cli/src/runtime/{mod,context}.rs` | `crates/difflore-cli/src/runtime.rs` |
+| `crates/difflore-cli/src/commands/util.rs` | `crates/difflore-cli/src/support/util.rs` |
+| `crates/difflore-cli/src/commands/review_text.rs` | `crates/difflore-cli/src/support/review_text.rs` |
+| `crates/difflore-cli/src/commands/impact_payload.rs` | `crates/difflore-cli/src/support/impact_payload.rs` |
+| `crates/difflore-cli/src/commands/welcome.rs` | `crates/difflore-cli/src/onboarding.rs` |
+| `crates/difflore-cli/src/commands/sync.rs` | `crates/difflore-cli/src/commands/cloud/sync.rs` |
+| `crates/difflore-cli/src/commands/search.rs` | `crates/difflore-cli/src/commands/recall/search.rs` |
+| `crates/difflore-cli/src/commands/audit_history.rs` | `crates/difflore-cli/src/commands/doctor/audit_history.rs` |
+| `crates/difflore-cli/src/commands/path_hints.rs` | `crates/difflore-cli/src/commands/fix/path_hints.rs` |
+| `crates/difflore-cli/src/commands/import_reviews.rs` | `crates/difflore-cli/src/commands/import_reviews/mod.rs` |
+
+New (no old path): `crates/difflore-cli/src/clients.rs` (`ClientId`, the
+single compile-time client table the installer registry / hook adapters /
+agent_exec all match over).
+
+Module path equivalents (crate-internal; `difflore-cli` is a binary crate so
+no published API surface changes):
+
+| Old | New |
+| --- | --- |
+| `difflore_cli::hooks` | `difflore_cli::hook::adapters` |
+| `difflore_cli::hooks::session_banner` | `difflore_cli::hook::banner` |
+| `difflore_cli::hook_runtime` | `difflore_cli::hook::runtime` |
+| `difflore_cli::hook_cache` | `difflore_cli::hook::cache` |
+| `difflore_cli::hook_forward` | `difflore_cli::hook::forward` |
+| `difflore_cli::mcp_install` | `difflore_cli::installer` |
+| `difflore_cli::agent_cli` | `difflore_cli::agent_exec` |
+| `difflore_cli::commands::{util,review_text,impact_payload}` | `difflore_cli::support::{util,review_text,impact_payload}` |
+| `difflore_cli::commands::welcome` | `difflore_cli::onboarding` |

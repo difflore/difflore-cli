@@ -10,17 +10,20 @@
 
 use clap::FromArgMatches;
 
-pub mod agent_cli;
+pub mod agent_exec;
 pub mod cli;
+pub mod clients;
 pub mod commands;
 mod dispatch;
 pub mod error;
 pub mod hook;
-pub mod mcp_install;
+pub mod installer;
+mod onboarding;
 pub mod post_install_scan;
 pub mod runtime;
 pub mod session_mine;
 pub mod style;
+mod support;
 
 use cli::{Cli, Commands, StatusLane};
 
@@ -54,21 +57,21 @@ pub async fn run() {
     } else {
         // First-run state machine: bare `difflore` runs the wizard/welcome
         // once, then falls through to the compact status surface.
-        match commands::welcome::first_run_path(cli.no_interactive).await {
-            commands::welcome::FirstRunPath::LaunchWizard => {
-                if !commands::welcome::run_wizard().await.should_continue_tui() {
+        match onboarding::first_run_path(cli.no_interactive).await {
+            onboarding::FirstRunPath::LaunchWizard => {
+                if !onboarding::run_wizard().await.should_continue_tui() {
                     return;
                 }
             }
-            commands::welcome::FirstRunPath::ShowWelcome => {
-                if !commands::welcome::show_welcome_then_continue()
+            onboarding::FirstRunPath::ShowWelcome => {
+                if !onboarding::show_welcome_then_continue()
                     .await
                     .should_continue_tui()
                 {
                     return;
                 }
             }
-            commands::welcome::FirstRunPath::Skip => {}
+            onboarding::FirstRunPath::Skip => {}
         }
         Commands::Status {
             json: false,

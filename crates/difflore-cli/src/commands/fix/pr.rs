@@ -7,7 +7,7 @@ use anyhow::{Context, bail};
 use difflore_core::domain::models::{DiffContentRecord, GitDiffInput};
 use serde::Deserialize;
 
-use crate::commands::util::validate_owner_repo;
+use crate::support::util::validate_owner_repo;
 use crate::style::{self, sym};
 
 use super::fix_debug;

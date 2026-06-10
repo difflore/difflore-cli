@@ -1,6 +1,6 @@
 //! Doctor data-probing for the default table view.
 //!
-//! Collects every `difflore_core` / `mcp_install` / `CommandContext` call the
+//! Collects every `difflore_core` / `installer` / `CommandContext` call the
 //! default `difflore doctor` table needs and decodes it into the plain
 //! [`Findings`] struct for `table.rs` to render. Returns only decoded scalars,
 //! options and small enums — severity / status / hint strings live in
@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use super::memory_snapshot::{self, MemorySnapshot};
-use crate::mcp_install;
+use crate::installer;
 
 /// Everything the readiness table needs, already fetched and decoded.
 /// Construct one with [`gather`].
@@ -20,7 +20,7 @@ pub(crate) struct Findings {
     /// Pre-loaded "what the AI has learned" snapshot. Defaults (rendering to
     /// "") when the current repo has no ready memory, so no load is issued.
     pub(crate) memory_snapshot: MemorySnapshot,
-    pub(crate) mcp: mcp_install::McpStatusSnapshot,
+    pub(crate) mcp: installer::McpStatusSnapshot,
     pub(crate) provider: ProviderProbe,
     pub(crate) cloud: CloudProbe,
     pub(crate) embedder: EmbedderProbe,
@@ -99,7 +99,7 @@ pub(crate) async fn gather(ctx: &crate::runtime::CommandContext) -> Findings {
     // near the row that reports it).
     let project_db = probe_project_db(pool, &ctx.project).await;
     let binary_version = env!("CARGO_PKG_VERSION").to_owned();
-    let mcp = mcp_install::collect_status_snapshot_with_runtime_probe();
+    let mcp = installer::collect_status_snapshot_with_runtime_probe();
     let provider = probe_provider(pool).await;
     let cloud = probe_cloud(ctx).await;
     let embedder = probe_embedder().await;

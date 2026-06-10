@@ -1,6 +1,6 @@
-use crate::commands::audit_history::load_audit_history;
+use crate::commands::doctor::audit_history::load_audit_history;
 use crate::commands::doctor::labels::doctor_probe_freshness;
-use crate::commands::util::git_str;
+use crate::support::util::git_str;
 use crate::hook::runtime as hook_runtime;
 
 use super::formatters::doctor_command_version;

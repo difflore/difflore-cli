@@ -69,14 +69,14 @@ fn client_status(name: &'static str, surfaces: Vec<TargetStatus>) -> McpClientSt
     }
 }
 
-/// Roll the per-surface `agents` up into one [`McpClientStatus`] per display
-/// client. The client list and surface→client mapping derive from the `AGENTS`
-/// table (`spec.client`), so a new agent row appears here automatically.
-/// Clients are emitted in first-seen `AGENTS` order, each client's surfaces in
-/// row order.
+/// Roll the per-surface `agents` up into one [`McpClientStatus`] per client.
+/// The client list and surface→client mapping derive from the `AGENTS` table
+/// (`spec.client`, a [`crate::clients::ClientId`]), so a new agent row appears
+/// here automatically. Clients are emitted in first-seen `AGENTS` order, each
+/// client's surfaces in row order.
 pub(super) fn collect_client_statuses_from_agents(agents: &[TargetStatus]) -> Vec<McpClientStatus> {
-    let mut clients: Vec<&'static str> = Vec::new();
-    let mut seen: BTreeSet<&'static str> = BTreeSet::new();
+    let mut clients: Vec<crate::clients::ClientId> = Vec::new();
+    let mut seen: BTreeSet<crate::clients::ClientId> = BTreeSet::new();
     for spec in AGENTS {
         if seen.insert(spec.client) {
             clients.push(spec.client);
@@ -90,7 +90,7 @@ pub(super) fn collect_client_statuses_from_agents(agents: &[TargetStatus]) -> Ve
                 .filter(|spec| spec.client == client)
                 .filter_map(|spec| find_surface(agents, spec.name))
                 .collect();
-            client_status(client, surfaces)
+            client_status(client.display_name(), surfaces)
         })
         .collect()
 }

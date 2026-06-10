@@ -19,32 +19,57 @@ pub enum AgentKind {
 }
 
 impl AgentKind {
-    /// Stable display label, matching the hook adapters' `name()`.
+    /// The [`ClientId`](crate::clients::ClientId) this agent kind executes
+    /// for. Total: every gate-capable agent is a known client.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn client_id(self) -> crate::clients::ClientId {
+        use crate::clients::ClientId;
         match self {
-            Self::ClaudeCode => "claude-code",
-            Self::Codex => "codex",
-            Self::Cursor => "cursor",
-            Self::GeminiCli => "gemini-cli",
-            Self::Windsurf => "windsurf",
+            Self::ClaudeCode => ClientId::ClaudeCode,
+            Self::Codex => ClientId::Codex,
+            Self::Cursor => ClientId::Cursor,
+            Self::GeminiCli => ClientId::GeminiCli,
+            Self::Windsurf => ClientId::Windsurf,
         }
     }
 
-    /// Parse the hook dispatcher's alias set. Returns `None` on unknown
-    /// input so callers fall back to a configured default rather than
-    /// silently routing to the wrong agent.
+    /// The gate runner for a client, if that client ships a headless CLI we
+    /// know how to drive. Exhaustive over [`ClientId`](crate::clients::ClientId)
+    /// so adding a client forces a decision about its gate support.
+    #[must_use]
+    pub const fn for_client(id: crate::clients::ClientId) -> Option<Self> {
+        use crate::clients::ClientId;
+        match id {
+            ClientId::ClaudeCode => Some(Self::ClaudeCode),
+            ClientId::Codex => Some(Self::Codex),
+            ClientId::Cursor => Some(Self::Cursor),
+            ClientId::GeminiCli => Some(Self::GeminiCli),
+            // Windsurf keeps a variant for hook-adapter symmetry even though
+            // it ships no headless CLI today (dispatch_gate errors out).
+            ClientId::Windsurf => Some(Self::Windsurf),
+            ClientId::CopilotCli
+            | ClientId::Antigravity
+            | ClientId::Goose
+            | ClientId::Crush
+            | ClientId::RooCode
+            | ClientId::Warp => None,
+        }
+    }
+
+    /// Stable display label, matching the hook adapters' `name()` — the
+    /// client's wire name from the single source of truth.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        self.client_id().wire_name()
+    }
+
+    /// Parse the hook dispatcher's alias set (via
+    /// [`ClientId::from_wire`](crate::clients::ClientId::from_wire)). Returns
+    /// `None` on unknown input so callers fall back to a configured default
+    /// rather than silently routing to the wrong agent.
     #[must_use]
     pub fn from_client_name(name: &str) -> Option<Self> {
-        let normalized = name.to_ascii_lowercase();
-        Some(match normalized.as_str() {
-            "claude" | "claude-code" | "claude_code" | "claude-cli" => Self::ClaudeCode,
-            "codex" | "codex-cli" => Self::Codex,
-            "cursor" | "cursor-agent" => Self::Cursor,
-            "gemini" | "gemini-cli" | "gemini_cli" => Self::GeminiCli,
-            "windsurf" => Self::Windsurf,
-            _ => return None,
-        })
+        Self::for_client(crate::clients::ClientId::from_wire(name)?)
     }
 }
 

@@ -920,7 +920,7 @@ fn detect_repo_label() -> Option<String> {
             return Some(repo);
         }
     }
-    let url = crate::commands::util::git_str(&["config", "--get", "remote.origin.url"])?;
+    let url = crate::support::util::git_str(&["config", "--get", "remote.origin.url"])?;
     if url.is_empty() {
         return None;
     }

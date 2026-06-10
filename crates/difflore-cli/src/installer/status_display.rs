@@ -13,7 +13,7 @@ pub fn status(json: bool) {
     let snapshot = collect_status_snapshot_with_runtime_probe();
 
     if json {
-        println!("{}", crate::commands::util::json_or(&snapshot, "{}"));
+        println!("{}", crate::support::util::json_or(&snapshot, "{}"));
         return;
     }
 

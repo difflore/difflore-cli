@@ -11,6 +11,8 @@
 
 use std::path::PathBuf;
 
+use crate::clients::ClientId;
+
 use super::{
     Status, TargetOutcome, TargetStatus,
     common::{
@@ -225,9 +227,10 @@ pub(super) struct AgentSpec {
     /// `canonical_target_key` + `client_name_for_surface` (and their tests)
     /// key off these exact strings.
     pub name: &'static str,
-    /// Display client this surface rolls up into (`snapshot.rs` grouping). e.g.
-    /// both "Cursor" and "Cursor hooks" roll up into client "Cursor".
-    pub client: &'static str,
+    /// Client this surface rolls up into (`snapshot.rs` grouping), as a
+    /// [`ClientId`] — the compile-time client table. e.g. both "Cursor" and
+    /// "Cursor hooks" roll up into [`ClientId::Cursor`].
+    pub client: ClientId,
     pub scope: PathScope,
     /// Path segments under home/cwd. Empty for `CliDelegate` rows (no file).
     pub segments: &'static [&'static str],
@@ -244,7 +247,7 @@ pub(super) struct AgentSpec {
 pub(super) static AGENTS: &[AgentSpec] = &[
     AgentSpec {
         name: "Claude Code",
-        client: "Claude Code",
+        client: ClientId::ClaudeCode,
         scope: PathScope::Home,
         segments: &[],
         display: "claude mcp add -s user difflore",
@@ -273,7 +276,7 @@ pub(super) static AGENTS: &[AgentSpec] = &[
     },
     AgentSpec {
         name: "Claude Code hooks",
-        client: "Claude Code",
+        client: ClientId::ClaudeCode,
         scope: PathScope::Home,
         segments: &[".claude", "settings.json"],
         display: "~/.claude/settings.json",
@@ -285,7 +288,7 @@ pub(super) static AGENTS: &[AgentSpec] = &[
     },
     AgentSpec {
         name: "Codex",
-        client: "Codex",
+        client: ClientId::Codex,
         scope: PathScope::Home,
         segments: &[],
         display: "codex mcp add difflore",
@@ -306,7 +309,7 @@ pub(super) static AGENTS: &[AgentSpec] = &[
     },
     AgentSpec {
         name: "Cursor",
-        client: "Cursor",
+        client: ClientId::Cursor,
         scope: PathScope::Home,
         segments: &[".cursor", "mcp.json"],
         display: "~/.cursor/mcp.json",
@@ -320,7 +323,7 @@ pub(super) static AGENTS: &[AgentSpec] = &[
     },
     AgentSpec {
         name: "Cursor hooks",
-        client: "Cursor",
+        client: ClientId::Cursor,
         scope: PathScope::Cwd,
         segments: &[".cursor", "hooks.json"],
         display: "./.cursor/hooks.json",
@@ -334,7 +337,7 @@ pub(super) static AGENTS: &[AgentSpec] = &[
     },
     AgentSpec {
         name: "Gemini",
-        client: "Gemini CLI",
+        client: ClientId::GeminiCli,
         scope: PathScope::Home,
         segments: &[".gemini", "settings.json"],
         display: "~/.gemini/settings.json",
@@ -349,7 +352,7 @@ pub(super) static AGENTS: &[AgentSpec] = &[
     },
     AgentSpec {
         name: "Gemini hooks",
-        client: "Gemini CLI",
+        client: ClientId::GeminiCli,
         scope: PathScope::Home,
         segments: &[".gemini", "settings.json"],
         display: "~/.gemini/settings.json",
@@ -361,7 +364,7 @@ pub(super) static AGENTS: &[AgentSpec] = &[
     },
     AgentSpec {
         name: "Copilot CLI",
-        client: "Copilot CLI",
+        client: ClientId::CopilotCli,
         scope: PathScope::Home,
         segments: &[".github", "copilot", "mcp.json"],
         display: "~/.github/copilot/mcp.json",
@@ -376,7 +379,7 @@ pub(super) static AGENTS: &[AgentSpec] = &[
     },
     AgentSpec {
         name: "Antigravity",
-        client: "Antigravity",
+        client: ClientId::Antigravity,
         scope: PathScope::Home,
         segments: &[".gemini", "antigravity", "mcp_config.json"],
         display: "~/.gemini/antigravity/mcp_config.json",
@@ -391,7 +394,7 @@ pub(super) static AGENTS: &[AgentSpec] = &[
     },
     AgentSpec {
         name: "Goose",
-        client: "Goose",
+        client: ClientId::Goose,
         scope: PathScope::Home,
         segments: &[".config", "goose", "config.yaml"],
         display: "~/.config/goose/config.yaml",
@@ -404,7 +407,7 @@ pub(super) static AGENTS: &[AgentSpec] = &[
     },
     AgentSpec {
         name: "Crush",
-        client: "Crush",
+        client: ClientId::Crush,
         scope: PathScope::Home,
         segments: &[".config", "crush", "mcp.json"],
         display: "~/.config/crush/mcp.json",
@@ -419,7 +422,7 @@ pub(super) static AGENTS: &[AgentSpec] = &[
     },
     AgentSpec {
         name: "Roo Code",
-        client: "Roo Code",
+        client: ClientId::RooCode,
         scope: PathScope::Cwd,
         segments: &[".roo", "mcp.json"],
         display: "./.roo/mcp.json",
@@ -433,7 +436,7 @@ pub(super) static AGENTS: &[AgentSpec] = &[
     },
     AgentSpec {
         name: "Warp",
-        client: "Warp",
+        client: ClientId::Warp,
         scope: PathScope::Home,
         segments: &[".warp", "mcp.json"],
         display: "~/.warp/mcp.json",
@@ -450,7 +453,7 @@ pub(super) static AGENTS: &[AgentSpec] = &[
     },
     AgentSpec {
         name: "Windsurf hooks",
-        client: "Windsurf",
+        client: ClientId::Windsurf,
         scope: PathScope::Home,
         segments: &[".codeium", "windsurf", "hooks.json"],
         display: "~/.codeium/windsurf/hooks.json",
@@ -950,7 +953,7 @@ pub(super) fn client_name_for_surface(surface: &str) -> &'static str {
     // ("claude hooks") both resolve to their display client.
     for spec in AGENTS {
         if surface_key(spec.name) == key {
-            return spec.client;
+            return spec.client.display_name();
         }
     }
     "unknown client"

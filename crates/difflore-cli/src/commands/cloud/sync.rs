@@ -1,4 +1,4 @@
-use crate::commands::util::{exit_code, exit_err};
+use crate::support::util::{exit_code, exit_err};
 use crate::runtime::CommandContext;
 use crate::style;
 
@@ -259,7 +259,7 @@ fn emit_not_logged_in(json: bool) -> ! {
             "ok": false,
             "reason": "not_logged_in",
         });
-        println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+        println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
         exit_code(1);
     }
     exit_err(
@@ -275,7 +275,7 @@ fn emit_dry_run(json: bool, direction: SyncDirection) {
             "pullOnly": matches!(direction, SyncDirection::Pull),
             "pushOnly": matches!(direction, SyncDirection::Push),
         });
-        println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+        println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
         return;
     }
     println!(
@@ -646,7 +646,7 @@ fn sync_summary_payload(outcome: &SyncOutcome) -> serde_json::Value {
 
 fn emit_summary_json(outcome: &SyncOutcome) {
     let payload = sync_summary_payload(outcome);
-    println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+    println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
 }
 
 fn proof_summary_line(

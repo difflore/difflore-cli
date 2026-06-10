@@ -223,7 +223,7 @@ impl PlatformAdapter for CursorAdapter {
             obj["context"] = Value::String(ctx);
         }
         let _ = result.system_message;
-        crate::commands::util::json_compact_or(&obj, "{\"continue\":true}")
+        crate::support::util::json_compact_or(&obj, "{\"continue\":true}")
     }
 }
 

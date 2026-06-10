@@ -1,6 +1,7 @@
-use crate::commands::util::exit_code;
+use crate::support::util::exit_code;
 use crate::style;
 
+pub(crate) mod audit_history;
 pub(crate) mod drain;
 pub(crate) mod fix;
 pub(crate) mod labels;

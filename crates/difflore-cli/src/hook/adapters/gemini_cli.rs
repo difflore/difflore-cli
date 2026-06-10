@@ -259,7 +259,7 @@ impl PlatformAdapter for GeminiCliAdapter {
                 "additionalContext": ctx,
             });
         }
-        crate::commands::util::json_compact_or(&obj, "{\"continue\":true}")
+        crate::support::util::json_compact_or(&obj, "{\"continue\":true}")
     }
 }
 

@@ -10,7 +10,7 @@ mod queries;
 mod transform;
 
 use crate::cli::StatusLane;
-use crate::commands::util::{exit_err, init_db, project_path};
+use crate::support::util::{exit_err, init_db, project_path};
 
 use queries::{
     LocalAcceptedProof, LocalHeroEvidence, LocalMcpRuleServe, LocalRecallProof,
@@ -34,7 +34,7 @@ pub(crate) async fn handle_status(json: bool, lane: StatusLane) {
         let json_value = payload.to_json_envelope();
         println!(
             "{}",
-            crate::commands::util::json_compact_or(&json_value, "{}")
+            crate::support::util::json_compact_or(&json_value, "{}")
         );
         return;
     }

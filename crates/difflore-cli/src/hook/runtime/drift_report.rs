@@ -187,7 +187,7 @@ fn git_changed_files(cwd: &str) -> Option<Vec<PathBuf>> {
     let mut paths: Vec<PathBuf> = Vec::new();
 
     // Modified tracked files.
-    let modified = crate::commands::util::git_str_in(cwd, &["diff", "--name-only", "HEAD"])?;
+    let modified = crate::support::util::git_str_in(cwd, &["diff", "--name-only", "HEAD"])?;
     for line in modified.lines() {
         let trimmed = line.trim();
         if !trimmed.is_empty() {
@@ -199,7 +199,7 @@ fn git_changed_files(cwd: &str) -> Option<Vec<PathBuf>> {
     // combine modified-tracked and new-untracked. Failures here are non-fatal —
     // better to under-report than refuse the whole audit.
     if let Some(untracked) =
-        crate::commands::util::git_str_in(cwd, &["ls-files", "--others", "--exclude-standard"])
+        crate::support::util::git_str_in(cwd, &["ls-files", "--others", "--exclude-standard"])
     {
         for line in untracked.lines() {
             let trimmed = line.trim();
