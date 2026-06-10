@@ -400,6 +400,12 @@ mod tests {
 
     use super::*;
 
+    fn normalized_doc(text: &str) -> String {
+        text.replace("\r\n", "\n")
+            .trim_end_matches(['\r', '\n'])
+            .to_owned()
+    }
+
     #[test]
     fn generated_skill_docs_match_root_plugin_files() {
         let skills_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/skills");
@@ -419,8 +425,8 @@ mod tests {
             let expected = std::fs::read_to_string(&path)
                 .unwrap_or_else(|err| panic!("could not read {}: {err}", path.display()));
             assert_eq!(
-                embedded,
-                expected.trim_end_matches(['\r', '\n']),
+                normalized_doc(embedded),
+                normalized_doc(&expected),
                 "{} drifted from generated MCP resource",
                 path.display()
             );
