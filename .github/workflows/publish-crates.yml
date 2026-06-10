@@ -5,15 +5,9 @@ permissions:
   id-token: write
 
 on:
-  workflow_call:
-    inputs:
-      plan:
-        required: true
-        type: string
-      dry_run:
-        required: false
-        type: boolean
-        default: false
+  push:
+    tags:
+      - '**[0-9]+.[0-9]+.[0-9]+*'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -23,7 +17,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  HAS_CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
   RUST_BACKTRACE: short
   SQLX_OFFLINE: "true"
 
@@ -31,6 +24,8 @@ jobs:
   publish:
     name: Publish workspace crates to crates.io
     runs-on: ubuntu-latest
+    env:
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
     steps:
       - uses: actions/checkout@v6
 
@@ -44,14 +39,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Refuse manual publish outside a release tag
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == false && !startsWith(github.ref, 'refs/tags/v') }}
+      - name: Refuse publish outside a vX.Y.Z tag
+        if: ${{ env.DRY_RUN != 'true' && !startsWith(github.ref, 'refs/tags/v') }}
         run: |
           echo "::error::Publishing requires running this workflow from a vX.Y.Z tag."
           exit 1
 
       - name: Verify tag matches CLI crate version
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: ${{ env.DRY_RUN != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -104,26 +99,40 @@ jobs:
         run: cargo package -p difflore-core
 
       - name: Package workspace dry run
-        if: ${{ inputs.dry_run == true }}
+        if: ${{ env.DRY_RUN == 'true' }}
         run: cargo package --workspace --no-verify
 
+      - name: Resolve crates.io auth mode
+        if: ${{ env.DRY_RUN != 'true' && (steps.crates-status.outputs.core != 'true' || steps.crates-status.outputs.tui != 'true' || steps.crates-status.outputs.cli != 'true') }}
+        id: crates-auth-mode
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "has_static_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_static_token=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Authenticate with crates.io Trusted Publishing
-        if: ${{ inputs.dry_run == false && env.HAS_CARGO_REGISTRY_TOKEN != 'true' && (steps.crates-status.outputs.core != 'true' || steps.crates-status.outputs.tui != 'true' || steps.crates-status.outputs.cli != 'true') }}
+        if: ${{ env.DRY_RUN != 'true' && steps.crates-auth-mode.outputs.has_static_token != 'true' && (steps.crates-status.outputs.core != 'true' || steps.crates-status.outputs.tui != 'true' || steps.crates-status.outputs.cli != 'true') }}
         id: crates-auth
         uses: rust-lang/crates-io-auth-action@v1
 
       - name: Publish difflore-core
-        if: ${{ inputs.dry_run == false && steps.crates-status.outputs.core != 'true' }}
+        if: ${{ env.DRY_RUN != 'true' && steps.crates-status.outputs.core != 'true' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.crates-auth.outputs.token }}
         run: cargo publish -p difflore-core
 
       - name: Wait for crates.io to index difflore-core
-        if: ${{ inputs.dry_run == false && steps.crates-status.outputs.tui != 'true' }}
+        if: ${{ env.DRY_RUN != 'true' && steps.crates-status.outputs.tui != 'true' }}
         run: sleep 60
 
       - name: Package difflore-tui
-        if: ${{ inputs.dry_run == false && steps.crates-status.outputs.tui != 'true' }}
+        if: ${{ env.DRY_RUN != 'true' && steps.crates-status.outputs.tui != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -137,17 +146,17 @@ jobs:
           exit 1
 
       - name: Publish difflore-tui
-        if: ${{ inputs.dry_run == false && steps.crates-status.outputs.tui != 'true' }}
+        if: ${{ env.DRY_RUN != 'true' && steps.crates-status.outputs.tui != 'true' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.crates-auth.outputs.token }}
         run: cargo publish -p difflore-tui
 
       - name: Wait for crates.io to index difflore-tui
-        if: ${{ inputs.dry_run == false && steps.crates-status.outputs.cli != 'true' }}
+        if: ${{ env.DRY_RUN != 'true' && steps.crates-status.outputs.cli != 'true' }}
         run: sleep 60
 
       - name: Package difflore-cli
-        if: ${{ inputs.dry_run == false && steps.crates-status.outputs.cli != 'true' }}
+        if: ${{ env.DRY_RUN != 'true' && steps.crates-status.outputs.cli != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -161,7 +170,7 @@ jobs:
           exit 1
 
       - name: Publish difflore-cli
-        if: ${{ inputs.dry_run == false && steps.crates-status.outputs.cli != 'true' }}
+        if: ${{ env.DRY_RUN != 'true' && steps.crates-status.outputs.cli != 'true' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.crates-auth.outputs.token }}
         run: cargo publish -p difflore-cli

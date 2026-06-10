@@ -21,7 +21,7 @@ hosting = "github"
 plan-jobs = ["./release-preflight"]
 # Publish the generated Homebrew formula from the release workflow.
 tap = "difflore/homebrew-tap"
-publish-jobs = ["homebrew", "./publish-crates"]
+publish-jobs = ["homebrew"]
 # Whether to install an updater program
 install-updater = false
 

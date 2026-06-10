@@ -10,6 +10,7 @@ mod recall_sampler;
 mod schemas;
 mod serve_render;
 mod server;
+mod skill_docs;
 mod tools;
 mod trust_proof;
 

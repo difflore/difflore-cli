@@ -1,5 +1,10 @@
 use serde_json::{Value, json};
 
+pub(super) use super::skill_docs::{
+    RULE_DIFF_SKILL_MD, RULE_GAP_SKILL_MD, RULE_JOURNEY_SKILL_MD, RULE_SEARCH_SKILL_MD,
+    RULE_WHY_FIRED_SKILL_MD, SMART_EXPLORE_SKILL_MD,
+};
+
 pub(super) fn tools_list() -> Value {
     json!([
         {
@@ -250,34 +255,6 @@ pub(super) fn resource_templates_list() -> Value {
         }
     ])
 }
-
-// SKILL.md files are resource-mirrored from the crate-local plugin directory
-// at compile time. Keeping them under CARGO_MANIFEST_DIR makes crates.io
-// tarball verification compile without the workspace root.
-pub(super) const RULE_SEARCH_SKILL_MD: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/plugin/skills/rule-search/SKILL.md"
-));
-pub(super) const RULE_GAP_SKILL_MD: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/plugin/skills/rule-gap/SKILL.md"
-));
-pub(super) const RULE_DIFF_SKILL_MD: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/plugin/skills/rule-diff/SKILL.md"
-));
-pub(super) const RULE_WHY_FIRED_SKILL_MD: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/plugin/skills/rule-why-fired/SKILL.md"
-));
-pub(super) const RULE_JOURNEY_SKILL_MD: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/plugin/skills/rule-journey/SKILL.md"
-));
-pub(super) const SMART_EXPLORE_SKILL_MD: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/plugin/skills/smart-explore/SKILL.md"
-));
 
 /// Full trigger guide for the `remember_rule` tool. Kept as a resource so
 /// the MCP tool description can stay terse (saves ~1.5KiB per initialize)
