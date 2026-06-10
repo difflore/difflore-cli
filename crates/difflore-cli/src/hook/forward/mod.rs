@@ -5,6 +5,13 @@
 //! Wire shapes, endpoint, and the shim's blocking transport live in
 //! [`protocol`] — the single protocol definition both binaries compile
 //! against.
+//!
+//! KNOWN-UNWIRED (R1/R4): [`try_forward`] and [`run_server`] currently have no
+//! callers in the workspace — the daemon that would host `run_server`, and the
+//! client path that would call `try_forward`, are not yet wired. Only
+//! [`protocol::ipc_roundtrip_blocking`] is live today (used by the
+//! `difflore-hook` shim binary). These two entry points are deliberately kept
+//! `pub` ahead of the daemon landing; see ARCHITECTURE.md "Known unwired".
 
 pub mod protocol;
 
