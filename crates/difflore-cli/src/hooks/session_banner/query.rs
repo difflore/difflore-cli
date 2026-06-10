@@ -1,57 +1,35 @@
 //! SQL for "new rules since `prev_ts`, scoped to this repo".
 //!
-//! Reads canonical rules from `~/.difflore/data.db` (the global rule
-//! ledger; per-project context indexes are a separate concern that
-//! the banner doesn't need). We filter `source_repo` against the
-//! current repo's aliases so a user in `acme/billing` doesn't get
-//! spammed with rules learned in `acme/notifier`.
+//! Reads canonical rules from `~/.difflore/data.db`, filtering
+//! `source_repo` against the current repo's aliases so a user in
+//! `acme/billing` isn't spammed with rules learned in `acme/notifier`.
 //!
-//! The query is deliberately narrow:
-//!   * `installed_at > prev_ts` (or all rows when `prev_ts` is None)
-//!   * `LOWER(source_repo)` in (alias set)
-//!   * `status = 'active'`            — pending rules aren't yet useful
-//!   * ordered by `installed_at` DESC — most recent first
-//!   * `LIMIT ?` — banner shape ceiling
-//!
-//! `created_at` in the `rule_events` stream is one floor lower (it
-//! captures every state change); for "new since last session" the
-//! right grain is *rule creation*, which lives on `skills.installed_at`.
-//! Using `rule_events` would surface confidence-bumps as "new rules"
-//! and make the banner noisy.
+//! Uses `skills.installed_at` (rule creation) rather than the
+//! `rule_events` stream, whose `created_at` captures every state change —
+//! using it would surface confidence-bumps as "new rules" and make the
+//! banner noisy.
 
 use sqlx::Row;
 
-/// One row in the banner. Title + provenance fragment ("from PR review
-/// by alice", "from PR merge signature", "manual `difflore rules add`").
-/// The render module is free to truncate either field — both are
-/// passed through verbatim from the DB and may be long.
+/// One banner row. Fields are passed through verbatim from the DB and may
+/// be long; the render module is free to truncate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewRule {
-    /// Human-readable rule name as stored in `skills.name`. Often a
-    /// sentence-case headline like "Wrap context cancellation in errgroup".
+    /// Rule name from `skills.name`.
     pub title: String,
-    /// One of the `origin` enum values: `manual`, `conversation`,
-    /// `pr_review`, `extracted`. Drives the provenance phrase in the
-    /// rendered banner.
+    /// `origin` enum value (`manual`, `conversation`, `pr_review`,
+    /// `extracted`); drives the provenance phrase in the banner.
     pub origin: String,
-    /// `source_repo` value, used only for the optional "← from {repo}"
-    /// suffix when a rule was cross-loaded from another repo. Today
-    /// the query filters to *this* repo's aliases so this is mostly
-    /// the same as the current repo, but the column is preserved for
-    /// future cross-repo widening.
+    /// `source_repo`, used for the optional "← from {repo}" suffix.
     pub source_repo: Option<String>,
 }
 
-/// Query `data.db` for up to `limit` rules whose `installed_at` is later
-/// than `prev_ts_ms` (millis since epoch) AND whose `source_repo`
-/// matches one of `repo_aliases` (case-insensitive). When `prev_ts_ms`
-/// is `None`, the time filter is dropped and we return the `limit`
-/// most recent rules for the repo — that's the "first session ever"
-/// case where every rule learned to date is genuinely new to the user.
-///
-/// Returns a Vec ordered newest-first. SQL errors propagate as
-/// `Err(String)` so the caller can fold into the "swallow and emit
-/// nothing" branch.
+/// Up to `limit` rules whose `installed_at` is later than `prev_ts_ms`
+/// (millis since epoch) AND whose `source_repo` matches one of
+/// `repo_aliases` (case-insensitive), ordered newest-first. When
+/// `prev_ts_ms` is `None` the time filter is dropped, returning the most
+/// recent rules — the "first session ever" case where everything is new.
+/// SQL errors propagate as `Err(String)`.
 pub async fn new_rules_since(
     db: &difflore_core::SqlitePool,
     prev_ts_ms: Option<i64>,
@@ -59,41 +37,30 @@ pub async fn new_rules_since(
     limit: usize,
 ) -> Result<Vec<NewRule>, String> {
     if repo_aliases.is_empty() {
-        // No repo identity → we'd select rules from every repo on
-        // the user's machine, which is the exact noise this filter
-        // exists to prevent.
+        // No repo identity would select rules from every repo on the
+        // machine — the exact noise this filter prevents.
         return Ok(Vec::new());
     }
 
-    // Pre-serialise the alias set into a JSON array sqlx can bind as a
-    // single parameter, then unfold via `json_each` inside the SQL.
-    // Matches the pattern used by `commands::status::queries` so
+    // Bind the alias set as one JSON-array parameter, unfolded via
+    // `json_each` in the SQL. Matches `commands::status::queries` so
     // sqlite's plan cache reuses the same shape.
     let repos_json = serde_json::to_string(repo_aliases).map_err(|e| format!("aliases: {e}"))?;
 
-    // Convert the watermark millis into a SQLite-compatible UTC
-    // ISO-8601 string. `skills.installed_at` is stored via
-    // `datetime('now')`, which produces `YYYY-MM-DD HH:MM:SS` (no
-    // millisecond precision). Comparing them via `datetime(…)` on
-    // both sides normalises the format. When `prev_ts_ms` is `None`
-    // we pass the unix epoch (1970-01-01), which keeps the SQL
-    // single-shape (no branching) and trivially matches every row.
+    // `skills.installed_at` is stored via `datetime('now')` (second
+    // precision, no millis), so compare via `datetime(…)` on both sides.
+    // `None` maps to the unix epoch, keeping the SQL single-shape and
+    // matching every row.
     let watermark_iso = prev_ts_ms
         .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
         .map_or_else(|| "1970-01-01T00:00:00Z".to_owned(), |dt| dt.to_rfc3339());
 
     let limit_i64 = i64::try_from(limit).unwrap_or(5);
 
-    // The query:
-    //   * `status = 'active'` keeps the banner free of pending rules
-    //     (those are unverified and could embarrass the user when
-    //     surfaced before they hit the review gate).
-    //   * `LOWER(source_repo)` matches the alias set generated by
-    //     `repo_aliases_for` (which lowercases).
-    //   * Sorting by `installed_at` DESC + `id` DESC keeps ties
-    //     deterministic (ULID id ordering tracks insertion time, so
-    //     the tiebreak surfaces the truly-latest insert when two rules
-    //     share a `installed_at` second).
+    // `status = 'active'` excludes unverified pending rules. The `id DESC`
+    // tiebreak relies on ULID ordering tracking insertion time, so it
+    // surfaces the truly-latest insert when two rules share an
+    // `installed_at` second.
     let rows = sqlx::query(
         r"SELECT name, origin, source_repo
           FROM skills
@@ -120,8 +87,7 @@ pub async fn new_rules_since(
             .unwrap_or_else(|_| "manual".to_owned());
         let source_repo: Option<String> = row.try_get("source_repo").ok();
         if title.trim().is_empty() {
-            // Defensive: a corrupted row with no `name` is unhelpful
-            // in the banner. Skip rather than render an empty bullet.
+            // Skip corrupted rows rather than render an empty bullet.
             continue;
         }
         out.push(NewRule {

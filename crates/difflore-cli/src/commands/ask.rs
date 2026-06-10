@@ -21,7 +21,7 @@ pub(crate) async fn handle_ask(
     let query = query.trim().to_owned();
     if query.is_empty() {
         eprintln!(
-            "{} `difflore ask` needs a question — try `difflore ask \"why do we ban unwrap?\"`",
+            "{} `difflore ask` needs a question; try `difflore ask \"why do we ban unwrap?\"`",
             style::err(sym::ERR),
         );
         exit_code(2);

@@ -1,11 +1,10 @@
 //! Team workspace status (`difflore cloud team`) and rule publish /
 //! unpublish (`difflore cloud publish` / `unpublish`).
 //!
-//! Also owns the "accepted-fix proof readiness" contract that several
-//! cloud surfaces share (status, team, login): whether a logged-in user
-//! has a team workspace wired up so accepted fixes can link to team
-//! Impact evidence. Those helpers are `pub(super)` so the sibling cloud
-//! modules can render the same readiness state without duplicating it.
+//! Also owns the accepted-fix readiness contract shared by several cloud
+//! surfaces (status, team, login): whether a logged-in user has a team
+//! workspace so accepted fixes can link to team review history. Those
+//! helpers are `pub(super)` so sibling cloud modules reuse the same state.
 
 use crate::commands::util::{exit_code, exit_err};
 use crate::style;
@@ -31,11 +30,11 @@ pub(super) fn accepted_fix_proof_readiness_state(
 
 fn accepted_fix_proof_readiness_message(logged_in: bool, team_name: Option<&str>) -> &'static str {
     if !logged_in {
-        "run `difflore cloud login`, then create or join a team before collecting cloud-linked accepted-fix evidence"
+        "run `difflore cloud login`, then create or join a team before uploading accepted edits"
     } else if accepted_fix_proof_ready(logged_in, team_name) {
-        "accepted fixes can link to team Impact evidence"
+        "accepted edits can link to team review history"
     } else {
-        "create or join a team before collecting cloud-linked accepted-fix evidence: https://difflore.dev/team"
+        "create or join a team before uploading accepted edits: https://difflore.dev/team"
     }
 }
 
@@ -53,7 +52,7 @@ const fn accepted_fix_proof_per_fix_required_fields() -> [&'static str; 7] {
         "client=difflore_cli",
         "targetPrNumber>0",
         "team_id IS NOT NULL",
-        "linked accepted fix_outcome observation",
+        "linked accepted fix_outcome activity",
         "non-empty rule_id",
         "fix_acceptances.created_at >= captureBaseline.capturedAtIso",
     ]
@@ -63,7 +62,7 @@ const fn accepted_fix_proof_non_counting_warnings() -> [&'static str; 5] {
     [
         "missing team workspace",
         "missing recalled rule id",
-        "missing linked rule observation",
+        "missing linked memory activity",
         "unexpected client",
         "missing target PR number",
     ]
@@ -79,7 +78,7 @@ pub(super) fn accepted_fix_proof_readiness_value(
         "message": accepted_fix_proof_readiness_message(logged_in, team_name),
         "readinessScope": "pre_capture_only",
         "countsAsEvidence": false,
-        "countingEvidence": "cloud DB fix_acceptances rows with acceptanceSource=difflore_fix, client=difflore_cli, targetPrNumber>0, team_id, and linked accepted fix_outcome observations",
+        "countingEvidence": "cloud DB fix_acceptances rows with acceptanceSource=difflore_fix, client=difflore_cli, targetPrNumber>0, team_id, and linked accepted fix_outcome activity",
         "preCaptureRequiredFields": accepted_fix_proof_pre_capture_required_fields(),
         "perFixRequiredFields": accepted_fix_proof_per_fix_required_fields(),
         "nonCountingWarnings": accepted_fix_proof_non_counting_warnings(),
@@ -93,14 +92,17 @@ pub(super) fn print_accepted_fix_proof_readiness(logged_in: bool, team_name: Opt
     } else {
         style::amber(message)
     };
-    println!("  evidence  {rendered}");
+    println!("  accepted edits  {rendered}");
 }
 
 fn team_workspace_state(logged_in: bool, team_name: Option<&str>) -> &'static str {
     accepted_fix_proof_readiness_state(logged_in, team_name)
 }
 
-fn team_workspace_next_command(logged_in: bool, team_name: Option<&str>) -> &'static str {
+pub(super) fn team_workspace_next_command(
+    logged_in: bool,
+    team_name: Option<&str>,
+) -> &'static str {
     if !logged_in {
         "difflore cloud login"
     } else if accepted_fix_proof_ready(logged_in, team_name) {
@@ -155,6 +157,13 @@ pub(crate) async fn handle_team(json: bool) {
         println!("{} No team workspace found.", style::warn(style::sym::WARN));
         println!("  Create or join one at {TEAM_WORKSPACE_URL}.");
         print_accepted_fix_proof_readiness(status.logged_in, status.team_name.as_deref());
+        println!(
+            "  next:     {}",
+            style::cmd(team_workspace_next_command(
+                status.logged_in,
+                status.team_name.as_deref()
+            ))
+        );
     }
 }
 
@@ -289,7 +298,7 @@ mod tests {
         assert!(
             logged_out["countingEvidence"]
                 .as_str()
-                .expect("counting evidence description")
+                .expect("counting accepted-edit description")
                 .contains("fix_acceptances")
         );
         assert_eq!(logged_out["preCaptureRequiredFields"][0], "loggedIn=true");

@@ -8,26 +8,17 @@ use tokio::io::AsyncWriteExt;
 
 use super::SegmentedPrompt;
 
-// ── Agent CLI dispatch ──────────────────────────────────────────────────────
-
-/// Sentinel scheme used to route a provider through a local agent CLI
-/// (Claude Code, Codex, Gemini, `OpenCode`) via `gate4agent` instead of
-/// any HTTP endpoint. The tool name follows the scheme:
-/// `agent-cli://claude`, `agent-cli://codex`, `agent-cli://gemini`,
-/// `agent-cli://opencode`. No real URL ever uses this scheme so
-/// collision with a legitimate HTTP provider is impossible.
+/// Sentinel scheme routing a provider through a local agent CLI
+/// (`agent-cli://claude`, `agent-cli://codex`, etc.) via `gate4agent`
+/// instead of an HTTP endpoint. No real URL uses this scheme.
 pub const AGENT_CLI_SCHEME: &str = "agent-cli://";
 
 /// Parse a provider `base_url` into a `CliTool` if it is an agent-CLI
 /// sentinel. Returns `None` for HTTP base URLs.
 ///
-/// Accepts both the canonical `agent-cli://<tool>` form and compatibility
-/// per-tool schemes `claude-cli://`, `codex-cli://`, `gemini-cli://`,
-/// `opencode-cli://` that older provider rows in user SQLite DBs still use.
-/// Without the alias, those rows silently fall through to the HTTP code path
-/// and reqwest rejects them with
-/// "scheme `claude-cli` is not supported", which is mistaken for an
-/// auth failure.
+/// Also accepts legacy per-tool schemes (`claude-cli://`, etc.) still
+/// present in old SQLite rows; without them, those rows fall through to
+/// the HTTP path where reqwest rejects the scheme as an auth failure.
 fn parse_agent_cli(base_url: &str) -> Option<CliTool> {
     if let Some(rest) = base_url.strip_prefix(AGENT_CLI_SCHEME) {
         let tool = rest.split('/').next().unwrap_or(rest);
@@ -39,7 +30,7 @@ fn parse_agent_cli(base_url: &str) -> Option<CliTool> {
             _ => None,
         };
     }
-    // Legacy per-tool schemes — back-compat only.
+    // Legacy per-tool schemes.
     if base_url.starts_with("claude-cli://") || base_url.starts_with("claude-code-cli://") {
         return Some(CliTool::ClaudeCode);
     }
@@ -55,8 +46,7 @@ fn parse_agent_cli(base_url: &str) -> Option<CliTool> {
     None
 }
 
-/// Canonical sentinel string for a given tool — used by `providers
-/// setup` when persisting a freshly-picked agent CLI provider.
+/// Canonical sentinel string for a given tool.
 pub const fn agent_cli_sentinel(tool: CliTool) -> &'static str {
     match tool {
         CliTool::ClaudeCode => "agent-cli://claude",
@@ -97,16 +87,16 @@ fn anthropic_messages_url(base_url: &str) -> String {
 const fn auth_hint(tool: CliTool) -> &'static str {
     match tool {
         CliTool::ClaudeCode => {
-            " — run `claude /login` once, or pick another provider with `difflore providers setup`"
+            "; run `claude /login` once, or pick another provider with `difflore providers setup`"
         }
         CliTool::Codex => {
-            " — run `codex login` once, or pick another provider with `difflore providers setup`"
+            "; run `codex login` once, or pick another provider with `difflore providers setup`"
         }
         CliTool::Gemini => {
-            " — run `gemini auth login` once, or pick another provider with `difflore providers setup`"
+            "; run `gemini auth login` once, or pick another provider with `difflore providers setup`"
         }
         CliTool::OpenCode => {
-            " — check `opencode auth` status, or pick another provider with `difflore providers setup`"
+            "; check `opencode auth` status, or pick another provider with `difflore providers setup`"
         }
     }
 }
@@ -170,15 +160,15 @@ fn is_transient_claude_failure(exit_code: Option<i32>, detail: &str) -> bool {
 
 async fn call_claude_cli_direct(model: &str, prompt: &str) -> crate::Result<String> {
     // Guard against argv injection: a `model` starting with `-` would be
-    // interpreted as a flag by the claude CLI, e.g. `--dangerous-flag`.
+    // read as a flag by the claude CLI.
     if model.starts_with('-') {
         return Err(CoreError::Internal(format!(
             "invalid model identifier {model:?}: must not start with '-'"
         )));
     }
 
-    // Up to 2 attempts (initial + 1 retry) on transient failures. We re-spawn
-    // the CLI each time because tokio Child can only be awaited once.
+    // Up to 2 attempts on transient failures. Re-spawn each time
+    // because a tokio Child can only be awaited once.
     let mut last_err: Option<CoreError> = None;
     for attempt in 0..2_u32 {
         if attempt > 0 {
@@ -262,23 +252,20 @@ async fn call_claude_cli_direct(model: &str, prompt: &str) -> crate::Result<Stri
     Err(last_err.unwrap_or_else(|| CoreError::Internal("Claude Code CLI failed".into())))
 }
 
-/// Replace common secret token prefixes with `[REDACTED]` so error output
-/// never leaks API keys or tokens. Conservative pattern matching — only
-/// well-known prefixes (`sk-`, `Bearer `, `ghp_`, `github_pat_`) trigger,
-/// each followed by enough opaque URL-safe or base64 characters to look like
-/// a real secret.
+/// Replace common secret token prefixes (`sk-`, `Bearer `, `ghp_`,
+/// `github_pat_`) with `[REDACTED]` so error output never leaks keys.
+/// Each prefix must be followed by enough opaque characters to look
+/// like a real secret.
 fn scrub_secrets(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let bytes = input.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        // Try each prefix at position i.
         if let Some(consumed) = try_scrub_prefix(bytes, i) {
             out.push_str("[REDACTED]");
             i += consumed;
             continue;
         }
-        // Append a single char (decoded as UTF-8 boundary-aware).
         let ch_end = next_utf8_boundary(bytes, i);
         out.push_str(&input[i..ch_end]);
         i = ch_end;
@@ -298,7 +285,6 @@ fn next_utf8_boundary(bytes: &[u8], i: usize) -> usize {
 }
 
 fn try_scrub_prefix(bytes: &[u8], i: usize) -> Option<usize> {
-    // Literal prefixes
     const LITERAL_PREFIXES: &[&[u8]] = &[b"sk-", b"ghp_", b"github_pat_"];
     for prefix in LITERAL_PREFIXES {
         if bytes[i..].starts_with(prefix) {
@@ -345,16 +331,12 @@ fn count_secret_body(bytes: &[u8]) -> usize {
 }
 
 /// Drive a local agent CLI (`claude` / `codex` / `gemini` / `opencode`)
-/// through `gate4agent` and collect the streamed assistant text. The
-/// transport handles each tool's headless flag dance (Claude:
-/// `-p --output-format stream-json --verbose`; Codex: `exec --json`;
-/// Gemini: `--output-format stream-json -p`; `OpenCode`: own NDJSON) so
-/// difflore stays out of the per-CLI argv business.
+/// through `gate4agent` and collect the streamed assistant text;
+/// `gate4agent` handles each tool's headless flag dance.
 ///
-/// `--bare` is preserved as load-bearing for Claude when the user has
-/// `ANTHROPIC_API_KEY` set — without it, `claude` pulls in MCP servers,
-/// skills, memory, and `CLAUDE.md` auto-discovery from the user's
-/// environment, which would corrupt review agent behaviour.
+/// For Claude with `ANTHROPIC_API_KEY` set, `--bare` is load-bearing:
+/// without it, `claude` auto-discovers MCP servers, skills, memory, and
+/// `CLAUDE.md` from the environment, corrupting review behaviour.
 pub(super) async fn call_agent_cli_provider(
     tool: CliTool,
     model: &str,
@@ -366,8 +348,8 @@ pub(super) async fn call_agent_cli_provider(
     } else {
         format!("System instructions:\n{system_prompt}\n\nUser request:\n{user_prompt}")
     };
-    // For Claude Code, the --print direct path works reliably on Windows where
-    // gate4agent's session-based spawn returns exit_code=1 with empty stderr.
+    // The Claude --print direct path works reliably on Windows, where
+    // gate4agent's session spawn returns exit_code=1 with empty stderr.
     // Default to direct; opt out with DIFFLORE_CLAUDE_DIRECT=0.
     if matches!(tool, CliTool::ClaudeCode)
         && std::env::var("DIFFLORE_CLAUDE_DIRECT")
@@ -482,13 +464,12 @@ pub(super) async fn call_agent_cli_provider(
 
 /// Call the Anthropic Messages API (`/v1/messages`) with prompt caching.
 ///
-/// The prompt is split into a cacheable `stable_prefix` (rules + repo
-/// context — identical across perspectives within a PR) and a per-call
-/// `dynamic_suffix` (verdicts + diff). Both land in a single `user`
-/// message as two content blocks; the first block carries
-/// `cache_control: { type: "ephemeral" }` so the Anthropic backend can
-/// reuse the KV-cache across the five perspective calls within the same
-/// PR review.
+/// The prompt splits into a cacheable `stable_prefix` (rules + repo
+/// context, identical across a PR's perspectives) and a per-call
+/// `dynamic_suffix` (verdicts + diff), sent as two content blocks of one
+/// `user` message. The first block carries
+/// `cache_control: { type: "ephemeral" }` so the backend reuses the
+/// KV-cache across the PR's perspective calls.
 async fn call_anthropic_provider(
     base_url: &str,
     api_key: &str,
@@ -687,11 +668,9 @@ pub(super) async fn call_ai_provider_segmented(
     user_prompt: &str,
 ) -> crate::Result<String> {
     if let Some(tool) = parse_agent_cli(base_url) {
-        // Agent CLIs have no prompt caching, so the stable/dynamic split
-        // carries no mechanical benefit — flatten into a single
-        // system+user shape. stable_prefix becomes the system prompt
-        // (background: rules + repo context); dynamic_suffix joins the
-        // diff-bearing user_prompt.
+        // Agent CLIs have no prompt caching, so flatten the
+        // stable/dynamic split into system (stable_prefix) + user
+        // (dynamic_suffix + user_prompt).
         return call_agent_cli_provider(
             tool,
             model,

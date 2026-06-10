@@ -88,7 +88,7 @@ pub(crate) fn run_fix_pass() {
     );
 }
 
-// ── Action planning ────────────────────────────────────────────────
+// Action planning
 
 enum Action {
     CreateDiffloreDir,
@@ -112,7 +112,7 @@ fn collect_actions() -> Vec<Action> {
     out
 }
 
-// ── 1. ~/.difflore/ directory ──────────────────────────────────────
+// 1. ~/.difflore/ directory
 
 fn difflore_dir_path() -> Option<PathBuf> {
     difflore_core::paths::data_home().ok()
@@ -147,7 +147,7 @@ fn apply_create_difflore_dir() {
     }
 }
 
-// ── 2. MCP install drift ───────────────────────────────────────────
+// 2. MCP install drift
 
 fn apply_install_mcp_drift(names: &[String]) {
     println!(
@@ -167,7 +167,7 @@ fn apply_install_mcp_drift(names: &[String]) {
     );
 }
 
-// ── 3. difflore-hook shim ──────────────────────────────────────────
+// 3. difflore-hook shim
 
 enum HookShimState {
     Ok,
@@ -272,7 +272,7 @@ fn apply_hook_shim(state: HookShimState) {
     }
 }
 
-// ── Decline notices ────────────────────────────────────────────────
+// Decline notices
 
 /// Print the one-line "we won't auto-touch this" notices for the
 /// privacy-sensitive surfaces. Only emitted under `--fix` so the

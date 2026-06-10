@@ -42,8 +42,7 @@ pub(crate) async fn handle_status(json: bool, lane: StatusLane) {
     payload.print_text();
 }
 
-/// Bundled output of the status pipeline. Carries everything
-/// `handle_status` needs for both JSON and text rendering.
+/// Bundled output of the status pipeline for both JSON and text rendering.
 #[derive(Debug)]
 struct StatusPayload {
     active_rules: i64,
@@ -242,10 +241,8 @@ mod tests {
     use super::*;
 
     /// Point DIFFLORE_HOME at a process-unique tempdir so the per-project index
-    /// DB (opened via `get_pool_for_cwd`) is isolated per test process. Without
-    /// this, parallel nextest processes contend on a shared on-disk index DB,
-    /// which surfaced as a flaky "database is locked" on CI. Mirrors the
-    /// DIFFLORE_HOME isolation used by the runtime-context tests.
+    /// DB is isolated per test process. Without it, parallel nextest processes
+    /// contend on a shared on-disk index DB ("database is locked").
     fn ensure_test_home() {
         use std::sync::OnceLock;
         use tempfile::TempDir;
@@ -266,8 +263,6 @@ mod tests {
     async fn empty_pool_payload_has_zero_shape() {
         use sqlx::sqlite::SqlitePoolOptions;
 
-        // Isolate the per-project index DB so parallel CI processes don't
-        // contend on a shared on-disk DB (flaky "database is locked").
         ensure_test_home();
 
         let pool = SqlitePoolOptions::new()

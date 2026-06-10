@@ -1,12 +1,11 @@
 //! GitHub GraphQL response shapes (wire format only).
 //!
-//! We issue one paginated query that returns merged PRs along with their
-//! reviews and reviewThreads. This replaces the old REST flow (1 list call +
-//! 2 per-PR calls + per-PR sleeps) with O(N/page) GraphQL calls, and lets us
-//! skip empty PRs without any additional HTTP round-trip.
+//! One paginated query returns merged PRs along with their reviews and
+//! reviewThreads in O(N/page) calls, skipping empty PRs without extra HTTP
+//! round-trips.
 //!
-//! These structs are pure deserialization glue — the business logic that
-//! consumes them lives in `parse.rs` and `mod.rs`.
+//! These structs are pure deserialization glue; the logic that consumes them
+//! lives in `parse.rs` and `mod.rs`.
 
 use serde::Deserialize;
 

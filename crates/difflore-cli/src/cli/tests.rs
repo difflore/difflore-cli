@@ -507,8 +507,7 @@ fn import_reviews_parses_exclude_prs_csv() {
 
     match cli.command.expect("subcommand") {
         Commands::ImportReviews(args) => {
-            // clap splits on commas; dedup happens later when the Vec is
-            // collected into a set during validation.
+            // clap splits on commas without deduping; dedup happens later during validation.
             assert_eq!(args.exclude_prs, vec![42, 1337, 42]);
         }
         _ => panic!("expected import-reviews command"),

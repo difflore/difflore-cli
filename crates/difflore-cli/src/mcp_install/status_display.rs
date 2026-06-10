@@ -90,7 +90,7 @@ pub fn status(json: bool) {
         }
         println!("  {}", style::pewter("Detected but not wired"));
         for name in &drift {
-            println!("    {} {}", style::amber("·"), name.bold());
+            println!("    {} {}", style::amber("-"), name.bold());
         }
         wrote_section = true;
     }
@@ -235,9 +235,9 @@ pub async fn maybe_print_mcp_hint() {
     let names = drift.join(", ");
     println!();
     println!(
-        "{} {} detected without DiffLore — install once so rules reach your next agent run:",
+        "{} {} detected without DiffLore - install once so rules reach your next agent run:",
         style::emerald(sym::TIP),
         style::ident(&names),
     );
-    println!("  → run {}", style::cmd("difflore init"));
+    println!("  -> run {}", style::cmd("difflore init"));
 }

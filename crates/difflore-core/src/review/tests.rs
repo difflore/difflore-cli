@@ -16,7 +16,7 @@ use crate::context::types::PastVerdict;
 use crate::errors::CoreError;
 use crate::review_trajectory::{TrajectoryBuilder, TrajectoryStep};
 
-// ── Prompt builders ──
+// Prompt builders
 
 #[test]
 fn user_prompt_orders_rules_before_file_section() {
@@ -37,7 +37,7 @@ fn user_prompt_orders_rules_before_file_section() {
     assert!(full.contains("src/foo.ts"));
 }
 
-// ── Parser ──
+// Parser
 
 #[test]
 fn parse_issues_handles_multiple_response_shapes() {
@@ -155,7 +155,7 @@ fn map_issues_fills_defaults_for_missing_fields() {
     }
 }
 
-// ── Perspectives ──
+// Perspectives
 
 fn issue(
     severity: &str,
@@ -192,7 +192,7 @@ fn build_system_prompt_some_appends_addendum_for_each_perspective() {
     }
 }
 
-// ── Segmented prompt (prompt-cache contract) ──
+// Segmented prompt (prompt-cache contract)
 
 fn rule(id: &str, content: &str) -> TeamRuleDigest {
     TeamRuleDigest {
@@ -337,7 +337,7 @@ fn stable_prefix_cache_invariants() {
     assert_ne!(single.stable_prefix, edited.stable_prefix);
 }
 
-// ── Merge / dedup invariants ──
+// Merge / dedup invariants
 
 #[test]
 fn merge_dedupes_and_picks_highest_severity() {

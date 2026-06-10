@@ -22,13 +22,11 @@ use crate::style;
 const MCP_RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(45);
 pub(super) const MCP_SERVER_ARG: &str = "mcp-server";
 
-/// Atomically write `contents` to `path` — a drop-in for `std::fs::write` that
-/// cannot leave a half-written or empty file. It writes a sibling temp file,
+/// Atomically write `contents` to `path`, a drop-in for `std::fs::write` that
+/// cannot leave a half-written or empty file. Writes a sibling temp file,
 /// fsyncs it, preserves the target's existing permissions, then atomically
-/// renames it over `path`. A crash / Ctrl-C / power loss leaves the ORIGINAL
-/// file intact (the rename is the only mutation of `path`), instead of the
-/// truncate-then-write window where an interrupted `fs::write` empties or
-/// corrupts the user's agent config.
+/// renames it over `path`, so a crash or power loss leaves the original file
+/// intact rather than truncated.
 pub(super) fn write_atomic(
     path: impl AsRef<Path>,
     contents: impl AsRef<[u8]>,
@@ -60,9 +58,9 @@ pub(super) fn difflore_mcp_record_path() -> Result<PathBuf, String> {
     Ok(dir.join("mcp.json"))
 }
 
-/// Write the v2 install manifest to `~/.difflore/mcp.json` from per-target
-/// detail. Keeps the v1 top-level `command` / `args` / `installed_targets`
-/// fields so compatibility readers keep working unchanged.
+/// Write the v2 install manifest to `~/.difflore/mcp.json`. Retains the v1
+/// top-level `command` / `args` / `installed_targets` fields for backward
+/// compatibility with older readers.
 pub(super) fn write_install_manifest(
     bin: &str,
     targets: Vec<ManifestTarget>,
@@ -78,10 +76,9 @@ pub(super) fn write_install_manifest(
     manifest::save(&record)
 }
 
-/// Read the `installed_targets` array from the canonical record at
-/// `~/.difflore/mcp.json`. Returns an empty vec when the record is missing,
-/// unreadable, or has no `installed_targets`. Used by `agents uninstall` to
-/// know which surfaces were wired so it can undo exactly those.
+/// Read the `installed_targets` array from `~/.difflore/mcp.json`, returning
+/// an empty vec when the record is missing, unreadable, or has no such field.
+/// Used by `agents uninstall` to undo exactly the surfaces that were wired.
 pub(super) fn read_canonical_record_targets() -> Vec<String> {
     let Ok(path) = difflore_mcp_record_path() else {
         return Vec::new();
@@ -102,8 +99,8 @@ pub(super) fn read_canonical_record_targets() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Delete the canonical record file at `~/.difflore/mcp.json`. A missing file
-/// is treated as success (idempotent). Called at the end of a real uninstall.
+/// Delete the canonical record at `~/.difflore/mcp.json`. Idempotent: a
+/// missing file is treated as success.
 pub(super) fn delete_canonical_record() -> Result<Option<PathBuf>, String> {
     let path = difflore_mcp_record_path()?;
     if !path.exists() {
@@ -140,9 +137,8 @@ pub(super) fn cwd_path(suffix: &[&str]) -> Result<PathBuf, String> {
     Ok(p)
 }
 
-// Plugin route registers MCP + hooks via bundled config; CLI path would
-// then create a duplicate MCP entry. Detect the cache dir layout so the
-// claude-code installer can short-circuit.
+// The plugin route registers MCP via bundled config, so the CLI installer
+// must short-circuit here to avoid creating a duplicate MCP entry.
 pub(super) fn claude_plugin_installed() -> bool {
     let Ok(cache_dir) = home_path(&[".claude", "plugins", "cache"]) else {
         return false;
@@ -419,10 +415,8 @@ pub(super) fn canonical_record_snapshot(
     }
 }
 
-/// Canonical lowercased key for a surface name. The normalization table now
-/// lives on the `AGENTS` registry ([`registry::canonical_target_key`]); this
-/// thin wrapper keeps the `common::canonical_target_key` call site / import
-/// path stable for every existing caller and test.
+/// Canonical lowercased key for a surface name. Delegates to
+/// [`registry::canonical_target_key`].
 pub(super) fn canonical_target_key(name: &str) -> String {
     registry::canonical_target_key(name)
 }
@@ -810,7 +804,6 @@ mod atomic_write_tests {
         write_atomic(&path, br#"{"a":1}"#).expect("create");
         assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"a":1}"#);
 
-        // Replace over the existing file (atomic rename, not truncate-rewrite).
         write_atomic(&path, br#"{"a":2}"#).expect("replace");
         assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"a":2}"#);
 

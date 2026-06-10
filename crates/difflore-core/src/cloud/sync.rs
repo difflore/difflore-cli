@@ -36,22 +36,17 @@ pub struct SyncedRule {
     pub content: String,
     pub updated_at: String,
     pub created_at: String,
-    /// Iter-9 (2026-04-18): glob list (e.g. `["**/*.rs"]`) the CLI's cascade
-    /// uses to drop rules whose patterns don't match the current file.
-    /// Empty / missing = universal rule.
+    /// Glob list (e.g. `["**/*.rs"]`) the CLI's cascade uses to drop rules
+    /// whose patterns don't match the current file. Empty / missing = universal rule.
     #[serde(default)]
     pub file_patterns: Vec<String>,
-    /// 2026-04-20: input-channel provenance (manual | conversation |
-    /// `pr_review` | extracted). When the cloud doesn't yet emit this
-    /// field, defaults to None and `apply_sync_result` falls back to
-    /// `cloud` so audit pages can still distinguish remotely-fetched
-    /// rules from locally-typed ones.
+    /// Input-channel provenance (manual | conversation | `pr_review` |
+    /// extracted). Defaults to None when the cloud doesn't emit it, so
+    /// `apply_sync_result` falls back to `cloud`.
     #[serde(default)]
     pub origin: Option<String>,
-    /// 2026-04-25: GitHub-style `owner/repo` provenance for the cluster
-    /// of extractions that drafted this rule. Mirrors cloud's
-    /// `rules_cloud.source_repo` 1-for-1; the local skills table carries
-    /// the same column in the initial schema.
+    /// GitHub-style `owner/repo` provenance for the extractions that drafted
+    /// this rule. Mirrors cloud's `rules_cloud.source_repo`.
     #[serde(default, rename = "sourceRepo")]
     pub source_repo: Option<String>,
 }
@@ -515,7 +510,6 @@ fn warn_skill_hash_fallback(message: &str) {
 }
 
 fn fallback_skill_content_for_hash(skill: &SkillRecord) -> String {
-    // Keep the sync contract centered on "content" semantics rather than full metadata.
     skill
         .check_prompt
         .clone()

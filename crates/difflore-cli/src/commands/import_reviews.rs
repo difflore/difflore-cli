@@ -171,7 +171,7 @@ fn run_dry_run(v: &ValidatedArgs, local_repo: &str, source_repo: &str) {
     }
 
     let label = if v.from_upstream.is_some() {
-        format!("{source_repo} → attach to {local_repo}")
+        format!("{source_repo} -> attach to {local_repo}")
     } else {
         local_repo.to_owned()
     };
@@ -180,19 +180,19 @@ fn run_dry_run(v: &ValidatedArgs, local_repo: &str, source_repo: &str) {
     } else {
         ""
     };
-    println!(
-        "{} Dry run · would import up to {} PRs from {label}{open_part}.",
+    style::println_wrapped(&format!(
+        "{} Dry run | would import up to {} PRs from {label}{open_part}.",
         style::ok(style::sym::TIP),
         v.max_prs,
-    );
+    ));
     if v.upload {
-        println!(
-            "  Would upload to cloud for extraction; `difflore cloud sync` then pulls rules down."
+        style::println_wrapped(
+            "  Would upload to cloud for extraction; `difflore cloud sync` then pulls rules down.",
         );
     }
     if v.local_candidates {
-        println!(
-            "  Would draft local rule candidates from high-signal review comments; no cloud needed."
+        style::println_wrapped(
+            "  Would draft local rule candidates from high-signal review comments; no cloud needed.",
         );
         println!(
             "  Up to {} rule drafts would be created.",
@@ -245,7 +245,7 @@ fn print_import_plan(v: &ValidatedArgs, local_repo: &str, source_repo: &str) {
     } else {
         local_repo.to_owned()
     };
-    println!(
+    style::println_wrapped(&format!(
         "{} Import plan: scan {} from {label}.",
         style::ok(style::sym::TIP),
         if v.pr_numbers.is_empty() {
@@ -265,30 +265,30 @@ fn print_import_plan(v: &ValidatedArgs, local_repo: &str, source_repo: &str) {
                     .join(", ")
             )
         },
-    );
+    ));
     if !v.exclude_prs.is_empty() {
         let excluded = sorted_exclude_prs(&v.exclude_prs)
             .iter()
             .map(|n| format!("#{n}"))
             .collect::<Vec<_>>()
             .join(", ");
-        println!(
+        style::println_wrapped(&format!(
             "  {} excluding {} (contributes zero rules)",
             style::pewter(style::sym::BULLET),
             excluded,
-        );
+        ));
     }
-    println!(
+    style::println_wrapped(&format!(
         "  {} preview only: {}",
         style::pewter(style::sym::BULLET),
         style::cmd("difflore import-reviews --dry-run"),
-    );
-    println!(
+    ));
+    style::println_wrapped(&format!(
         "  {} recovery: if GitHub throttles, retry with {} or {}.",
         style::pewter(style::sym::BULLET),
         style::cmd("--max-prs 20"),
         style::cmd("--since YYYY-MM-DD"),
-    );
+    ));
 }
 
 async fn run_import(
@@ -309,6 +309,7 @@ async fn run_import(
 
     let spinner_label = format!("Importing PR reviews from {source_repo}");
     let spinner = style::Spinner::new(&spinner_label);
+    let spinner_progress = spinner.handle();
 
     let empty_pr_kind = if opts.include_open {
         "merged/open PRs"
@@ -323,19 +324,22 @@ async fn run_import(
             } else {
                 String::new()
             };
-            eprintln!(
+            spinner_progress.println(&format!(
                 "  [{}/{}] {} comments imported{}",
                 p.prs_fetched, p.prs_total, p.comments_imported, skipped_part
-            );
+            ));
         } else if p.prs_total > 0 {
-            eprintln!("  {} PRs with review activity to import", p.prs_total);
+            spinner_progress.println(&format!(
+                "  {} PRs with review activity to import",
+                p.prs_total
+            ));
         } else if direct_pr_mode && p.prs_missing > 0 {
-            eprintln!(
+            spinner_progress.println(&format!(
                 "  No requested PRs with review activity found ({} missing/inaccessible).",
                 p.prs_missing
-            );
+            ));
         } else {
-            eprintln!("  No {empty_pr_kind} with review activity found.");
+            spinner_progress.println(&format!("  No {empty_pr_kind} with review activity found."));
         }
     });
 
@@ -368,8 +372,8 @@ async fn run_import(
             .join(", ");
         println!("  missing PRs:            {missing}");
     }
-    // Upload runs after this summary; phrase as "requested" so a later
-    // upload failure doesn't contradict an earlier "uploaded: yes".
+    // Phrase as "requested": upload runs after this summary, so a later
+    // failure must not contradict an earlier "uploaded: yes".
     println!(
         "  upload requested:       {}",
         if upload { "yes" } else { "no" }
@@ -382,9 +386,10 @@ async fn run_import(
         );
     } else if result.comments_imported > 0 {
         println!(
-            "  {} Imports stayed local. Drafting review candidates from high-signal comments...",
+            "  {} Imports stayed local.",
             style::emerald(style::sym::TIP),
         );
+        style::println_wrapped("    Drafting review candidates from high-signal comments...");
     }
     Ok(result)
 }
@@ -485,10 +490,8 @@ pub(crate) async fn try_handle(
     let import_result = run_import(db, opts, &local_repo, &source_repo, v.upload, v.json).await?;
 
     let local_candidate_progress = if v.local_candidates {
-        // Auto-scale the candidate budget with the import scope: small
-        // first-run imports keep the conservative drawer-sized ceiling,
-        // bulk imports (max_prs ≥ ~13) get a 2× budget so 100-PR imports
-        // don't silently drop ~95% of high-signal review evidence.
+        // Budget scales with import scope so bulk imports don't silently drop
+        // most high-signal review evidence.
         let budget = local_candidate_budget(&v);
         let progress = run_local_candidates(
             db,
@@ -1314,10 +1317,9 @@ We should validate the header before parsing because malformed requests panic.\n
 
     #[test]
     fn local_candidate_does_not_auto_activate_unadopted_bot_directive() {
-        // Correctness-aware gate: a bot is no longer a blanket veto, but with
-        // no adoption signal (unresolved thread, no reactions) its directive
-        // should NOT auto-activate. It lands as a medium-confidence pending
-        // draft for the user to review — not dropped, not active.
+        // A bot directive with no adoption signal (unresolved, no reactions)
+        // must land as a medium-confidence pending draft: not dropped, not
+        // auto-active.
         let mut item = imported_item(
             Some("user/fork"),
             Some(r#"{"sourceRepoFullName":"upstream/project","attachedRepoFullName":"user/fork"}"#),
@@ -1341,10 +1343,8 @@ We should validate the header before parsing because malformed requests panic.\n
 
     #[test]
     fn local_candidate_auto_activates_resolved_bot_directive() {
-        // The flip side: a bot directive that WAS adopted (resolved thread)
-        // must NOT be auto-dropped — it earns the resolved bonus and clears
-        // the HIGH threshold, exactly the case the old blanket veto wrongly
-        // discarded (e.g. a specific CodeRabbit directive that was applied).
+        // A bot directive that WAS adopted (resolved thread) earns the
+        // resolved bonus and clears the HIGH threshold, so it auto-activates.
         let mut item = imported_item(
             Some("user/fork"),
             Some(r#"{"sourceRepoFullName":"upstream/project","attachedRepoFullName":"user/fork"}"#),
@@ -1390,9 +1390,8 @@ We should validate the header before parsing because malformed requests panic.\n
 
     #[test]
     fn local_candidate_leaves_unadopted_human_directive_pending() {
-        // The other half of the quarantine fix: a bare strong human directive
-        // with no adoption signal is no longer auto-activated — it becomes a
-        // pending candidate the user must accept.
+        // A strong human directive with no adoption signal becomes a pending
+        // candidate the user must accept, not auto-active.
         let mut item = imported_item(
             Some("user/fork"),
             Some(r#"{"sourceRepoFullName":"upstream/project","attachedRepoFullName":"user/fork"}"#),
@@ -1433,12 +1432,9 @@ We should validate the header before parsing because malformed requests panic.\n
 
     #[test]
     fn local_candidate_demotes_resolved_but_downvoted_directive_to_pending() {
-        // Over-capture guard: a resolved thread alone clears HIGH (auto-active),
-        // but community DISAPPROVAL (👎 strictly outweighs 👍) is a correctness
-        // signal that must not pass inert. A resolved-but-net-downvoted directive
-        // must demote from active to a *pending* candidate (≥ LOW so it is still
-        // reviewed, not silently dropped) — it must NOT auto-activate as if the
-        // reaction balance were neutral.
+        // A resolved thread alone clears HIGH, but a strict 👎-majority is a
+        // correctness signal: the directive demotes to a pending candidate
+        // (still ≥ LOW so it is reviewed, not dropped), not auto-active.
         let mut item = imported_item(
             Some("user/fork"),
             Some(r#"{"sourceRepoFullName":"upstream/project","attachedRepoFullName":"user/fork"}"#),
@@ -1466,11 +1462,8 @@ We should validate the header before parsing because malformed requests panic.\n
 
     #[test]
     fn local_candidate_keeps_resolved_directive_active_despite_single_downvote() {
-        // The other side of the disapproval guard: a *lone* 👎 against a 👍 (a
-        // tie, here) is explicitly NOT a veto — a single down-react on a strong,
-        // resolved directive must not sink it. With thumbs balanced the penalty
-        // is withheld (only a strict 👎-majority penalizes), so the resolved
-        // bonus still carries it to active. Locks in the documented intent.
+        // A tied 👍/👎 is not a veto: only a strict 👎-majority penalizes, so
+        // the resolved bonus still carries the directive to active.
         let mut item = imported_item(
             Some("user/fork"),
             Some(r#"{"sourceRepoFullName":"upstream/project","attachedRepoFullName":"user/fork"}"#),

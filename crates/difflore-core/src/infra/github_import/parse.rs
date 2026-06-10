@@ -1,30 +1,26 @@
 //! Comment parsing, durability-signal derivation, metadata serialization,
 //! and PR filtering/dedup helpers.
 //!
-//! This is the business logic that turns the raw GraphQL wire shapes in
-//! `schema.rs` into the comment metadata and candidate set the importer
-//! persists. It deliberately holds no HTTP / `gh`-CLI concerns.
+//! Turns the raw GraphQL wire shapes in `schema.rs` into the comment metadata
+//! and candidate set the importer persists. Holds no HTTP / `gh`-CLI concerns.
 
 use super::schema::{PrNode, ReactionGroupNode};
 
-/// Flattened correctness/durability signal for a single comment, derived
-/// from the GraphQL thread/reaction shape and serialized into the comment
-/// metadata JSON so the local-candidate gate can read it back without a
-/// second GitHub round-trip. Every field is independently optional and
-/// neutral-by-default so a missing GraphQL field never blocks import.
+/// Durability signal for a single comment, derived from the GraphQL
+/// thread/reaction shape and serialized into the comment metadata JSON so the
+/// local-candidate gate can read it back without a second GitHub round-trip.
+/// Every field is neutral-by-default so a missing GraphQL field never blocks
+/// import.
 #[derive(Debug, Default, Clone)]
 pub(super) struct CommentDurabilitySignal {
-    /// The parent review thread was resolved (v1 adoption proxy).
+    /// The parent review thread was resolved (adoption proxy).
     pub(super) resolved: bool,
-    /// Total reactions of any kind on the comment.
     pub(super) reactions_total: i64,
-    /// 👍-style approval reactions.
     pub(super) thumbs_up: i64,
-    /// 👎-style disapproval reactions.
     pub(super) thumbs_down: i64,
-    /// Ordered bodies of the replies that came AFTER this comment in the
-    /// same thread (used to detect a later contradiction like "actually,
-    /// no"). Empty for review bodies and standalone issue comments.
+    /// Bodies of replies that came after this comment in the same thread, used
+    /// to detect a later contradiction. Empty for review bodies and standalone
+    /// issue comments.
     pub(super) later_replies: Vec<String>,
 }
 
@@ -43,10 +39,9 @@ impl CommentDurabilitySignal {
         signal
     }
 
-    /// Serialize the non-neutral fields into the comment metadata object so
-    /// the local-candidate confidence gate can recover them. Skipping the
-    /// all-neutral case keeps existing metadata byte-identical for comments
-    /// that carry no durability signal.
+    /// Serialize the non-neutral fields into the metadata object for the
+    /// confidence gate. Returns `None` for an all-neutral signal so metadata
+    /// stays byte-identical for comments with no signal.
     pub(super) fn to_metadata_value(&self) -> Option<serde_json::Value> {
         if !self.resolved
             && self.reactions_total == 0
@@ -75,11 +70,9 @@ pub(super) fn imported_external_id(repo: &str, source_repo: &str, db_id: i64) ->
 }
 
 /// Build the per-comment metadata JSON string, merging the provenance keys
-/// (`filePath` / `sourceRepoFullName` / `attachedRepoFullName` /
-/// `sourceKind`) the local-candidate gate already reads with the new
-/// durability signal keys. Durability keys are only added when at least one
-/// is non-neutral, so a comment with no signal serializes byte-identically
-/// to the legacy shape.
+/// (`filePath` / `sourceRepoFullName` / `attachedRepoFullName` / `sourceKind`)
+/// with the durability signal keys. Durability keys are added only when
+/// non-neutral, so a comment with no signal serializes to the legacy shape.
 pub(super) fn comment_metadata_json(
     file_path: Option<&str>,
     source_repo: &str,
@@ -115,9 +108,8 @@ pub(super) fn comment_metadata_json(
 }
 
 /// Drop any fetched PR whose `number` is in `exclude_prs`, in place. Runs
-/// BEFORE comments are turned into candidates so an excluded PR contributes
-/// zero rules — the leak-free guarantee `--exclude-prs` relies on for recall
-/// evaluation. A no-op when the exclude set is empty (the common case).
+/// before comments become candidates so an excluded PR contributes zero rules
+/// — the leak-free guarantee `--exclude-prs` relies on for recall evaluation.
 pub(super) fn drop_excluded_prs(
     collected: &mut Vec<PrNode>,
     exclude_prs: &std::collections::HashSet<i32>,

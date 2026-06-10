@@ -27,7 +27,7 @@ tools only when you need tighter provenance or full rule bodies.
 2. **Local memory exists**: if answers are empty, suggest `difflore init` and
    `difflore import-reviews`.
 3. **Cloud is optional**: use `difflore cloud status` only when the user asks
-   about team sync or cloud-backed governance.
+   about team sync or cloud-backed team controls.
 
 ## Workflow
 

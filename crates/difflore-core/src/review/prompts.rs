@@ -2,40 +2,33 @@ use super::{ReviewIssueRecord, ReviewPerspective};
 use crate::context::assembler::PastVerdictSection;
 use crate::context::types::PastVerdict;
 
-// Segmented prompt for prompt cache reuse.
-
-/// A single team rule in the canonical form used when producing the
-/// cacheable team-rules digest. This is deliberately minimal: the point
-/// of the digest is to be deterministic / hash-stable across reviews so
-/// that an upstream Anthropic `cache_control` hint can reuse the prefix.
+/// A single team rule in the canonical form used for the cacheable team-rules
+/// digest. Minimal and deterministic so the digest is hash-stable across
+/// reviews and an Anthropic `cache_control` hint can reuse the prefix.
 #[derive(Debug, Clone)]
 pub struct TeamRuleDigest {
     pub id: String,
     pub content: String,
 }
 
-/// System prompt split into a cacheable stable prefix and a per-review
-/// dynamic suffix. The stable prefix is intended to be reused across
-/// multiple reviews from the same team (identical perspective + rules +
-/// repo context) so providers that support prompt caching (e.g. Anthropic
-/// `cache_control: ephemeral`) can skip re-tokenising it.
+/// System prompt split into a cacheable stable prefix and a per-review dynamic
+/// suffix. The stable prefix is hash-stable across reviews from the same team so
+/// providers that support prompt caching (e.g. Anthropic `cache_control:
+/// ephemeral`) can skip re-tokenising it.
 ///
-/// Concatenating `stable_prefix + dynamic_suffix` yields a conventional
-/// flat system prompt — `build_system_prompt` relies on this property for
-/// byte-identical backward compatibility.
+/// Concatenating `stable_prefix + dynamic_suffix` yields a flat system prompt;
+/// `build_system_prompt` relies on this for byte-identical compatibility.
 #[derive(Debug, Clone)]
 pub struct SegmentedPrompt {
-    /// Cacheable, hash-stable across reviews for the same team:
-    /// base instructions → perspective addendum → sorted team rules →
-    /// repo context facts.
+    /// base instructions → perspective addendum → sorted team rules → repo
+    /// context facts.
     pub stable_prefix: String,
-    /// Per-review content: past verdicts → current diff → user instructions.
+    /// past verdicts → current diff → user instructions.
     pub dynamic_suffix: String,
 }
 
-/// Hard-coded base instructions for the review system prompt. Kept as a
-/// constant so the compatibility shim and `build_segmented_prompt` share the
-/// exact same bytes.
+/// Base instructions for the review system prompt, shared verbatim by the
+/// compatibility shim and `build_segmented_prompt`.
 const REVIEW_BASE_INSTRUCTIONS: &str = r#"You are a code review assistant. Review the provided diff against the given rules and return issues as a JSON array.
 
 Each issue must be a JSON object with these fields:
@@ -53,12 +46,10 @@ Matched rules are the user's review memory and should be treated as authoritativ
 Return ONLY a JSON array. No markdown, no explanation, no code blocks. Just the raw JSON array.
 If no issues are found, return an empty array: []"#;
 
-/// Render the team-rules digest section. Rules are sorted by `id` so the
-/// resulting string is deterministic across review runs — this is what
-/// makes the stable prefix hash-stable and therefore cacheable.
+/// Render the team-rules digest section. Rules are sorted by `id` so the output
+/// is deterministic across runs, keeping the stable prefix hash-stable.
 ///
-/// Returns an empty string when `rules` is empty so callers that have no
-/// rules produce a prefix that is byte-identical to the flat prompt.
+/// Returns an empty string when `rules` is empty.
 pub(super) fn render_team_rules_digest(rules: &[TeamRuleDigest]) -> String {
     if rules.is_empty() {
         return String::new();
@@ -93,12 +84,11 @@ pub(super) fn render_repo_context_section(repo_context_facts: Option<&str>) -> S
     }
 }
 
-/// Render the per-review dynamic suffix. Empty inputs produce an empty
-/// string so the compatibility shim can reassemble byte-identical output.
+/// Render the per-review dynamic suffix. Empty inputs produce an empty string.
 ///
-/// `past_verdicts` is review-memory recall injected at the front of the dynamic
-/// segment, so the LLM reads prior verdicts before the current diff. When it is
-/// `None` or empty the section is omitted entirely.
+/// `past_verdicts` is review-memory recall placed at the front of the segment
+/// so the LLM reads prior verdicts before the current diff; omitted when `None`
+/// or empty.
 pub(super) fn render_dynamic_suffix(
     diff: &str,
     user_instructions: &str,
@@ -117,8 +107,6 @@ pub(super) fn render_dynamic_suffix(
     }
 
     let mut s = String::new();
-    // Past verdicts come first in the dynamic segment so the LLM reads
-    // prior decisions before the current diff.
     if has_verdicts {
         s.push_str("\n\n");
         s.push_str(verdicts_rendered.trim_end());
@@ -135,16 +123,8 @@ pub(super) fn render_dynamic_suffix(
     s
 }
 
-/// Build a `SegmentedPrompt` split into a hash-stable cacheable prefix
-/// and a per-review dynamic suffix. See [`SegmentedPrompt`] for layout.
-///
-/// Ordering (top → bottom):
-/// * `stable_prefix`: base instructions → perspective addendum → team
-///   rules digest (sorted by id) → repo context facts.
-/// * `dynamic_suffix`: past verdicts → current diff → user instructions.
-///
-/// Concatenating the two halves yields the same flat prompt that
-/// `build_system_prompt` reassembles for compatibility.
+/// Build a `SegmentedPrompt` split into a hash-stable cacheable prefix and a
+/// per-review dynamic suffix. See [`SegmentedPrompt`] for layout.
 pub fn build_segmented_prompt(
     perspective: Option<ReviewPerspective>,
     team_rules: &[TeamRuleDigest],
@@ -153,22 +133,14 @@ pub fn build_segmented_prompt(
     repo_context_facts: Option<&str>,
     past_verdicts: Option<&[PastVerdict]>,
 ) -> SegmentedPrompt {
-    // 1. Base instructions (hardcoded, perspective-agnostic).
     let mut stable_prefix = String::with_capacity(REVIEW_BASE_INSTRUCTIONS.len() + 1024);
     stable_prefix.push_str(REVIEW_BASE_INSTRUCTIONS);
-
-    // 2. Perspective addendum (if any).
     if let Some(p) = perspective {
         stable_prefix.push_str(p.system_prompt_addendum());
     }
-
-    // 3. Team rules digest (deterministic / hash-stable).
     stable_prefix.push_str(&render_team_rules_digest(team_rules));
-
-    // 4. Repo context facts.
     stable_prefix.push_str(&render_repo_context_section(repo_context_facts));
 
-    // Dynamic suffix: past verdicts → current diff → user instructions.
     let dynamic_suffix = render_dynamic_suffix(diff, user_instructions, past_verdicts);
 
     SegmentedPrompt {

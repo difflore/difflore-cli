@@ -1,10 +1,7 @@
-//! Actually invoke the agent CLI binary and capture its output.
+//! Invoke the agent CLI binary and capture its output.
 //!
-//! Split out from `mod.rs` so the public surface stays a single
-//! function (`dispatch_gate`) while the spawn / timeout / capture
-//! plumbing is testable independently. Arg construction is a free
-//! function (`build_args`) so unit tests can verify the exact CLI we
-//! synthesise for each agent without having to spawn anything.
+//! Arg construction lives in the free function `build_args` so unit tests
+//! can verify the exact CLI synthesised for each agent without spawning.
 
 use std::ffi::OsString;
 use std::process::Stdio;
@@ -45,21 +42,17 @@ pub(super) async fn run(agent: AgentKind, prompt: &str, time_budget: Duration) -
 
     let mut command = TokioCommand::new(&binary);
     command.args(&args);
-    // Inherit the parent's environment but kill the child if we get
-    // dropped while waiting — prevents orphaned CLI processes if the
-    // caller times out at a higher level and gives up on us.
+    // Kill the child if we're dropped while waiting, so a higher-level
+    // timeout doesn't orphan the CLI process.
     command.kill_on_drop(true);
-    // Force-disable telemetry capture in the spawned agent so its hooks
-    // do not re-emit observations while the parent is already observing.
+    // Disable telemetry capture in the spawned agent so its hooks don't
+    // re-emit observations while the parent is already observing.
     command.env(difflore_core::cloud::capture::DIFFLORE_CAPTURE_ENV, "false");
-    // We spawn manually (rather than `command.output()`) so we can feed the
-    // prompt over stdin for agents that read it there — capture both streams
-    // ourselves.
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
-    // For stdin-capable agents, send the prompt through stdin so repo code and
-    // diffs do not land in argv. Other agents keep stdin null and receive the
-    // prompt as the last positional.
+    // Stdin-capable agents receive the prompt over stdin so repo code and
+    // diffs don't land in argv. Others keep stdin null and take the prompt as
+    // the last positional.
     command.stdin(if via_stdin {
         Stdio::piped()
     } else {
@@ -97,9 +90,9 @@ pub(super) async fn run(agent: AgentKind, prompt: &str, time_budget: Duration) -
         };
     }
 
-    // Non-zero exit: still surface whatever the CLI printed — many
-    // agents print a partial JSON / partial answer on stdout before
-    // erroring out. Caller decides if `stdout` is usable.
+    // Non-zero exit: still surface whatever the CLI printed; many agents
+    // print a partial answer on stdout before erroring. Caller decides if
+    // `stdout` is usable.
     let code = spawn_result
         .status
         .code()
@@ -112,21 +105,19 @@ pub(super) async fn run(agent: AgentKind, prompt: &str, time_budget: Duration) -
     }
 }
 
-/// Whether `agent`'s CLI reads its prompt from stdin (so we can keep the
-/// prompt out of argv). Only agents with a confirmed stdin contract are listed:
-/// Claude Code and Codex. Cursor and Gemini stay on argv until verified.
+/// Whether `agent`'s CLI reads its prompt from stdin (keeping it out of argv).
+/// Only agents with a confirmed stdin contract qualify: Claude Code and Codex.
 ///
-/// INVARIANT: an agent returns `true` here IFF `build_args` omits the prompt
-/// positional for it. The `build_args_matches_prompt_via_stdin` test pins this.
+/// INVARIANT: returns `true` iff `build_args` omits the prompt positional for
+/// that agent. Pinned by the `build_args_matches_prompt_via_stdin` test.
 fn prompt_via_stdin(agent: AgentKind) -> bool {
     matches!(agent, AgentKind::ClaudeCode | AgentKind::Codex)
 }
 
 /// Spawn `command`, optionally feed `stdin_prompt` to the child's stdin (then
-/// close it so the CLI sees EOF), and capture stdout + stderr. Split out so
-/// `run` can wrap the whole spawn-write-wait in a single `timeout`. A write
-/// error on the child's stdin (e.g. the CLI exited before reading it) is
-/// swallowed — we still want whatever the CLI managed to print.
+/// close it for EOF), and capture stdout + stderr. A write error on the
+/// child's stdin (e.g. the CLI exited before reading) is swallowed so we still
+/// get whatever the CLI printed.
 async fn spawn_and_capture(
     mut command: TokioCommand,
     stdin_prompt: Option<&str>,
@@ -142,20 +133,17 @@ async fn spawn_and_capture(
     child.wait_with_output().await
 }
 
-/// Build the argv. Flags come first; the `prompt` is appended as the LAST
-/// positional ONLY for agents that do NOT read it from stdin (see
-/// `prompt_via_stdin`) — stdin agents get an empty-of-prompt argv. Kept as a
-/// free function so tests can assert the exact wire form without spawning.
+/// Build the argv. Flags come first; `prompt` is the LAST positional only for
+/// agents that don't read it from stdin (see `prompt_via_stdin`). A free
+/// function so tests can assert the exact wire form without spawning.
 pub(super) fn build_args(agent: AgentKind, prompt: &str) -> Vec<OsString> {
     let mut args: Vec<OsString> = Vec::new();
     match agent {
         AgentKind::ClaudeCode => {
-            // Headless, no-persist, Haiku for cost/latency. `--no-session-
-            // persistence` keeps the gate call from polluting the user's
-            // active Claude Code session history; `--permission-mode
-            // bypassPermissions` lets the call run without an interactive
-            // tool-approval prompt (we're only asking the model to read
-            // and respond, no tool use).
+            // Headless, Haiku for cost/latency. `--no-session-persistence`
+            // keeps the gate call out of the user's session history;
+            // `--permission-mode bypassPermissions` skips the interactive
+            // tool-approval prompt (the gate uses no tools anyway).
             args.push(OsString::from("-p"));
             args.push(OsString::from("--no-session-persistence"));
             args.push(OsString::from("--model"));
@@ -166,18 +154,15 @@ pub(super) fn build_args(agent: AgentKind, prompt: &str) -> Vec<OsString> {
         }
         AgentKind::Codex => {
             // `exec` is codex's headless invocation. The dangerous-bypass
-            // flag matches hivemind's gate-runner; we never let the gate
-            // trigger tool calls, so the bypass is moot for our use but
-            // necessary to suppress the per-tool approval prompt.
+            // flag only suppresses the per-tool approval prompt; the gate
+            // never triggers tool calls.
             args.push(OsString::from("exec"));
             args.push(OsString::from("--dangerously-bypass-approvals-and-sandbox"));
             // Prompt travels via stdin, not argv.
         }
         AgentKind::Cursor => {
-            // `--print` exits after one response; `--force` skips any
-            // confirmation flow; `--output-format text` makes the stdout
-            // a plain string rather than JSON-wrapped, simpler for the
-            // caller's downstream parsing.
+            // `--print` exits after one response; `--force` skips confirmation;
+            // `--output-format text` returns plain (not JSON-wrapped) stdout.
             args.push(OsString::from("--print"));
             args.push(OsString::from("--model"));
             args.push(OsString::from("auto"));

@@ -1,18 +1,12 @@
-//! Integration tests for the since-last-session banner.
+//! Integration tests for the since-last-session banner SQL path, end to end
+//! against a temporary SQLite DB. We avoid `init_db()` (a global pool cache)
+//! and build a fresh `:memory:` pool with the exact schema columns the query
+//! touches.
 //!
-//! The unit tests in `render.rs` exercise the formatter against
-//! in-memory `NewRule` vectors; this file exercises the SQL path end
-//! to end against a temporary SQLite DB. We don't go through
-//! `init_db()` because that's behind a global pool cache — instead we
-//! build a fresh `:memory:` pool with the exact schema columns the
-//! query touches.
-//!
-//! Watermark IO is tested separately in `watermark.rs::tests` (which
-//! redirects `DIFFLORE_HOME` to a tempdir). The end-to-end
-//! `render_since_last_session_banner` helper isn't exercised here
-//! because it touches the real `init_db()` pool cache, which would
-//! pollute or race other tests in the suite; the inner pipeline is
-//! covered transitively by the query + render tests.
+//! Watermark IO is tested separately in `watermark.rs::tests`. The end-to-end
+//! `render_since_last_session_banner` helper isn't exercised here because it
+//! touches the real `init_db()` pool cache, which would race other tests; the
+//! inner pipeline is covered transitively by the query + render tests.
 
 use super::query::{NewRule, new_rules_since};
 

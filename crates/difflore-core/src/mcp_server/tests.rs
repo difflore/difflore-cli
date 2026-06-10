@@ -6,11 +6,9 @@
     reason = "test scaffolding"
 )]
 mod remember_tool_tests {
-    //! In-process MCP roundtrip tests for the `remember_rule` tool. These
-    //! call `handle_message` directly with a hand-built JSON-RPC envelope
-    //! so we exercise the dispatch + arg-parsing path without spawning a
-    //! subprocess. The schema-list assertion gives us a tiny smoke check
-    //! that the tool stays advertised even after refactors.
+    //! In-process MCP roundtrip tests: call `handle_message` directly with a
+    //! hand-built JSON-RPC envelope to exercise dispatch + arg-parsing without
+    //! spawning a subprocess.
 
     use super::super::*;
     use serde_json::{Value, json};
@@ -92,10 +90,8 @@ mod remember_tool_tests {
 
     #[tokio::test]
     async fn tools_list_advertises_expected_tools() {
-        // Single tools/list snapshot pinning every advertised tool name.
-        // If a tool is dropped or renamed, the agent loses access — so we
-        // assert the full required-set in one place rather than once per
-        // tool.
+        // Pin every advertised tool name in one snapshot: if a tool is dropped
+        // or renamed, the agent loses access.
         let state = build_state().await;
         let result = call_ok(&state, &rpc(1, "tools/list")).await;
         let names: Vec<String> = result["tools"]
@@ -131,7 +127,7 @@ mod remember_tool_tests {
             .expect("search_rules description");
         assert!(
             description.contains("citedCount") && description.contains("trustRate"),
-            "search_rules should advertise accepted-use proof fields: {description}"
+            "search_rules should advertise accepted-use summary fields: {description}"
         );
         let get_rules = result["tools"]
             .as_array()
@@ -143,8 +139,8 @@ mod remember_tool_tests {
             .as_str()
             .expect("get_rules description");
         assert!(
-            get_rules_description.contains("file-scoped local proof"),
-            "get_rules should tell agents to pass file for local proof: {get_rules_description}"
+            get_rules_description.contains("connect the rule to that file"),
+            "get_rules should tell agents to pass the current file: {get_rules_description}"
         );
         assert!(
             get_rules["inputSchema"]["properties"]["file"].is_object(),
@@ -172,7 +168,6 @@ mod remember_tool_tests {
     async fn remember_rule_writes_then_search_and_get_rules_recalls() {
         let state = build_state().await;
 
-        // Step 1: agent captures a rule from the user.
         let remember = call_ok(
             &state,
             &call_tool(
@@ -206,9 +201,9 @@ mod remember_tool_tests {
             "confirm text mentions publish workflow"
         );
 
-        // Step 2: an immediate search_rules -> get_rules flow should
-        // surface the freshly-remembered rule. This is the "I told it to
-        // remember, therefore it now applies" UX guarantee.
+        // An immediate search_rules -> get_rules flow must surface the
+        // freshly-remembered rule: the "I told it to remember, therefore it now
+        // applies" guarantee.
         let (search_body, search_result) = call_tool_json(
             &state,
             3,
@@ -273,10 +268,8 @@ mod remember_tool_tests {
 
     #[tokio::test]
     async fn remember_rule_dedup_returns_strengthened_meta() {
-        // Same-title re-capture should come back with deduped=true and
-        // confidence bumped to 0.65 — confirms the MCP surface tells the
-        // agent (and through it, the user) that we strengthened rather
-        // than duplicated.
+        // Same-title re-capture must return deduped=true and confidence bumped
+        // to 0.65, signalling that we strengthened rather than duplicated.
         let state = build_state().await;
 
         let make_req = |id: i64| {
@@ -309,8 +302,6 @@ mod remember_tool_tests {
             "confirm text should mention strengthening, got: {body_text}"
         );
     }
-
-    // ── 3-layer progressive disclosure: search_rules / get_rules ──
 
     const TEST_REPO: &str = "acme/widgets";
 
@@ -351,15 +342,11 @@ mod remember_tool_tests {
     }
 
     async fn scope_rule_to_current_git_repo(state: &McpState, rule_id: &str) {
-        let repos = detect_git_remote_owner_repos();
-        let Some(repo) = repos.first() else {
-            return;
-        };
-        scope_rule_to_repo(state, rule_id, repo).await;
+        set_detected_repos_for_current_dir_for_test(vec![TEST_REPO.to_owned()]);
+        scope_rule_to_repo(state, rule_id, TEST_REPO).await;
     }
 
-    /// Insert N rules via `remember_rule` so we have a deterministic
-    /// corpus the search + get round-trip tests can assert on.
+    /// Insert N rules via `remember_rule` for a deterministic corpus.
     async fn seed_rules(state: &McpState, items: &[(&str, &str)]) -> Vec<String> {
         let mut ids = Vec::new();
         for (i, (title, body)) in items.iter().enumerate() {
@@ -419,8 +406,8 @@ mod remember_tool_tests {
         let index_pool = state.index_pool.as_ref().expect("index pool");
 
         // Force-rebuild bypasses the freshness gate: seed_rules already indexed
-        // the corpus (so an `ensure_*` call would short-circuit), yet rebuild
-        // still runs and returns the in-scope chunk count.
+        // the corpus (so `ensure_*` would short-circuit), yet rebuild still runs
+        // and returns the in-scope chunk count.
         let count = crate::context::orchestrator::rebuild_rules_index_for_repo_scopes(
             &state.db,
             index_pool,
@@ -434,8 +421,8 @@ mod remember_tool_tests {
             "rebuild should index both scoped rules, got {count}"
         );
 
-        // Repeatable: a second force-rebuild re-runs (not freshness-gated) and is
-        // stable — the property that makes it a reliable recovery command.
+        // A second force-rebuild re-runs (not freshness-gated) and is stable,
+        // the property that makes it a reliable recovery command.
         let count_again = crate::context::orchestrator::rebuild_rules_index_for_repo_scopes(
             &state.db,
             index_pool,
@@ -446,9 +433,9 @@ mod remember_tool_tests {
         .expect("rebuild scoped again");
         assert_eq!(count, count_again, "force-rebuild is idempotent");
 
-        // Force-prune: rebuilding for no scope clears the index even though the
-        // freshness meta currently says it is populated — the recovery path that
-        // heals a polluted / inconsistent index regardless of freshness.
+        // Force-prune: rebuilding for no scope clears the index even when the
+        // freshness meta says it is populated — the recovery path that heals a
+        // polluted index regardless of freshness.
         let pruned = crate::context::orchestrator::rebuild_rules_index_for_repo_scopes(
             &state.db,
             index_pool,
@@ -547,9 +534,8 @@ mod remember_tool_tests {
                     .and_then(|v| v.as_array())
                     .is_some()
             );
-            // Full rule body header from `render_full_rule_with_examples`
-            // must NOT appear — that's the line that would tell us the
-            // index path accidentally included everything.
+            // The examples block must not appear: its presence would mean the
+            // index path accidentally included the full body.
             for (_k, v) in entry.as_object().unwrap() {
                 if let Some(s) = v.as_str() {
                     assert!(
@@ -645,8 +631,8 @@ mod remember_tool_tests {
         assert!(cost.is_object(), "cost meta must be present: {result}");
         let tokens_used = cost["tokens_used"].as_u64().expect("tokens_used number");
         assert!(tokens_used > 0, "tokens_used should be non-zero");
-        // Index-style tool MUST surface the vs-full comparison so the
-        // agent can see progressive disclosure pays off.
+        // Index-style tools surface the vs-full comparison so the agent can see
+        // progressive disclosure pays off.
         let tokens_if_full = cost["tokens_if_full"].as_u64().expect("tokens_if_full");
         assert!(
             tokens_if_full >= tokens_used,
@@ -752,8 +738,8 @@ mod remember_tool_tests {
         .await;
         let cost = &result["_meta"]["cost"];
         assert!(cost["tokens_used"].as_u64().unwrap() > 0);
-        // Detail-layer tool intentionally has no savings baseline — the
-        // response IS the full payload.
+        // Detail-layer tools have no savings baseline: the response IS the full
+        // payload.
         assert!(
             cost.get("tokens_if_full").is_none(),
             "detail tool should not claim savings: {cost}"
@@ -792,10 +778,9 @@ mod remember_tool_tests {
             call_tool_json(&state, 510, "get_rules", json!({ "ids": ids.clone() })).await;
         let results = body["results"].as_array().expect("results array");
         assert_eq!(results.len(), 2, "expected 2 results in order");
-        // Order must match input
+        // Order must match input.
         assert_eq!(results[0]["id"].as_str(), Some(ids[0].as_str()));
         assert_eq!(results[1]["id"].as_str(), Some(ids[1].as_str()));
-        // Bodies must contain the unique tokens from the seeded descriptions
         assert!(results[0]["body"].as_str().unwrap().contains("AAAAONE"));
         assert!(results[1]["body"].as_str().unwrap().contains("BBBBTWO"));
         assert!(body["missing_ids"].as_array().unwrap().is_empty());
@@ -1015,21 +1000,11 @@ mod remember_tool_tests {
         )
         .await;
 
-        // The intent both (a) carries the unique `ALPHAMARKER` token so this
-        // query pins to THIS test's seeded rules — without it, parallel tests
-        // in the same shared-DB process (see `SHARED_DB` OnceCell above) seed
-        // competing rules and the natural-language query lost top-K under
-        // workspace-level concurrency, flaking `!results.is_empty()` (~33%
-        // pass) — AND (b) restates rule alpha's own directive ("prefer
-        // tokio::select over manual spawn"). The (b) part is required by the
-        // intent-alignment gate (precision fix): the gate now drops candidates
-        // whose directive doesn't share the query's imperative + object, so a
-        // bare topical pin like the old "background task best practices" (which
-        // shares NOTHING with the seeded rule's directive) is correctly
-        // suppressed. A real recall query for this rule WOULD name its action,
-        // so aligning the intent here reflects the real contract — the
-        // round-trip assertions below (search returns IDs → get_rules resolves
-        // full bodies) are unchanged.
+        // The intent must (a) carry the unique `ALPHAMARKER` token to pin this
+        // query to THIS test's seeded rules (parallel tests share the DB and
+        // would otherwise compete for top-K, flaking the query), and (b) restate
+        // rule alpha's directive — the intent-alignment gate drops candidates
+        // whose directive doesn't share the query's imperative + object.
         let (search_body, _) = call_tool_json(
             &state,
             530,
@@ -1059,13 +1034,11 @@ mod remember_tool_tests {
         for (i, entry) in fetched.iter().enumerate() {
             assert_eq!(entry["id"].as_str(), Some(top_ids[i].as_str()));
             let full_body = entry["body"].as_str().unwrap();
-            // Item ⑥: the full body now leads with the code-spec header
-            // `## Rule {id} — {name}` (replacing the old `Rule ID:` line),
-            // so the 2-stage search_rules -> get_rules flow still has a
-            // stable, id-carrying detail contract.
+            // The full body leads with the code-spec header `## Rule {id} —
+            // {name}`, giving the search_rules -> get_rules flow a stable,
+            // id-carrying detail contract.
             assert!(full_body.contains(&format!("## Rule {}", top_ids[i])));
             assert!(full_body.contains(top_ids[i].as_str()));
-            // Code-spec contract section is always present.
             assert!(full_body.contains("### Contract"));
         }
     }
@@ -1105,13 +1078,10 @@ mod remember_tool_tests {
         );
     }
 
-    // ── rule_timeline ────────────────────────────────────────────────
-
     #[tokio::test]
     async fn rule_timeline_orders_events_and_truncates_preview() {
         let state = build_state().await;
 
-        // Seed a rule via remember_rule — produces the `remember` event.
         let long_body = "A".repeat(500); // forces preview truncation
         let remember = call_ok(
             &state,
@@ -1127,10 +1097,7 @@ mod remember_tool_tests {
             .expect("rule_id in _meta")
             .to_owned();
 
-        // Attach an example — produces the `extracted` event. Backdate
-        // `created_at` via a direct UPDATE so the example sorts AFTER the
-        // skill row (SQLite's 1-sec resolution means same-second rows
-        // would tie; a strict asc check needs a distinct ts).
+        // Attach an example, producing the `extracted` event.
         let example_input = crate::models::AddExampleInput {
             skill_id: rule_id.clone(),
             bad_code: "let x = unwrap();".into(),
@@ -1141,8 +1108,8 @@ mod remember_tool_tests {
         let example = crate::skills::add_example(&state.db, example_input)
             .await
             .unwrap();
-        // Force the example timestamp strictly AFTER the skill's
-        // installed_at — same-second ties would drop into id-tie-break
+        // Force the example timestamp strictly after the skill's installed_at;
+        // SQLite's 1-sec resolution means same-second ties fall to id-tie-break
         // and make the ordering assertion non-deterministic.
         sqlx::query!(
             "UPDATE rule_examples SET created_at = datetime('now', '+1 second') WHERE id = ?1",
@@ -1152,8 +1119,8 @@ mod remember_tool_tests {
         .await
         .unwrap();
 
-        // Persist an explicit feedback signal. The timeline should read this
-        // from rule_events instead of guessing from skills.updated_at.
+        // Persist an explicit feedback signal; the timeline reads this from
+        // rule_events rather than guessing from skills.updated_at.
         crate::skills::update_confidence(
             &state.db,
             crate::models::UpdateConfidenceInput {
@@ -1184,13 +1151,11 @@ mod remember_tool_tests {
         .await;
         let events = body["events"].as_array().expect("events array");
 
-        // Must carry at least the seed + example + feedback rows.
         assert!(
             events.len() >= 3,
             "expected >= 3 events (remember + extracted + feedback), got: {events:?}"
         );
 
-        // First event is the `remember` row at the rule's installed_at.
         assert_eq!(events[0]["kind"].as_str(), Some("remember"));
         assert_eq!(events[0]["source"].as_str(), Some("conversation"));
         assert_eq!(events[0]["id"].as_str(), Some(rule_id.as_str()));
@@ -1203,14 +1168,13 @@ mod remember_tool_tests {
             "creation event should carry ruleCreated evidence: {events:?}"
         );
 
-        // Chronological asc — each ts must be >= the previous one.
+        // Chronological ascending: each ts must be >= the previous one.
         for pair in events.windows(2) {
             let a = pair[0]["ts"].as_str().unwrap();
             let b = pair[1]["ts"].as_str().unwrap();
             assert!(a <= b, "events not sorted asc: {a} vs {b}");
         }
 
-        // Every preview stays under the 120-char budget.
         for e in events {
             let preview = e["preview"].as_str().unwrap();
             assert!(
@@ -1220,7 +1184,6 @@ mod remember_tool_tests {
             );
         }
 
-        // Extracted example event present with the right kind.
         let has_extracted = events.iter().any(|e| {
             e["kind"].as_str() == Some("extracted") && e["source"].as_str() == Some("extracted")
         });
@@ -1251,9 +1214,8 @@ mod remember_tool_tests {
             "missing example evidence payload: {events:?}"
         );
 
-        // Dump one sample row under DIFFLORE_TEST_DUMP=1 so humans can
-        // paste it into PR descriptions / task reports without digging
-        // into the JSON-RPC payload shape.
+        // Dump one sample row under DIFFLORE_TEST_DUMP=1 to inspect the payload
+        // shape without digging into the JSON-RPC envelope.
         if std::env::var_os("DIFFLORE_TEST_DUMP").is_some() {
             eprintln!(
                 "[rule_timeline.sample] {}",
@@ -1269,9 +1231,8 @@ mod remember_tool_tests {
 
     #[tokio::test]
     async fn rule_timeline_depth_caps_at_twenty() {
-        // Over-asking for 999 each side must clamp to 20 (the advertised
-        // max) without the tool raising an error. Prevents an agent from
-        // blowing the response budget by passing a huge number.
+        // Over-asking for 999 each side must clamp to 20 (the advertised max)
+        // without erroring, so an agent can't blow the response budget.
         let state = build_state().await;
         let remember = call_ok(
             &state,
@@ -1324,9 +1285,8 @@ mod remember_tool_tests {
         .await;
         let rule_id = remember["_meta"]["rule_id"].as_str().unwrap().to_owned();
 
-        // Backfill source_repo via direct UPDATE — the public skill creation
-        // surfaces (remember_rule, manual rules) leave it null, so we set it
-        // explicitly to exercise the timeline's serialisation branch.
+        // Backfill source_repo: public creation surfaces leave it null, so set
+        // it explicitly to exercise the timeline's serialisation branch.
         sqlx::query!(
             "UPDATE skills SET source_repo = ?1 WHERE id = ?2",
             "github.com/example/repo",
@@ -1379,10 +1339,8 @@ mod remember_tool_tests {
             json!({ "rule_id": rule_id.clone() }),
         )
         .await;
-        // remember_rule leaves source_repo NULL; the timeline serialiser
-        // builds two distinct json! branches and the None branch must omit
-        // the key entirely (not emit `null`) so agents reading the response
-        // don't have to special-case the falsy form.
+        // When source_repo is NULL the serialiser must omit the key entirely
+        // (not emit `null`), so agents don't have to special-case the falsy form.
         assert!(
             body.get("source_repo").is_none(),
             "expected source_repo to be omitted, got: {body}"
@@ -1391,8 +1349,7 @@ mod remember_tool_tests {
 
     #[tokio::test]
     async fn rule_timeline_omits_source_repo_when_blank() {
-        // Empty / whitespace strings must elide too — the production code
-        // filters them out so the same row can't accidentally print a stray
+        // Empty/whitespace strings must elide too, so a row can't print a stray
         // "from " line on downstream surfaces.
         let state = build_state().await;
         let remember = call_ok(
@@ -1421,8 +1378,6 @@ mod remember_tool_tests {
             "expected blank source_repo to be elided, got: {body}"
         );
     }
-
-    // ── Citation resources (verdicts / signatures) ───────────────────
 
     #[tokio::test]
     async fn resource_templates_list_advertises_verdicts_and_signatures() {
@@ -1543,8 +1498,8 @@ mod remember_tool_tests {
                 .unwrap()
                 .contains("verdicts/ext-abc123")
         );
-        // Note field is the no-local-cache disclosure — required so agents
-        // don't pretend to have rich detail they can't actually serve.
+        // The note is the no-local-cache disclosure, so agents don't pretend to
+        // have detail they can't serve.
         assert!(body["note"].is_string());
         assert_eq!(body["status"].as_str(), Some("not_cached_locally"));
         assert!(
@@ -1668,14 +1623,10 @@ mod remember_tool_tests {
         );
     }
 
-    // ── embedding-lane degradation is not silent ──
-
-    /// Overwrite the persisted corpus embedding profile on the project
-    /// index DB. Mirrors `index_db::write_meta` (which is `pub(super)` and
-    /// therefore unreachable from here) using the *exact* upsert statement
-    /// so the sqlx offline cache resolves it without a live DB. Lets a
-    /// test pin the corpus profile independently of whatever embedder the
-    /// test box resolves, so we can construct a profile mismatch on demand.
+    /// Overwrite the persisted corpus embedding profile on the project index
+    /// DB. Mirrors `index_db::write_meta` (which is `pub(super)` and unreachable
+    /// here) so a test can pin the corpus profile and construct a mismatch on
+    /// demand, independent of whatever embedder the test box resolves.
     async fn overwrite_index_embedding_profile(pool: &sqlx::SqlitePool, profile: &str) {
         sqlx::query!(
             "INSERT INTO rule_index_meta (key, value)\n         VALUES (?1, ?2)\n         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -1687,23 +1638,17 @@ mod remember_tool_tests {
         .expect("overwrite embedding_profile meta row");
     }
 
-    /// Regression for the public eval-seed contract: a 1536d-profile corpus served
-    /// to a 128d SHA1 fallback query embedder must NOT silently look like
-    /// a normal retrieval. Before the embedding diagnostics surface, a
-    /// provider/dimension fallback degraded recall to lexical noise while
-    /// the MCP response still looked healthy — the agent (and the user)
-    /// had no signal. This asserts the degradation is now surfaced both at
-    /// the diagnostic-function level (deterministic) and in the
+    /// A 1536d-profile corpus served to a 128d SHA1 fallback query embedder
+    /// must not silently look like a normal retrieval. Asserts the degradation
+    /// is surfaced both at the diagnostic-function level and in the
     /// agent-visible `search_rules` `_meta.embedding` channel, with a
-    /// matched-profile positive control proving the signal is not a
-    /// constant.
+    /// matched-profile positive control proving the signal is not a constant.
     #[tokio::test]
     async fn embedding_profile_mismatch_is_surfaced_not_silent() {
         let state = build_state().await;
 
-        // Seed a rule. `remember_rule` builds the project index and, via
-        // `ensure_rules_indexed` → `mark_rule_index_current`, persists the
-        // *active* embedder's profile into `rule_index_meta`.
+        // remember_rule builds the project index and persists the active
+        // embedder's profile into `rule_index_meta`.
         let _rule_id = remember_rule_with_patterns(
             &state,
             "Embedding lane guard rule",
@@ -1713,12 +1658,10 @@ mod remember_tool_tests {
         .await;
         let index_pool = state.index_pool.as_ref().expect("test index pool");
 
-        // The test box has no cloud token (`shared_test_home`) and no BYOK
-        // settings, so the active embedder is the local SHA1 lexical hash.
-        // If a dev machine *does* have a real cloud token the precondition
-        // for a sha1-vs-cloud mismatch does not hold, so we guard the
-        // mismatch assertions on it (same pattern as the unit tests in
-        // `context::index_db::diagnostics`).
+        // The test box normally has no cloud token, so the active embedder is
+        // the local SHA1 lexical hash. A dev machine with a real cloud token
+        // breaks the sha1-vs-cloud mismatch precondition, so the mismatch
+        // assertions are guarded on it.
         let active = crate::context::embedding::active_embedding_profile().await;
         let sha1_fallback_active = active.starts_with("sha1:");
 
@@ -1728,15 +1671,12 @@ mod remember_tool_tests {
                 "test default embedder must be the 128d SHA1 fallback"
             );
 
-            // Construct the §2 scenario: a 1536d cloud-embedded corpus
-            // being queried by the 128d SHA1 fallback embedder.
+            // A 1536d cloud-embedded corpus queried by the 128d SHA1 fallback.
             overwrite_index_embedding_profile(index_pool, "cloud:text-embedding-3-small:1536")
                 .await;
 
-            // Deterministic unit guarantee: read straight off the mutated
-            // meta row with no tool call in between (nothing can self-heal
-            // the profile before we observe it). This is the load-bearing
-            // "not silent" assertion — it cannot be a healthy retrieval.
+            // Read straight off the mutated meta row with no tool call in
+            // between, so nothing can self-heal the profile before we observe it.
             let diag = crate::context::gather_embedding_diagnostics(index_pool).await;
             assert!(
                 diag.degraded,
@@ -1768,17 +1708,11 @@ mod remember_tool_tests {
                 "diagnostic must report the persisted semantic corpus profile: {diag:?}"
             );
 
-            // Agent-visible channel: the degradation must reach the MCP
-            // `_meta.embedding` block (the camelCase serialization of
-            // `EmbeddingDiagnostics`) so the call no longer *looks like* a
-            // normal retrieval to the agent. We assert the block is present
-            // and well-formed with every contract key of the right type —
-            // the structural "it is surfaced at all" guarantee — and pin
-            // the semantic verdict deterministically via the function-level
-            // assertions above (a tool call runs `ensure_rules_indexed`,
-            // whose rebuild path resets the meta, so the tool response's
-            // verdict depends on where the wiring samples diagnostics; the
-            // structural presence here does not).
+            // The degradation must reach the agent-visible `_meta.embedding`
+            // block. Assert the block is present and well-formed with every
+            // contract key of the right type; the semantic verdict is pinned by
+            // the function-level assertions above, since a tool call runs
+            // `ensure_rules_indexed` whose rebuild path can reset the meta.
             let (_body, result) = call_tool_json(
                 &state,
                 770,
@@ -1827,12 +1761,10 @@ mod remember_tool_tests {
             );
         }
 
-        // Positive control: when the persisted corpus profile equals the
-        // active embedder profile, the lane is healthy. This state is
-        // stable across `ensure_rules_indexed` (profile matches → no
-        // rebuild → no meta clobber), so the tool's `_meta.embedding`
-        // verdict is fully deterministic here and proves the degraded
-        // signal above is a real discriminator, not a constant.
+        // Positive control: a matched profile is a healthy lane. This state is
+        // stable across `ensure_rules_indexed` (matching profile → no rebuild →
+        // no meta clobber), so the verdict is deterministic and proves the
+        // degraded signal above is a real discriminator, not a constant.
         overwrite_index_embedding_profile(index_pool, &active).await;
         let healthy = crate::context::gather_embedding_diagnostics(index_pool).await;
         assert!(
@@ -1883,9 +1815,9 @@ mod remember_tool_tests {
     reason = "test scaffolding"
 )]
 mod resource_uri_tests {
-    //! Unit-level parse tests for the citation resource URIs. Kept
-    //! separate from the integration tests above so the URI surface can
-    //! be regression-tested without standing up a real `SqlitePool`.
+    //! Parse tests for the citation resource URIs, kept separate from the
+    //! integration tests so the URI surface can be tested without a real
+    //! `SqlitePool`.
 
     use super::super::{parse_signature_uri, parse_verdict_uri};
 
@@ -1969,14 +1901,13 @@ mod git_remote_tests {
     reason = "test scaffolding"
 )]
 mod kill_switch_tests {
-    // The kill-switch reads a process-wide env var, so these tests
-    // mutate global state. `temp_env::with_vars` serialises and
-    // restores so they can't race each other.
+    // The kill-switch reads a process-wide env var, so these tests mutate
+    // global state. `temp_env::with_vars` serialises and restores so they can't
+    // race each other.
     use super::super::*;
 
-    /// All env vars consulted by the kill-switch / haiku auto-disable
-    /// gate. The test harness must clear every one of these around
-    /// each test so a stray `ANTHROPIC_MODEL=…haiku…` in the dev
+    /// All env vars consulted by the kill-switch / haiku auto-disable gate.
+    /// Cleared around each test so a stray `ANTHROPIC_MODEL=…haiku…` in the dev
     /// shell can't flip the gate underneath us.
     const GATE_ENV_KEYS: &[&str] = &[
         "DIFFLORE_DISABLE_RULES",
@@ -1986,10 +1917,9 @@ mod kill_switch_tests {
         "CLAUDE_MODEL",
     ];
 
-    /// Run `f` with the requested overrides applied to the gate env,
-    /// then restore. `overrides` entries with `None` clear the var,
-    /// `Some(v)` sets it. Vars not listed in `overrides` are cleared
-    /// for the duration of the test so the harness is hermetic.
+    /// Run `f` with the requested overrides applied to the gate env, then
+    /// restore. `None` clears a var, `Some(v)` sets it; vars not listed are
+    /// cleared for the duration so the harness is hermetic.
     fn with_gate_env<F: FnOnce()>(overrides: &[(&str, Option<&str>)], f: F) {
         let mut vars: Vec<(&str, Option<&str>)> =
             GATE_ENV_KEYS.iter().map(|k| (*k, None)).collect();
@@ -2026,8 +1956,8 @@ mod kill_switch_tests {
 
     #[test]
     fn falsy_value_does_not_disable() {
-        // Empty / "0" / "false" are treated as not-set so users can
-        // unset by writing `=0` rather than removing the var.
+        // Empty / "0" / "false" count as not-set so users can unset by writing
+        // `=0` rather than removing the var.
         with_env("DIFFLORE_DISABLE_RULES", Some(""), || {
             assert!(rule_injection_disabled().is_none());
         });
@@ -2041,8 +1971,8 @@ mod kill_switch_tests {
 
     #[test]
     fn haiku_model_auto_disables_injection() {
-        // Haiku detected via any of the supported env vars → gate
-        // returns Some(reason) without the explicit kill switch.
+        // Haiku detected via any supported env var auto-disables without the
+        // explicit kill switch.
         for key in ["DIFFLORE_AGENT_MODEL", "ANTHROPIC_MODEL", "CLAUDE_MODEL"] {
             with_gate_env(&[(key, Some("claude-haiku-4-5-20251001"))], || {
                 let reason = rule_injection_disabled().expect("haiku should auto-disable");
@@ -2082,9 +2012,8 @@ mod kill_switch_tests {
 
     #[test]
     fn explicit_kill_switch_wins_over_force_override() {
-        // If both the kill switch AND the haiku override are set, the
-        // explicit kill switch still suppresses — user intent is
-        // unambiguous and we report that path's reason.
+        // When both the kill switch and the haiku override are set, the kill
+        // switch wins and we report its reason.
         with_gate_env(
             &[
                 ("DIFFLORE_DISABLE_RULES", Some("1")),
@@ -2147,8 +2076,8 @@ mod kill_switch_tests {
     reason = "test scaffolding"
 )]
 mod plan_pr_tests {
-    //! Fixture tests for the pure helper behind the MCP `plan_pr` tool.
-    //! Tests only the pure algorithm; no `SQLite` is touched.
+    //! Fixture tests for the pure helper behind the MCP `plan_pr` tool. No
+    //! `SQLite` is touched.
     use super::super::{HistoricalPr, predict_scope_from_corpus};
 
     fn pr(repo: &str, pr_number: i32, text: &str, files: &[&str]) -> HistoricalPr {

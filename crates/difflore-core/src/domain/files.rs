@@ -315,8 +315,7 @@ mod tests {
 
     #[test]
     fn name_matches_falls_back_to_fuzzy_when_substring_fails() {
-        // "usvc" is not a substring of "UserService.ts" (case-normalized "userservice.ts")
-        // but is a subsequence: u→s→v...wait, "v" is not in "userservice.ts". Use a real case.
+        // "usi" is not a substring of "userserviceimpl.ts" but is a subsequence.
         assert!(name_matches_query("UserServiceImpl.ts", "usi"));
     }
 }

@@ -9,9 +9,8 @@ pub(crate) mod probes;
 pub(crate) mod report;
 pub(crate) mod table;
 
-/// Bundle of every flag the doctor command currently exposes. Keeping
-/// them in one struct lets `handle_doctor` keep a single signature as
-/// the surface grows.
+/// Flags the doctor command exposes, bundled so `handle_doctor` keeps a single
+/// signature as the surface grows.
 #[derive(Debug)]
 pub(crate) struct DoctorArgs {
     pub report: bool,
@@ -33,8 +32,7 @@ pub(crate) async fn handle_doctor(ctx: &crate::runtime::CommandContext, args: Do
     } = args;
 
     if drain_abandoned {
-        // Resurrection path — strictly opt-in. Dry-run by default; the
-        // user must pass `--no-dry-run` to actually write.
+        // Dry-run by default; `--no-dry-run` is required to actually write.
         let cutoff = match drain::parse_older_than(&older_than) {
             Ok(d) => d,
             Err(msg) => {
@@ -56,9 +54,8 @@ pub(crate) async fn handle_doctor(ctx: &crate::runtime::CommandContext, args: Do
     if report {
         let md = report::build_doctor_report(ctx).await;
         let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-        // Park reports under `~/.difflore/reports/` so they don't
-        // accumulate in the user's project root. Fall back to cwd on
-        // the (rare) failure path so the user still gets their report.
+        // Park reports under `~/.difflore/reports/` so they don't accumulate
+        // in the project root; fall back to cwd if that path is unavailable.
         let dir = match difflore_core::paths::data_home() {
             Ok(d) => d.join("reports"),
             Err(_) => std::path::PathBuf::from("."),
@@ -84,24 +81,17 @@ pub(crate) async fn handle_doctor(ctx: &crate::runtime::CommandContext, args: Do
             }
         }
     } else {
-        // Default doctor view: aligned-column table. The markdown report
-        // stays behind `--report` for paste-into-issue workflows.
         let rendered = table::render_table(ctx).await;
         print!("{rendered}");
-        // Only print the slow-drain warning when the same queues used by
-        // `--drain-abandoned` cross their thresholds.
         if let Some(warning) = slow_drain_warning(ctx).await {
             println!();
             println!("  {warning}");
         }
         if fix_mode {
-            // Run a fix pass after the diagnostic table so the user
-            // sees the same surface they always do, then watches the
-            // narrow auto-repairs apply against it.
             fix::run_fix_pass();
         } else if fix::has_fixable() {
-            // Single-line nudge — only printed when there's something
-            // to fix. Sized to never nag a healthy install.
+            // Nudge only when there's something to fix, so a healthy install
+            // isn't nagged.
             println!();
             println!(
                 "  {} {} {} {}",
@@ -114,14 +104,13 @@ pub(crate) async fn handle_doctor(ctx: &crate::runtime::CommandContext, args: Do
     }
 }
 
-/// Thresholds for the passive slow-drain warning. Healthy installs should
-/// clear `pending` rows well below these counts.
+/// Thresholds for the slow-drain warning; healthy installs stay well below
+/// these `pending`-row counts.
 const SLOW_DRAIN_CLOUD_THRESHOLD: i64 = 500;
 const SLOW_DRAIN_OBSERVATION_THRESHOLD: i64 = 200;
 
-/// Inspect the two outbox queues and return a single-line warning when
-/// either is over its slow-drain threshold. Returns `None` otherwise
-/// so doctor's clean-install surface is unchanged.
+/// Single-line warning when either outbox queue is over its slow-drain
+/// threshold; `None` otherwise.
 async fn slow_drain_warning(ctx: &crate::runtime::CommandContext) -> Option<String> {
     use difflore_core::cloud::observations::ObservationEmitter;
     use difflore_core::cloud::outbox::OutboxQueue;
@@ -150,7 +139,7 @@ async fn slow_drain_warning(ctx: &crate::runtime::CommandContext) -> Option<Stri
     }
 
     Some(format!(
-        "{} {} {} — run `difflore cloud sync`; if it stays queued, attach `difflore doctor --report`.",
+        "{} {} {}; run `difflore cloud sync`; if it stays queued, attach `difflore doctor --report`.",
         style::amber(style::sym::WARN),
         style::pewter("upload queue:"),
         parts.join(" + "),

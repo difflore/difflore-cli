@@ -7,10 +7,9 @@
 //! row and the in-process settings/token state, never the network and never
 //! the corpus vectors themselves.
 //!
-//! It exists so `difflore doctor` (and the CLI status surface) can answer
-//! "is recall still semantic, or did it silently fall back to local SHA1?"
-//! without re-embedding anything. The corpus profile is written by
-//! `mark_rule_index_current` (see `pool.rs`); the active profile comes from
+//! Lets `difflore doctor` answer "is recall still semantic, or did it silently
+//! fall back to local SHA1?" without re-embedding. The corpus profile is written
+//! by `mark_rule_index_current` (see `pool.rs`); the active profile comes from
 //! `active_embedding_profile()` (see `embedding.rs`). A profile string is
 //! `cloud:{model}:{dim}` / `byok:{host}:{model}:{dim}` / `sha1:local:128`,
 //! so the trailing `:`-segment is always the embedding dimension.
@@ -46,20 +45,16 @@ pub struct EmbeddingDiagnostics {
     pub vector_lane_available: bool,
 }
 
-/// Parse the embedding dimension — the integer after the **last** `:` of a
-/// profile string. Returns `None` for an unparseable / malformed tail so
-/// the caller treats the dimension as unknown rather than guessing.
+/// Parse the embedding dimension: the integer after the last `:` of a profile
+/// string. `None` on an unparseable tail so callers treat the dim as unknown.
 fn profile_dim(profile: &str) -> Option<u32> {
     profile.rsplit(':').next().and_then(|s| s.parse().ok())
 }
 
-/// Best-effort check for a *recent* embedding fallback recorded by the
-/// activity stream. Used only as a tie-breaker when the static profile
-/// comparison did not already flag degradation: a provider can fail at
-/// query time while the persisted corpus profile still looks semantic.
-///
-/// Reads the cheap tail API; any miss (no file / not present) yields
-/// `false` so this never blocks or adds infrastructure.
+/// Best-effort check for a recent embedding fallback in the activity stream.
+/// Used as a tie-breaker when the static profile comparison did not flag
+/// degradation: a provider can fail at query time while the persisted corpus
+/// profile still looks semantic. Any miss yields `false`, so it never blocks.
 fn recent_embedding_fallback_from_events(
     events: &[crate::activity_stream::ActivityEvent],
     now_ms: i64,
@@ -85,22 +80,20 @@ fn recent_embedding_fallback() -> bool {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-    // A small window is enough: report query-time degradation only when the
-    // latest embedding activity was a fresh fallback. Older fallbacks should
-    // not keep a quiet project red forever.
+    // Report query-time degradation only when the latest embedding activity was
+    // a fresh fallback; older fallbacks must not keep a quiet project red.
     recent_embedding_fallback_from_events(&tail(16), now_ms)
 }
 
-/// True when **any** embedding fallback was recorded inside the recency window.
+/// True when any embedding fallback occurred inside the recency window.
 ///
 /// Unlike [`recent_embedding_fallback_from_events`], this is NOT masked by a
-/// later `RetrievalEmbedding` event. That matters because every
-/// `retrieve_rules_with_confidence` records a `RetrievalEmbedding` at the end of
-/// retrieval (even when the query embed itself fell back to SHA1), so the
-/// "latest event" view almost always sees retrieval, not the fallback that
-/// preceded it in the same pass. Decisions that must NOT be fooled by that
-/// trailing event — e.g. "is the remote embedder currently down, so skip a
-/// futile corpus re-embed?" — use this strict scan instead.
+/// later `RetrievalEmbedding` event. Every `retrieve_rules_with_confidence`
+/// records a `RetrievalEmbedding` at the end of retrieval (even when the query
+/// embed fell back to SHA1), so a latest-event view almost always sees retrieval
+/// rather than the fallback that preceded it in the same pass. Decisions that
+/// must not be fooled by that trailing event (e.g. "is the remote embedder down,
+/// so skip a futile corpus re-embed?") use this strict scan.
 fn recent_embedding_fallback_strict_from_events(
     events: &[crate::activity_stream::ActivityEvent],
     now_ms: i64,
@@ -119,10 +112,9 @@ fn recent_embedding_fallback_strict() -> bool {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
-    // Scan the full capped log (not just the newest few): with the futile
-    // re-embed skipped, warm recalls only append `RetrievalEmbedding`, so the
-    // most recent fallback can sit many events back yet still be inside the
-    // 10-minute window.
+    // Scan the full capped log: with the futile re-embed skipped, warm recalls
+    // only append `RetrievalEmbedding`, so the most recent fallback can sit many
+    // events back yet still be inside the 10-minute window.
     recent_embedding_fallback_strict_from_events(&tail(MAX_EVENTS), now_ms)
 }
 
@@ -165,25 +157,21 @@ fn cloud_embed_outage_active_from_events(
 /// True when the cloud embedder is in a sustained outage or a persistent
 /// cap/auth failure, per the persisted activity log.
 ///
-/// The query hot path consults this to skip a doomed remote embed — when the
-/// provider is genuinely down, a per-query cloud call just burns the timeout
-/// budget on every edit and falls back to SHA1 anyway. A single transient blip
-/// does NOT trip it (`SUSTAINED_TRANSIENT_FALLBACK_THRESHOLD`), so a brief
-/// outage still recovers on the very next query. Cross-process by design: it
-/// reads the on-disk log, so even short-lived per-fire hook invocations honour
-/// it (an in-process flag would reset every hook spawn).
+/// The query hot path consults this to skip a doomed remote embed: when the
+/// provider is down, a per-query cloud call just burns the timeout budget and
+/// falls back to SHA1 anyway. A single transient blip does NOT trip it
+/// (`SUSTAINED_TRANSIENT_FALLBACK_THRESHOLD`), so a brief outage recovers on the
+/// next query. Cross-process by design: it reads the on-disk log so short-lived
+/// per-fire hook invocations honour it (an in-process flag would reset).
 pub(crate) fn cloud_embed_outage_active() -> bool {
     use crate::activity_stream::{MAX_EVENTS, tail};
     use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    // Short in-process cache. This runs on the query hot path (every hook fire /
-    // search), but the outage signal moves on the order of seconds, so re-reading
-    // the activity log per query is wasted I/O. A 3s TTL bounds it to ~once per
-    // window in a long-lived MCP/daemon process; a short-lived per-fire hook
-    // still reads once (it issues a single query), so it loses nothing. Two
-    // un-paired atomics are fine here — a torn read at most costs one extra log
-    // scan, never correctness.
+    // Short in-process cache: this runs on the query hot path but the outage
+    // signal moves on the order of seconds, so re-reading the log per query is
+    // wasted I/O. The two un-paired atomics are fine — a torn read at most costs
+    // one extra log scan, never correctness.
     static CACHED_AT_MS: AtomicI64 = AtomicI64::new(0);
     static CACHED_VALUE: AtomicBool = AtomicBool::new(false);
     const CACHE_TTL_MS: i64 = 3_000;
@@ -205,17 +193,15 @@ pub(crate) fn cloud_embed_outage_active() -> bool {
 
 /// Gather a side-band embedding-lane diagnostic for one project.
 ///
-/// Compares the corpus embedding profile persisted in `index_pool`'s
-/// `rule_index_meta` against the active embedder profile and classifies the
-/// vector lane. Deterministic and cheap: a single meta-row read plus the
-/// in-process embedder probe. Any DB error reading the persisted profile is
-/// treated as "no index" rather than propagated — a diagnostic must never
+/// Compares the corpus profile in `index_pool`'s `rule_index_meta` against the
+/// active embedder profile and classifies the vector lane. A single meta-row
+/// read plus the in-process embedder probe. Any DB error reading the persisted
+/// profile is treated as "no index", never propagated — a diagnostic must not
 /// itself fail.
 pub async fn gather_embedding_diagnostics(index_pool: &SqlitePool) -> EmbeddingDiagnostics {
     let active = active_embedding_profile().await;
-    // Treat any DB error as "no persisted profile": a degraded/missing
-    // index DB is exactly the condition we are reporting on, so a read
-    // failure must not panic or propagate out of a diagnostic.
+    // Treat any DB error as "no persisted profile": a degraded/missing index DB
+    // is the condition we report on, so a read failure must not propagate.
     let index = read_meta(index_pool, "embedding_profile")
         .await
         .ok()
@@ -224,8 +210,8 @@ pub async fn gather_embedding_diagnostics(index_pool: &SqlitePool) -> EmbeddingD
     let profile_match = index.as_deref() == Some(active.as_str());
 
     let Some(index_profile) = index else {
-        // Corpus was never built — nothing to compare against. The lane is
-        // unavailable but this is "not yet indexed", not a regression.
+        // Corpus never built: lane unavailable, but "not yet indexed", not a
+        // regression.
         return EmbeddingDiagnostics {
             active_profile: active,
             index_profile: None,
@@ -237,7 +223,6 @@ pub async fn gather_embedding_diagnostics(index_pool: &SqlitePool) -> EmbeddingD
     };
 
     if profile_match {
-        // Active embedder matches the corpus exactly — fully healthy.
         return EmbeddingDiagnostics {
             active_profile: active,
             index_profile: Some(index_profile),
@@ -248,10 +233,10 @@ pub async fn gather_embedding_diagnostics(index_pool: &SqlitePool) -> EmbeddingD
         };
     }
 
-    // Profiles differ — decide *how* badly. Worst case first: the corpus
-    // was embedded by a real semantic provider but the active embedder is
-    // the local SHA1 lexical hash. Cosine search against semantic vectors
-    // with lexical query vectors is noise — the lane is effectively dead.
+    // Profiles differ; decide how badly. Worst case: the corpus was embedded by
+    // a semantic provider but the active embedder is the local SHA1 lexical hash.
+    // Cosine search of lexical query vectors against semantic vectors is noise,
+    // so the lane is effectively dead.
     let provider_fallback = active.starts_with("sha1:")
         && (index_profile.starts_with("cloud:") || index_profile.starts_with("byok:"));
     if provider_fallback {
@@ -265,8 +250,8 @@ pub async fn gather_embedding_diagnostics(index_pool: &SqlitePool) -> EmbeddingD
         };
     }
 
-    // Both dimensions known and different → vectors are not comparable at
-    // all (different vector spaces). Lane is unusable until re-index.
+    // Both dims known and different: vectors live in different spaces and are
+    // not comparable. Lane is unusable until re-index.
     let active_dim = profile_dim(&active);
     let index_dim = profile_dim(&index_profile);
     if let (Some(a), Some(i)) = (active_dim, index_dim)
@@ -282,9 +267,9 @@ pub async fn gather_embedding_diagnostics(index_pool: &SqlitePool) -> EmbeddingD
         };
     }
 
-    // Same (or unknown) dimension but a different provider/model. Vectors
-    // are still the right shape so cosine search can run, but cross-model
-    // similarity is weaker than a matched corpus — degraded, lane usable.
+    // Same (or unknown) dim but a different provider/model: vectors are still
+    // the right shape so cosine runs, but cross-model similarity is weaker.
+    // Degraded, lane usable.
     EmbeddingDiagnostics {
         active_profile: active,
         index_profile: Some(index_profile),
@@ -295,12 +280,11 @@ pub async fn gather_embedding_diagnostics(index_pool: &SqlitePool) -> EmbeddingD
     }
 }
 
-/// Variant of [`gather_embedding_diagnostics`] that additionally consults
-/// the activity stream: if the static profile comparison did *not* already
-/// flag degradation but a recent embed call fell back to local SHA1, the
-/// lane is reported as `provider_fallback` (a query-time regression the
-/// persisted profile cannot see). Best-effort — a missing activity log is
-/// simply ignored.
+/// Variant of [`gather_embedding_diagnostics`] that also consults the activity
+/// stream: if the static comparison did not flag degradation but a recent embed
+/// fell back to SHA1, the lane is reported as `provider_fallback` (a query-time
+/// regression the persisted profile cannot see). A missing activity log is
+/// ignored.
 pub async fn gather_embedding_diagnostics_with_activity(
     index_pool: &SqlitePool,
 ) -> EmbeddingDiagnostics {
@@ -320,16 +304,14 @@ pub fn embedding_provider_recently_down() -> bool {
     recent_embedding_fallback_strict()
 }
 
-/// Decide the freshness-expected embedding profile (pure; see
-/// [`effective_embedding_profile_for_freshness`]).
+/// Pure decision behind [`effective_embedding_profile_for_freshness`].
 ///
-/// Returns the persisted SHA1 profile — so a SHA1 index counts as "current" and
-/// the futile re-embed is skipped — only when the active embedder is remote, the
-/// provider is currently failing, and the on-disk index is already SHA1. Every
-/// other case returns the active profile unchanged (healthy upgrade/downgrade
-/// paths are untouched). This only ever relaxes freshness toward the index
-/// already on disk; it never serves stale content, because the count, scope
-/// signature, and `max_updated_at` checks still run independently.
+/// Returns the persisted SHA1 profile (so a SHA1 index counts as current and the
+/// futile re-embed is skipped) only when the active embedder is remote, the
+/// provider is failing, and the on-disk index is already SHA1; every other case
+/// returns the active profile unchanged. This only relaxes freshness toward the
+/// index already on disk — it never serves stale content, because the count,
+/// scope signature, and `max_updated_at` checks still run independently.
 fn freshness_expected_profile(
     active_profile: &str,
     persisted_profile: Option<&str>,
@@ -345,25 +327,23 @@ fn freshness_expected_profile(
     active_profile.to_owned()
 }
 
-/// The embedding profile the index-freshness check should *expect* for the
-/// active embedder, accounting for a remote provider that is currently failing.
+/// The embedding profile the index-freshness check should expect, accounting
+/// for a remote provider that is currently failing.
 ///
-/// Normally this is just the active profile. But when the active embedder is
-/// remote (cloud / BYOK) and the provider is currently failing, re-embedding the
-/// corpus to "adopt" that profile is futile: every chunk calls the dead
-/// provider, falls back to local SHA1, and rewrites the identical SHA1 index —
-/// turning every recall / MCP serve / hook fire into a multi-second corpus
-/// re-embed (measured at 5-18s on real fork corpora). In that state, report the
-/// persisted SHA1 profile so a SHA1 index counts as current and the futile
-/// re-embed is skipped. The skip is self-limiting: once the strict fallback
-/// window elapses (~10 min), the next freshness check re-embeds and, if the
-/// provider has recovered, upgrades to cloud vectors. Probe cost is therefore
-/// at most one re-embed per window instead of one per recall.
+/// Normally just the active profile. But when the active embedder is remote
+/// (cloud / BYOK) and the provider is failing, re-embedding the corpus to adopt
+/// that profile is futile: every chunk calls the dead provider, falls back to
+/// SHA1, and rewrites the identical SHA1 index, turning every recall / MCP serve
+/// / hook fire into a multi-second re-embed (5-18s on real corpora). In that
+/// state, report the persisted SHA1 profile so the SHA1 index counts as current.
+/// Self-limiting: once the strict fallback window elapses (~10 min), the next
+/// freshness check re-embeds and, if the provider recovered, upgrades to cloud
+/// vectors — at most one re-embed per window rather than one per recall.
 pub async fn effective_embedding_profile_for_freshness(
     index_pool: &SqlitePool,
     active_profile: &str,
 ) -> String {
-    // Cheap exits first so the meta read only happens when relaxation can apply.
+    // Cheap exits first so the meta read happens only when relaxation can apply.
     if active_profile.starts_with("sha1:") || !embedding_provider_recently_down() {
         return active_profile.to_owned();
     }
@@ -445,7 +425,7 @@ mod tests {
     #[test]
     fn cloud_outage_persistent_failure_trips_immediately() {
         let now = 1_000_000;
-        // A cap / auth rejection persists — one is conclusive, no run needed.
+        // A cap / auth rejection persists: one is conclusive, no run needed.
         assert!(cloud_embed_outage_active_from_events(
             &[fallback(now - 1_000, "cap")],
             now
@@ -492,10 +472,9 @@ mod tests {
 
     #[test]
     fn strict_fallback_is_not_masked_by_trailing_retrieval() {
-        // Regression: the freshness-skip signal must NOT be hidden by the
-        // `RetrievalEmbedding` that every retrieval records last. The original
-        // (latest-event) check returns false here; the strict check returns
-        // true because a fresh fallback exists within the window.
+        // The freshness-skip signal must NOT be hidden by the
+        // `RetrievalEmbedding` that every retrieval records last: the latest-event
+        // check returns false here, but the strict check sees the fresh fallback.
         let now = 1_000_000;
         let fresh_fallback = ActivityEvent {
             ts_ms: now - 1_000,
@@ -557,13 +536,11 @@ mod tests {
 
     #[tokio::test]
     async fn persisted_sha1_meta_feeds_freshness_relaxation() {
-        // Round-trips the persisted `embedding_profile` meta the async helper
-        // reads, then feeds it to the pure decision exactly as
-        // `effective_embedding_profile_for_freshness` does: a persisted SHA1
-        // profile under a remote active embedder + provider-down resolves to the
-        // SHA1 profile (so the freshness check treats the SHA1 index as current).
-        // The async wrapper itself is a thin read_meta + strict-signal layer over
-        // process-global state; the decision logic it delegates to is covered by
+        // Round-trips the persisted `embedding_profile` meta and feeds it to the
+        // pure decision as `effective_embedding_profile_for_freshness` does: a
+        // persisted SHA1 profile under a remote active embedder + provider-down
+        // resolves to SHA1. The async wrapper is a thin read_meta + strict-signal
+        // layer over process-global state; the decision logic is covered by
         // `freshness_expected_profile_relaxes_only_for_remote_active_over_sha1_index`.
         let tmp = TempDir::new().unwrap();
         let pool = fresh_pool(&tmp).await;

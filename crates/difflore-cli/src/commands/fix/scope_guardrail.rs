@@ -91,7 +91,7 @@ fn render_scope_guardrail(
     if memory_recommended != recommended {
         writeln!(
             out,
-            "- Raw memory estimate was {memory_recommended}; handoff kept it conservative for the current diff and repo evidence."
+            "- Raw memory estimate was {memory_recommended}; handoff kept it conservative for the current diff and repo history."
         )
         .ok();
     }

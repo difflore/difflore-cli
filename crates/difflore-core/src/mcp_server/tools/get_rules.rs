@@ -61,8 +61,8 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
         .await
         .map_err(|e| (-32603, format!("Failed to fetch rules: {e}")))?;
 
-    // Load examples in one batch keyed by the *present* skill ids so we
-    // don't waste a round trip on IDs that won't render anyway.
+    // Batch-load examples keyed by the present skill ids only, so we
+    // don't round-trip on IDs that won't render.
     let present_ids: Vec<String> = ids
         .iter()
         .filter(|id| meta_map.contains_key(id.as_str()))
@@ -94,9 +94,7 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
                     })
                     .unwrap_or_default();
                 // Surface source_repo at the top level so an agent
-                // reading the JSON doesn't have to grep the embedded
-                // "Source: " line in `body`. Same provenance the rest
-                // of difflore prints as "<- learned from <repo>".
+                // need not grep the "Source: " line in `body`.
                 results.push(json!({
                     "id": row.id,
                     "title": row.name,
@@ -145,7 +143,9 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
     )
     .await
     {
-        eprintln!("[difflore-mcp] get_rules serve record failed: {e}");
+        if crate::env::debug_telemetry() {
+            eprintln!("[difflore-mcp] get_rules serve record failed: {e}");
+        }
     }
     {
         let cloud = state.cloud.clone();
@@ -166,7 +166,9 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
             if let Err(e) =
                 crate::cloud::observations::enqueue_and_flush_default(served_event, &cloud).await
             {
-                eprintln!("[difflore-mcp] get_rules served event failed: {e}");
+                if crate::env::debug_telemetry() {
+                    eprintln!("[difflore-mcp] get_rules served event failed: {e}");
+                }
             }
         });
     }
@@ -178,9 +180,9 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
     let origin_step = rule_hits_by_origin(&state.db, &present_ids).await;
     emit_trajectory_step(&origin_step);
 
-    // Detail-layer tool: the response IS the full payload already, so
-    // there is no narrower response to save against. Emit `tokens_used`
-    // only — this still lets the agent compare session-level spend.
+    // Detail-layer tool: the response is already the full payload, so
+    // there's no narrower response to measure savings against; emit
+    // `tokens_used` only.
     Ok(json!({
         "content": [{ "type": "text", "text": text }],
         "_meta": {

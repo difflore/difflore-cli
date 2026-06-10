@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(unsafe_code)]
-//! Behavioural regression test for W1-B hot-path fix.
+//! Behavioural regression test for the `PostToolUse:Edit` hot path.
 //!
 //! Lives in its own integration-test binary on purpose: the test
 //! mutates `DIFFLORE_HOME` so all on-disk side effects (`data.db`,
@@ -9,19 +9,16 @@
 //! every `tests/*.rs` file its own process, so that env mutation
 //! cannot leak into sibling test binaries.
 //!
-//! The fix being guarded: `PostToolUse:Edit` must consult
-//! `hook_cache::should_skip_recent` BEFORE opening the SQLite
-//! pool or running `observation::classify` + outbox `enqueue`.
-//! Before the fix the skip path still paid all of those costs
-//! (175ms p99); after it, a duplicate edit short-circuits to a
-//! noop without writing any observation row or any
-//! `cloud_outbox` row.
+//! Invariant guarded: `PostToolUse:Edit` must consult
+//! `hook_cache::should_skip_recent` BEFORE opening the SQLite pool
+//! or running `observation::classify` + outbox `enqueue`. A duplicate
+//! edit must short-circuit to a noop, writing no observation row and
+//! no `cloud_outbox` row.
 //!
 //! The proceed half asserts the non-skip branch still runs the
-//! classifier + outbox enqueue, so the fix didn't accidentally
-//! suppress capture. Both halves run in the same `#[tokio::test]`
-//! to avoid racing on the shared process-wide `DIFFLORE_HOME` env
-//! var.
+//! classifier + outbox enqueue, so capture is not suppressed. Both
+//! halves run in the same `#[tokio::test]` to avoid racing on the
+//! shared process-wide `DIFFLORE_HOME` env var.
 
 use std::collections::BTreeMap;
 use std::path::Path;

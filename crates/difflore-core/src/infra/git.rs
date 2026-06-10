@@ -291,12 +291,11 @@ pub async fn branches(input: GitBranchesInput) -> crate::Result<Vec<GitBranchRec
     Ok(rows)
 }
 
-/// CLI2-2: reject a revision/ref that git could misparse as an OPTION (argument
-/// injection). Values are already passed as argv (so there is no SHELL
-/// injection), but git still parses a leading-`-` arg as a flag, so a cloud- or
-/// PR-supplied ref like `--upload-pack=…` could smuggle a dangerous git flag.
-/// Legitimate git revisions never begin with `-` and never contain control
-/// characters, so refusing those is safe and closes the vector.
+/// Reject a revision/ref that git could misparse as an OPTION (argument
+/// injection). Values are passed as argv (no shell injection), but git parses a
+/// leading-`-` arg as a flag, so a cloud-/PR-supplied ref like `--upload-pack=…`
+/// could smuggle a dangerous git flag. Legitimate revisions never begin with
+/// `-` and never contain control characters, so refusing those closes the vector.
 pub fn reject_option_like_revision(value: &str, what: &str) -> crate::Result<()> {
     if value.starts_with('-') {
         return Err(CoreError::Validation(format!(
@@ -316,8 +315,8 @@ pub async fn diff(input: GitDiffInput) -> crate::Result<Vec<DiffContentRecord>> 
     if input.staged.unwrap_or(false) {
         args.push("--cached".into());
     }
-    // CLI2-2: validate the user/cloud-supplied revisions before handing them to
-    // git so an option-looking ref can't be parsed as a flag.
+    // Validate the user/cloud-supplied revisions before handing them to git so
+    // an option-looking ref can't be parsed as a flag.
     if let Some(ref a) = input.ref1 {
         reject_option_like_revision(a, "diff revision")?;
         args.push(a.clone());
@@ -517,9 +516,8 @@ pub fn detect_github_repo_full_names(project_path: &str) -> Vec<String> {
 ///   `https://github.com/owner/repo(.git)?`
 ///   `git@github.com:owner/repo(.git)?`
 ///
-/// Used by `run_review` to scope past-verdict recall to THIS repo's rules
-/// (slogan: "understands your repo better"). Non-fatal — callers return no repo-scoped
-/// recall when detection fails.
+/// Used by `run_review` to scope past-verdict recall to THIS repo's rules.
+/// Non-fatal — callers return no repo-scoped recall when detection fails.
 pub fn detect_github_repo_full_name(project_path: &str) -> Option<String> {
     detect_github_repo_full_names(project_path)
         .into_iter()
@@ -552,9 +550,9 @@ mod detect_tests {
 
     #[test]
     fn reject_option_like_revision_blocks_argument_injection() {
-        // CLI2-2: option-looking revisions are refused (a real ref never starts
-        // with '-' and never carries control characters), so a cloud-/PR-supplied
-        // ref can't smuggle a git flag like `--upload-pack=…`.
+        // Option-looking revisions are refused (a real ref never starts with '-'
+        // and never carries control characters), so a cloud-/PR-supplied ref
+        // can't smuggle a git flag like `--upload-pack=…`.
         assert!(reject_option_like_revision("--upload-pack=evil", "ref").is_err());
         assert!(reject_option_like_revision("-foo", "ref").is_err());
         assert!(reject_option_like_revision("--output=/tmp/x", "ref").is_err());

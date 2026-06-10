@@ -22,15 +22,10 @@ pub mod skills;
 pub mod sources;
 pub mod team;
 
-// ---------------------------------------------------------------------------
-// Public API compatibility re-exports.
-//
-// The previous layout exposed every domain/observability/infra module as a
-// flat top-level path (e.g. `difflore_core::models`, `difflore_core::db`).
-// Files have been grouped into subdirectories for organisation, but the old
-// import paths must continue to resolve for the rest of the workspace and
+// Public API compatibility re-exports: modules grouped into subdirectories,
+// but the old flat top-level paths (e.g. `difflore_core::models`,
+// `difflore_core::db`) must continue to resolve for the workspace and
 // downstream consumers.
-// ---------------------------------------------------------------------------
 
 // domain/*
 pub use domain::errors;

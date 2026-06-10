@@ -1,22 +1,14 @@
 //! Shared types for the `agent_cli` module.
-//!
-//! Why split: keeps `mod.rs` focused on the public `dispatch_gate` entry
-//! point while `runner.rs` / `binary_finder.rs` own behaviour. Tests in
-//! each sub-module can import these without pulling in the runner.
 
 /// Which agent CLI to shell out to.
 ///
-/// Matches (case-insensitively, separator-insensitively) the
-/// `client_name` strings used by the hook adapters in
-/// `crate::hooks::get_platform_adapter` so callers that already know
-/// which IDE they're in can route gate work to the matching CLI without
-/// a second mapping table.
+/// Matches (case- and separator-insensitively) the `client_name`
+/// strings the hook adapters use, so callers that know their IDE can
+/// route gate work without a second mapping table.
 ///
-/// `Windsurf` is included for symmetry with the hook adapters even
-/// though Windsurf ships no headless CLI today — `dispatch_gate` will
-/// return an errored `GateResult` for it rather than panicking, so the
-/// caller can decide whether to fall back to a different agent or BYOK
-/// provider. See `runner::run` for the exact error text.
+/// `Windsurf` ships no headless CLI today; `dispatch_gate` returns an
+/// errored `GateResult` for it rather than panicking. See `runner::run`
+/// for the error text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum AgentKind {
     ClaudeCode,
@@ -27,8 +19,7 @@ pub enum AgentKind {
 }
 
 impl AgentKind {
-    /// Stable display label (matches the hook adapters' `name()`).
-    /// Kept `&'static` so error messages can avoid an allocation.
+    /// Stable display label, matching the hook adapters' `name()`.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -40,12 +31,9 @@ impl AgentKind {
         }
     }
 
-    /// Parse the same alias set the hook dispatcher accepts. Returns
-    /// `None` on unknown input so callers can fall back to a configured
-    /// default rather than silently routing to a wrong agent (which is
-    /// what `get_platform_adapter` does — appropriate for hooks where
-    /// blocking the assistant is worse than a wrong parse, but not for
-    /// LLM dispatch where the wrong CLI just wastes the user's time).
+    /// Parse the hook dispatcher's alias set. Returns `None` on unknown
+    /// input so callers fall back to a configured default rather than
+    /// silently routing to the wrong agent.
     #[must_use]
     pub fn from_client_name(name: &str) -> Option<Self> {
         let normalized = name.to_ascii_lowercase();
@@ -62,38 +50,31 @@ impl AgentKind {
 
 /// Outcome of a single `dispatch_gate` call.
 ///
-/// We deliberately do NOT return `Result<String, anyhow::Error>` here:
-/// the caller almost always wants stdout AND knowledge of whether the
-/// CLI exited non-zero (so it can downgrade an "errored gate" to a
-/// best-effort skip without losing the partial output the CLI may have
-/// printed before failing). Mirrors hivemind's `gate-runner.ts` return
-/// shape so prompts shared across that codebase and DiffLore can use
-/// the same fallback flow.
+/// Not a `Result`: the caller wants stdout AND whether the CLI exited
+/// non-zero, so it can downgrade an errored gate to a best-effort skip
+/// without losing the partial output. Mirrors hivemind's
+/// `gate-runner.ts` shape for a shared fallback flow.
 #[derive(Clone, Debug, Default)]
 pub struct GateResult {
-    /// Whatever the CLI wrote to stdout. Trimmed by the runner so
-    /// callers don't need to re-trim. Never `None` — empty string on
-    /// total failure so JSON-parsing code paths can fail with a
-    /// "expected JSON, got empty" error rather than a null deref.
+    /// CLI stdout, trimmed by the runner. Empty string (never `None`)
+    /// on total failure so JSON-parsing paths fail with a clear
+    /// "expected JSON, got empty" error.
     pub stdout: String,
-    /// Whatever the CLI wrote to stderr. Useful for surfacing the
-    /// CLI's own error text up to the user when `errored == true`.
+    /// CLI stderr, useful for surfacing the CLI's error text when
+    /// `errored == true`.
     pub stderr: String,
-    /// `true` if: binary not found, spawn failed, exit code non-zero,
-    /// timed out, or agent is Windsurf (no headless CLI). Callers
-    /// treat this as "skip the gate, don't trust `stdout`".
+    /// `true` if the binary was missing, spawn/exit failed, timed out,
+    /// or the agent is Windsurf. Callers then skip the gate and ignore
+    /// `stdout`.
     pub errored: bool,
-    /// Short human-readable reason populated when `errored == true`.
-    /// Empty otherwise. Kept separate from `stderr` so we can attach
-    /// our own context (e.g. "timeout after 30s") that the CLI itself
-    /// never wrote.
+    /// Short reason set when `errored == true`. Separate from `stderr`
+    /// so we can attach our own context (e.g. "timeout after 30s").
     pub error_message: String,
 }
 
 impl GateResult {
-    /// Construct a quick error result with no stdout/stderr. Used
-    /// when we fail before even spawning the CLI (binary not found,
-    /// unsupported agent, etc).
+    /// Error result with no stdout/stderr, for failures before spawning
+    /// the CLI (binary not found, unsupported agent).
     pub(super) fn errored_with(message: impl Into<String>) -> Self {
         Self {
             stdout: String::new(),
@@ -138,8 +119,7 @@ mod tests {
 
     #[test]
     fn label_round_trips_through_from_client_name() {
-        // Every kind's label must parse back to itself. Guards against
-        // a future label rename quietly desyncing the parser.
+        // Guards against a label rename desyncing the parser.
         for kind in [
             AgentKind::ClaudeCode,
             AgentKind::Codex,

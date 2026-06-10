@@ -1,16 +1,13 @@
 //! Real-time "memory pipeline" event stream powering the TUI's Activity tab.
 //!
-//! Mirrors jcode's `MemoryEvent` design: each retrieval / injection /
-//! reinforcement emits a small typed record to a JSONL file at
-//! `$DIFFLORE_HOME/activity.jsonl`. The TUI tail-reads this file and
-//! renders the last N events so users SEE rules being recalled and
-//! reinforced as their agent runs.
+//! Each retrieval / injection / reinforcement emits a small typed record to a
+//! JSONL file at `$DIFFLORE_HOME/activity.jsonl`, which the TUI tail-reads to
+//! render the last N events.
 //!
-//! Why a JSONL file rather than an in-process channel: the MCP server,
-//! CLI fix command, and TUI run as separate processes. A file is the
-//! cheapest cross-process bus that survives a TUI restart and needs no
-//! daemon. Capped at 1000 lines via tail-rotation so it never grows
-//! without bound.
+//! A JSONL file (rather than an in-process channel) is used because the MCP
+//! server, CLI fix command, and TUI run as separate processes; a file is the
+//! cheapest cross-process bus that survives a TUI restart with no daemon.
+//! Capped at 1000 lines via tail-rotation.
 
 use std::fs;
 use std::io::Write;
@@ -18,14 +15,12 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// Hard cap on retained events. When a write would exceed this, the
-/// file is truncated to the last `MAX_EVENTS - 1` lines plus the new
-/// one. Keeps the file readable in `cat` and bounded on disk.
+/// Hard cap on retained events. A write that would exceed this truncates the
+/// file to the last `MAX_EVENTS - 1` lines plus the new one.
 pub const MAX_EVENTS: usize = 1000;
 
-/// One line in `activity.jsonl`. `kind` is the discriminant; payload
-/// fields live alongside it (flat layout — easier for ad-hoc `jq`
-/// inspection than a tagged enum).
+/// One line in `activity.jsonl`. Flat layout (payload fields alongside `kind`)
+/// for easier ad-hoc `jq` inspection.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivityEvent {
@@ -37,26 +32,25 @@ pub struct ActivityEvent {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActivityPayload {
-    /// One rule surfaced by retrieval. Emitted once per top-K rule per
-    /// MCP call so the TUI can show a stream of "what just got pulled".
+    /// One rule surfaced by retrieval, emitted once per top-K rule per MCP
+    /// call.
     RuleRecalled {
         rule_id: String,
         rule_title: String,
         score: f32,
         took_ms: u64,
     },
-    /// Aggregate signal for an MCP call: how many rules were placed in
-    /// the agent's context window, with an intent summary the user can
-    /// scan ("review src/foo.rs · general").
+    /// Aggregate per-MCP-call signal: how many rules were placed in the
+    /// agent's context window, plus a scannable intent summary.
     RuleInjected {
         rule_count: u32,
         prompt_chars: u32,
         intent_summary: String,
     },
     /// Confidence shift on a single rule. `reason` is one of
-    /// {"`recalled","cited","fix_accepted","fix_rejected`"}. Stored
-    /// as `String` so the round-tripped event from JSONL still
-    /// deserialises (serde flatten + 'static refs are incompatible).
+    /// `recalled`/`cited`/`fix_accepted`/`fix_rejected`. Stored as `String`
+    /// (not `&'static str`) since serde flatten is incompatible with 'static
+    /// refs on round-trip.
     RuleReinforced {
         rule_id: String,
         rule_title: String,
@@ -64,14 +58,11 @@ pub enum ActivityPayload {
         new_strength: f32,
         reason: String,
     },
-    /// ANN / hybrid retrieval pass result. Lets the user see the engine
-    /// is actually running and how fast.
+    /// ANN / hybrid retrieval pass result.
     RetrievalEmbedding { hits: u32, took_ms: u64 },
-    /// Cloud-managed embedding cap hit. Emitted whenever the cloud
-    /// returns `409 embed_cap_reached` so `difflore doctor` can surface
-    /// "you've been hitting the Free-tier embed cap N times this week —
-    /// upgrade or switch to BYOK". `cap` is the tier ceiling; `used` is
-    /// the value the cloud reported.
+    /// Cloud-managed embedding cap hit, emitted when the cloud returns
+    /// `409 embed_cap_reached`. `cap` is the tier ceiling; `used` is the
+    /// cloud-reported value.
     EmbedCapReached { cap: u32, used: u32 },
     /// Semantic embedding provider fell back to local SHA1 after retry.
     /// `reason` is a short sanitized bucket such as "network", "scope",
@@ -115,11 +106,9 @@ fn append_with_cap(path: &std::path::Path, line: &str) -> std::io::Result<()> {
         fs::create_dir_all(parent)?;
     }
 
-    // Cheap path: file is small, just append. Read once and pass the
-    // string into the rotate branch — the previous shape read twice,
-    // which on the rotate path could see the second read fail (file
-    // deleted/renamed between calls) and silently truncate the log to
-    // just the new entry. One read = single source of truth.
+    // Read once and reuse for the rotate branch: a second read could fail
+    // (file deleted/renamed between calls) and silently truncate the log to
+    // just the new entry.
     let existing = fs::read_to_string(path).unwrap_or_default();
     if existing.lines().count() >= MAX_EVENTS {
         // Tail-rotate: keep the last MAX_EVENTS-1 lines, then append.

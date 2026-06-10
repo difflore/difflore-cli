@@ -67,13 +67,12 @@ mod tests {
     };
     use std::{collections::BTreeSet, fs};
 
-    // ── Registry single-table guard rails (Item ④) ─────────────────────────
+    // ── Registry single-table guard rails ─────────────────────────
 
     #[test]
     fn agents_table_orders_claude_then_claude_hooks_then_codex_first() {
-        // R4: `collect_agent_statuses` relies on this row order (Claude Code →
-        // Claude Code hooks → Codex first), now encoded directly in the table
-        // instead of a manual reshuffle. Guard the first three names.
+        // `collect_agent_statuses` relies on this row order (Claude Code →
+        // Claude Code hooks → Codex first). Guard the first three names.
         let first_three: Vec<&str> = AGENTS.iter().take(3).map(|spec| spec.name).collect();
         assert_eq!(
             first_three,
@@ -83,7 +82,7 @@ mod tests {
 
     #[test]
     fn every_agent_surface_resolves_to_a_known_client() {
-        // R1: surface `name` strings are load-bearing — every one must resolve
+        // Surface `name` strings are load-bearing: every one must resolve
         // through `client_name_for_surface` to a real client (never the
         // "unknown client" sentinel), or roll-up and record-matching silently
         // break.
@@ -106,9 +105,9 @@ mod tests {
 
     #[test]
     fn agents_table_keeps_legacy_surface_name_set() {
-        // R1 mitigation: pin the exact surface-name set so a typo (e.g.
-        // "Gemini CLI" vs "Gemini") can't slip in and desync the canonical
-        // record / client roll-up.
+        // Pin the exact surface-name set so a typo (e.g. "Gemini CLI" vs
+        // "Gemini") can't slip in and desync the canonical record / client
+        // roll-up.
         let names: BTreeSet<&str> = AGENTS.iter().map(|spec| spec.name).collect();
         let expected: BTreeSet<&str> = [
             "Claude Code",
@@ -504,7 +503,7 @@ mod tests {
     fn diagnosis_distinguishes_healthy_runtime_from_install_record_drift() {
         let snapshot = diagnosis_fixture(RuntimeProbeState::Ok, CanonicalRecordState::Stale);
         let diagnosis = diagnose_status_snapshot(&snapshot);
-        assert!(diagnosis.summary.contains("server is healthy"));
+        assert!(diagnosis.summary.contains("ready for agents"));
         assert!(diagnosis.summary.contains("client-wiring drift"));
         assert!(diagnosis.next_step.contains("difflore agents install"));
         assert_eq!(diagnosis.affected_clients, vec!["Claude Code".to_owned()]);
@@ -560,7 +559,7 @@ mod tests {
     fn diagnosis_flags_runtime_failure_as_memory_server_problem() {
         let snapshot = diagnosis_fixture(RuntimeProbeState::Failed, CanonicalRecordState::Present);
         let diagnosis = diagnose_status_snapshot(&snapshot);
-        assert!(diagnosis.summary.contains("failed the stdio self-check"));
+        assert!(diagnosis.summary.contains("failed the status check"));
         assert!(diagnosis.next_step.contains("stderr/details"));
         assert!(
             diagnosis

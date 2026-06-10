@@ -26,14 +26,11 @@ pub(super) fn no_provider_configured_message() -> String {
         .to_owned()
 }
 
-// `fix --preview` is a *trust* signal — a clean preview must mean a review the
-// user can vouch for actually ran. The zero-config agent-CLI fallback (claude /
-// codex / … picked up off PATH) is fine for the apply path, but in preview it
-// would let an incidental, unconfigured CLI's "no issues" read as a clean,
-// `reviewed` pass — exactly the false-clean the 5.4 audit flagged. So preview
-// requires an explicitly configured (`is_active`) provider; absent one, this is
-// reported as `no_provider` (→ not_reviewed, non-zero exit) regardless of any
-// agent CLI on PATH. Keyed phrase ("no AI provider configured") matches the
+// `fix --preview` is a trust signal: a clean preview must mean a review the
+// user can vouch for actually ran. So preview requires an explicitly
+// configured (`is_active`) provider and rejects the zero-config agent-CLI
+// fallback, reporting `no_provider` (not_reviewed, non-zero exit) when absent.
+// The keyed phrase ("no AI provider configured") must match the
 // `format_fix_err` classifier so the actionable hint is preserved.
 fn preview_no_provider_configured_message() -> String {
     "no AI provider configured — run `difflore providers setup`.\n\n  \
@@ -45,15 +42,14 @@ fn preview_no_provider_configured_message() -> String {
         .to_owned()
 }
 
-/// Pure preflight decision, split out from the DB/PATH probing so the trust
+/// Pure preflight decision, split from DB/PATH probing so the trust
 /// contract is exhaustively unit-testable.
 ///
 /// - An `is_active` configured provider always satisfies the check.
-/// - When `require_configured_provider` (i.e. `--preview`), the agent-CLI
-///   fallback is intentionally NOT accepted: a clean preview must never be
-///   backed by an unconfigured stand-in, so no provider ⇒ `Err(preview msg)`.
-/// - Otherwise (apply path) an agent CLI on PATH is an acceptable zero-config
-///   backend; only its absence is an error.
+/// - With `require_configured_provider` (`--preview`), the agent-CLI
+///   fallback is NOT accepted: no provider ⇒ `Err(preview msg)`.
+/// - Otherwise (apply path) an agent CLI on PATH is acceptable; only its
+///   absence is an error.
 pub(super) fn preflight_decision(
     has_active_provider: bool,
     agent_cli: Option<&str>,
@@ -75,9 +71,8 @@ pub(super) fn preflight_decision(
 /// Pre-flight the review backend before running `fix`.
 ///
 /// `require_configured_provider` is set for `--preview`: it demands an
-/// `is_active` provider and does NOT accept the agent-CLI fallback, so a clean
-/// preview can never be backed by an unconfigured stand-in. The apply path
-/// passes `false` and keeps the existing zero-config CLI fallback.
+/// `is_active` provider and rejects the agent-CLI fallback. The apply
+/// path passes `false` and keeps the zero-config CLI fallback.
 pub(super) async fn preflight_provider_backend(
     db: &difflore_core::SqlitePool,
     require_configured_provider: bool,
@@ -86,7 +81,7 @@ pub(super) async fn preflight_provider_backend(
         .await
         .map_err(|e| format!("failed to read provider configuration: {e}"))?;
     let has_active_provider = providers.iter().any(|provider| provider.is_active);
-    // Only probe PATH when the fallback could matter (apply path, no provider).
+    // Only probe PATH when the fallback could matter.
     let agent_cli = if has_active_provider || require_configured_provider {
         None
     } else {
@@ -189,9 +184,8 @@ mod tests {
 
     #[test]
     fn preview_preflight_rejects_agent_cli_fallback_when_no_provider_configured() {
-        // The core of the trust fix: in `--preview` (require_configured_provider),
-        // an unconfigured agent CLI on PATH must NOT satisfy the preflight — no
-        // configured provider ⇒ `no_provider`, even with `claude`/`codex` present.
+        // In `--preview`, an unconfigured agent CLI on PATH must NOT
+        // satisfy the preflight; no configured provider ⇒ error.
         assert!(preflight_decision(false, Some("claude"), true).is_err());
         assert!(preflight_decision(false, None, true).is_err());
         // A genuinely configured provider satisfies preview regardless of CLI.
@@ -201,9 +195,8 @@ mod tests {
 
     #[test]
     fn apply_path_preflight_still_accepts_agent_cli_fallback() {
-        // The zero-config apply path (require_configured_provider == false) is
-        // unchanged: an agent CLI on PATH is an acceptable backend, and only the
-        // absence of BOTH a provider and a CLI is an error.
+        // Apply path: an agent CLI on PATH is an acceptable backend;
+        // only the absence of BOTH a provider and a CLI is an error.
         assert!(preflight_decision(true, None, false).is_ok());
         assert!(preflight_decision(false, Some("codex"), false).is_ok());
         assert!(preflight_decision(false, None, false).is_err());

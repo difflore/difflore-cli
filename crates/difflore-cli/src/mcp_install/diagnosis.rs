@@ -37,9 +37,9 @@ pub(super) fn diagnose_status_snapshot(snapshot: &McpStatusSnapshot) -> McpStatu
                 &installed_clients,
             )];
             actions.extend(client_reload_actions(&installed_clients));
-            actions.push("If the error persists, compare that client's MCP entry with `difflore agents status --json`; the runtime self-check already proved the DiffLore server starts, lists tools, and completes a search_rules tool call.".to_owned());
+            actions.push("If the error persists, compare that client's DiffLore entry with `difflore agents status --json`; the status check already showed DiffLore starts, lists tools, and completes a search_rules call.".to_owned());
             build_diagnosis(
-                "DiffLore MCP server starts, serves tools, and completes a search_rules recall probe; installed client wiring matches the current probe snapshot.",
+                "DiffLore is ready for agents and can complete a search_rules memory check; installed client wiring matches the current status snapshot.",
                 actions,
                 affected_clients,
             )
@@ -50,15 +50,15 @@ pub(super) fn diagnose_status_snapshot(snapshot: &McpStatusSnapshot) -> McpStatu
                 restart_clients_action("affected client(s)", &affected_clients),
             ];
             actions.extend(client_reload_actions(&affected_clients));
-            actions.push("If a refreshed client still reports `Transport closed`, compare that client's config in `difflore agents status --json`; the stdio self-check already proved the DiffLore server can serve tools and complete a search_rules call.".to_owned());
+            actions.push("If a refreshed client still reports `Transport closed`, compare that client's config in `difflore agents status --json`; the status check already showed DiffLore can list tools and complete a search_rules call.".to_owned());
             build_diagnosis(
-                "DiffLore MCP server is healthy and can complete a recall tool call; remaining MCP issues are install-record or client-wiring drift, not a broken memory server.",
+                "DiffLore is ready for agents and can complete a memory tool call; remaining issues are install-record or client-wiring drift.",
                 actions,
                 affected_clients,
             )
         }
         Some(RuntimeProbeState::Timeout) => build_diagnosis(
-            "DiffLore MCP server started but did not answer the stdio self-check before the timeout.",
+            "DiffLore started but did not answer the status check before the timeout.",
             vec![
                 "Run `difflore agents status --json` for stderr/details.".to_owned(),
                 "After checking provider/network startup latency, run `difflore agents install` and restart affected clients.".to_owned(),
@@ -66,7 +66,7 @@ pub(super) fn diagnose_status_snapshot(snapshot: &McpStatusSnapshot) -> McpStatu
             affected_clients,
         ),
         Some(RuntimeProbeState::Failed) => build_diagnosis(
-            "DiffLore MCP server failed the stdio self-check; clients will not receive review-memory tools until the runtime starts cleanly.",
+            "DiffLore failed the status check; clients will not receive memory tools until startup succeeds.",
             vec![
                 "Run `difflore agents status --json` for stderr/details.".to_owned(),
                 "Rebuild or upgrade the binary before reinstalling agents.".to_owned(),
@@ -74,9 +74,9 @@ pub(super) fn diagnose_status_snapshot(snapshot: &McpStatusSnapshot) -> McpStatu
             affected_clients,
         ),
         None => build_diagnosis(
-            "MCP install snapshot collected without a runtime self-check.",
+            "Agent install status was collected without a startup check.",
             vec![
-                "Run `difflore agents status` or `difflore doctor --report` to verify the MCP server can actually serve tools.".to_owned(),
+                "Run `difflore agents status` or `difflore doctor --report` to check that DiffLore is ready for agents.".to_owned(),
             ],
             affected_clients,
         ),
@@ -127,11 +127,10 @@ pub(super) fn install_repair_targets_for_snapshot(snapshot: &McpStatusSnapshot) 
         CanonicalRecordState::Present
     ) {
         for surface in canonical_record_drift_surfaces(&snapshot.canonical_record) {
-            // Canonical-record drift (e.g. a hooks surface present on disk but
-            // not captured in `~/.difflore/mcp.json`) still needs the client's
-            // wiring refreshed even when its MCP entry already probes as
-            // Installed -- the hook surface is a separate signal from the MCP
-            // entry. Always list the client so the idempotent installer reruns.
+            // Canonical-record drift (e.g. a hooks surface on disk but not in
+            // `~/.difflore/mcp.json`) needs the client's wiring refreshed even
+            // when its MCP entry probes as Installed, since the hook surface is
+            // a separate signal. List the client so the installer reruns.
             clients.insert(client_name_for_surface(&surface).to_owned());
         }
     }
@@ -166,17 +165,15 @@ fn canonical_record_drift_surfaces(record: &CanonicalRecordStatus) -> Vec<String
 }
 
 /// Map a surface name to its display client (e.g. `Cursor hooks` → `Cursor`).
-/// The mapping now lives on the `AGENTS` registry
-/// ([`super::registry::client_name_for_surface`]); this wrapper keeps the
-/// `diagnosis::client_name_for_surface` call site / import path stable for
-/// every existing caller and test.
+/// Wrapper over [`super::registry::client_name_for_surface`] kept stable for
+/// this module's callers and tests.
 pub(super) fn client_name_for_surface(surface: &str) -> &'static str {
     super::registry::client_name_for_surface(surface)
 }
 
 fn restart_clients_action(scope: &str, clients: &[String]) -> String {
     if clients.is_empty() {
-        return format!("Restart/reload {scope} so they pick up MCP config.");
+        return format!("Restart/reload {scope} so they pick up the DiffLore config.");
     }
     format!("Restart/reload {scope}: {}.", clients.join(", "))
 }

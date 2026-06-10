@@ -1,7 +1,6 @@
 //! "Local hero" evidence: the current-repo rule with the strongest combined
-//! signal (accepted edits + signed diff proofs + recall + MCP serves). Unlike
-//! the proven-rule drilldown this is strictly current-repo scoped and pulls in
-//! recall/MCP context. Feeds the `localHeroEvidence` envelope key.
+//! signal (accepted edits + signed diff proofs + recall + MCP serves).
+//! Strictly current-repo scoped. Feeds the `localHeroEvidence` envelope key.
 
 use super::proof_counters::{
     LOCAL_PROOF_WINDOW_DAYS, REVIEW_MINUTES_PER_ACCEPTED_PROOF, normalized_repo_aliases,

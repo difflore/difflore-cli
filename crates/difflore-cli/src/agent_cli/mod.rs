@@ -1,20 +1,12 @@
 //! Non-hot-path LLM dispatch via the user's installed agent CLI.
 //!
-//! DiffLore wants to make occasional LLM calls (candidate-name
-//! extraction, `plan_pr` secondary judgment, future session-mining
-//! gates) without requiring the user to configure a BYOK provider —
-//! the cloud-spec measurement showed 85–95% of users have no LLM key
-//! configured at install time, so a feature gated on "user has Anthropic
-//! / OpenAI / Gemini key" misses most of the user base.
-//!
-//! The workaround DiffLore borrows from Activeloop hivemind's
-//! `gate-runner.ts`: if the user is already running inside (or alongside)
-//! an agent CLI — Claude Code, Codex, cursor-agent, Gemini CLI — that
-//! CLI's binary is on PATH (or in a well-known install location). We
-//! shell out to it for the gate call, pay nothing for the LLM key
-//! (the CLI handles auth via the user's existing session), and stay
-//! out of the hot path so the CLI's latency only affects best-effort
-//! gates, never the user-typed-command latency.
+//! Lets DiffLore make occasional LLM calls (candidate-name extraction,
+//! `plan_pr` secondary judgment, etc.) without requiring a BYOK provider —
+//! most users have no LLM key configured at install time. If the user is
+//! already running an agent CLI (Claude Code, Codex, cursor-agent, Gemini CLI)
+//! whose binary is on PATH, we shell out to it for the gate call: the CLI
+//! handles auth via the user's existing session, and dispatch stays off the
+//! hot path so its latency only affects best-effort gates.
 //!
 //! ## Surface
 //!
@@ -60,21 +52,13 @@ use std::time::Duration;
 
 /// Dispatch a single LLM call to whichever agent CLI matches `agent`.
 ///
-/// Returns a `GateResult` describing what the CLI printed and whether
-/// it errored. Never panics — even on a missing binary, the result is
-/// `{ errored: true, error_message: "...", stdout: "", stderr: "" }`
-/// so callers can downgrade a failed gate to "skip, don't block".
+/// Never panics — even on a missing binary the result is errored, so callers
+/// can downgrade a failed gate to "skip, don't block". `time_budget` is
+/// enforced via `tokio::time::timeout` and the child is killed on drop.
 ///
-/// `time_budget` is enforced via `tokio::time::timeout`; the child
-/// process is killed on drop. Pick a budget that matches how
-/// best-effort the gate is — DiffLore's typical gates run with 15-30s.
-///
-/// Side-effects: spawns a child process, inherits the parent's
-/// environment, sends `prompt` as a single argv positional (the last
-/// one) so prompt content that looks like a flag is dispatched as
-/// argument data, not parsed by the CLI. If your prompt itself starts
-/// with `-`, the dispatched CLI may misparse it — sanitise prompts
-/// upstream of this call.
+/// Spawns a child process inheriting the parent's environment, sending
+/// `prompt` as the last argv positional. A prompt that itself starts with `-`
+/// may be misparsed by the CLI — sanitise prompts upstream of this call.
 pub async fn dispatch_gate(agent: AgentKind, prompt: &str, time_budget: Duration) -> GateResult {
     runner::run(agent, prompt, time_budget).await
 }
@@ -85,11 +69,8 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_gate_for_windsurf_errors_out_quickly() {
-        // End-to-end-ish check that the public surface is wired up: a
-        // Windsurf dispatch is the only agent we can fully exercise
-        // without depending on a real CLI being installed on the test
-        // host. Confirms `dispatch_gate` doesn't deadlock or panic on
-        // the no-CLI path.
+        // Windsurf is the only agent we can exercise without a real CLI on the
+        // test host; confirms the no-CLI path doesn't deadlock or panic.
         let result = dispatch_gate(
             AgentKind::Windsurf,
             "anything",

@@ -107,10 +107,10 @@ fn top_rules_value<E>(
 
 pub(crate) fn accepted_proof_source_label(source: Option<&str>) -> Option<&'static str> {
     match source {
-        Some("local_fix") => Some("Local Fix proof"),
-        Some("cloud_fix") => Some("Imported proof"),
-        Some("historical_backfill") => Some("Historical proof"),
-        Some("mixed") => Some("Mixed proof"),
+        Some("local_fix") => Some("Local Fix activity"),
+        Some("cloud_fix") => Some("Imported activity"),
+        Some("historical_backfill") => Some("Historical activity"),
+        Some("mixed") => Some("Mixed activity"),
         _ => None,
     }
 }
@@ -134,13 +134,21 @@ pub(crate) fn reviewer_context_proof_label(serves: i64, mentions: i64) -> Option
             "reviewer mentions",
         )),
         (serves, 0) => Some(format!(
-            "{} · waiting for first reviewer mention",
-            format_count(serves, "Reviewer Context serve", "Reviewer Context serves",)
+            "{}; waiting for first reviewer mention",
+            format_count(
+                serves,
+                "reviewer context recall",
+                "reviewer context recalls",
+            )
         )),
         (serves, mentions) => Some(format!(
             "{} after {}",
             format_count(mentions, "reviewer mention", "reviewer mentions"),
-            format_count(serves, "Reviewer Context serve", "Reviewer Context serves")
+            format_count(
+                serves,
+                "reviewer context recall",
+                "reviewer context recalls"
+            )
         )),
     }
 }
@@ -372,7 +380,7 @@ mod tests {
         assert_eq!(payload["topRules"]["rules"][0]["reviewerMentions"], 2);
         assert_eq!(
             payload["topRules"]["rules"][0]["reviewerContextProofLabel"],
-            "2 reviewer mentions after 5 Reviewer Context serves"
+            "2 reviewer mentions after 5 reviewer context recalls"
         );
         assert_eq!(
             payload["topRules"]["rules"][0]["sourceRepo"],
@@ -380,7 +388,7 @@ mod tests {
         );
         assert_eq!(
             accepted_proof_source_label(Some("local_fix")),
-            Some("Local Fix proof")
+            Some("Local Fix activity")
         );
         assert_eq!(payload["fixScorecard"]["roi"]["savedReviewMinutes"], 8);
         assert_eq!(
@@ -433,7 +441,7 @@ mod tests {
         );
         assert_eq!(
             payload["topRules"]["rules"][0]["acceptedProofLabel"],
-            "Local Fix proof"
+            "Local Fix activity"
         );
         assert!(payload["topRules"]["rules"][0]["agentReadyProofLabel"].is_null());
     }
@@ -455,11 +463,11 @@ mod tests {
     fn reviewer_context_proof_label_summarizes_serves_and_mentions() {
         assert_eq!(
             reviewer_context_proof_label(5, 2).as_deref(),
-            Some("2 reviewer mentions after 5 Reviewer Context serves")
+            Some("2 reviewer mentions after 5 reviewer context recalls")
         );
         assert_eq!(
             reviewer_context_proof_label(1, 0).as_deref(),
-            Some("1 Reviewer Context serve · waiting for first reviewer mention")
+            Some("1 reviewer context recall; waiting for first reviewer mention")
         );
         assert_eq!(
             reviewer_context_proof_label(0, 1).as_deref(),

@@ -1,16 +1,11 @@
 //! Local-only rule outcome telemetry.
 //!
 //! Records when a rule is surfaced by recall (`kind = 'recalled'`) so
-//! `difflore memory` can show "what rules are actually pulling weight"
-//! and `rules show` can include a use-count line.
+//! `difflore memory` and `rules show` can report which rules pull weight.
+//! Fix-acceptance telemetry lives separately in `fix_outcomes`; both are read
+//! together by the surfaces.
 //!
-//! Fix-acceptance telemetry already lives in `fix_outcomes` (richer
-//! schema with file path + applied/failed split); this table is just
-//! the recall-side ledger. Both are read together by the surfaces.
-//!
-//! Data never leaves the device. Personal usage signal is not uploaded
-//! to cloud — cluster precision is derived cloud-side over consented
-//! aggregates only.
+//! Data never leaves the device.
 
 use sqlx::SqlitePool;
 
@@ -47,11 +42,11 @@ pub async fn record_recalled(pool: &SqlitePool, rule_ids: &[String]) -> crate::R
     Ok(())
 }
 
-/// Insert recall rows with enough low-sensitive context to prove a value loop.
+/// Insert recall rows with low-sensitivity context.
 ///
-/// We store hashes and scope, not prompt text or source code. `rank <= 3` is
-/// the key bit the buyer-value gate needs: the accepted rule was not merely
-/// somewhere in a corpus, it was one of the memories an agent would actually see.
+/// Stores hashes and scope, never prompt text or source code. `rank` matters:
+/// a `rank <= 3` recall means the rule was one an agent would actually see, not
+/// merely present somewhere in the corpus.
 pub async fn record_recalled_with_context(
     pool: &SqlitePool,
     recalls: &[RuleRecallInput<'_>],
@@ -144,9 +139,8 @@ pub async fn top_recalled(
     let days = days.max(1);
     let limit = limit.max(1);
     let window = format!("-{days} days");
-    // INNER JOIN against `skills` so deleted rules do not surface as zombie
-    // rows. Without this filter, `difflore memory` would render the bare
-    // rule_id when the join fell through to fallback.
+    // INNER JOIN `skills` so deleted rules don't surface as zombie rows
+    // rendered as a bare rule_id.
     let rows = sqlx::query_as!(
         RecallCount,
         r#"SELECT o.rule_id AS "rule_id!: String", COUNT(*) AS "count!: i64"

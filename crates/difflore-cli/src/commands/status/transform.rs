@@ -271,7 +271,7 @@ pub(super) fn local_value_loop_status(
         (
             "auditable_value_loop_ready",
             format!(
-                "{} from {}#{} traveled through top-{} recall, MCP serve, and accepted edit proof (~{} review minute{} saved locally)",
+                "{} from {}#{} matched memory #{} and became an accepted edit (~{} review minute{} saved locally)",
                 evidence.accepted_rule.title,
                 evidence.imported_review.source_repo,
                 evidence.imported_review.pr_number,
@@ -289,7 +289,7 @@ pub(super) fn local_value_loop_status(
         (
             "accepted_edit_proof_ready",
             format!(
-                "{} accepted edit proof{} ({} after prior memory-use proof{} within {}d, ~{} review minute{} saved locally)",
+                "{} accepted edit{} ({} after prior memory use{} within {}d, ~{} review minute{} saved locally)",
                 accepted_total,
                 plural(accepted_total),
                 accepted.accepted_outcomes_linked_to_prior_recall,
@@ -308,7 +308,7 @@ pub(super) fn local_value_loop_status(
         (
             "local_recall_seen",
             format!(
-                "{} local recall event{} recorded; run impact to inspect cited rules, then accept a matching agent edit to close proof",
+                "{} local recall event{} recorded; preview fixes, then accept a matching agent edit",
                 recall.recall_events,
                 plural(recall.recall_events),
             ),
@@ -317,7 +317,7 @@ pub(super) fn local_value_loop_status(
         (
             "accepted_edit_seen",
             format!(
-                "{} accepted edit proof{} recorded for this repo, but 0 followed prior memory-use proof within {}d; run recall/MCP before accepting edits to close the value loop",
+                "{} accepted edit{} recorded for this repo, but 0 followed memory use within {}d; preview recalled memories before accepting edits",
                 accepted_total,
                 plural(accepted_total),
                 accepted.recall_lookback_days,
@@ -326,7 +326,7 @@ pub(super) fn local_value_loop_status(
     } else if repo_scoped_rules_ready {
         (
             "repo_rules_ready",
-            "repo-scoped rules exist; run recall to prove they match this diff".to_owned(),
+            "repo-scoped memories exist; preview them against this diff".to_owned(),
         )
     } else if repo_candidates_ready {
         (
@@ -344,7 +344,7 @@ pub(super) fn local_value_loop_status(
     } else {
         (
             "repo_memory_missing",
-            "import this repo's review memory before testing recall".to_owned(),
+            "import this repo's review history before testing recall".to_owned(),
         )
     };
 
@@ -364,15 +364,15 @@ pub(super) fn local_value_loop_status(
 pub(super) fn mcp_agent_recall_buyer_evidence(serves: &LocalMcpRuleServe) -> String {
     if serves.strict_matches > 0 {
         return format!(
-            "{} file-scoped MCP rule match{} served to agents; run impact to inspect proof, then accept a matching agent edit",
+            "{} file-scoped memory match{} ready for agents; preview fixes, then accept a matching agent edit",
             serves.strict_matches,
             if serves.strict_matches == 1 { "" } else { "es" },
         );
     }
     format!(
-        "{} MCP rule{} served to agents; run impact to inspect proof, then accept a matching agent edit",
+        "{} memor{} ready for agents; preview fixes, then accept a matching agent edit",
         serves.rules_served,
-        plural(serves.rules_served),
+        if serves.rules_served == 1 { "y" } else { "ies" },
     )
 }
 
@@ -413,12 +413,12 @@ fn local_beta_lane_readiness(
     };
     let summary = if ready {
         format!(
-            "Local/design-partner beta lane has usable review-memory signal: {}. This remains non-production evidence.",
+            "Local/design-partner beta lane has usable review memory: {}. This does not count toward production GA.",
             value_loop.buyer_evidence
         )
     } else {
         format!(
-            "Local/design-partner beta lane is not yet proof-ready: {}.",
+            "Local/design-partner beta lane is not ready yet: {}.",
             value_loop.buyer_evidence
         )
     };
@@ -433,8 +433,8 @@ fn local_beta_lane_readiness(
         production_score_delta: 0,
         required_evidence: vec![
             "repo-scoped review memory imported from PR reviews".to_owned(),
-            "local recall or MCP serve that matches the current repo/file".to_owned(),
-            "accepted edit proof after prior memory use for stronger beta proof".to_owned(),
+            "local recall or agent delivery that matches the current repo/file".to_owned(),
+            "accepted edit after prior memory use for stronger beta readiness".to_owned(),
         ],
     }
 }
@@ -444,17 +444,17 @@ fn production_ga_lane_readiness() -> LaneReadiness {
         name: "production-ga".to_owned(),
         status: "blocked_external_release_gates_required".to_owned(),
         ready: false,
-        summary: "Local `difflore status` cannot approve production GA; GA requires production-classified release artifacts from difflore-cloud.".to_owned(),
+        summary: "Local `difflore status` cannot approve production GA; GA requires production-ready release artifacts from DiffLore Cloud.".to_owned(),
         next_command: "difflore doctor --report".to_owned(),
         counts_as_production_evidence: false,
         release_ready_influence: "none".to_owned(),
         production_score_delta: 0,
         required_evidence: vec![
-            "30 counted production accepted difflore fix proofs".to_owned(),
+            "30 counted production accepted difflore fix edits".to_owned(),
             "3 real production tenants".to_owned(),
-            "10 counted production proofs per tenant".to_owned(),
+            "10 counted production accepted edits per tenant".to_owned(),
             "6 current third-party confirmations".to_owned(),
-            "release_gate_runner hard gates all pass in the same evidence window".to_owned(),
+            "release gates pass in the same readiness window".to_owned(),
             "Claude second-layer audit returns APPROVE_10=true on that same bundle".to_owned(),
         ],
     }
@@ -563,14 +563,12 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
         if !cloud_logged_in {
             return NextAction {
                 command: "difflore cloud login".to_owned(),
-                reason: "log in before turning local accepted proof into a cloud value summary"
-                    .to_owned(),
+                reason: "log in before uploading local accepted edits".to_owned(),
             };
         }
         return NextAction {
             command: "difflore cloud team --json".to_owned(),
-            reason: "verify cloud session and team before turning local accepted proof into a value summary"
-                .to_owned(),
+            reason: "confirm your team workspace before uploading accepted edits".to_owned(),
         };
     }
 
@@ -583,17 +581,9 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
 
     if scope.scoped_recall_ready {
         if local_recall_proof.recall_events > 0 || local_mcp_serves.strict_matches > 0 {
-            if !cloud_logged_in {
-                return NextAction {
-                    command: "difflore cloud login".to_owned(),
-                    reason: "log in before cloud impact can summarize recalled rules".to_owned(),
-                };
-            }
             return NextAction {
-                command: "difflore cloud team --json".to_owned(),
-                reason:
-                    "verify cloud session and team before cloud impact summarizes recalled rules"
-                        .to_owned(),
+                command: "difflore fix --preview".to_owned(),
+                reason: "turn recalled memories into accepted edits".to_owned(),
             };
         }
         return NextAction {
@@ -656,30 +646,41 @@ fn suggested_import_or_default(scope: &RepoScopeStatus) -> String {
 }
 
 pub(super) fn proof_path_commands(next: &NextAction, cloud_logged_in: bool) -> Vec<String> {
+    const CLOUD_LOGIN_COMMAND: &str = "difflore cloud login";
     const CLOUD_PROOF_READINESS_COMMAND: &str = "difflore cloud team --json";
     const CLOUD_IMPACT_COMMAND: &str = "difflore cloud impact";
 
-    let command = next.command.as_str();
-    let mut path = if command == CLOUD_IMPACT_COMMAND {
+    fn cloud_proof_path(cloud_logged_in: bool, include_impact: bool) -> Vec<String> {
         if cloud_logged_in {
-            vec![CLOUD_PROOF_READINESS_COMMAND.to_owned(), command.to_owned()]
+            let mut path = vec![CLOUD_PROOF_READINESS_COMMAND.to_owned()];
+            if include_impact {
+                path.push(CLOUD_IMPACT_COMMAND.to_owned());
+            }
+            path
         } else {
-            vec![CLOUD_PROOF_READINESS_COMMAND.to_owned()]
-        }
-    } else if command == CLOUD_PROOF_READINESS_COMMAND {
-        if cloud_logged_in {
             vec![
+                CLOUD_LOGIN_COMMAND.to_owned(),
                 CLOUD_PROOF_READINESS_COMMAND.to_owned(),
-                CLOUD_IMPACT_COMMAND.to_owned(),
             ]
-        } else {
-            vec![CLOUD_PROOF_READINESS_COMMAND.to_owned()]
         }
+    }
+
+    let command = next.command.as_str();
+    let mut path = if matches!(
+        command,
+        CLOUD_IMPACT_COMMAND | CLOUD_PROOF_READINESS_COMMAND
+    ) {
+        cloud_proof_path(cloud_logged_in, true)
+    } else if command == CLOUD_LOGIN_COMMAND {
+        cloud_proof_path(cloud_logged_in, false)
     } else {
         vec![command.to_owned()]
     };
 
-    if command == CLOUD_IMPACT_COMMAND || command == CLOUD_PROOF_READINESS_COMMAND {
+    if command == CLOUD_IMPACT_COMMAND
+        || command == CLOUD_PROOF_READINESS_COMMAND
+        || command == CLOUD_LOGIN_COMMAND
+    {
         return path;
     }
 
@@ -688,10 +689,7 @@ pub(super) fn proof_path_commands(next: &NextAction, cloud_logged_in: bool) -> V
         path.push("difflore fix --preview".to_owned());
     }
 
-    path.push(CLOUD_PROOF_READINESS_COMMAND.to_owned());
-    if cloud_logged_in {
-        path.push(CLOUD_IMPACT_COMMAND.to_owned());
-    }
+    path.extend(cloud_proof_path(cloud_logged_in, cloud_logged_in));
     path
 }
 
@@ -757,7 +755,7 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
         return text.to_owned();
     }
     let head: String = text.chars().take(max_chars.saturating_sub(1)).collect();
-    format!("{head}…")
+    format!("{head}...")
 }
 
 #[cfg(test)]
@@ -953,7 +951,7 @@ mod tests {
     }
 
     #[test]
-    fn next_action_verifies_team_after_local_recall_proof_when_cloud_logged_in() {
+    fn next_action_uses_fix_preview_after_local_recall_proof_when_cloud_logged_in() {
         let scope = scope(Some("acme/app"), 2);
         let proof = empty_local_proof();
         let recall_proof = LocalRecallProof {
@@ -972,12 +970,12 @@ mod tests {
             local_mcp_serves: &empty_mcp_serves(),
         });
 
-        assert_eq!(next.command, "difflore cloud team --json");
-        assert!(next.reason.contains("verify cloud session and team"));
+        assert_eq!(next.command, "difflore fix --preview");
+        assert!(next.reason.contains("accepted edits"));
     }
 
     #[test]
-    fn next_action_moves_to_login_after_local_recall_proof_when_cloud_logged_out() {
+    fn next_action_uses_fix_preview_after_local_recall_proof_when_cloud_logged_out() {
         let scope = scope(Some("acme/app"), 2);
         let proof = empty_local_proof();
         let recall_proof = LocalRecallProof {
@@ -996,12 +994,12 @@ mod tests {
             local_mcp_serves: &empty_mcp_serves(),
         });
 
-        assert_eq!(next.command, "difflore cloud login");
-        assert!(next.reason.contains("before cloud impact"));
+        assert_eq!(next.command, "difflore fix --preview");
+        assert!(next.reason.contains("accepted edits"));
     }
 
     #[test]
-    fn next_action_verifies_team_after_mcp_rule_serves_when_cloud_logged_in() {
+    fn next_action_uses_fix_preview_after_mcp_rule_serves_when_cloud_logged_in() {
         let scope = scope(Some("acme/app"), 2);
         let proof = empty_local_proof();
         let mcp_serves = LocalMcpRuleServe {
@@ -1023,8 +1021,8 @@ mod tests {
             local_mcp_serves: &mcp_serves,
         });
 
-        assert_eq!(next.command, "difflore cloud team --json");
-        assert!(next.reason.contains("verify cloud session and team"));
+        assert_eq!(next.command, "difflore fix --preview");
+        assert!(next.reason.contains("accepted edits"));
     }
 
     #[test]
@@ -1088,6 +1086,7 @@ mod tests {
                 "difflore import-reviews --repo acme/app",
                 "difflore recall --diff",
                 "difflore fix --preview",
+                "difflore cloud login",
                 "difflore cloud team --json",
             ]
         );
@@ -1102,7 +1101,7 @@ mod tests {
         );
         assert_eq!(
             proof_path_commands(&impact, false),
-            vec!["difflore cloud team --json"]
+            vec!["difflore cloud login", "difflore cloud team --json"]
         );
 
         let team = NextAction {
@@ -1115,7 +1114,16 @@ mod tests {
         );
         assert_eq!(
             proof_path_commands(&team, false),
-            vec!["difflore cloud team --json"]
+            vec!["difflore cloud login", "difflore cloud team --json"]
+        );
+
+        let login = NextAction {
+            command: "difflore cloud login".to_owned(),
+            reason: String::new(),
+        };
+        assert_eq!(
+            proof_path_commands(&login, false),
+            vec!["difflore cloud login", "difflore cloud team --json"]
         );
     }
 
@@ -1160,7 +1168,7 @@ mod tests {
         });
 
         assert_eq!(next.command, "difflore cloud team --json");
-        assert!(next.reason.contains("accepted proof"));
+        assert!(next.reason.contains("accepted edits"));
     }
 
     #[test]
@@ -1193,7 +1201,10 @@ mod tests {
         });
 
         assert_eq!(next.command, "difflore cloud login");
-        assert!(next.reason.contains("before turning local accepted proof"));
+        assert!(
+            next.reason
+                .contains("before uploading local accepted edits")
+        );
     }
 
     #[test]
@@ -1249,13 +1260,9 @@ mod tests {
 
         assert_eq!(status.stage, "agent_recall_seen");
         assert!(status.mcp_agent_recall_proof_ready);
-        assert!(
-            status
-                .buyer_evidence
-                .contains("file-scoped MCP rule matches")
-        );
-        assert!(status.buyer_evidence.contains("run impact"));
-        assert!(!status.buyer_evidence.contains("fix preview"));
+        assert!(status.buyer_evidence.contains("file-scoped memory matches"));
+        assert!(status.buyer_evidence.contains("preview fixes"));
+        assert!(!status.buyer_evidence.contains("run impact"));
     }
 
     #[test]
@@ -1279,7 +1286,7 @@ mod tests {
 
         assert_eq!(status.stage, "repo_rules_ready");
         assert!(!status.mcp_agent_recall_proof_ready);
-        assert!(status.buyer_evidence.contains("run recall"));
+        assert!(status.buyer_evidence.contains("preview them"));
     }
 
     #[test]
@@ -1316,7 +1323,7 @@ mod tests {
         assert!(
             status
                 .buyer_evidence
-                .contains("2 after prior memory-use proof (2 rule recalls) within 7d")
+                .contains("2 after prior memory use (2 rule recalls) within 7d")
         );
         assert_eq!(status.saved_review_minutes, 8);
     }

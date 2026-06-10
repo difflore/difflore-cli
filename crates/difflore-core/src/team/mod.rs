@@ -132,9 +132,8 @@ mod tests {
         );
     }
 
-    /// 2026-04-20: origin must travel up so cloud Dashboard sees the
-    /// input-channel provenance of published rules. (Pinning the
-    /// `origin` field is the only non-trivial part of this serde shape.)
+    // `origin` must travel up on the wire so the cloud Dashboard sees the
+    // input-channel provenance of published rules.
     #[test]
     fn team_rule_publish_input_includes_origin_on_wire() {
         let input = TeamRulePublishInput {

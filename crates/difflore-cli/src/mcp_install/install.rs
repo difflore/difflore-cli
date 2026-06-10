@@ -89,8 +89,6 @@ pub(super) const fn should_write_canonical_record(
     !dry_run && !installed.is_empty() && failed.is_empty()
 }
 
-// ── Public entry points ──────────────────────────────────────────────────
-
 pub fn install_all(dry_run: bool) {
     let cli_bin = match resolve_difflore_binary() {
         Ok(b) => b,
@@ -101,7 +99,7 @@ pub fn install_all(dry_run: bool) {
     let install_message = if dry_run {
         "Checking DiffLore MCP install plan for every detected agent"
     } else {
-        "Installing DiffLore MCP server to every detected agent"
+        "Getting DiffLore ready for every detected agent"
     };
     let dry_tag = if dry_run {
         format!(" {}", style::amber("(dry-run; no changes)"))
@@ -148,9 +146,9 @@ pub fn install_all(dry_run: bool) {
         } else {
             current_installed.as_slice()
         };
-        // Build the v2 manifest: per-target config path + block_kind +
-        // block_version + a hash of the exact block we rendered, preserving the
-        // prior `installed_at` for any target we re-installed. The v1
+        // Build the v2 manifest: per-target config path, block_kind,
+        // block_version, and a hash of the exact block we rendered, preserving
+        // the prior `installed_at` for any re-installed target. The v1
         // `command`/`args`/`installed_targets` fields are still emitted for
         // compatibility readers.
         let prior = manifest::load();
@@ -183,16 +181,14 @@ pub fn install_all(dry_run: bool) {
     print_post_install_help(dry_run, &outcomes);
 }
 
-/// One row → one outcome. The single `AGENTS` table now drives the entire
-/// install dispatch; adding an agent row makes it install automatically.
-/// Claude Code hooks ride along inside the Claude Code MCP install (its row's
-/// installer is a no-op skip), exactly as in the legacy hand-coded list.
+/// One row → one outcome, driven by the `AGENTS` table: adding an agent row
+/// makes it install automatically. Claude Code hooks ride along inside the
+/// Claude Code MCP install (their row's installer is a no-op skip).
 fn install_all_targets(mcp_bin: &str, cli_bin: &str, dry_run: bool) -> Vec<TargetOutcome> {
     AGENTS
         .iter()
-        // The Claude Code hooks surface is installed as a side effect of the
-        // Claude Code MCP row; omit its standalone (skip) outcome so the
-        // printed plan matches the legacy 13-line dispatch.
+        // Claude Code hooks install as a side effect of the Claude Code MCP row;
+        // omit its standalone (skip) outcome from the printed plan.
         .filter(|spec| spec.name != "Claude Code hooks")
         .map(|spec| registry::install(spec, mcp_bin, cli_bin, dry_run))
         .collect()
@@ -217,14 +213,14 @@ fn print_install_outcomes(
                 (style::ok(sym::OK), style::emerald(plain_verb))
             }
             Status::Installed | Status::Updated if dry_run => {
-                (style::amber("·"), style::amber(plain_verb))
+                (style::amber("-"), style::amber(plain_verb))
             }
-            // Removed isn't reachable on the install path, but Installed/Updated
-            // and Removed all render the same OK/emerald line.
+            // Removed isn't reachable on the install path; it renders the same
+            // OK/emerald line as Installed/Updated.
             Status::Installed | Status::Updated | Status::Removed => {
                 (style::ok(sym::OK), style::emerald(plain_verb))
             }
-            Status::Skipped(_) => (style::pewter("·"), style::pewter(plain_verb)),
+            Status::Skipped(_) => (style::pewter("-"), style::pewter(plain_verb)),
             Status::Error(_) => (style::err(sym::ERR), style::danger(plain_verb)),
         };
         println!("  {mark} {:<14} {verb}", o.name.bold());
@@ -250,7 +246,7 @@ fn print_install_outcomes(
         if !agents.is_empty() {
             println!(
                 "  {} {}",
-                style::pewter("·"),
+                style::pewter("-"),
                 style::pewter(&format!(
                     "agents skipped/not detected: {}",
                     agents.join(", ")
@@ -260,7 +256,7 @@ fn print_install_outcomes(
         if !hooks.is_empty() {
             println!(
                 "  {} {}",
-                style::pewter("·"),
+                style::pewter("-"),
                 style::pewter(&format!("hooks skipped/not detected: {}", hooks.join(", ")))
             );
         }
@@ -300,19 +296,16 @@ fn public_install_detail(detail: &str, mcp_bin: &str) -> String {
 static MCP_TOOLS_HELP: &[(&str, &str)] = &[
     (
         "search_rules",
-        "        — compact rule index (~80 tok/result), ids only",
+        "        - find matched rules by id and title",
     ),
-    (
-        "get_rules",
-        "           — fetch full rule bodies by ids (batch after search_rules)",
-    ),
+    ("get_rules", "           - fetch full rule bodies by id"),
     (
         "get_past_verdicts",
-        "     — recall past PR review decisions",
+        "     - recall past PR review decisions",
     ),
     (
         "remember_rule",
-        "        — save \"remember this rule\" moments mid-chat",
+        "        - save \"remember this rule\" moments mid-chat",
     ),
 ];
 
@@ -336,7 +329,7 @@ fn print_post_install_help(dry_run: bool, outcomes: &[TargetOutcome]) {
         );
     } else {
         println!(
-            "{} restart/reload {} so they pick up the new DiffLore memory server.",
+            "{} restart/reload {} so DiffLore is ready for agents.",
             style::emerald(sym::TIP),
             if clients.is_empty() {
                 "Claude/Codex/Cursor/etc.".to_owned()
@@ -352,21 +345,21 @@ fn print_post_install_help(dry_run: bool, outcomes: &[TargetOutcome]) {
     );
     println!();
     println!(
-        "{} review-memory tools your local agent can now call:",
+        "{} memory tools your local agent can now call:",
         style::emerald(sym::TIP)
     );
     for (name, desc) in MCP_TOOLS_HELP {
-        println!("  • {}{desc}", style::ident(name));
+        println!("  * {}{desc}", style::ident(name));
     }
     println!();
     println!(
-        "  {} For large rule libraries prefer search_rules → get_rules (~10× fewer tokens on large libraries).",
-        style::pewter("ℹ")
+        "  {} For large rule libraries prefer search_rules -> get_rules to expand only matched rules.",
+        style::pewter("*")
     );
     println!();
-    println!("{} verification loop:", style::emerald(sym::TIP));
+    println!("{} status check:", style::emerald(sym::TIP));
     println!(
-        "  {} run {} after applying to verify config, runtime startup, tool listing, and the built-in search_rules self-check.",
+        "  {} run {} after applying to check config, startup, tool listing, and the built-in search_rules check.",
         style::pewter(sym::BULLET),
         style::cmd("difflore agents status"),
     );
@@ -376,13 +369,11 @@ fn print_post_install_help(dry_run: bool, outcomes: &[TargetOutcome]) {
         style::ident(&restart_targets),
     );
     println!(
-        "  {} in one restarted agent, call {} to verify DiffLore MCP can recall review memory.",
+        "  {} in one restarted agent, call {} to check that DiffLore can find review memory.",
         style::pewter(sym::BULLET),
         style::cmd("search_rules"),
     );
 }
-
-// ── Safe-upgrade lifecycle (`difflore agents update`) ─────────────────────
 
 /// What `update` decides to do with one manifest target. Pure (filesystem +
 /// hashing happen in the caller); split out so the compare/skip/upgrade policy
@@ -484,10 +475,9 @@ pub fn update_all(dry_run: bool, force: bool) {
         return;
     };
 
-    // v1-record migration: an old record has no per-target `targets`
-    // array, only `installed_targets`. Seed provisional targets (hash unknown)
-    // so the loop's adoption path can recognise + claim our standard blocks
-    // without ever clobbering a user edit.
+    // v1 records have no per-target `targets` array, only `installed_targets`.
+    // Seed provisional targets (hash unknown) so the loop's adoption path can
+    // recognise and claim our standard blocks without clobbering a user edit.
     if manifest.targets.is_empty() && !manifest.installed_targets.is_empty() {
         manifest.targets = manifest::v1_provisional_targets(&manifest.installed_targets);
     }
@@ -510,7 +500,7 @@ pub fn update_all(dry_run: bool, force: bool) {
     if force {
         println!(
             "  {} {}",
-            style::amber("·"),
+            style::amber("-"),
             style::amber("--force: locally-edited blocks will be overwritten"),
         );
     }
@@ -554,8 +544,7 @@ pub fn update_all(dry_run: bool, force: bool) {
             standard_render_hash.as_deref(),
         );
         // `--force` overrides the protected "local edits" skip, overwriting the
-        // hand-edited block with our current render (the legacy unconditional
-        // behaviour, now explicit and opt-in).
+        // hand-edited block with our current render.
         if force && matches!(action, UpdateAction::SkippedLocalEdits) {
             action = UpdateAction::ForceOverwrite;
         }
@@ -577,7 +566,7 @@ pub fn update_all(dry_run: bool, force: bool) {
     }
 
     // Persist re-stamped versions/hashes only on a real run that changed
-    // something (dry-run touches nothing; a no-op run leaves the file alone).
+    // something; dry-run and no-op runs leave the file alone.
     if !dry_run && any_changed {
         // A v1 record we just adopted/upgraded becomes a v2 manifest on save.
         manifest.manifest_version = manifest::MANIFEST_VERSION;
@@ -614,7 +603,7 @@ fn apply_update_action(
         UpdateAction::UpToDate => {
             report_update_line(
                 spec.name,
-                style::pewter("·"),
+                style::pewter("-"),
                 style::pewter("up to date"),
                 "",
             );
@@ -623,7 +612,7 @@ fn apply_update_action(
         UpdateAction::UpToDateExternal => {
             report_update_line(
                 spec.name,
-                style::pewter("·"),
+                style::pewter("-"),
                 style::pewter("up to date"),
                 &format!(
                     "managed by {} (no local block to upgrade)",
@@ -650,18 +639,17 @@ fn apply_update_action(
         }
         UpdateAction::Upgrade { from, to } => {
             let verb = if dry_run {
-                format!("would upgrade v{from}→v{to}")
+                format!("would upgrade v{from}->v{to}")
             } else {
-                format!("upgraded v{from}→v{to}")
+                format!("upgraded v{from}->v{to}")
             };
             report_update_line(spec.name, style::ok(sym::OK), style::emerald(&verb), "");
             if dry_run {
                 return false;
             }
-            // Re-render the current block in place (the registry installer
-            // performs the same destructive merge that replaces our block).
-            // Claude Code hooks have no standalone installer — they ride the
-            // Claude Code MCP install — so re-render through that surface.
+            // Re-render the current block in place via the registry installer's
+            // destructive merge. Claude Code hooks have no standalone installer,
+            // so re-render through the Claude Code MCP surface.
             let render_spec = effective_install_spec(spec);
             let outcome = registry::install(render_spec, mcp_bin, cli_bin, false);
             if let Status::Error(e) = &outcome.status {
@@ -679,11 +667,14 @@ fn apply_update_action(
         UpdateAction::ReissueCli { from, to } => {
             let verb = if dry_run {
                 format!(
-                    "would re-issue {} add (v{from}→v{to})",
+                    "would re-issue {} add (v{from}->v{to})",
                     external_cli_label(spec)
                 )
             } else {
-                format!("re-issued {} add (v{from}→v{to})", external_cli_label(spec))
+                format!(
+                    "re-issued {} add (v{from}->v{to})",
+                    external_cli_label(spec)
+                )
             };
             report_update_line(spec.name, style::ok(sym::OK), style::emerald(&verb), "");
             if dry_run {
@@ -704,17 +695,17 @@ fn apply_update_action(
                 spec.name,
                 style::warn("!"),
                 style::amber("gone"),
-                "no DiffLore block on disk — reinstall with `difflore agents install`",
+                "no DiffLore block on disk; reinstall with `difflore agents install`",
             );
             false
         }
         UpdateAction::SkippedLocalEdits => {
             report_update_line(
                 spec.name,
-                style::pewter("·"),
+                style::pewter("-"),
                 style::pewter("skipped: local edits since DiffLore wrote it"),
                 &format!(
-                    "{} — re-run with --force to overwrite",
+                    "{}; re-run with --force to overwrite",
                     target.config_path.as_deref().map_or_else(
                         || spec.display.to_owned(),
                         |p| public_install_detail(p, mcp_bin)
@@ -812,7 +803,7 @@ fn print_update_footer(dry_run: bool, force: bool, changed: bool, gone: bool, sk
         );
     } else {
         println!(
-            "{} everything is already up to date — no blocks needed re-rendering.",
+            "{} everything is already up to date; no blocks needed re-rendering.",
             style::emerald(sym::TIP),
         );
     }
@@ -838,7 +829,7 @@ mod update_tests {
 
     #[test]
     fn external_cli_reissues_only_on_version_bump() {
-        // Behind → re-issue; current → up to date. (No file ever touched.)
+        // Behind → re-issue; current → up to date. No file is ever touched.
         assert_eq!(
             plan_update_target(true, None, 1, 2, None, None),
             UpdateAction::ReissueCli { from: 1, to: 2 }

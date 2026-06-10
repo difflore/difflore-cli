@@ -12,9 +12,6 @@ pub async fn get() -> crate::Result<AppSettingsRecord> {
         return Ok(defaults);
     }
     let content = std::fs::read_to_string(&path)?;
-    // The error is already named & propagated — the prior `eprintln!`
-    // was a duplicate emit. CLI handlers (`exit_err`) print the wrapped
-    // message themselves; library code shouldn't smuggle stderr writes.
     let settings: AppSettingsRecord = serde_json::from_str(&content).map_err(|e| {
         CoreError::Internal(format!(
             "settings.json is corrupted and could not be parsed: {e}"

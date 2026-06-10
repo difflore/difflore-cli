@@ -1,8 +1,7 @@
 // Top-level tab set for the TUI.
 //
-// The TUI is a fast read-only inspector and conversion bridge. Cloud
-// is the editorial surface for edits, publishing, and extraction review,
-// so editorial actions here open difflore.dev deep links.
+// The TUI is a read-only inspector and conversion bridge; editorial actions
+// (edits, publishing, extraction review) open difflore.dev deep links.
 //
 //   1. Rules     — browse the rule corpus; deep-link to cloud for edits
 //   2. Activity  — review activity, fire heatmaps, and daily impact
@@ -27,9 +26,8 @@ impl Tab {
     pub(crate) const ALL: [Self; 4] = [Self::Rules, Self::Activity, Self::Team, Self::Settings];
 
     pub(crate) const fn title(self) -> &'static str {
-        // Display labels per launch brief: Memory / Fixes / Cloud / Setup.
-        // Rust enum variants stay (Rules/Activity/Team/Settings) to keep
-        // the existing module layout and avoid touching call sites.
+        // Display labels differ from the enum variant names; the variants stay
+        // as-is to avoid renaming modules and call sites.
         match self {
             Self::Rules => "Memory",
             Self::Activity => "Fixes",

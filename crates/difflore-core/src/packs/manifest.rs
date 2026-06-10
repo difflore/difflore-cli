@@ -1,7 +1,7 @@
 //! Serde types for the pack registry `index.json` catalog and per-pack
-//! `pack.json` manifest (roadmap §3, §6). The manifest pins only pack-level
-//! metadata + attribution and treats each rule's renderable content through
-//! item ⑥'s canonical body shape — it does not invent a second body format.
+//! `pack.json` manifest. The manifest pins pack-level metadata and attribution;
+//! each rule's renderable content uses the canonical body shape rather than a
+//! second body format.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -118,9 +118,8 @@ pub struct PackMaintainer {
     pub verified: bool,
 }
 
-/// Pack-level provenance default. `kind` is the honesty contract (roadmap §3.3):
-/// `curated` | `mined` | `imported`. No `kind` may carry trust/acceptance
-/// numbers into the installing team's store.
+/// Pack-level provenance default. `kind` is `curated` | `mined` | `imported`;
+/// no `kind` may carry trust/acceptance numbers into the installing team's store.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PackProvenance {
@@ -139,8 +138,8 @@ pub struct PackProvenanceSource {
     pub url: Option<String>,
 }
 
-/// One rule inside a manifest. `body` is the item-⑥-shaped renderable content;
-/// `examples` map to a `rule_examples` row when both sides are present.
+/// One rule inside a manifest. `body` is the renderable content; `examples`
+/// map to a `rule_examples` row when both sides are present.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PackRule {
@@ -157,9 +156,9 @@ pub struct PackRule {
     pub file_globs: Vec<String>,
     #[serde(default)]
     pub tags: Vec<String>,
-    /// The rule body prose. Authored in the same `Rule:` / first-sentence
-    /// directive shape the item-⑥ renderer parses, so the rendered code-spec is
-    /// identical to a mined rule's.
+    /// The rule body prose, authored in the same `Rule:` / first-sentence
+    /// directive shape the renderer parses, so the rendered code-spec matches a
+    /// mined rule's.
     #[serde(default)]
     pub body: Option<String>,
     #[serde(default)]

@@ -1,10 +1,8 @@
 //! Recall presentation: `--json` payload construction, human/markdown
 //! rendering, and diagnostic formatting.
 //!
-//! This is the "how do we show it" half of `difflore recall`. The data these
-//! functions render is gathered by the sibling `retrieval` module; the shared
-//! result types and orchestration live in the parent `mod.rs`. These functions
-//! must keep `recall --json` and the text output byte-identical.
+//! The "how do we show it" half of `difflore recall`; data is gathered by the
+//! sibling `retrieval` module, shared types and orchestration live in `mod.rs`.
 
 use difflore_core::context::types::PastVerdictScope;
 
@@ -40,8 +38,6 @@ pub(super) fn render_cross_repo_starter_human(hits: &[LocalRuleHit], file: &str)
             style::title(&hit.title),
             style::emerald(&format!("\u{21aa} from {source}")),
         );
-        // Show the same bad→fix snippets here so a cold-start repo's starter
-        // suggestions read as concretely as in-scope recall.
         render_hit_examples(hit, "     ");
     }
     println!();
@@ -250,7 +246,7 @@ pub(super) fn render_local_recall_human(
             );
         } else {
             println!(
-                "  {} Local corpus has {} rule{} for this repo; try a broader query or inspect status: {}",
+                "  {} Local memory has {} rule{} for this repo; try a broader query or inspect status: {}",
                 style::pewter(sym::TIP),
                 local.rules_indexed,
                 if local.rules_indexed == 1 { "" } else { "s" },
@@ -263,7 +259,7 @@ pub(super) fn render_local_recall_human(
     println!(
         "{}",
         style::ok(&format!(
-            "Top {} local memories for {} · file={} repo={}",
+            "Top {} local memories for {} | file={} repo={}",
             local.matches.len(),
             recall_subject(intent),
             file.unwrap_or("(none)"),
@@ -291,8 +287,8 @@ pub(super) fn render_local_recall_human(
             .as_deref()
             .filter(|repo| !repo.trim().is_empty())
             .map_or_else(
-                || "review evidence".to_owned(),
-                |repo| format!("\u{2190} learned from {repo}"),
+                || "review history".to_owned(),
+                |repo| format!("learned from {repo}"),
             );
         println!("       {} {}", style::pewter("source:"), source);
         // The bad→fix pair is the felt value: it makes real recall as sharp as
@@ -368,7 +364,7 @@ pub(super) fn render_cloud_recall_human(
             style::danger(sym::ERR),
         );
         println!(
-            "  {} repo: {} · scope: {}",
+            "  {} repo: {} | scope: {}",
             style::pewter(sym::BULLET),
             style::pewter(repo),
             recall.scope,
@@ -397,7 +393,7 @@ pub(super) fn render_cloud_recall_human(
     println!(
         "{}",
         style::ok(&format!(
-            "Top {} cloud review memories for {} · file={} repo={} scope={}",
+            "Top {} cloud review memories for {} | file={} repo={} scope={}",
             recall.verdicts.len(),
             recall_subject(intent),
             file.unwrap_or("(none)"),

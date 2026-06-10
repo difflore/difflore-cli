@@ -12,7 +12,7 @@ use parse::{
 };
 use schema::{DirectGraphResponse, GraphResponse, PrNode};
 
-// ── Public types ────────────────────────────────────────────────────────────
+// Public types
 
 pub struct ImportOptions {
     /// Repo that imported review memory should attach to locally/cloud-side.
@@ -24,17 +24,14 @@ pub struct ImportOptions {
     pub project_id: String,
     pub max_prs: usize,
     pub pr_numbers: Vec<i32>,
-    /// PR numbers to EXCLUDE from import. Any PR whose `number` is in this set
-    /// is dropped before its comments become candidates, so excluded PRs
-    /// contribute zero rules. Enables leak-free recall evaluation: import a
-    /// repo's review memory while withholding the exact PR(s) recall is tested
-    /// on. Empty in the common case (no exclusions).
+    /// PR numbers to EXCLUDE from import. Dropped before their comments
+    /// become candidates, so excluded PRs contribute zero rules. Enables
+    /// leak-free recall evaluation. Empty in the common case.
     pub exclude_prs: std::collections::HashSet<i32>,
     pub since: Option<String>,
     pub upload_to_cloud: bool,
-    /// When true, also pull open PRs (still gated by `-review:none`). Default
-    /// false → only merged PRs are imported, matching the legacy behavior
-    /// before the CLI redesign added `--include-open`.
+    /// When true, also pull open PRs (still gated by `-review:none`).
+    /// Default false → only merged PRs are imported.
     pub include_open: bool,
 }
 
@@ -59,7 +56,7 @@ pub type ProgressCallback = Box<dyn Fn(&ImportProgress) + Send>;
 const GRAPHQL_SEARCH_PAGE_SIZE: usize = 30;
 const GRAPHQL_MIN_SEARCH_PAGE_SIZE: usize = 5;
 
-// ── GitHub CLI bridge ───────────────────────────────────────────────────────
+// GitHub CLI bridge
 
 const GRAPHQL_QUERY: &str = r"
 query($q: String!, $first: Int!, $after: String) {
@@ -169,13 +166,11 @@ query($owner: String!, $name: String!, $number: Int!) {
 const GH_API_TIMEOUT_SECS: u64 = 45;
 const GRAPHQL_MAX_ATTEMPTS: usize = 4;
 
-/// Build the `search` query string with `-review:none` so the GitHub server
-/// returns only PRs that carry review activity — empty PRs never hit the
-/// wire. (`reviews:>0` is NOT a valid GitHub search qualifier; it silently
-/// matches nothing, so the bulk path imported zero PRs. `-review:none` is the
-/// supported way to say "has at least one review".) `sort:updated-desc` keeps
-/// the same ordering as the old REST path, and `merged:>={since}` pushes the
-/// `--since` filter server-side too.
+/// Build the `search` query string with `-review:none` so the server returns
+/// only PRs that carry review activity. NOTE: `reviews:>0` is NOT a valid
+/// GitHub search qualifier (it silently matches nothing); `-review:none` is
+/// the supported way to say "has at least one review". `merged:>={since}`
+/// pushes the `--since` filter server-side too.
 fn build_search_query(repo: &str, since: Option<&str>, include_open: bool) -> String {
     // `is:merged` excludes open PRs; with `--include-open` we drop the
     // gate so the search returns merged + open PRs that have any review
@@ -409,7 +404,7 @@ async fn comment_exists(db: &SqlitePool, external_id: &str) -> crate::Result<boo
     Ok(count > 0)
 }
 
-// ── Core import logic ───────────────────────────────────────────────────────
+// Core import logic
 
 pub async fn import_pr_reviews(
     db: &SqlitePool,
@@ -433,12 +428,10 @@ pub async fn import_pr_reviews(
         missing_pr_numbers: Vec::new(),
     };
 
-    // ── Paginate via GitHub search ─────────────────────────────────────────
-    //
-    // The search query (`repo:X is:pr is:merged -review:none [merged:>=since]`)
-    // filters server-side, so empty PRs never hit the wire. Keep the page
-    // size below GitHub's nested GraphQL node-limit cliff; each PR can carry
-    // files, reviews, comments, and review threads.
+    // Paginate via GitHub search. The query filters server-side, so empty
+    // PRs never hit the wire. Keep the page size below GitHub's nested
+    // GraphQL node-limit cliff; each PR can carry files, reviews, comments,
+    // and review threads.
     let mut collected: Vec<PrNode> = Vec::new();
     if opts.pr_numbers.is_empty() {
         let search_query =
@@ -530,7 +523,7 @@ pub async fn import_pr_reviews(
         cb(&progress);
     }
 
-    // ── Step 3: Persist each content-carrying PR ────────────────────────────
+    // Persist each content-carrying PR
     for pr in &filtered {
         // Earlier filters guarantee `number` is present (non-PR search nodes
         // were dropped at collection time).

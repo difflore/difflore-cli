@@ -80,7 +80,7 @@ impl Theme {
         origin_conversation: Color::Rgb(0x7f, 0xbc, 0xff),
         origin_manual: Color::Rgb(0xc8, 0xa8, 0xff),
         origin_pr_review: Color::Rgb(0xf5, 0xa2, 0x5e),
-        // Jade — moved off brand emerald so origin tag ≠ brand color.
+        // Jade, kept distinct from brand emerald so origin tag ≠ brand color.
         origin_extracted: Color::Rgb(0x22, 0xd3, 0xa8),
         origin_cloud: Color::Rgb(0x5e, 0xe0, 0xc8),
         origin_team: Color::Rgb(0xff, 0xd8, 0x6b),
@@ -233,10 +233,8 @@ mod tests {
 
     #[test]
     fn current_returns_dark_or_light() {
-        // `Theme::current()` now delegates to `difflore_core::config`;
-        // TOML parsing is covered by core::infra::config tests. Here we
-        // just verify the mapping returns one of the two known palettes
-        // (no panic, no third option).
+        // Verify the mapping returns one of the two known palettes; TOML
+        // parsing is covered by core::infra::config tests.
         let t = Theme::current();
         let is_dark = t.bg == Theme::DARK.bg;
         let is_light = t.bg == Theme::LIGHT.bg;

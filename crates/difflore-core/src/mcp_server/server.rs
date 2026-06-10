@@ -15,12 +15,9 @@ use super::schemas::{
 
 pub(super) const PROTOCOL_VERSION: &str = "2024-11-05";
 pub(super) const SERVER_NAME: &str = "difflore";
-/// Reported back to MCP clients in the `serverInfo.version` field.
-/// Sourced from `CARGO_PKG_VERSION` so MCP clients see the crate version
-/// instead of a hardcoded value that can drift.
+/// Reported to MCP clients in `serverInfo.version`. Sourced from
+/// `CARGO_PKG_VERSION` so it can't drift from the crate version.
 pub(super) const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-// ── JSON-RPC helpers ───────────────────────────────────────────────
 
 #[allow(clippy::needless_pass_by_value)] // reason: json! macro consumes the Value into the new object
 pub(super) fn jsonrpc_result(id: Value, result: Value) -> Value {
@@ -35,8 +32,6 @@ pub(crate) fn jsonrpc_error(id: Value, code: i64, message: &str) -> Value {
         "error": { "code": code, "message": message }
     })
 }
-
-// ── Tool / resource definitions ────────────────────────────────────
 
 pub(crate) const fn estimate_tokens(text: &str) -> usize {
     text.len() / 4
@@ -73,10 +68,9 @@ pub(crate) fn emit_trajectory_step(step: &TrajectoryStep) {
 }
 
 /// Look up the `origin` column for each `skill_id` and aggregate into
-/// `TrajectoryStep::RuleHitByOrigin`. Unknown / missing origins are
-/// silently dropped. Uses a single `SELECT ... WHERE id IN (?, ?, ...)`
-/// built with bind parameters so the query stays injection-safe even if
-/// a `skill_id` happens to contain SQL-looking text.
+/// `TrajectoryStep::RuleHitByOrigin`. Unknown / missing origins are silently
+/// dropped. IDs are passed as a single bound JSON parameter so the query stays
+/// injection-safe even if a `skill_id` contains SQL-looking text.
 pub(crate) async fn rule_hits_by_origin(db: &SqlitePool, skill_ids: &[String]) -> TrajectoryStep {
     let mut manual = 0u32;
     let mut conversation = 0u32;
@@ -115,8 +109,6 @@ pub(crate) async fn rule_hits_by_origin(db: &SqlitePool, skill_ids: &[String]) -
         cloud,
     }
 }
-
-// ── Handler dispatch ───────────────────────────────────────────────
 
 pub(crate) struct McpState {
     pub(crate) db: SqlitePool,
@@ -305,10 +297,9 @@ pub(crate) fn parse_signature_uri(uri: &str) -> Option<String> {
     Some(hash.to_owned())
 }
 
-/// Build the JSON body for `difflore://verdicts/{id}`. Full verdict JSON is
-/// not cached locally yet, so the resource returns a stable pointer plus an
-/// explicit action. Keep the text product-facing: MCP clients surface this
-/// directly to users and agents.
+/// Build the JSON body for `difflore://verdicts/{id}`. Full verdict JSON isn't
+/// cached locally yet, so the resource returns a stable pointer plus an
+/// explicit action. Text is product-facing: MCP clients surface it directly.
 pub(super) async fn build_verdict_resource(state: &McpState, id: &str) -> Value {
     let cloud_dashboard = state.cloud.base_url().trim_end_matches("/api").to_owned();
     let deep_link = format!("{cloud_dashboard}/verdicts/{id}");
@@ -328,7 +319,6 @@ pub(super) async fn build_verdict_resource(state: &McpState, id: &str) -> Value 
     })
 }
 
-/// Build the JSON body for `difflore://signatures/{hash}`.
 pub(super) fn build_signature_resource(state: &McpState, hash: &str) -> Value {
     let cloud_dashboard = state.cloud.base_url().trim_end_matches("/api").to_owned();
     let deep_link = format!("{cloud_dashboard}/signatures/{hash}");

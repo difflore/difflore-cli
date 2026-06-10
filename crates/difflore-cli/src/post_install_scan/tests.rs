@@ -75,10 +75,8 @@ fn guard_layer_skips_when_running_in_ci() {
 
 #[test]
 fn guard_skip_priority_matches_blame_order() {
-    // Documents the deliberate priority: explicit user opt-out wins
-    // over CI detection, which wins over non-tty, etc. Future
-    // maintainers reordering the guards will break this and have to
-    // re-read the priority intent.
+    // Pins the deliberate priority: explicit user opt-out wins over CI, which
+    // wins over non-tty, etc. Reordering the guards breaks this.
     let mut s = pristine_signals();
     s.explicit_skip = true;
     s.in_ci = true;

@@ -11,9 +11,8 @@ use difflore_core::models::{ProviderAddInput, ProviderRemoveInput, ProviderSetAc
 use crate::commands::util::{confirm_destructive, exit_err};
 use crate::runtime::CommandContext;
 
-/// Resolve a secret from (in order): explicit flag, env var, or piped
-/// stdin. Used by cloud login to pick up `DIFFLORE_CLOUD_TOKEN`. Kept
-/// here because multiple commands import the same input flow.
+/// Resolve a secret from, in order: explicit flag, env var, or piped stdin.
+/// Used by cloud login to pick up `DIFFLORE_CLOUD_TOKEN`.
 pub(crate) fn resolve_secret_input(
     flag_value: Option<String>,
     env_var: &str,

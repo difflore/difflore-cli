@@ -1,29 +1,21 @@
 //! Maintenance sweeps for stale or weakly grounded skills.
 //!
-//! The corpus has accumulated a long tail of `conv-review-*` skills that
-//! never get accepted, never get served past the first injection, and
-//! still pay full freight in the top-5 retrieval ranking. Two
-//! complementary sweeps live here:
+//! 1. [`sweep_stale_skills`] multiplicatively decays `confidence_score` on
+//!    skills installed long enough ago to have a track record, NOT served in
+//!    the recent window, and that have NEVER earned an accepted fix. Confidence
+//!    is a multiplier in the recall ranker (`context::retrieval::rules`), so
+//!    halving it drops the chunk out of the top 5 over two sweeps without
+//!    deleting anything.
 //!
-//! 1. [`sweep_stale_skills`] multiplicatively decays `confidence_score`
-//!    on skills that were installed long enough ago to have a track
-//!    record, have NOT been served in the recent window, and have NEVER
-//!    earned an accepted fix. Confidence is a multiplier in the recall
-//!    ranker (`context::retrieval::rules`), so halving it ~halves the
-//!    chunk's fused score and naturally drops it out of the top 5 over
-//!    two sweeps without deleting anything.
+//! 2. [`quarantine_unguided_conv_reviews`] flips `conv-review-*` skills with
+//!    neither `file_patterns` nor a `trigger` to `status = 'pending'`. Those
+//!    are imported from PR comments with no grounding, so the embedding does
+//!    all the work and usually loses to a real rule. Pending keeps the row (it
+//!    can be promoted back by a human or an accept event) but removes it from
+//!    active recall.
 //!
-//! 2. [`quarantine_unguided_conv_reviews`] flips `conv-review-*` skills
-//!    that have neither `file_patterns` nor a `trigger` to `status =
-//!    'pending'`. These are the worst offenders: imported from a PR
-//!    comment with no grounding so the embedding has to do all the
-//!    work, and the embedding usually loses to a real rule. Pending
-//!    status keeps the row (it can be promoted back by a human or an
-//!    accept event) but removes it from active recall.
-//!
-//! Hard constraints: no schema changes, no DELETEs, all writes wrapped
-//! in a single sqlx transaction so a partial sweep can't half-decay the
-//! corpus.
+//! Hard constraints: no schema changes, no DELETEs, all writes in a single
+//! sqlx transaction so a partial sweep can't half-decay the corpus.
 
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -40,13 +32,12 @@ pub struct SweepOpts {
     /// A skill counts as "active" if any `mcp_rule_serves` row inside
     /// the last `stale_serve_days` references it via `rule_ids_json`.
     pub stale_serve_days: u32,
-    /// Multiplier applied to `confidence_score` per sweep. Defaults to
-    /// 0.5 so two sweeps drop a 0.6 base below the 0.15 cutoff.
+    /// Multiplier applied to `confidence_score` per sweep. Defaults to 0.5 so
+    /// two sweeps drop a 0.6 base below the 0.15 cutoff.
     pub decay_factor: f32,
     /// When true, compute the decay plan without committing.
     pub dry_run: bool,
-    /// Confidence floor — we never drive below this. Rule eviction is
-    /// a separate concern handled by other tooling.
+    /// Confidence floor; we never drive below this.
     pub min_floor: f32,
 }
 
@@ -62,9 +53,8 @@ impl Default for SweepOpts {
     }
 }
 
-/// Outcome of one [`sweep_stale_skills`] pass. Counts are best-effort
-/// snapshots taken during the same transaction as the writes (or the
-/// dry-run preview, if `dry_run` was set).
+/// Outcome of one [`sweep_stale_skills`] pass. Counts are snapshots taken in
+/// the same transaction as the writes (or the dry-run preview).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SweepReport {
@@ -78,8 +68,8 @@ pub struct SweepReport {
     /// Skills already at or below `min_floor` — left untouched so the
     /// floor stays meaningful.
     pub skipped_because_already_at_floor: u64,
-    /// Echo of [`SweepOpts::dry_run`] so JSON readers can confirm
-    /// whether the report represents a real or simulated pass.
+    /// Echo of [`SweepOpts::dry_run`]: whether this report is a real or
+    /// simulated pass.
     pub dry_run: bool,
 }
 
@@ -88,21 +78,16 @@ pub async fn sweep_stale_skills(pool: &SqlitePool, opts: SweepOpts) -> Result<Sw
     let install_window = format!("-{} days", opts.stale_install_days);
     let serve_window = format!("-{} days", opts.stale_serve_days);
 
-    // Single SQL pass identifies the decay candidates. We compute the
-    // bucket counts on the same snapshot so the report numbers reconcile
-    // with what we'd actually UPDATE. We avoid sqlx::query! macros here
-    // because the compile-time cache would have to be regenerated.
-    //
-    // Bucket logic, evaluated per stale-installed skill:
-    //   - "active" → served in the last `stale_serve_days` OR has an
-    //     accepted fix_outcomes row
-    //   - "at_floor" → confidence_score <= min_floor (cheap short-circuit)
-    //   - "decay" → everything else: the actual targets
-    // Cross-join expands rule_ids_json (a JSON array of skill ids) into
-    // one row per id; SELECT value pulls the scalar element out. Matches
-    // the json_each idiom used elsewhere (e.g. mcp_server::server,
-    // context::index_db::queries) so SQLite's json1 builds the right
-    // implicit text-affinity comparison against skills.id.
+    // Single SQL pass identifies the decay candidates and computes bucket
+    // counts on the same snapshot so report numbers reconcile with what we'd
+    // UPDATE. Buckets, per stale-installed skill:
+    //   - "active"   → served in the last `stale_serve_days` OR has an accepted
+    //                  fix_outcomes row
+    //   - "at_floor" → confidence_score <= min_floor
+    //   - "decay"    → everything else: the actual targets
+    // The cross-join expands rule_ids_json (a JSON array of skill ids) into one
+    // row per id via json_each, so SQLite's json1 builds the right text-affinity
+    // comparison against skills.id.
     let stale_serve_subquery = "id IN (\
         SELECT value FROM mcp_rule_serves, json_each(rule_ids_json) \
         WHERE served_at > datetime('now', ?2)\
@@ -110,9 +95,9 @@ pub async fn sweep_stale_skills(pool: &SqlitePool, opts: SweepOpts) -> Result<Sw
     let accepted_subquery =
         "id IN (SELECT rule_id FROM fix_outcomes WHERE rule_id IS NOT NULL AND accepted = 1)";
 
-    // We materialise the candidate ids so the dry-run preview and the
-    // real UPDATE both see the same snapshot. Local DBs we've measured
-    // have ~2K stale candidates so a fetch_all is fine.
+    // Materialise the candidate ids so the dry-run preview and the real UPDATE
+    // see the same snapshot. Stale candidates number in the low thousands, so a
+    // fetch_all is fine.
     let candidates_sql = format!(
         "SELECT id, confidence_score FROM skills \
          WHERE installed_at < datetime('now', ?1) \
@@ -132,8 +117,7 @@ pub async fn sweep_stale_skills(pool: &SqlitePool, opts: SweepOpts) -> Result<Sw
         .fetch_all(pool)
         .await?;
 
-    // Partition: anything above floor is a decay target; floor-or-below
-    // is a skip. Cast to f64 because sqlx hands back the column as f64.
+    // Anything above floor is a decay target; floor-or-below is skipped.
     let floor = f64::from(opts.min_floor);
     let to_decay: Vec<&(String, f64)> = rows.iter().filter(|(_, c)| *c > floor).collect();
     let at_floor_len = rows.len() - to_decay.len();
@@ -141,7 +125,7 @@ pub async fn sweep_stale_skills(pool: &SqlitePool, opts: SweepOpts) -> Result<Sw
     let decayed_count = u64::try_from(to_decay.len()).unwrap_or(u64::MAX);
     let at_floor_count = u64::try_from(at_floor_len).unwrap_or(u64::MAX);
     let examined_u64 = u64::try_from(examined).unwrap_or(0);
-    // "active" = stale-installed minus the candidates we did pull.
+    // "active" = stale-installed minus the candidates we pulled.
     let skipped_active = examined_u64.saturating_sub(decayed_count + at_floor_count);
 
     let report = SweepReport {
@@ -156,8 +140,7 @@ pub async fn sweep_stale_skills(pool: &SqlitePool, opts: SweepOpts) -> Result<Sw
         return Ok(report);
     }
 
-    // Real write path: single transaction so a mid-batch failure leaves
-    // the corpus consistent.
+    // Single transaction so a mid-batch failure leaves the corpus consistent.
     let factor = f64::from(opts.decay_factor);
     let mut tx = pool.begin().await?;
     for (id, conf) in &to_decay {
@@ -340,8 +323,7 @@ mod tests {
             .unwrap()
     }
 
-    /// Tolerant float comparison so clippy's `float_cmp` lint stays
-    /// satisfied while keeping the assertion intent obvious.
+    /// Tolerant float comparison to satisfy clippy's `float_cmp` lint.
     fn approx_eq(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-6
     }
@@ -390,7 +372,6 @@ mod tests {
         let report = sweep_stale_skills(&pool, opts()).await.unwrap();
 
         assert!(approx_eq(confidence(&pool, "fresh").await, 0.7));
-        // 0.7 * 0.5 = 0.35
         assert!(approx_eq(confidence(&pool, "stale-quiet").await, 0.35));
         assert!(approx_eq(confidence(&pool, "stale-served").await, 0.7));
         assert!(approx_eq(confidence(&pool, "stale-accepted").await, 0.7));
@@ -398,9 +379,9 @@ mod tests {
 
         assert_eq!(report.decayed, 1);
         assert_eq!(report.skipped_because_already_at_floor, 1);
-        // examined = 4 stale skills (fresh excluded by install window)
+        // 4 stale skills examined (fresh excluded by install window).
         assert_eq!(report.examined, 4);
-        // 4 examined - 1 decayed - 1 at_floor = 2 active
+        // 4 examined - 1 decayed - 1 at_floor = 2 active.
         assert_eq!(report.skipped_because_active, 2);
         assert!(!report.dry_run);
     }

@@ -1,4 +1,4 @@
-//! Context engine record types, previously defined in the Tauri commands layer.
+//! Context engine record types.
 
 use crate::models::SkillRecord;
 

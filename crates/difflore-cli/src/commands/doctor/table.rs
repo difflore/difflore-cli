@@ -1,8 +1,6 @@
-//! Doctor table renderer.
-//!
-//! Aligned-column status surface — replaces the prose markdown for
-//! the default `difflore doctor` invocation. The richer markdown
-//! report stays behind `--report` for bug-report paste-ins.
+//! Doctor table renderer: the aligned-column status surface for the default
+//! `difflore doctor` invocation (the richer markdown report stays behind
+//! `--report`).
 //!
 //! Rows are grouped into three sections:
 //!
@@ -10,14 +8,13 @@
 //!   Blocks core value       — recall cannot run (DB / corpus broken)
 //!   Optional improvements   — provider, MCP wiring, daemon, git hooks
 //!
-//! Empty sections are omitted. The footer collapses to a single
-//! `next:` action line pointing at the highest-priority blocker (or,
-//! if all-green, at `difflore recall --diff`).
+//! Empty sections are omitted. The footer collapses to a single `next:`
+//! action line pointing at the highest-priority blocker (or, if all-green,
+//! at `difflore recall --diff`).
 //!
-//! This module is pure presentation: it consumes the precomputed
-//! [`probes::Findings`] struct and never touches a live data source, so
-//! every shaper below can be exercised against a hand-built findings
-//! value without mocking core.
+//! Pure presentation: consumes a precomputed [`probes::Findings`] and never
+//! touches a live data source, so shapers can be tested against a hand-built
+//! findings value.
 
 use colored::Colorize;
 
@@ -29,7 +26,7 @@ use super::probes::{
 use crate::mcp_install;
 use crate::style;
 
-const RULE: &str = "─────────────────────────────────────────";
+const RULE: &str = "-----------------------------------------";
 const LABEL_W: usize = 17;
 
 /// Visual marker for a row — orthogonal to `Severity`. A `Ready` row
@@ -42,8 +39,7 @@ enum Status {
     Err,
 }
 
-/// Section a row belongs to. Drives both grouping in the human
-/// renderer and the `severity` field on the JSON-style row.
+/// Section a row belongs to; drives grouping in the renderer.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Severity {
     Blocker,
@@ -66,13 +62,11 @@ struct Row {
     status: Status,
     label: &'static str,
     value: String,
-    /// Optional follow-up `▸` lines rendered indented under the row.
-    /// For blockers, the first hint should lead with the consequence
-    /// ("agents can't fix without a provider — run `difflore providers setup`").
+    /// Follow-up lines rendered indented under the row. For blockers, the
+    /// first hint should lead with the consequence.
     hints: Vec<String>,
-    /// Single repair command suggested as the `next:` action when this
-    /// row is the highest-priority blocker. None for rows that have
-    /// no actionable repair (already-green rows, Optional notices).
+    /// Repair command suggested as the `next:` action when this row is the
+    /// highest-priority blocker. `None` when there's no actionable repair.
     repair: Option<String>,
 }
 
@@ -94,9 +88,8 @@ pub(crate) async fn render_table(ctx: &crate::runtime::CommandContext) -> String
     render_findings(&findings)
 }
 
-/// Shape a fully-probed [`Findings`] into the doctor surface string.
-/// Split from `render_table` so tests can feed a hand-built findings
-/// value without any live data source.
+/// Shape a fully-probed [`Findings`] into the doctor surface string. Split
+/// from `render_table` so tests can feed a hand-built findings value.
 fn render_findings(findings: &Findings) -> String {
     let rows = vec![
         binary_row(&findings.binary_version),
@@ -108,9 +101,8 @@ fn render_findings(findings: &Findings) -> String {
         git_hooks_row(&findings.git_hooks),
         daemon_row(&findings.daemon),
     ];
-    // "What we've learned" preview — `render` collapses to an empty
-    // string when the snapshot is empty (fresh install / no ready
-    // repo memory), so the doctor surface is unchanged in that case.
+    // "What we've learned" preview — renders to "" when the snapshot is empty
+    // (fresh install / no ready repo memory).
     let snapshot_block = memory_snapshot::render(&findings.memory_snapshot);
     render_rows(&rows, &snapshot_block)
 }
@@ -143,7 +135,7 @@ fn project_db_row(probe: &ProjectDbProbe) -> Row {
             label: "project db",
             value: "no memory indexed".to_owned(),
             hints: vec![
-                "recall returns nothing without memory: seed the corpus first".to_owned(),
+                "recall returns nothing without memory: import review history first".to_owned(),
                 "difflore status   (shows the shortest local path for this repo)".to_owned(),
                 "difflore import-reviews --max-prs 50".to_owned(),
             ],
@@ -197,16 +189,16 @@ fn project_db_row(probe: &ProjectDbProbe) -> Row {
 
     let (value, import_cmd) = match repo_full_name {
         Some(repo) => (
-            format!("0 memories for {repo} · {total_rules} on this machine"),
+            format!("0 memories for {repo} | {total_rules} on this machine"),
             format!("difflore import-reviews --repo {repo}"),
         ),
         None => (
-            format!("{total_rules} memories on this machine · no GitHub repo detected"),
+            format!("{total_rules} memories on this machine | no GitHub repo detected"),
             "difflore status".to_owned(),
         ),
     };
     let mut hints = vec![
-        "no current-repo memory is ready; doctor will not show unrelated repo proof here"
+        "no current-repo memory is ready; doctor will not show unrelated repo activity here"
             .to_owned(),
         "difflore status   (shows the repo-scoped value path)".to_owned(),
     ];
@@ -493,22 +485,20 @@ fn cloud_row(probe: &CloudProbe) -> Row {
     match probe {
         CloudProbe::LoggedIn { plan, team_name } => {
             let suffix = match team_name.as_deref() {
-                Some(team) => format!(" · team: {team}"),
+                Some(team) => format!(" | team: {team}"),
                 None => String::new(),
             };
-            // Embedding-aware plan line. Free shows that managed embedding
-            // has a plan cap, but avoids printing an exact number here
-            // because the default doctor row has no fresh cap/usage cache.
-            // Cap hits themselves are surfaced by the embedder row and
-            // doctor report from activity_stream telemetry.
+            // Free notes the managed-embedding cap but prints no exact number
+            // (the default doctor row has no fresh cap/usage cache; cap hits
+            // are surfaced by the embedder row from telemetry).
             let embedding_suffix = if plan.eq_ignore_ascii_case("free") {
-                " · managed embedding cap · upgrade or embeddings setup"
+                " | managed embedding cap | upgrade or embeddings setup"
             } else {
-                " · unlimited embedding"
+                " | unlimited embedding"
             };
             Row::ready_ok(
                 "cloud",
-                format!("logged in · plan: {plan}{suffix}{embedding_suffix}"),
+                format!("logged in | plan: {plan}{suffix}{embedding_suffix}"),
             )
         }
         CloudProbe::NotLoggedIn => Row {
@@ -517,7 +507,7 @@ fn cloud_row(probe: &CloudProbe) -> Row {
             label: "cloud",
             value: "not logged in".to_owned(),
             hints: vec![
-                "log in to enable team sync, dashboard, and cloud extractions".to_owned(),
+                "log in to enable team sync, dashboard, and uploaded review analysis".to_owned(),
                 "difflore cloud login".to_owned(),
             ],
             repair: None,
@@ -597,7 +587,7 @@ fn embedder_row_from_kind(
                     severity: Severity::Optional,
                     status: Status::Warn,
                     label: "embedder",
-                    value: "cloud-managed · semantic search configured · recent keyword fallback"
+                    value: "cloud-managed | semantic search configured | recent keyword fallback"
                         .to_owned(),
                     hints: vec![
                         format!("recent embedding degradation: {}", recent.summary()),
@@ -610,7 +600,7 @@ fn embedder_row_from_kind(
                     repair: None,
                 };
             }
-            Row::ready_ok("embedder", "cloud-managed · semantic search".to_owned())
+            Row::ready_ok("embedder", "cloud-managed | semantic search".to_owned())
         }
         ActiveEmbedderKind::Byok { provider_host, .. } => {
             let host = provider_host.clone();
@@ -620,7 +610,7 @@ fn embedder_row_from_kind(
                     status: Status::Warn,
                     label: "embedder",
                     value: format!(
-                        "BYOK · {host} · semantic search configured · recent keyword fallback"
+                        "BYOK | {host} | semantic search configured | recent keyword fallback"
                     ),
                     hints: vec![
                         format!("recent embedding degradation: {}", recent.summary()),
@@ -632,13 +622,13 @@ fn embedder_row_from_kind(
                     repair: None,
                 };
             }
-            Row::ready_ok("embedder", format!("BYOK · {host} · semantic search"))
+            Row::ready_ok("embedder", format!("BYOK | {host} | semantic search"))
         }
         ActiveEmbedderKind::Sha1 => Row {
             severity: Severity::Optional,
             status: Status::Warn,
             label: "embedder",
-            value: "semantic search: off · using fast keyword matching".to_owned(),
+            value: "semantic search: off | using fast keyword matching".to_owned(),
             hints: vec![
                 "recall still works; semantic search is optional".to_owned(),
                 "difflore cloud login".to_owned(),
@@ -668,9 +658,9 @@ fn embedder_row_from_diagnostics(
         _ => "index is out of date",
     };
     let value = if diag.vector_lane_available {
-        format!("semantic index needs attention · {display_reason}")
+        format!("semantic index needs attention | {display_reason}")
     } else {
-        format!("semantic index is paused · {display_reason}")
+        format!("semantic index is paused | {display_reason}")
     };
     let repair_hint = match reason {
         "provider_fallback" => {
@@ -799,7 +789,6 @@ fn render_rows(rows: &[Row], snapshot_block: &str) -> String {
             continue;
         }
         if wrote_any_section {
-            // Blank line between sections so the headings breathe.
             out.push('\n');
         }
         wrote_any_section = true;
@@ -813,17 +802,13 @@ fn render_rows(rows: &[Row], snapshot_block: &str) -> String {
             render_row_into(&mut out, row);
         }
     }
-    // "What we've learned" preview — skipped entirely when the corpus
-    // is empty (helper returns ""), so the doctor surface for a fresh
-    // install is unchanged.
     if !snapshot_block.is_empty() {
         out.push_str(snapshot_block);
     }
     out.push_str(&format!("{}\n", style::pewter(RULE)));
 
-    // Footer: section-style `Next` per the redesign brief. The single
-    // line under it is the highest-priority blocker's repair command,
-    // or the canonical "now what?" command when nothing's blocking.
+    // Footer: the highest-priority blocker's repair command, or the canonical
+    // "now what?" command when nothing's blocking.
     let next_blocker = rows
         .iter()
         .find(|r| r.severity == Severity::Blocker && r.repair.is_some());
@@ -941,7 +926,7 @@ mod tests {
         let row = embedder_row_from_kind(&kind, &no_recent());
         assert_ready_ok(&row, "embedder");
         assert!(
-            row.value.starts_with("BYOK · api.openai.com"),
+            row.value.starts_with("BYOK | api.openai.com"),
             "value: {}",
             row.value
         );
@@ -962,7 +947,7 @@ mod tests {
         assert!(matches!(row.status, Status::Warn));
         assert!(
             row.value
-                .contains("BYOK · embed.example.com · semantic search configured"),
+                .contains("BYOK | embed.example.com | semantic search configured"),
             "value: {}",
             row.value
         );
@@ -1011,10 +996,9 @@ mod tests {
 
     #[test]
     fn embedder_row_surfaces_force_rebuild_for_profile_mismatch() {
-        // A profile/dimension mismatch is exactly the case the force-rebuild
-        // command recovers: the lazy `recall --diff` refresh is freshness-gated
-        // and can skip a same-count inconsistency, so doctor must point users at
-        // `difflore embeddings rebuild` here.
+        // A profile/dimension mismatch needs force-rebuild: the lazy
+        // `recall --diff` refresh is freshness-gated and can skip a same-count
+        // inconsistency, so doctor must point at `difflore embeddings rebuild`.
         let row = embedder_row_from_diagnostics(&EmbeddingDiagnostics {
             active_profile: "cloud:text-embedding-3-small:1536".to_owned(),
             index_profile: Some("sha1:local:128".to_owned()),
@@ -1056,7 +1040,7 @@ mod tests {
         };
         let row = embedder_row_from_kind(&kind, &no_recent());
         assert!(
-            row.value.contains("BYOK · embed.example.com"),
+            row.value.contains("BYOK | embed.example.com"),
             "value: {}",
             row.value
         );

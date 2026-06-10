@@ -50,10 +50,16 @@ pub(crate) async fn enqueue_mcp_query_outbox(db: &SqlitePool, entry: McpQueryOut
                 .enqueue(crate::cloud::outbox::kind::MCP_QUERY, &payload_str)
                 .await
             {
-                eprintln!("[difflore-mcp] enqueue mcp_query outbox failed: {e}");
+                if crate::env::debug_telemetry() {
+                    eprintln!("[difflore-mcp] enqueue mcp_query outbox failed: {e}");
+                }
             }
         }
-        Err(e) => eprintln!("[difflore-mcp] serialize mcp_query outbox failed: {e}"),
+        Err(e) => {
+            if crate::env::debug_telemetry() {
+                eprintln!("[difflore-mcp] serialize mcp_query outbox failed: {e}");
+            }
+        }
     }
 }
 
@@ -66,7 +72,9 @@ pub(crate) async fn drain_mcp_query_outbox(
     match crate::cloud::outbox::drain_outbox(&queue, cloud, max_items).await {
         Ok(summary) => summary,
         Err(e) => {
-            eprintln!("[difflore-mcp] drain mcp_query outbox failed: {e}");
+            if crate::env::debug_telemetry() {
+                eprintln!("[difflore-mcp] drain mcp_query outbox failed: {e}");
+            }
             (0, 0)
         }
     }
@@ -177,42 +185,32 @@ pub(crate) struct SkillDetailRow {
     pub(crate) name: String,
     pub(crate) description: String,
     pub(crate) r#type: String,
-    /// JSON-encoded tag list. Selected so the row deserialises cleanly and the
-    /// column stays available to callers, but the item ⑥ code-spec body no
-    /// longer renders a `Tags:` line (tags are not an actionable obligation),
-    /// so the field is read only by the `FromRow` derive today.
+    /// JSON-encoded tag list. Selected so the row deserialises cleanly; read
+    /// only by the `FromRow` derive today since the code-spec body no longer
+    /// renders a `Tags:` line.
     #[allow(dead_code)]
     pub(crate) tags: String,
     pub(crate) confidence_score: f64,
     pub(crate) file_patterns: Option<String>,
     pub(crate) origin: String,
-    /// Source repo attribution column (mirrors `RuleRow` in
-    /// `context::rule_source`). Pulled so `render_full_rule_with_examples`
-    /// can emit a `Source: owner/repo` line. Without this the 2-stage
-    /// `search_rules` → `get_rules` path silently drops attribution and
-    /// the agent can't cite "(from acme/widgets)" downstream.
+    /// Source repo attribution. Pulled so `render_full_rule_with_examples` can
+    /// emit a `Source: owner/repo` line that the agent can cite downstream.
     pub(crate) source_repo: Option<String>,
-    /// Free-text "when to apply" hint. The column already exists on `skills`
-    /// (and round-trips through cloud sync) but was historically dropped on
-    /// the MCP serve path; item ⑥ surfaces it as the code-spec `### Trigger`
+    /// Free-text "when to apply" hint, rendered as the code-spec `### Trigger`
     /// slot when present. Nullable — most local rules carry none.
     pub(crate) trigger: Option<String>,
-    /// Free-text self-check prompt. Same provenance/nullability as `trigger`;
-    /// rendered as the `### Self-check` slot when present (team/cloud rules
-    /// often carry one).
+    /// Free-text self-check prompt, rendered as the `### Self-check` slot when
+    /// present. Same nullability as `trigger`.
     pub(crate) check_prompt: Option<String>,
 }
 
 /// Build the full markdown rule body for callers who pair
 /// `search_rules` → `get_rules`.
 ///
-/// Item ⑥: this no longer emits a free-prose blob. It re-projects the row's
-/// already-stored fields into the concrete code-spec template (contract /
+/// Re-projects the row's stored fields into the code-spec template (contract /
 /// validation matrix / cases / self-check / provenance) via the shared,
-/// DB-free `context::rule_render` helpers, which item ① also imports so a
-/// published pack renders identically. The signature is unchanged so
-/// `get_rules.rs` is untouched, and the structured `examples[]` JSON the tool
-/// also returns is unaffected (the richer text goes in `body` only).
+/// DB-free `context::rule_render` helpers, so a published pack renders
+/// identically.
 pub(crate) fn render_full_rule_with_examples(
     row: &SkillDetailRow,
     examples: Option<&Vec<crate::context::rule_source::RuleExample>>,
@@ -405,9 +403,9 @@ pub(crate) fn build_timeline_evidence(
         EvidenceKind::RuleUpdated => format!("rule updated from {source} at {ts}"),
         EvidenceKind::RuleExample => format!("example captured from {source} at {ts}"),
         EvidenceKind::TriggerMatch => format!("trigger text carried forward from {source} at {ts}"),
-        EvidenceKind::FilePatternMatch => format!("file-pattern evidence at {ts}"),
-        EvidenceKind::RetrievalMatch => format!("retrieval evidence at {ts}"),
-        EvidenceKind::SemanticSimilarity => format!("semantic evidence at {ts}"),
+        EvidenceKind::FilePatternMatch => format!("file-pattern match at {ts}"),
+        EvidenceKind::RetrievalMatch => format!("retrieval match at {ts}"),
+        EvidenceKind::SemanticSimilarity => format!("semantic match at {ts}"),
         EvidenceKind::PastVerdictRecall => format!("past verdict recall at {ts}"),
     };
 
@@ -470,16 +468,11 @@ pub fn origin_to_kind(origin: &str) -> &'static str {
     }
 }
 
-/// Build a `QueryFilter` from the file path the agent is working on
-/// plus an optional GitHub `owner/repo` for the calling project.
-/// `language` comes from the file extension so the SQL pre-filter drops
-/// rules tagged for other languages (e.g. tokio Rust rules don't
-/// pollute retrieval on a vite TypeScript file). `repo_scope` scopes
-/// retrieval to the current repo/project only; NULL scope is not a
-/// runtime global fallback.
-/// Language is conservative no-guess: when the path doesn't yield a known
-/// language, the filter falls through to NULL. Runtime callers still need
-/// a concrete repo scope before injecting rules.
+/// Build a `QueryFilter` from the agent's target file plus an optional GitHub
+/// `owner/repo`. `language` comes from the file extension so the SQL pre-filter
+/// drops rules tagged for other languages; an unknown extension falls through
+/// to NULL. `repo_scope` scopes retrieval to the current repo only — a NULL
+/// scope is not a runtime global fallback.
 pub(crate) fn filter_from_file(
     target_file: Option<&str>,
     repo_scope: Option<&str>,
@@ -511,17 +504,11 @@ fn normalize_repo_scope(scope: &str) -> Option<String> {
     Some(scope.to_ascii_lowercase())
 }
 
-// `merge_scored_rule_chunks` is the canonical helper at
-// `context::retrieval::merge_scored_rule_chunks` — see that module for
-// the shared implementation reused across the MCP tool helpers, the
-// orchestrator, and the CLI search path.
 use crate::context::retrieval::merge_scored_rule_chunks;
 
-/// Args for [`retrieve_rules_with_repo_scopes`]. Bundling ranking
-/// metadata (`confidence_map`, `age_days_map`) and tuning knobs
-/// (`ann_enabled`, `adaptive_prune`) here drops the function below the
-/// 7-arg clippy threshold and lets each call site name what it's
-/// passing instead of relying on positional booleans.
+/// Args for [`retrieve_rules_with_repo_scopes`]. Bundles ranking metadata and
+/// tuning knobs so each call site can name what it passes instead of relying on
+/// positional booleans.
 pub(crate) struct RetrieveRulesArgs<'a> {
     pub query: &'a str,
     pub lexical_query: Option<&'a str>,

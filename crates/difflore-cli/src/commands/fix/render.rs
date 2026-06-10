@@ -36,7 +36,7 @@ pub(super) fn render_fix_report_markdown(
                 .get(id)
                 .map(|repo| format!(" _(learned from `{repo}`)_"))
                 .unwrap_or_default();
-            writeln!(out, "- **{title}** — `{id}`{provenance}").ok();
+            writeln!(out, "- **{title}** - `{id}`{provenance}").ok();
         }
         out.push('\n');
     }
@@ -63,7 +63,7 @@ pub(super) fn render_fix_report_markdown(
         let loc = file_loc(issue);
         writeln!(
             out,
-            "### {idx}. `{loc}` — {rule} ({pct}% {conf_label})\n",
+            "### {idx}. `{loc}` - {rule} ({pct}% {conf_label})\n",
             idx = i + 1,
             rule = issue.rule,
         )
@@ -430,10 +430,10 @@ mod tests {
 
         assert!(
             report
-                .contains("**MaxBytesError handling** — `rule-a` _(learned from `gin-gonic/gin`)_")
+                .contains("**MaxBytesError handling** - `rule-a` _(learned from `gin-gonic/gin`)_")
         );
         // rule-b has no attribution -> no provenance suffix.
-        assert!(report.contains("**Other rule** — `rule-b`\n"));
+        assert!(report.contains("**Other rule** - `rule-b`\n"));
     }
 
     #[test]

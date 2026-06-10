@@ -1,6 +1,6 @@
-/// Read the rolling audit history (most-recent `window` runs by `ts_ms`).
-/// Returns Err on read error or any corrupt JSONL line so diagnostics can
-/// surface a damaged history file instead of treating it as "no activity".
+/// Read the most-recent `window` audit runs, ordered by `ts_ms`.
+/// Returns Err on any corrupt JSONL line so a damaged history file surfaces
+/// instead of being treated as "no activity".
 pub(crate) fn load_audit_history(
     window: usize,
 ) -> anyhow::Result<Vec<difflore_core::context::intent_filter::AuditRunRecord>> {

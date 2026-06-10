@@ -13,12 +13,10 @@ use crate::style::{self, sym};
 const SENTINEL: &str = "welcomed";
 const SENTINEL_VERSION: &str = "welcome-v2";
 
-/// Filename of the resume marker. Written by Step 4 when cloud extraction
-/// is taking longer than the user is willing to wait. Presence means:
-/// "import is queued upstream, baseline rule count was N at time T —
-/// re-running `difflore` should jump back to Step 4 with that baseline
-/// instead of restarting the whole flow." Removed once a wizard
-/// completes successfully (`mark_welcomed`) or the user explicitly resets.
+/// Resume marker written by Step 4 when Cloud processing outlasts the
+/// user's patience. Its presence makes a re-run of `difflore` jump back
+/// to Step 4 instead of restarting the flow. Removed once a wizard
+/// completes (`mark_welcomed`) or the user resets.
 const RESUME_SENTINEL: &str = "wizard_resume";
 const RESUME_SENTINEL_VERSION: &str = "wizard-resume-v2";
 
@@ -39,7 +37,7 @@ const DEFAULT_IMPORT_MAX_PRS: usize = 50;
 const MIN_IMPORT_MAX_PRS: usize = 1;
 const MAX_IMPORT_MAX_PRS: usize = 1000;
 
-/// First-run state machine, per the CLI Command Interaction Redesign:
+/// First-run state machine:
 ///
 /// ```text
 /// Brand-new user, zero rules, no cloud login, sentinel missing
@@ -85,11 +83,11 @@ pub(crate) struct WizardSignals {
     pub cloud_logged_in: bool,
 }
 
-/// Pure decision: should the chained wizard run?
+/// Should the chained wizard run?
 ///
-/// All four "skip" rails (CI flag, pipe, env opt-out, returning user)
-/// short-circuit before the first-run criteria are checked so a user who
-/// already onboarded is never pulled back into the wizard.
+/// The four skip rails (CI flag, pipe, env opt-out, returning user)
+/// short-circuit before the first-run criteria so an onboarded user is
+/// never pulled back into the wizard.
 pub(crate) const fn should_launch_wizard(s: WizardSignals) -> bool {
     if s.no_interactive_flag {
         return false;
@@ -103,8 +101,8 @@ pub(crate) const fn should_launch_wizard(s: WizardSignals) -> bool {
     if s.sentinel_exists {
         return false;
     }
-    // First-run criteria: any single one is enough that the user
-    // hasn't gotten value out of the product yet.
+    // First-run: no local rules and not logged in => the user hasn't
+    // gotten value out of the product yet.
     s.local_rules_count == 0 && !s.cloud_logged_in
 }
 
@@ -117,9 +115,8 @@ struct FirstRunPreflight {
     resume_pending: bool,
 }
 
-/// Fast rails that never need DB / cloud probing. Keeping these separate
-/// prevents bare `difflore` from paying `CommandContext::new` latency for
-/// returning users, opted-out users, or pending resume markers.
+/// Fast rails that need no DB / cloud probing, so returning, opted-out, or
+/// resume-pending users skip the `CommandContext::new` latency.
 const fn preflight_first_run_path(s: FirstRunPreflight) -> Option<FirstRunPath> {
     if !s.stdout_is_tty || s.no_interactive_flag || s.no_welcome_env {
         return Some(FirstRunPath::Skip);
@@ -135,8 +132,8 @@ const fn preflight_first_run_path(s: FirstRunPreflight) -> Option<FirstRunPath> 
 
 /// Decide which first-run path bare `difflore` should take.
 ///
-/// The suppression rails are intentionally ordered before the DB/cloud
-/// sniff: non-TTY, explicit no-interactive, env opt-out, then sentinels.
+/// Suppression rails run before the DB/cloud sniff, in order: non-TTY,
+/// no-interactive, env opt-out, then sentinels.
 pub(crate) async fn first_run_path(no_interactive_flag: bool) -> FirstRunPath {
     let stdout_tty = io::stdout().is_terminal();
     let stdin_tty = io::stdin().is_terminal();
@@ -163,8 +160,8 @@ pub(crate) async fn first_run_path(no_interactive_flag: bool) -> FirstRunPath {
         return path;
     }
 
-    // Probe the same signals init.rs uses so wizard / static welcome
-    // share the same definition of "fresh install".
+    // Probe the same signals init.rs uses so wizard and static welcome
+    // agree on what "fresh install" means.
     let (rules_count, cloud_logged_in) = sniff_first_run_state().await;
 
     let signals = WizardSignals {
@@ -184,12 +181,11 @@ pub(crate) async fn first_run_path(no_interactive_flag: bool) -> FirstRunPath {
     }
 }
 
-/// Reuse init.rs's queries so wizard's "is this user fresh" matches the
-/// dashboard's idea of fresh exactly. Failures degrade to "fresh".
+/// Reuse init.rs's queries so the wizard's notion of "fresh user" matches
+/// the dashboard's. Failures degrade to "fresh".
 async fn sniff_first_run_state() -> (usize, bool) {
-    // `first_run_path` runs once per process before dispatch, so we
-    // build the context locally rather than threading one through the
-    // pre-dispatch pipeline. Subsequent commands re-init their own.
+    // `first_run_path` runs once per process before dispatch, so build a
+    // context locally rather than threading one through the pipeline.
     let ctx = crate::runtime::CommandContext::new(crate::runtime::OutputMode::Text).await;
     let rules = match difflore_core::skills::stats(&ctx.db).await {
         Ok(s) => s.total as usize,
@@ -201,11 +197,8 @@ async fn sniff_first_run_state() -> (usize, bool) {
 
 /// Print the first-run welcome screen and mark the sentinel.
 ///
-/// Non-blocking: the TUI launches afterwards no matter what the user
-/// types. The screen exists to set expectations — without `init`, the
-/// product's headline promise (review memory recalled by your AI agent
-/// before it codes) cannot fire, and the empty TUI dashboard alone hides
-/// that.
+/// Non-blocking: the TUI launches afterwards regardless of what the user
+/// types. The screen sets expectations the empty TUI dashboard can't.
 pub(crate) async fn show_welcome_then_continue() -> WelcomeFlow {
     let cloud_logged_in = difflore_core::cloud::client::CloudClient::create()
         .await
@@ -223,7 +216,7 @@ pub(crate) async fn show_welcome_then_continue() -> WelcomeFlow {
     );
     println!("  Fewer repeated review comments, fewer redo loops.");
     println!();
-    println!("  {tip} See it work right now — no repo, no setup:");
+    println!("  {tip} See it work right now - no repo, no setup:");
     println!(
         "        {}   a live recall on a bundled sample edit (5 seconds)",
         style::cmd("difflore try"),
@@ -238,7 +231,7 @@ pub(crate) async fn show_welcome_then_continue() -> WelcomeFlow {
         "        2. {}  {}",
         style::cmd(import_cmd),
         if cloud_logged_in {
-            "queue cloud extraction from PR comments"
+            "upload PR comments for team memory"
         } else {
             "create local memories from PR comments"
         },
@@ -248,11 +241,11 @@ pub(crate) async fn show_welcome_then_continue() -> WelcomeFlow {
         style::cmd("difflore recall --diff"),
     );
     println!(
-        "        4. {}        prove recall, MCP serve, and local value",
+        "        4. {}        show recall, agent readiness, and accepted edits",
         style::cmd("difflore status"),
     );
     println!(
-        "        {} Cloud adds managed extraction, sync, governance, and impact proof.",
+        "        {} Cloud adds managed team memory, sync, and accepted-edit dashboards.",
         style::pewter(sym::BULLET),
     );
     println!();
@@ -281,9 +274,8 @@ const fn static_welcome_import_command(cloud_logged_in: bool) -> &'static str {
 
 /// Run the chained 5-step onboarding wizard.
 ///
-/// Each step is independently skippable (`n` answers bail out cleanly
-/// with a `difflore init` bridge) so a user who only wants part of the
-/// flow never gets trapped.
+/// Each step is skippable (`n` bails out cleanly with a `difflore init`
+/// bridge) so a user is never trapped mid-flow.
 pub(crate) async fn run_wizard() -> WelcomeFlow {
     let resume = difflore_core::paths::data_home().ok().is_some_and(|dir| {
         sentinel_version_current(&dir.join(RESUME_SENTINEL), RESUME_SENTINEL_VERSION)
@@ -291,11 +283,10 @@ pub(crate) async fn run_wizard() -> WelcomeFlow {
     run_wizard_with_interrupt(resume).await
 }
 
-/// Step return signal. `Continue` advances to the next step;
-/// `BailWelcomed` means the step already called `finish_with_bridge`
-/// (which marks welcomed) and the wizard should exit silently;
-/// `BailResumeLater` means the resume marker is set and the wizard
-/// should exit without marking welcomed.
+/// Step return signal. `Continue` advances; `BailWelcomed` means the step
+/// already called `finish_with_bridge` (marks welcomed) and the wizard
+/// exits silently; `BailResumeLater` means the resume marker is set and
+/// the wizard exits without marking welcomed.
 enum StepFlow {
     Continue,
     BailWelcomed,
@@ -376,7 +367,7 @@ fn handle_wizard_interrupt(interrupt: &WizardInterrupt) {
     if interrupt.should_write_resume() {
         write_resume_marker();
         println!(
-            "  {} Saved your cloud extraction checkpoint; resume with {}.",
+            "  {} Saved your Cloud processing checkpoint; resume with {}.",
             style::pewter(sym::BULLET),
             style::cmd("difflore"),
         );
@@ -460,11 +451,11 @@ fn print_wizard_header(resume: bool) {
     }
     println!("  {rule}");
     if resume {
-        println!("  Picking up where we left off — checking on cloud extraction.");
+        println!("  Picking up where we left off - checking on Cloud processing.");
     } else {
         println!("  Five quick questions to wire DiffLore into your repo.");
         println!(
-            "  {} skip any step with {} — you can resume with {}",
+            "  {} skip any step with {} - you can resume with {}",
             style::pewter(sym::BULLET),
             style::cmd("n"),
             style::cmd("difflore"),
@@ -487,7 +478,7 @@ async fn step1_repo_confirm(state: &mut WizardState) -> StepFlow {
         style::ident(repo_label),
     );
     if !prompt_yes(&q1).await {
-        finish_with_bridge("OK — you can wire a different repo later with `difflore init`.");
+        finish_with_bridge("OK - you can wire a different repo later with `difflore init`.");
         return StepFlow::BailWelcomed;
     }
     StepFlow::Continue
@@ -503,11 +494,10 @@ async fn step2_login(state: &mut WizardState) -> StepFlow {
         state.cloud_logged_in = true;
         return StepFlow::Continue;
     }
-    let q2 =
-        "Step 2/5  Connect to DiffLore Cloud for managed extraction and team proof?".to_owned();
+    let q2 = "Step 2/5  Connect to DiffLore Cloud for managed team memory?".to_owned();
     if !prompt_yes(&q2).await {
         println!(
-            "  {} Staying local — the CLI can still draft candidates and recall accepted rules.",
+            "  {} Staying local - the CLI can still draft candidates and recall accepted rules.",
             style::pewter(sym::BULLET),
         );
         state.cloud_logged_in = false;
@@ -520,7 +510,7 @@ async fn step2_login(state: &mut WizardState) -> StepFlow {
             style::amber(sym::WARN),
         );
         println!(
-            "  {} Continuing locally so first-run setup still proves value.",
+            "  {} Continuing locally so first-run setup still shows value.",
             style::pewter(sym::BULLET),
         );
         println!(
@@ -540,7 +530,7 @@ async fn step2_login(state: &mut WizardState) -> StepFlow {
 async fn step3_import(state: &mut WizardState) -> StepFlow {
     let from_label = state.detected_repo.as_deref().unwrap_or("upstream");
     let import_label = if state.cloud_logged_in {
-        "Import PR review history with Cloud extraction from"
+        "Upload PR review history for Cloud team memory from"
     } else {
         "Draft local candidates from PR review history in"
     };
@@ -552,13 +542,13 @@ async fn step3_import(state: &mut WizardState) -> StepFlow {
     );
     if !prompt_yes(&q3).await {
         finish_with_bridge(
-            "OK — you can import later with `difflore import-reviews --max-prs 50`.",
+            "OK - you can import later with `difflore import-reviews --max-prs 50`.",
         );
         return StepFlow::BailWelcomed;
     }
     let Some(max_prs) = prompt_import_depth(DEFAULT_IMPORT_MAX_PRS).await else {
         finish_with_bridge(
-            "OK — import was not started. Resume later with `difflore import-reviews --dry-run`.",
+            "OK - import was not started. Resume later with `difflore import-reviews --dry-run`.",
         );
         return StepFlow::BailWelcomed;
     };
@@ -593,7 +583,7 @@ async fn step3_import(state: &mut WizardState) -> StepFlow {
         Ok(outcome) => {
             if state.used_cloud_import && !outcome.cloud_upload_queued {
                 println!(
-                    "  {} No cloud extraction was queued, so setup will stay on the local path.",
+                    "  {} No Cloud processing was queued, so setup will stay on the local path.",
                     style::pewter(sym::BULLET),
                 );
                 state.used_cloud_import = false;
@@ -676,7 +666,7 @@ fn step4_local_candidate_bridge(
 
 async fn step4_wait(baseline: Option<i32>) -> StepFlow {
     println!();
-    println!("  Step 4/5  Waiting for cloud extraction (usually 10-60s, occasionally longer)…");
+    println!("  Step 4/5  Waiting for Cloud processing (usually 10-60s, occasionally longer)...");
     match wait_for_extraction_tolerant(SOFT_CAP, HARD_CAP, 1, baseline).await {
         ExtractionOutcome::Done { pulled } => {
             println!(
@@ -694,7 +684,7 @@ async fn step4_wait(baseline: Option<i32>) -> StepFlow {
                 elapsed.as_secs(),
             );
             println!(
-                "  {} Your import is still running on the cloud — we've saved your progress.",
+                "  {} Your import is still running in Cloud - we've saved your progress.",
                 style::pewter(sym::BULLET),
             );
             println!(
@@ -728,11 +718,9 @@ async fn step5_recall() {
     .await;
 }
 
-/// Outcome of [`wait_for_extraction_tolerant`]. `Done` means we hit the
-/// rule threshold (or surfaced a non-zero pull at the soft cap and the
-/// user accepted it). `ResumeLater` means the user opted out at the soft
-/// cap, or the hard cap fired with no rules — caller writes the resume
-/// marker and prints the bridge.
+/// Outcome of [`wait_for_extraction_tolerant`]. `Done` means the rule
+/// threshold was hit; `ResumeLater` means the user opted out at the soft
+/// cap or the hard cap fired — the caller writes the resume marker.
 enum ExtractionOutcome {
     Done { pulled: i32 },
     ResumeLater { pulled: i32, elapsed: Duration },
@@ -760,7 +748,7 @@ fn current_heartbeat_mode() -> HeartbeatMode {
 
 fn print_extraction_heartbeat(mode: HeartbeatMode, elapsed: Duration, delta: i32) {
     let line = format!(
-        "  … {}s elapsed, {delta} rules pulled, still extracting",
+        "  ... {}s elapsed, {delta} memories pulled, still processing",
         elapsed.as_secs(),
     );
     match mode {
@@ -794,8 +782,8 @@ async fn wait_for_extraction_tolerant(
 ) -> ExtractionOutcome {
     let client = difflore_core::cloud::client::CloudClient::create().await;
     if !client.is_logged_in() {
-        // Nothing we can poll. Treat as resume-later so the user gets
-        // the bridge text instead of a confusing silent success.
+        // Nothing to poll; resume-later gives the bridge text instead of
+        // a confusing silent success.
         return ExtractionOutcome::ResumeLater {
             pulled: 0,
             elapsed: Duration::ZERO,
@@ -846,7 +834,6 @@ async fn wait_for_extraction_tolerant(
                     elapsed,
                 };
             }
-            // User opted to keep waiting — fall through to next poll.
         } else {
             print_extraction_heartbeat(heartbeat, elapsed, delta);
         }
@@ -940,9 +927,9 @@ fn detect_repo_label() -> Option<String> {
     crate::commands::init::parse_owner_repo_from_url(&url).or(Some(url))
 }
 
-/// Render `[Y/n]` prompt with default-yes semantics. Empty lines or any
-/// non-`n` answer count as yes; EOF/read errors bail out instead of
-/// opting a non-interactive caller into browser/network work.
+/// `[Y/n]` prompt, default yes: empty or any non-`n` answer is yes.
+/// EOF/read errors bail out so a non-interactive caller isn't opted into
+/// browser/network work.
 async fn prompt_yes(question: &str) -> bool {
     print!(
         "  {} {} {} ",
@@ -989,11 +976,9 @@ fn finish_with_bridge(msg: &str) {
     mark_welcomed();
 }
 
-/// Touch `~/.difflore/welcomed` so the screen never shows again on this
-/// machine. Failures are silent — worst case the user sees the welcome a
-/// second time, which is annoying but not broken. Also clears any
-/// pending resume marker — completing the wizard means the user isn't
-/// mid-flow anymore.
+/// Touch `~/.difflore/welcomed` so the screen never shows again, and
+/// clear any pending resume marker. Failures are silent (worst case the
+/// welcome shows a second time).
 fn mark_welcomed() {
     let Ok(dir) = difflore_core::paths::data_home() else {
         return;
@@ -1003,11 +988,10 @@ fn mark_welcomed() {
     let _ = std::fs::remove_file(dir.join(RESUME_SENTINEL));
 }
 
-/// Write the resume marker so a subsequent bare `difflore` knows to jump
-/// back into Step 4 instead of restarting the wizard from Step 1.
-/// Best-effort; failures are silent
-/// (worst case the user re-runs the full wizard, which is idempotent
-/// for steps 1-3 anyway because login + import dedupe).
+/// Write the resume marker so a later bare `difflore` jumps back into
+/// Step 4 instead of restarting at Step 1. Best-effort; failures are
+/// silent (re-running the full wizard is idempotent for steps 1-3 since
+/// login + import dedupe).
 fn write_resume_marker() {
     let Ok(dir) = difflore_core::paths::data_home() else {
         return;
@@ -1019,11 +1003,9 @@ fn write_resume_marker() {
     );
 }
 
-/// Remove the resume marker once Step 4 actually completed. Called from
-/// the success branch so the next `difflore` doesn't re-enter the
-/// wizard. The post-wizard `mark_welcomed` also clears it, but doing it
-/// explicitly here keeps the success path correct even if a future
-/// refactor moves `mark_welcomed`.
+/// Remove the resume marker once Step 4 completed, so the next `difflore`
+/// doesn't re-enter the wizard. `mark_welcomed` also clears it; doing it
+/// here keeps the success path correct independently.
 fn clear_resume_marker() {
     let Ok(dir) = difflore_core::paths::data_home() else {
         return;

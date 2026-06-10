@@ -27,7 +27,7 @@ get_rules(ids=["conv-a1f9c"], file="src/worker.rs")
 ```
 
 Skip `rule_timeline` when the top hit is clearly relevant. Use it when the user
-asks why a rule exists, when confidence is low, or when a rule may be stale.
+asks why a rule exists, when the match is uncertain, or when a rule may be stale.
 
 ## Avoid
 
@@ -48,7 +48,7 @@ description: Find review-feedback patterns your team keeps repeating that aren't
 
 # Rule Gap Analysis
 
-Surface review patterns that should be rules but aren't yet — the highest-leverage captures to add to your team's DiffLore library.
+Surface review patterns that should be rules but aren't yet - the highest-leverage captures to add to your team's DiffLore library.
 
 ## When to Use
 
@@ -69,7 +69,7 @@ get_past_verdicts(
 )
 ```
 
-Required `query` is a natural-language topic phrase ("async borrow", "header types"); `file` is an optional scoping hint. Run the call once per topic of interest. Returns past review extractions — each one is a structured `{ title, body, file_patterns, confidence }` tuple. Dismissed extractions still land here so we see the "tried but rejected" signal too.
+Required `query` is a natural-language topic phrase ("async borrow", "header types"); `file` is an optional scoping hint. Run the call once per topic of interest. Returns past review memories - each one is a structured `{ title, body, file_patterns }` tuple. Dismissed suggestions still land here so we see the "tried but rejected" signal too.
 
 ### Step 2: Diff against the current rule library
 
@@ -79,7 +79,7 @@ Read the active rule library as a single Markdown document:
 resource: difflore://rules/active
 ```
 
-That resource renders the full library with origins and confidence — a one-shot listing without spending search tokens. Cross-reference with Step 1: for each extraction, check if any existing rule covers the same `file_patterns` + body topic.
+That resource renders the full library with origins and review history - a one-shot listing. Cross-reference with Step 1: for each memory, check if any existing rule covers the same `file_patterns` + body topic.
 
 Public CLI cross-check (use when you want to ask whether the current library
 already covers the topic):
@@ -94,25 +94,25 @@ For more precise matching, fetch specific rule full-text with `get_rules(ids=[..
 
 For extractions without a covering rule:
 
-1. Cluster by topic (do this yourself — a few lines of analysis).
-2. Pick 3-5 high-leverage capture proposals where the pattern repeats across ≥3 extractions.
+1. Cluster by topic (do this yourself - a few lines of analysis).
+2. Pick 3-5 high-leverage capture proposals where the pattern repeats across 3 or more memories.
 3. For each, propose a `remember_rule(...)` call with:
-   - `title` rewritten for action ("don't X" → "always Y")
+   - `title` rewritten for action ("don't X" -> "always Y")
    - `file_patterns` that match where the extractions originated
    - `bad_code` / `good_code` if you can construct minimal examples
 
-Present the proposals to the user and ask which to capture. Don't auto-capture — the user should steer.
+Present the proposals to the user and ask which to capture. Don't auto-capture - the user should steer.
 
 ## Anti-patterns
 
-- **Don't** propose rules for single-occurrence extractions — wait for pattern repetition (≥3 is a reasonable bar).
-- **Don't** duplicate existing rules. If `search_rules` returns a high-similarity match (>0.75), skip that cluster.
+- **Don't** propose rules for single-occurrence memories - wait for pattern repetition (3 or more is a reasonable bar).
+- **Don't** duplicate existing rules. If `search_rules` returns a strong existing match, skip that cluster.
 - **Don't** propose vague rules ("write better tests"). If the rule isn't actionable, it's noise.
 
 ## Related
 
-- `remember-rule-guide` skill — schema for the capture call
-- `rule-why-fired` skill — debug path when a proposed rule feels off
+- `remember-rule-guide` skill - schema for the capture call
+- `rule-why-fired` skill - debug path when a proposed rule feels off
 - Cloud: the team dashboard has the long-horizon signature-clustering pipeline for the same goal."################;
 
 pub(super) const RULE_DIFF_SKILL_MD: &str = r################"---
@@ -122,13 +122,13 @@ description: Summarize team rule changes since the last `difflore cloud sync`. U
 
 # Rule Diff
 
-Show what's changed in the team rule set since the local cache was last synced — new additions, confidence bumps, and removals. Useful for "catch me up" moments after a sync.
+Show what's changed in the team rule set since the local cache was last synced - new additions, strengthened rules, and removals. Useful for "catch me up" moments after a sync.
 
 ## When to Use
 
 - Immediately after `difflore cloud sync` completes (user or automation just ran it)
 - User asks "what's new from the team?" / "did anything change?"
-- Before a PR review session — so you apply rules the team added since last time
+- Before a PR review session - so you apply rules the team added since last time
 
 ## 2-Step Recipe
 
@@ -149,29 +149,29 @@ Produce a compact diff summary grouped by origin:
 Team rule changes since <last_sync>:
 
 added (3)
-  ● [pr_review]  "no router-core in adapters"   — extracted from PR #421
-  ● [pr_review]  "use Mapping not dict for headers"   — PR #418
-  ● [cloud]      "ban .unwrap() in hot paths"
+  * [pr_review]  "no router-core in adapters"   - extracted from PR #421
+  * [pr_review]  "use Mapping not dict for headers"   - PR #418
+  * [cloud]      "ban .unwrap() in hot paths"
 
-confidence ↑ (2)
-  ● [manual]     "always Arc for shared state"   0.75 → 0.82
-  ● [extracted]  "prefer PathBuf over String"    0.68 → 0.74
+strengthened (2)
+  * [manual]     "always Arc for shared state"   0.75 -> 0.82
+  * [extracted]  "prefer PathBuf over String"    0.68 -> 0.74
 
 removed (1)
-  ● [manual]     "use async_std for I/O"         — superseded
+  * [manual]     "use async_std for I/O"         - superseded
 ```
 
-Prioritize pr_review and cloud-origin additions (team-visible) over conversation captures (personal). Highlight high-confidence additions (>0.8) — those are the rules agents will inject often.
+Prioritize pr_review and cloud-origin additions (team-visible) over conversation captures (personal). Highlight additions with strong team review history - those are the rules agents will use often.
 
 ## Anti-patterns
 
-- **Don't** list every single rule — only changes. The user already has the full library.
-- **Don't** reorder by confidence — stable grouping (added / changed / removed) is easier to scan.
+- **Don't** list every single rule - only changes. The user already has the full library.
+- **Don't** reorder by internal score - stable grouping (added / changed / removed) is easier to scan.
 - **Don't** silently call `sync` yourself. If the user wants a fresh diff, they run `difflore cloud sync` explicitly first.
 
 ## Related
 
-- `rule-search` — look up the full body of any changed rule
+- `rule-search` - look up the full body of any changed rule
 - CLI: `difflore cloud sync` (call it yourself if the user explicitly asks)"################;
 
 pub(super) const RULE_WHY_FIRED_SKILL_MD: &str = r################"---
@@ -181,7 +181,7 @@ description: Explain why a specific DiffLore rule matched the current file / dif
 
 # Rule: Why Fired?
 
-Give the user a precise, evidence-based answer for why a particular rule showed up in the agent's context.
+Give the user a precise, review-history-based answer for why a particular rule showed up in the agent's context.
 
 ## When to Use
 
@@ -197,59 +197,58 @@ Give the user a precise, evidence-based answer for why a particular rule showed 
 get_rules(ids=["<rule-id>"])
 ```
 
-If the rule came back from `search_rules`, inspect its `evidence` array first. That response now carries explicit evidence types:
+If the rule came back from `search_rules`, inspect its match reasons first. That response now carries explicit match types:
 
 - `filePatternMatch` when the current file matches the rule's glob(s)
 - `semanticSimilarity` for the retrieval score against the user's intent
 
 Look for three signals in the response:
 
-- `file_patterns` — glob(s) the rule claims to apply to. A match here is the **strongest** reason a rule fired.
-- `similarity` (if present in the response metadata) — semantic match against the current file / intent.
-- `origin` + `confidence` — higher-confidence rules have a lower injection threshold.
+- `file_patterns` - glob(s) the rule claims to apply to. A match here is the **strongest** reason a rule fired.
+- `similarity` (if present in the response metadata) - semantic match against the current file / intent.
+- `origin` + team review history - rules with stronger history may be shown sooner.
 
 ### Step 2: Explain the match in 3 ordered causes
 
-Present the reasoning in this priority order — the first reason that applies is usually *the* reason:
+Present the reasoning in this priority order - the first reason that applies is usually *the* reason:
 
 1. **File-pattern match** (strongest):
    ```
    Rule `conv-a1f9c` has file_patterns ["src/**/*.rs"].
-   You are editing src/worker/executor.rs → pattern matches.
+   You are editing src/worker/executor.rs -> pattern matches.
    This is a strict file-pattern match.
    ```
 
 2. **Semantic similarity** (next):
    ```
    Rule body mentions "executor boundary" / "borrow across spawn".
-   Current file contains `tokio::spawn(self.process(...))` — matches
-   the retrieval query with cosine similarity ~0.82.
+   Current file contains `tokio::spawn(self.process(...))` - matches
+   the current task.
    ```
 
 3. **Past-verdict recall** (occasional):
    ```
    get_past_verdicts returned 2 historical judgments on the same pattern
-   in this repo — the agent transport's strict-verdict path pulled the associated
+   in this repo - DiffLore pulled the associated
    rule along for context.
    ```
 
 When `rule_timeline` is available, use it to ground the story with
-chronological evidence rows. Those rows now carry their own `evidence`
-objects, so you can cite both the event and the reason it matters instead
-of reconstructing provenance from free-form prose.
+chronological history rows. Those rows carry their own match context,
+so you can cite both the event and the reason it matters.
 
-If none of the three apply cleanly, say so plainly — "this looks like a borderline match; retrieval confidence is N.NN." Never fabricate a reason.
+If none of the three apply cleanly, say so plainly - "this looks like a borderline match." Never fabricate a reason.
 
 ## Anti-patterns
 
-- **Don't** explain in abstract ML terms — the user wants a concrete citation ("line X matches glob Y").
-- **Don't** dismiss the dispute with "the rule is always right." If the user says it doesn't apply, they're probably correct — inspect provenance with `rule_timeline`; if it is confirmed bad, tell the user the rule should be removed through the current governance path.
+- **Don't** explain in abstract ML terms - the user wants a concrete citation ("line X matches glob Y").
+- **Don't** dismiss the dispute with "the rule is always right." If the user says it doesn't apply, they're probably correct - inspect team review history with `rule_timeline`; if it is confirmed bad, tell the user the rule should be removed through the current team memory admin path.
 - **Don't** walk through the full retrieval stack unless asked. Three clear causes beats a tutorial.
 
 ## Related
 
-- `rule-search` — inspect the retrieved rule set for the current file
-- Public CLI: `difflore recall` / `difflore ask` can verify what context the agent sees; provenance inspection uses the MCP `rule_timeline` tool."################;
+- `rule-search` - inspect the retrieved rule set for the current file
+- Public CLI: `difflore recall` / `difflore ask` can verify what context the agent sees; team history inspection uses the MCP `rule_timeline` tool."################;
 
 pub(super) const RULE_JOURNEY_SKILL_MD: &str = r################"---
 name: rule-journey
@@ -273,7 +272,7 @@ Prefer public DiffLore surfaces:
 
 If direct local DB access is available and the user asked for a deeper report,
 you may inspect `~/.difflore/data.db`, but keep the report focused and avoid
-dumping raw SQL output.
+dumping database output.
 
 ## Report Shape
 
@@ -281,7 +280,7 @@ Write a concise Markdown report with:
 
 1. Rule count and date range.
 2. Main origins, such as manual, conversation, or PR review.
-3. The highest-confidence rules and why they matter.
+3. The rules with the strongest team review history and why they matter.
 4. File-pattern coverage gaps.
 5. Suggested next steps, such as importing reviews or capturing missing rules.
 
@@ -375,7 +374,7 @@ When reporting back to the user, summarize:
 - any rules that look relevant
 - the next concrete action
 
-Do not dump raw file lists unless the user asks.
+Do not dump full file lists unless the user asks.
 
 ## Read Gate Interaction
 

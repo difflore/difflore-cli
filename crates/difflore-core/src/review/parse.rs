@@ -12,14 +12,13 @@ pub(super) fn severity_rank(s: &str) -> u8 {
     }
 }
 
-/// Parse JSON array from AI response text
+/// Parse a JSON issue array from AI response text, trying a direct parse, a
+/// fenced code block, then a first-`[`-to-last-`]` scan.
 pub(super) fn parse_issues(text: &str) -> Vec<ReviewIssueRecord> {
-    // Strategy 1: try direct parse
     if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(text.trim()) {
         return map_issues(&arr);
     }
 
-    // Strategy 2: extract from ```json ... ``` code block
     if let Some(start) = text.find("```") {
         let after = &text[start + 3..];
         let content_start = after.find('\n').map_or(0, |i| i + 1);
@@ -31,7 +30,6 @@ pub(super) fn parse_issues(text: &str) -> Vec<ReviewIssueRecord> {
         }
     }
 
-    // Strategy 3: find first [ to last ]
     if let (Some(start), Some(end)) = (text.find('['), text.rfind(']'))
         && end > start
         && let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&text[start..=end])
@@ -80,10 +78,10 @@ pub(super) fn map_issues(arr: &[serde_json::Value]) -> Vec<ReviewIssueRecord> {
         .collect()
 }
 
-/// Extract the optional verbatim source snippet the model attached to each
-/// issue, in the same order `parse_issues` returns them. Looks for any of
-/// `existingCode` / `existing_code` / `code` / `snippet` (different prompts
-/// and models use different keys). Returns one `Option<String>` per issue.
+/// Extract the optional verbatim source snippet attached to each issue, in
+/// the same order `parse_issues` returns them. Accepts any of `existingCode` /
+/// `existing_code` / `code` / `snippet` (models differ). Returns one
+/// `Option<String>` per issue.
 ///
 /// Kept separate from `parse_issues` so the cloud-facing `ReviewIssueRecord`
 /// stays unchanged: the snippet is consumed locally by the hunk resolver only.
@@ -136,8 +134,7 @@ fn parse_issue_array(text: &str) -> Vec<serde_json::Value> {
 pub(super) fn parse_verify_response(
     text: &str,
 ) -> Option<std::collections::HashMap<usize, (f32, bool)>> {
-    // Strategy: same three-tier extraction as `parse_issues` (direct,
-    // code block, bracket scan) but decoding into a Vec of objects.
+    // Same three-tier extraction as `parse_issues`, decoding into objects.
     let arr: Vec<serde_json::Value> =
         if let Ok(v) = serde_json::from_str::<Vec<serde_json::Value>>(text.trim()) {
             v

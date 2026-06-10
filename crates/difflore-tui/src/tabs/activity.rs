@@ -1,6 +1,6 @@
-//! Activity tab — real local fix outcomes over time, plus a live
-//! "memory pipeline" event stream so the user can SEE rules being
-//! recalled, reinforced, and injected as their agent runs.
+//! Activity tab — local fix outcomes over time, plus a live "memory pipeline"
+//! event stream showing rules being recalled, reinforced, and injected as the
+//! agent runs.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -14,9 +14,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{BarChart, Block, Borders, Paragraph, Sparkline, Wrap};
 
-/// Render the Activity tab. Returns the visible-row budget of the
-/// pipeline list so the app-level key handler can clamp the scroll
-/// offset against the current terminal geometry.
+/// Pipeline-list geometry returned by [`render`] so the app-level key handler
+/// can clamp the scroll offset against the current terminal size.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RenderStats {
     pub visible_rows: usize,
@@ -40,9 +39,8 @@ pub fn render(
     let stream_events = cached_activity_events(40);
     let rows_len = displayed_rows_count(&stream_events);
 
-    // No data anywhere → empty state. Otherwise we always render the
-    // pipeline panel even if fix outcomes are missing — for fresh
-    // installs the pipeline is the first thing to come alive.
+    // No data anywhere → empty state. Otherwise render the pipeline panel even
+    // without fix outcomes; on fresh installs it comes alive first.
     let has_outcomes = matches!(summary, Some(s) if s.applied + s.failed + s.rejected > 0);
     if !has_outcomes && stream_events.is_empty() {
         render_empty(frame, area);
@@ -67,24 +65,21 @@ pub fn render(
     }
     let pipeline_area = chunks[2];
     draw_pipeline_stream(frame, pipeline_area, &stream_events, offset, source_repos);
-    // Subtract 2 for the bordered block's top + bottom edges. Floor at
-    // 0 on absurdly small terminals so the clamp arithmetic stays sane.
+    // Subtract 2 for the block's top + bottom borders; floor at 0 on tiny
+    // terminals.
     RenderStats {
         visible_rows: usize::from(pipeline_area.height).saturating_sub(2),
         rows_len,
     }
 }
 
-/// Number of rows the pipeline panel will display for the given event
-/// tail, after burst grouping and the 20-row cap. Used by the app key
-/// handler to compute the scroll-offset clamp.
+/// Number of rows the pipeline panel displays for the given event tail, after
+/// burst grouping and the 20-row cap.
 pub fn displayed_rows_count(events: &[ActivityEvent]) -> usize {
     group_consecutive(events, 20).len()
 }
 
-/// Clamp a candidate scroll offset against the row count and visible
-/// row budget. Centralised so both the key handler and tests share the
-/// same arithmetic; `[0, max(0, rows.saturating_sub(visible_rows))]`.
+/// Clamp a candidate scroll offset to `[0, rows.saturating_sub(visible_rows)]`.
 pub fn clamp_offset(offset: usize, rows: usize, visible_rows: usize) -> usize {
     let max_offset = rows.saturating_sub(visible_rows);
     offset.min(max_offset)
@@ -108,9 +103,9 @@ fn draw_outcomes_placeholder(frame: &mut ratatui::Frame<'_>, area: Rect) {
     frame.render_widget(p, area);
 }
 
-/// Render the live memory-pipeline stream — last N events newest-first.
-/// Consecutive identical events within 1 second collapse to a single
-/// row with `(×N)` so a burst of recalls doesn't drown the panel.
+/// Render the live memory-pipeline stream, newest-first. Consecutive identical
+/// events within 1 second collapse to a single `(×N)` row so a burst of recalls
+/// doesn't drown the panel.
 fn draw_pipeline_stream(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
@@ -122,10 +117,8 @@ fn draw_pipeline_stream(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
-        // Title says "lines" not "events" because group_consecutive
-        // collapses bursts ("(×N)") into one row — a literal "20 events"
-        // claim would be wrong any time a single line stands in for a
-        // recall storm.
+        // "lines" not "events": group_consecutive collapses bursts into one
+        // row, so a "20 events" claim would be wrong.
         .title(Span::styled(
             " memory pipeline · last 20 lines ",
             Style::default().fg(theme.accent),
@@ -162,9 +155,8 @@ fn draw_pipeline_stream(
     frame.render_widget(body, area);
 }
 
-/// Collapse runs of identical events emitted within 1 second of each
-/// other into one (event, count) entry. `events` is newest-first; we
-/// preserve that order. Truncates to `limit` rows.
+/// Collapse runs of identical events within 1 second into one (event, count)
+/// entry, preserving the newest-first order. Truncates to `limit` rows.
 fn group_consecutive(events: &[ActivityEvent], limit: usize) -> Vec<(&ActivityEvent, usize)> {
     let mut out: Vec<(&ActivityEvent, usize)> = Vec::with_capacity(events.len().min(limit));
     for ev in events {
@@ -188,12 +180,8 @@ fn event_line<'a>(
     source_repos: &HashMap<String, Option<String>>,
 ) -> Line<'a> {
     let theme = crate::theme::Theme::current();
-    // Resolved provenance for the rule this event mentions, if any. We
-    // only attach a "← learned from <repo>" suffix to event variants
-    // that carry a `rule_id`; non-rule events (e.g. RetrievalEmbedding,
-    // EmbedCapReached, EmbeddingFallback) and rule events whose
-    // source_repo is unknown or empty get no suffix so the panel stays
-    // uncluttered.
+    // "← learned from <repo>" suffix is attached only to events carrying a
+    // `rule_id` whose source_repo is known and non-empty; others get none.
     let mut rule_repo: Option<String> = None;
     let (glyph, prefix, prefix_color, summary) = match &event.payload {
         ActivityPayload::RuleRecalled {
@@ -290,11 +278,8 @@ fn event_line<'a>(
         Span::styled(summary, Style::default().fg(theme.foreground)),
         Span::styled(count_suffix, Style::default().fg(theme.muted)),
     ];
-    // Buyer-grounding suffix: "← learned from <repo>". Same framing as
-    // the Memory/Rules tab badge (iter #11) and the CLI fix preview
-    // header (iter #10) so users see a consistent attribution thread
-    // across surfaces. Only appended when the event references a known
-    // rule and that rule has a non-empty source_repo.
+    // "← learned from <repo>" suffix, only when the event references a known
+    // rule with a non-empty source_repo.
     if let Some(repo) = rule_repo {
         spans.push(Span::styled(
             "  \u{2190} learned from ",
@@ -305,8 +290,8 @@ fn event_line<'a>(
     Line::from(spans)
 }
 
-/// Resolve a rule's `source_repo` from the shared map, returning `None`
-/// for unknown ids and for entries whose repo is `None` or whitespace.
+/// Resolve a rule's `source_repo`, returning `None` for unknown ids and for
+/// entries whose repo is `None` or whitespace.
 fn lookup_repo(source_repos: &HashMap<String, Option<String>>, rule_id: &str) -> Option<String> {
     source_repos
         .get(rule_id)
@@ -478,8 +463,8 @@ fn outcome_color(kind: &str) -> Color {
     }
 }
 
-/// Bucket outcome rows by day for the last `days` days.
-/// Returns oldest-first so the sparkline reads left-to-right chronologically.
+/// Bucket outcome rows by day for the last `days` days, oldest-first so the
+/// sparkline reads left-to-right chronologically.
 fn daily_outcome_totals(rows: &[FixOutcomeDaily], days: usize) -> Vec<u64> {
     use chrono::Utc;
 
@@ -701,9 +686,7 @@ mod tests {
 
     #[test]
     fn clamp_offset_floors_at_zero_when_rows_fit() {
-        // Top end: visible budget covers (or exceeds) the row count, so
-        // any positive offset gets pulled back to 0 — there is nothing
-        // to scroll to.
+        // Visible budget covers the rows, so any offset pulls back to 0.
         assert_eq!(clamp_offset(0, 5, 10), 0);
         assert_eq!(clamp_offset(7, 5, 10), 0);
         assert_eq!(clamp_offset(3, 10, 10), 0);
@@ -711,8 +694,7 @@ mod tests {
 
     #[test]
     fn clamp_offset_caps_at_rows_minus_visible() {
-        // Bottom end: offset can never exceed rows - visible. A `G`
-        // press lands here; subsequent `j` presses must stick at max.
+        // Offset can never exceed rows - visible.
         assert_eq!(clamp_offset(0, 20, 8), 0);
         assert_eq!(clamp_offset(5, 20, 8), 5);
         assert_eq!(clamp_offset(12, 20, 8), 12);

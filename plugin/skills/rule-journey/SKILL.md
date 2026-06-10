@@ -20,7 +20,7 @@ Prefer public DiffLore surfaces:
 
 If direct local DB access is available and the user asked for a deeper report,
 you may inspect `~/.difflore/data.db`, but keep the report focused and avoid
-dumping raw SQL output.
+dumping database output.
 
 ## Report Shape
 
@@ -28,7 +28,7 @@ Write a concise Markdown report with:
 
 1. Rule count and date range.
 2. Main origins, such as manual, conversation, or PR review.
-3. The highest-confidence rules and why they matter.
+3. The rules with the strongest team review history and why they matter.
 4. File-pattern coverage gaps.
 5. Suggested next steps, such as importing reviews or capturing missing rules.
 

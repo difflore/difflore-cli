@@ -61,7 +61,6 @@ impl<'a> DiffContextFile<'a> {
     }
 }
 
-/// Packing options.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DiffContextOptions {
     /// Maximum character count for the packed diff text. This is deliberately
@@ -70,7 +69,6 @@ pub struct DiffContextOptions {
     pub mode: DiffContextMode,
 }
 
-/// A file included in the packed context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackedDiffFile {
     pub path: String,

@@ -61,10 +61,9 @@ impl ModalStack {
         Self::default()
     }
 
-    /// Enqueue a modal. If the same `kind` is already queued or
-    /// current, drop the incoming one (idempotent under repeat
-    /// triggers). The queue is then re-sorted by `priority` so the
-    /// highest-priority pending modal is popped first.
+    /// Enqueue a modal, dropping it if the same `kind` is already queued or
+    /// current (idempotent under repeat triggers). The queue is re-sorted by
+    /// `priority` so the highest-priority modal is popped first.
     pub fn try_show(&mut self, modal: Modal) {
         let k = modal.kind();
         if self.current.as_ref().map(Modal::kind) == Some(k)

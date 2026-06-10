@@ -1,19 +1,16 @@
 //! Hunk-aware line resolution for review issues.
 //!
-//! Ported from open-code-review's `internal/diff/resolver.go`. The review
-//! LLM returns an `existing_code` snippet and/or a claimed `line`, but the
-//! claimed line is unreliable (models routinely emit diff-relative or
+//! The review LLM returns an `existing_code` snippet and/or a claimed `line`,
+//! but the claimed line is unreliable (models routinely emit diff-relative or
 //! off-by-N numbers, or count from the hunk header). This module snaps the
-//! issue to the exact new-file line range by matching against the parsed
-//! diff hunks, replacing the token-overlap heuristic for *line* attribution.
+//! issue to the exact new-file line range by matching against the parsed diff
+//! hunks.
 //!
 //! Everything here is pure: it takes a unified-diff string plus a
 //! [`ResolveTarget`] and returns the resolved `(start, end)` (1-based,
 //! new-file line numbers), or `None` when no confident match exists (the
-//! caller then keeps whatever the model claimed). No I/O, no settings, no
-//! LLM — so it is fully unit-testable and runs unconditionally (it only
-//! ever *improves* a line number, never regresses behaviour: when it can't
-//! match it returns `None`).
+//! caller then keeps whatever the model claimed). It only ever improves a line
+//! number, never regresses: when it can't match it returns `None`.
 
 /// One physical line inside a hunk, tagged by which side(s) of the diff it
 /// belongs to, paired with its absolute 1-based line number on that side.
@@ -49,14 +46,12 @@ struct IndexedLine {
     content: String,
 }
 
-/// The minimal, struct-decoupled view of a review issue the resolver needs.
-/// Keeping this separate from `ReviewIssueRecord` lets the resolver stay a
-/// pure function with trivial unit tests, and avoids widening the
-/// cloud-facing issue record.
+/// The minimal view of a review issue the resolver needs. Kept separate from
+/// `ReviewIssueRecord` so the resolver stays a pure, easily-tested function.
 #[derive(Debug, Clone, Default)]
 pub struct ResolveTarget {
-    /// The verbatim source snippet the model flagged, if any (OCR's
-    /// `existing_code`). This is the primary, highest-precision signal.
+    /// The verbatim source snippet the model flagged, if any. The primary,
+    /// highest-precision signal.
     pub snippet: Option<String>,
     /// The line number the model claimed. Used as a secondary signal to
     /// pick the enclosing hunk and snap to a real changed line.
@@ -141,7 +136,7 @@ fn parse_hunk_header(header: &str) -> Option<DiffHunk> {
 
 /// Resolve an issue to `(start, end)` 1-based new-file line numbers.
 ///
-/// Strategy, in priority order (mirrors OCR):
+/// Strategy, in priority order:
 /// 1. **Snippet match, new side** — match the normalized `snippet` against
 ///    a consecutive run of context+added lines → new-file line numbers.
 /// 2. **Snippet match, old side** — fall back to context+deleted lines →
@@ -330,7 +325,7 @@ fn split_and_normalize(code: &str) -> Vec<String> {
 }
 
 /// Trim whitespace and strip a single leading diff marker (`+`/`-`), then
-/// trim again. Mirrors OCR's `normalizeLine`.
+/// trim again.
 fn normalize_line(s: &str) -> String {
     let t = s.trim();
     let t = t

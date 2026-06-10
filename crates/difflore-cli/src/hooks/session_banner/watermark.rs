@@ -1,68 +1,50 @@
 //! Per-project "last session start" watermark.
 //!
-//! Stored at `~/.difflore/projects/{hash}/last-session-start.json` as a
-//! one-shot JSON blob `{ "ts_ms": …, "client": "…" }`. Owning this file
-//! is a single-purpose responsibility — no other code reads or writes
-//! it — so the format can change freely as long as the read path stays
-//! permissive about missing/malformed input (silent fallback to `None`,
-//! never panics).
+//! Stored at `~/.difflore/projects/{hash}/last-session-start.json` as a JSON
+//! blob `{ "ts_ms": …, "client": "…" }`. The read path stays permissive about
+//! missing/malformed input (silent fallback to `None`, never panics).
 //!
-//! Concurrent SessionStart fires from two agent windows in the same repo
-//! could race the write here. That's fine: whichever fires last wins,
-//! and the only consequence is one of the two banners may show a
-//! slightly older `prev_ts`. We deliberately do NOT take a lock — the
-//! whole helper is on the hot path and a contended file lock would
-//! defeat the 50 ms budget.
+//! Concurrent SessionStart fires from two agent windows can race the write;
+//! that's fine — last writer wins, and the only consequence is a slightly
+//! older `prev_ts` in one banner. No lock is taken: a contended file lock
+//! would defeat this hot path's 50 ms budget.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// One row in the watermark file. `client` is purely diagnostic — the
-/// banner pipeline doesn't branch on it today, but storing it lets a
-/// future audit answer "which agent last opened this repo?" without
-/// crawling the fire log.
+/// One row in the watermark file. `client` is diagnostic only — the banner
+/// pipeline doesn't branch on it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Watermark {
     /// Unix epoch milliseconds (UTC) of the watermark write.
     pub ts_ms: i64,
-    /// Adapter name the SessionStart came from (`"claude-code"`,
-    /// `"cursor"`, …). Diagnostic only.
+    /// Adapter the SessionStart came from (`"claude-code"`, `"cursor"`, …).
     pub client: String,
 }
 
-/// Resolve the watermark file path under the canonical
-/// `~/.difflore/projects/{hash}/` layout. Does NOT create the parent
-/// directory — the write helper handles that, and the read helper is
-/// satisfied with a missing path (returns `None`).
+/// Watermark file path under `~/.difflore/projects/{hash}/`. Does not create
+/// the parent directory (the write helper handles that).
 fn watermark_path(project_hash: &str) -> PathBuf {
     difflore_core::db::project_index_dir(project_hash).join("last-session-start.json")
 }
 
-/// Read the watermark for the given project hash. Returns `None` when:
-///   * the file doesn't exist (first session on this repo),
-///   * the file exists but is unreadable,
-///   * the JSON fails to parse.
-///
-/// All three collapse into "treat this like a fresh repo" — the banner
-/// then shows everything learned to date, capped at the row limit.
+/// Read the watermark for the given project hash. Returns `None` if the file
+/// is missing, unreadable, or unparseable — all of which the banner treats as
+/// a fresh repo (shows everything learned to date, capped at the row limit).
 pub fn read_watermark(project_hash: &str) -> Option<Watermark> {
     read_watermark_at(&watermark_path(project_hash))
 }
 
-/// Write the watermark for the given project hash. Best-effort:
-/// caller can ignore the `Result` via `let _ = …`. Creates the parent
-/// dir on demand — first-ever SessionStart in a repo finds
-/// `~/.difflore/projects/{hash}/` missing.
+/// Write the watermark for the given project hash, creating the parent dir on
+/// demand. Best-effort: the caller can ignore the `Result`.
 pub fn write_watermark(project_hash: &str, wm: &Watermark) -> Result<(), String> {
     write_watermark_at(&watermark_path(project_hash), wm)
 }
 
-/// Pure-path variant of [`read_watermark`]. Tests call this with a
-/// tempdir-rooted path instead of mutating `DIFFLORE_HOME`, which would
-/// require an `unsafe` block (forbidden by the workspace's
-/// `unsafe_code = "deny"` lint) and would race other tests reading the
-/// same env var.
+/// Pure-path variant of [`read_watermark`] so tests can pass a tempdir path
+/// instead of mutating `DIFFLORE_HOME` (which needs `unsafe` and races other
+/// tests reading the env var).
 fn read_watermark_at(path: &Path) -> Option<Watermark> {
     let raw = std::fs::read_to_string(path).ok()?;
     serde_json::from_str::<Watermark>(&raw).ok()
@@ -88,7 +70,6 @@ fn write_watermark_at(path: &Path, wm: &Watermark) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// End-to-end roundtrip against a tempdir-rooted path.
     #[test]
     fn write_then_read_returns_same_value() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -120,10 +101,8 @@ mod tests {
 
     #[test]
     fn write_creates_missing_parent_dirs() {
-        // A fresh repo's `~/.difflore/projects/{hash}/` directory
-        // doesn't exist until the watermark write runs. Production
-        // would surface this as a hot-path stall if `write` didn't
-        // mkdir-p — regression-guard the behaviour here.
+        // A fresh repo's `~/.difflore/projects/{hash}/` doesn't exist until
+        // the first write, so `write` must mkdir-p its parent.
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp
             .path()

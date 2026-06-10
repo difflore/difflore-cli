@@ -7,13 +7,12 @@ use super::super::{ReviewIssueRecord, ReviewLlm};
 use super::{collect_diff_files, count_blocking};
 use crate::models::ReviewSummary;
 
-/// Self-check: re-run a cheap LLM pass over merged issues to score confidence
-/// and drop obvious false positives.
+/// Self-check: re-run a cheap LLM pass over merged issues to score
+/// confidence and drop obvious false positives.
 ///
-/// Graceful degradation is the #1 invariant here: on any failure
-/// (disabled, empty, LLM error, parser error) the caller's candidate
-/// issues come back untouched. We NEVER drop issues because the verify
-/// pass broke.
+/// Graceful degradation is the #1 invariant: on any failure (disabled,
+/// empty, LLM error, parser error) the candidate issues come back
+/// untouched. We never drop issues because the verify pass broke.
 pub(in super::super) async fn verify_pass(
     llm: &dyn ReviewLlm,
     self_check_enabled: bool,
@@ -32,7 +31,9 @@ pub(in super::super) async fn verify_pass(
     let response = match llm.chat(VERIFY_SYSTEM_PROMPT, &user_prompt).await {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[verify_pass] cheap-model call failed: {e:?}");
+            if crate::env::fix_debug() {
+                eprintln!("[verify_pass] cheap-model call failed: {e:?}");
+            }
             return issues;
         }
     };
@@ -40,7 +41,11 @@ pub(in super::super) async fn verify_pass(
     let map = match parse_verify_response(&response) {
         Some(m) if !m.is_empty() => m,
         _ => {
-            eprintln!("[verify_pass] could not parse verify response; keeping issues unchanged");
+            if crate::env::fix_debug() {
+                eprintln!(
+                    "[verify_pass] could not parse verify response; keeping issues unchanged"
+                );
+            }
             return issues;
         }
     };
@@ -56,17 +61,18 @@ pub(in super::super) async fn verify_pass(
                 out.push(issue);
             }
             None => {
-                // Model didn't score this one — keep it at default
-                // confidence rather than silently dropping it.
+                // Model didn't score this one — keep it rather than drop.
                 out.push(issue);
             }
         }
     }
 
     if out.is_empty() && !original_issues.is_empty() {
-        eprintln!(
-            "[verify_pass] verifier dropped every candidate issue; keeping original issues to avoid a false-negative review"
-        );
+        if crate::env::fix_debug() {
+            eprintln!(
+                "[verify_pass] verifier dropped every candidate issue; keeping original issues to avoid a false-negative review"
+            );
+        }
         return original_issues;
     }
 
@@ -93,7 +99,9 @@ pub(in super::super) async fn run_review_summary(
     let response = match llm.chat(SUMMARY_SYSTEM_PROMPT, &user_prompt).await {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[run_review_summary] cheap-model call failed: {e:?}");
+            if crate::env::fix_debug() {
+                eprintln!("[run_review_summary] cheap-model call failed: {e:?}");
+            }
             return None;
         }
     };

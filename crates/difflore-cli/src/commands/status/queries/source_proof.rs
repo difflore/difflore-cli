@@ -1,8 +1,8 @@
-//! Source-proof resolution for a rule: where the rule originally came from
-//! (a PR review comment / candidate-promotion event), used by the value-loop
-//! evidence chain to prove a rule was *learned* from one PR and later *served*
-//! into a different one. Pure scoring/normalisation helpers live alongside the
-//! SQL so the fuzzy review-comment fallback stays in one place.
+//! Source-proof resolution for a rule: where the rule originally came from (a
+//! PR review comment / candidate-promotion event), used to prove a rule was
+//! learned from one PR and later served into a different one. Scoring and
+//! normalisation helpers sit alongside the SQL so the fuzzy review-comment
+//! fallback stays in one place.
 
 use super::super::transform::{normalize_repo, pr_number_for_value_loop};
 

@@ -102,17 +102,12 @@ impl ObservationEmitter {
         retry_count: i64,
         err: &str,
     ) -> Result<(), String> {
-        // Shared retry/abandon decision (unified `MAX_RETRY_COUNT`).
-        // Equivalent to the prior `next = retry_count + 1; next >=
-        // MAX_RETRY_COUNT ? abandon : backoff` — this queue keeps its
-        // exponential-backoff re-schedule for the retry case.
+        // Shared retry/abandon decision (unified `MAX_RETRY_COUNT`); abandon at
+        // the cap, otherwise re-schedule with exponential backoff.
         let next_count = match decide_retry(retry_count) {
             RetryDecision::Abandon { .. } => return self.abandon(id, err).await,
             RetryDecision::Retry { next_count } => next_count,
         };
-        // `backoff_delay_ms` reproduces the previous inline
-        // `60_000 * (1 << clamp(next_count, 0, 5))` exactly, including
-        // the checked-shift / saturating-mul overflow guards.
         let delay_ms = backoff_delay_ms(next_count);
         let next_attempt = now_unix_ms().saturating_add(delay_ms);
         sqlx::query(
@@ -140,19 +135,16 @@ impl ObservationEmitter {
         Ok(())
     }
 
-    /// Resurrect `abandoned` observation_events rows older than
-    /// `cutoff_unix_ms` back to `pending`. Returns the number of rows
-    /// that were (or would be, in `dry_run` mode) reset, bucketed by
-    /// `event_type` (sorted ascending so doctor output is stable).
+    /// Resurrect `abandoned` observation_events rows older than `cutoff_unix_ms`
+    /// back to `pending`. Returns the rows reset (or that would reset, in
+    /// `dry_run` mode), bucketed by `event_type` and sorted ascending so doctor
+    /// output is stable.
     ///
-    /// Uses a single transaction so a partial drain cannot leave the
-    /// queue half-reset; `dry_run = true` rolls back instead of committing.
+    /// Runs in a single transaction so a partial drain cannot leave the queue
+    /// half-reset; `dry_run = true` rolls back instead of committing.
     ///
-    /// Cutoff: a row is eligible iff its `created_at_ms` is older than
-    /// the provided cutoff. We deliberately don't use
-    /// `next_attempt_at_ms` because it isn't carried forward when a
-    /// row is abandoned (the prior `mark_failed` rewrote it for the
-    /// would-be retry that never happened), so `created_at_ms` is the
+    /// Eligibility is by `created_at_ms`, not `next_attempt_at_ms`: the latter
+    /// isn't carried forward when a row is abandoned, so `created_at_ms` is the
     /// stable age signal.
     pub async fn drain_abandoned_older_than(
         &self,
@@ -192,10 +184,9 @@ impl ObservationEmitter {
             return Ok(summary);
         }
 
-        // Resurrected rows must be due immediately (`next_attempt_at_ms`
-        // = now) and free of any prior error context. We deliberately do
-        // NOT touch `created_at_ms` so the cap-queue trimmer's age
-        // ordering is preserved.
+        // Resurrected rows are due immediately (`next_attempt_at_ms` = now) and
+        // cleared of prior error context. `created_at_ms` is left untouched so
+        // the cap-queue trimmer's age ordering is preserved.
         let now = now_unix_ms();
         let result = sqlx::query(
             "UPDATE observation_events \

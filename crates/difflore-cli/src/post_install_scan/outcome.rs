@@ -1,10 +1,4 @@
 //! What [`super::maybe_offer_import_reviews`] returns to its caller.
-//!
-//! The outcome is intentionally a flat enum — the install path uses it
-//! only to decide whether to print the "Imported … run `difflore status`
-//! to inspect" success line. No further branching at the caller; if
-//! more state is ever needed, add a variant rather than overloading an
-//! existing one so the caller's match stays exhaustive.
 
 /// Reason the offer was *not* shown to the user. Distinct from
 /// [`PostInstallScanOutcome::Declined`] — the user never saw the prompt.
@@ -28,44 +22,36 @@ pub enum SkipReason {
     /// distinguish them.
     RunningInCi,
     /// `DIFFLORE_SKIP_POST_INSTALL_SCAN=1` (or `true`/`yes`) is set.
-    /// Lets test scripts and "I'll do it later" users opt out without
-    /// inventing a new flag on every CLI surface.
     ExplicitlySkipped,
 }
 
-/// Result of the post-install offer. The caller treats `Skipped` and
-/// `Declined` as the same "do nothing more" outcome but the distinction
-/// is preserved for logging / future telemetry.
+/// Result of the post-install offer. `Skipped` and `Declined` are both
+/// "do nothing more"; the distinction is kept for logging.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PostInstallScanOutcome {
     /// Offer was never shown. See [`SkipReason`] for the precondition
     /// that wasn't met.
     Skipped { reason: SkipReason },
 
-    /// Prompt was shown, user answered No (or hit Enter on the default
-    /// being `Y` was overridden — we treat any answer starting with
-    /// `n` as decline).
+    /// Prompt was shown and the user declined (any answer starting with `n`).
     Declined,
 
-    /// Import completed (`difflore import-reviews` exited 0). The two
-    /// counters echo what the import printed — they're advisory; the
-    /// authoritative source is the local DB.
+    /// Import completed (`difflore import-reviews` exited 0). The counters
+    /// echo what the import printed and are advisory; the local DB is
+    /// authoritative.
     ImportedReviews {
         pr_count: u32,
         rule_count: u32,
     },
 
-    /// `difflore import-reviews` exited non-zero. The install flow
-    /// treats this as recoverable — the user already saw stderr from
-    /// the child process, no need to crash the install on top of it.
+    /// `difflore import-reviews` exited non-zero. Treated as recoverable —
+    /// the user already saw the child process's stderr.
     ImportFailed { error: String },
 }
 
 impl PostInstallScanOutcome {
-    /// True iff the user actually said yes and the import process ran
-    /// to completion (success or failure). Useful for callers that
-    /// want to gate follow-up prompts on "did we just consume their
-    /// attention".
+    /// True iff the user said yes and the import process ran to completion
+    /// (success or failure). Lets callers gate follow-up prompts.
     #[must_use]
     pub const fn user_engaged(&self) -> bool {
         matches!(

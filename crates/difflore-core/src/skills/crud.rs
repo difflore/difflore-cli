@@ -8,11 +8,9 @@ use crate::models::{
 
 use super::{SkillRow, decode_base64_lossy, parse_skill_frontmatter};
 
-/// Sidecar query: `(skill_id → source_repo)` for every rule in the local
-/// `skills` table.
-///
-/// Used by the TUI to default the rules tab to the current repo without
-/// widening `SkillRecord` (which is a stable serde surface).
+/// Map `skill_id → source_repo` for every active rule. Lets the TUI
+/// default the rules tab to the current repo without widening the stable
+/// `SkillRecord` serde surface.
 pub async fn list_source_repos(
     db: &sqlx::SqlitePool,
 ) -> crate::Result<HashMap<String, Option<String>>> {
@@ -26,15 +24,13 @@ pub async fn list_source_repos(
     Ok(out)
 }
 
-/// Expand detected git remotes with a conservative source-repo alias.
+/// Expand git remotes with a conservative source-repo alias.
 ///
-/// A common fork setup only has `origin` configured locally, e.g.
-/// `difflore-fixtures/fastapi`, while the imported review memory is scoped to
-/// the upstream repo, e.g. `fastapi/fastapi`. If the local rule store has
-/// exactly one active source repo with the same repository name, include that
-/// source repo as an additional recall scope. When there are zero or multiple
-/// possible aliases, keep the original remotes only so unrelated repos never
-/// receive global memory.
+/// A fork's local `origin` (e.g. `difflore-fixtures/fastapi`) may differ from
+/// the upstream repo the imported memory is scoped to (e.g. `fastapi/fastapi`).
+/// When exactly one active source repo shares the same repository name, add it
+/// as an extra recall scope. With zero or multiple candidates, keep only the
+/// original remotes so unrelated repos never receive global memory.
 pub async fn expand_repo_scopes_with_source_aliases(
     db: &sqlx::SqlitePool,
     repo_full_names: &[String],
@@ -108,9 +104,8 @@ pub async fn list(db: &sqlx::SqlitePool) -> crate::Result<Vec<SkillRecord>> {
     Ok(rows.into_iter().map(SkillRecord::from).collect())
 }
 
-/// Same SELECT as `list()` but without the `status='active'` filter.
-/// Used by review-memory surfaces that need to see pending rows alongside
-/// active ones.
+/// Like `list()` but without the `status='active'` filter, so callers can
+/// see pending rows alongside active ones.
 pub async fn list_all(db: &sqlx::SqlitePool) -> crate::Result<Vec<SkillRecord>> {
     let rows = sqlx::query_as!(
         SkillRow,
@@ -178,8 +173,8 @@ pub async fn remove(db: &sqlx::SqlitePool, input: RemoveSkillInput) -> crate::Re
     .await?
     .map(SkillRecord::from);
 
-    // Fail loud when the id doesn't exist — otherwise we return a phantom
-    // "Removed rule: X" for typos, which makes debugging impossible.
+    // Fail loud on an unknown id; otherwise a typo returns a phantom
+    // "Removed rule: X" that's impossible to debug.
     let Some(skill) = skill else {
         return Err(CoreError::NotFound(format!(
             "rule '{}' not found. Inspect local memory with `difflore status --json`.",
@@ -236,7 +231,6 @@ pub async fn toggle_engine(
         other => return Err(CoreError::Internal(format!("unknown engine: {other}"))),
     }
 
-    // Sync the symlink on disk to match the new DB state.
     if let Some(row) = sqlx::query_as!(
         SkillRow,
         "SELECT id, name, source, directory, version, description, type, \

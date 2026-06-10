@@ -9,7 +9,7 @@ pub(super) fn tools_list() -> Value {
     json!([
         {
             "name": "search_rules",
-            "description": "Compact index search. Returns rule ids/titles/origins/confidence plus explicit evidence records for file-pattern and retrieval-match reasoning before fetching details. Recall is scoped to the current git remotes; pass `repo_full_name` (GitHub owner/repo) when auto-detection is unavailable. When cloud proof is available, results include citedCount and trustRate so agents can prefer rules that led to accepted edits. Use with get_rules for 2-stage retrieval (saves tokens for large rule libraries).",
+            "description": "Compact memory search. Returns rule ids/titles/origins plus match reasons before fetching details. Memory is scoped to the current git remotes; pass `repo_full_name` (GitHub owner/repo) when auto-detection is unavailable. When team review history is available, results include citedCount and trustRate so agents can prefer rules that led to accepted edits. Use with get_rules to expand only matched rules.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -23,14 +23,14 @@ pub(super) fn tools_list() -> Value {
                     },
                     "repo_full_name": {
                         "type": "string",
-                        "description": "GitHub `owner/repo` for the current project. Omit only when the MCP server can detect the current repo from git remotes."
+                        "description": "GitHub `owner/repo` for the current project. Omit only when DiffLore can detect the current repo from git remotes."
                     },
                     "top_k": {
                         "type": "number",
                         "default": 5,
                         "minimum": 1,
                         "maximum": 50,
-                        "description": "Maximum number of rule candidates to return; smaller values save tokens, default 5."
+                        "description": "Maximum number of matched rules to return; default 5."
                     },
                     "session_id": {
                         "type": "string",
@@ -42,7 +42,7 @@ pub(super) fn tools_list() -> Value {
         },
         {
             "name": "get_rules",
-            "description": "Fetch full rule text + examples by ID. Use after search_rules to expand only the IDs worth the tokens. Batch multiple IDs in one call. Pass the current file path when editing so DiffLore can record file-scoped local proof.",
+            "description": "Fetch full rule text + examples by ID. Use after search_rules to expand only the matched rules you need. Batch multiple IDs in one call. Pass the current file path when editing so DiffLore can connect the rule to that file.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -54,7 +54,7 @@ pub(super) fn tools_list() -> Value {
                     },
                     "file": {
                         "type": "string",
-                        "description": "Optional repo-relative file path being edited; records file-scoped local proof when agents fetch rule details."
+                        "description": "Optional repo-relative file path being edited; helps DiffLore connect fetched rule details to that file."
                     },
                     "session_id": {
                         "type": "string",
@@ -66,7 +66,7 @@ pub(super) fn tools_list() -> Value {
         },
         {
             "name": "get_past_verdicts",
-            "description": "Search historical review verdicts (WHAT the team decided on similar code before). Recall is scoped to the current repo/project only; pass `repo_full_name` (GitHub owner/repo) when auto-detection is unavailable. Pass `file` (the path you're editing) so the cloud can apply file-pattern cascade ranking and zero-result calls feed gap-detection telemetry pinpointed to that file. Use this to cite concrete prior decisions; use `rule_timeline` when you need the *why this rule exists* narrative for a specific rule.",
+            "description": "Search team review history (WHAT the team decided on similar code before). Memory is scoped to the current repo/project only; pass `repo_full_name` (GitHub owner/repo) when auto-detection is unavailable. Pass `file` (the path you're editing) so DiffLore can prioritize matching file patterns and show useful gaps for that file. Use this to cite concrete prior decisions; use `rule_timeline` when you need the *why this rule exists* narrative for a specific rule.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -76,11 +76,11 @@ pub(super) fn tools_list() -> Value {
                     },
                     "repo_full_name": {
                         "type": "string",
-                        "description": "GitHub `owner/repo` for the current project. Omit only when the MCP server can detect the current repo from git origin."
+                        "description": "GitHub `owner/repo` for the current project. Omit only when DiffLore can detect the current repo from git origin."
                     },
                     "file": {
                         "type": "string",
-                        "description": "Repo-relative path of the file you're editing (e.g. `src/auth/session.ts`). When supplied, cloud-side recall ranks rules whose `file_patterns` match this path first; without it, ordering falls back to pure relevance. Also fills `mcp.gap` telemetry on zero-result calls so the dashboard can show 'you asked but had no rules here'."
+                        "description": "Repo-relative path of the file you're editing (e.g. `src/auth/session.ts`). When supplied, DiffLore prioritizes rules whose `file_patterns` match this path first; without it, ordering falls back to overall relevance. Also helps the dashboard show where memory is missing."
                     },
                     "top_k": {
                         "type": "number",
@@ -95,7 +95,7 @@ pub(super) fn tools_list() -> Value {
         },
         {
             "name": "rule_timeline",
-            "description": "Chronological event stream for ONE rule — why it exists, how it got reinforced. Returns compact rows (~80 tok each) with explicit evidence records for creation/update/example/feedback provenance. Use when the user asks 'where did this rule come from?' or you need provenance for a citation. Complements `get_past_verdicts` (timeline = why this rule; verdicts = what did we decide before).",
+            "description": "Chronological event stream for ONE rule - why it exists, how it got reinforced. Returns compact history rows for creation/update/example/feedback context. Use when the user asks 'where did this rule come from?' or you need team review history for a citation. Complements `get_past_verdicts` (timeline = why this rule; verdicts = what did we decide before).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -123,17 +123,17 @@ pub(super) fn tools_list() -> Value {
         },
         {
             "name": "remember_rule",
-            "description": "Persist a coding rule the user just stated so it survives this conversation and gets recalled in future agent edits + PR reviews. Call WHENEVER the user signals intent to make a rule stick (\"remember this\", \"from now on\", \"don't do X again\", \"always require tests before merge\", \"make this a rule\"). Pass `title` as a short imperative and `body` containing the user's verbatim reasoning — the WHY, not just what. Returns the saved rule_id; echo it back so the user knows the rule landed. Saying \"got it\" without calling this tool drops the rule the moment the session ends. Full trigger guide at difflore://skills/remember_rule.",
+            "description": "Persist a coding rule the user just stated so it survives this conversation and gets remembered in future agent edits + PR reviews. Call WHENEVER the user signals intent to make a rule stick (\"remember this\", \"from now on\", \"don't do X again\", \"always require tests before merge\", \"make this a rule\"). Pass `title` as a short imperative and `body` containing the user's verbatim reasoning - the WHY, not just what. Returns the saved rule_id; echo it back so the user knows the rule landed. Saying \"got it\" without calling this tool drops the rule the moment the session ends. Full trigger guide at difflore://skills/remember_rule.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "title": {
                         "type": "string",
-                        "description": "Short imperative title (≤80 chars). E.g. \"Avoid Promise.race for timeout in fetch wrappers\"."
+                        "description": "Short imperative title (80 chars or fewer). E.g. \"Avoid Promise.race for timeout in fetch wrappers\"."
                     },
                     "body": {
                         "type": "string",
-                        "description": "Full natural-language explanation. Include WHY, not just what — quote the user's reason if they gave one. Multi-paragraph OK."
+                        "description": "Full natural-language explanation. Include WHY, not just what - quote the user's reason if they gave one. Multi-paragraph OK."
                     },
                     "file_patterns": {
                         "type": "array",
@@ -159,7 +159,7 @@ pub(super) fn tools_list() -> Value {
         },
         {
             "name": "plan_pr",
-            "description": "Predict the influence scope BEFORE editing: given an issue/PR description (`intent`), returns the expected file count, file-category mix, and the closest historical PRs from this team's review history. Use this to avoid silently under-completing — when the team's prior pattern for similar work touches 4+ files, finishing at 2 is the failure mode this prevents. Falls back to an empty prediction with a hint when no local PR review data exists — run `difflore import-reviews` to populate.",
+            "description": "Predict the influence scope BEFORE editing: given an issue/PR description (`intent`), returns the expected file count, file-category mix, and the closest historical PRs from this team's review history. Use this to avoid silently under-completing - when the team's prior pattern for similar work touches 4+ files, finishing at 2 is the failure mode this prevents. Falls back to an empty prediction with a hint when no local PR review data exists - run `difflore import-reviews` to populate.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -198,7 +198,7 @@ pub(super) fn resources_list() -> Value {
         {
             "uri": "difflore://skills/rule-search",
             "name": "rule-search SKILL",
-            "description": "2-layer workflow for querying team rules via MCP: search_rules → get_rules with token-efficient batching.",
+            "description": "2-step workflow for querying team rules via MCP: search_rules -> get_rules.",
             "mimeType": "text/markdown"
         },
         {
@@ -210,7 +210,7 @@ pub(super) fn resources_list() -> Value {
         {
             "uri": "difflore://skills/rule-diff",
             "name": "rule-diff SKILL",
-            "description": "Summarize team rule changes since the last `difflore cloud sync` — added, confidence-bumped, removed.",
+            "description": "Summarize team rule changes since the last `difflore cloud sync` - added, strengthened, removed.",
             "mimeType": "text/markdown"
         },
         {
@@ -234,11 +234,9 @@ pub(super) fn resources_list() -> Value {
     ])
 }
 
-/// URI-template resources (MCP `resources/templates/list`). Concrete URIs
-/// are built by the client by filling in the placeholders — the static
-/// `resources/list` above intentionally does NOT enumerate every possible
-/// verdict or signature id, since the set is effectively unbounded and
-/// cloud-scoped.
+/// URI-template resources (MCP `resources/templates/list`). The client fills in
+/// the placeholders; the static `resources/list` above does not enumerate every
+/// verdict or signature id since the set is unbounded and cloud-scoped.
 pub(super) fn resource_templates_list() -> Value {
     json!([
         {
@@ -256,12 +254,12 @@ pub(super) fn resource_templates_list() -> Value {
     ])
 }
 
-/// Full trigger guide for the `remember_rule` tool. Kept as a resource so
-/// the MCP tool description can stay terse (saves ~1.5KiB per initialize)
-/// while agents can still pull the full decision tree when they need it.
-pub(super) const REMEMBER_RULE_GUIDE_MD: &str = r#"# `remember_rule` — Full Trigger Guide
+/// Full trigger guide for the `remember_rule` tool. Kept as a resource so the
+/// tool description stays terse (saves ~1.5KiB per initialize) while agents can
+/// still pull the full decision tree on demand.
+pub(super) const REMEMBER_RULE_GUIDE_MD: &str = r#"# `remember_rule` - Full Trigger Guide
 
-**Persist a coding rule to DiffLore so it applies to future reviews and agent sessions.** This tool is the ONLY way a rule the user mentions in chat actually gets saved — saying "got it, I'll remember" without calling this tool means the rule is lost the moment the conversation ends.
+**Persist a coding rule to DiffLore so it applies to future reviews and agent sessions.** This tool is the ONLY way a rule the user mentions in chat actually gets saved - saying "got it, I'll remember" without calling this tool means the rule is lost the moment the conversation ends.
 
 ## MUST CALL when the user expresses intent like (in any language):
 
@@ -271,7 +269,7 @@ pub(super) const REMEMBER_RULE_GUIDE_MD: &str = r#"# `remember_rule` — Full Tr
 - "add a rule that X" / "make a rule for X"
 - "in this codebase we always X" / "our convention is X"
 
-The trigger is the user's *intent* to make the rule stick across sessions — phrasing varies by language and tone, so match on intent, not exact words. If you're unsure, prefer calling the tool: a wrong-but-recoverable capture beats a silently dropped rule.
+The trigger is the user's *intent* to make the rule stick across sessions - phrasing varies by language and tone, so match on intent, not exact words. If you're unsure, prefer calling the tool: a wrong-but-recoverable capture beats a silently dropped rule.
 
 ## MUST NOT call when:
 
@@ -281,9 +279,9 @@ The trigger is the user's *intent* to make the rule stick across sessions — ph
 
 ## Transcribe verbatim
 
-Put the user's own words in `body` — don't paraphrase or summarise the reasoning away. Their wording often carries the WHY that makes the rule useful. If the user wrote in a non-English language, keep their original wording in `body` (the rule body is opaque text); use English for the `title` so audit listings stay scannable.
+Put the user's own words in `body` - don't paraphrase or summarise the reasoning away. Their wording often carries the WHY that makes the rule useful. If the user wrote in a non-English language, keep their original wording in `body` (the rule body is opaque text); use English for the `title` so audit listings stay scannable.
 
 ## After calling, confirm to the user
 
-Echo the returned `rule_id` and one sentence ("Saved as Rule X — applies to next review of TS files"). The rule lands with `origin=conversation`, base confidence 0.6, and is available to local recall immediately.
+Echo the returned `rule_id` and one sentence ("Saved as Rule X - applies to next review of TS files"). The rule is available to local memory immediately.
 "#;

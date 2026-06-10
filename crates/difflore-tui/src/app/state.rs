@@ -5,9 +5,8 @@ use crate::tabs::rules::{RepoScope, ordered_filtered_rules};
 use super::{App, RulesOriginFilter, RulesRepoFilter};
 
 impl App {
-    /// Snap the list selection back to the first visible row whenever the
-    /// filter changes. Without this the cursor lands on a stale index and
-    /// the detail pane shows nothing.
+    /// Snap the list selection to the first visible row when the filter
+    /// changes, so the cursor doesn't land on a stale index showing nothing.
     pub(super) fn reset_selection_after_filter_change(&mut self) {
         if self.filtered_rules_count() == 0 {
             self.state.rules_list_state.select(None);
@@ -16,10 +15,9 @@ impl App {
         }
     }
 
-    /// Build the `RepoScope` describing the active repo filter. Mirrors
-    /// the scope `render` passes into `tabs::rules::render`, so the list
-    /// the user sees and the selection-derived state are computed from
-    /// identical inputs.
+    /// `RepoScope` for the active repo filter. Must mirror the scope `render`
+    /// passes into `tabs::rules::render` so the visible list and the
+    /// selection-derived state share identical inputs.
     fn rules_scope(&self) -> RepoScope<'_> {
         RepoScope {
             source_repos: &self.state.rules_source_repos,
@@ -29,10 +27,9 @@ impl App {
         }
     }
 
-    /// The sorted + filtered rule slice — the single source shared with
-    /// the rendered list (see `tabs::rules::ordered_filtered_rules`). The
-    /// cursor indexes into THIS order, so `selected_rule` and the cursor
-    /// clamp must too.
+    /// Sorted + filtered rule slice shared with the rendered list (see
+    /// `tabs::rules::ordered_filtered_rules`). The cursor indexes into this
+    /// order, so `selected_rule` and the cursor clamp must too.
     fn ordered_filtered_rules(&self) -> Vec<&SkillRecord> {
         ordered_filtered_rules(
             &self.state.rules,
@@ -42,10 +39,9 @@ impl App {
         )
     }
 
-    /// Currently selected rule, after applying the active origin × repo ×
-    /// search filter *and the same sort order the list renders with*. The
-    /// CTAs need this to build the cloud URL; deriving it from the sorted
-    /// slice is what keeps `e/p/s` acting on the highlighted row.
+    /// Currently selected rule, after the active origin × repo × search filter
+    /// and the list's sort order. Deriving it from the sorted slice keeps
+    /// `e/p/s` acting on the highlighted row.
     pub(super) fn selected_rule(&self) -> Option<&SkillRecord> {
         let idx = self.state.rules_list_state.selected()?;
         self.ordered_filtered_rules().into_iter().nth(idx)

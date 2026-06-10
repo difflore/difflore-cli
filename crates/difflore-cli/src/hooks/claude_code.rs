@@ -25,7 +25,6 @@
 //! ```json
 //! {
 //!   "continue": true,
-//!   "systemMessage": "optional short string",
 //!   "hookSpecificOutput": { "additionalContext": "optional long string" }
 //! }
 //! ```
@@ -40,15 +39,12 @@ use super::synth;
 use super::types::{HookEvent, HookResult};
 use super::{PayloadAdapter, PlatformAdapter};
 
-/// Zero-sized marker type. The adapter holds no state — every
-/// invocation is a pure stdin-in, stdout-out transformation.
 pub struct ClaudeCodeAdapter;
 
 /// Typed view of Claude Code's hook stdin payload. Everything except
-/// `hook_event_name` is optional because Claude Code sends different
-/// subsets of fields per event. We keep the parse permissive so a new
-/// hook event in a future Claude Code release doesn't break `DiffLore` —
-/// it just lands in `Err(...)` from `to_canonical` and the CLI no-ops.
+/// `hook_event_name` is optional because Claude Code sends different subsets of
+/// fields per event. The parse stays permissive so a future hook event lands in
+/// `Err(...)` from `to_canonical` and the CLI no-ops rather than breaking.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) struct ClaudeHookPayload {
@@ -72,10 +68,8 @@ pub(crate) struct ClaudeHookPayload {
 }
 
 impl ClaudeHookPayload {
-    /// Map the parsed payload into our canonical `HookEvent`. Unknown
-    /// event names return `Err` so the CLI can log them — missing
-    /// event names also error (they indicate a malformed stdin, not
-    /// a new-event-we-don't-know-about).
+    /// Map the parsed payload into our canonical `HookEvent`. Unknown and
+    /// missing event names both return `Err` so the CLI can log + no-op.
     fn into_canonical(self) -> Result<HookEvent, String> {
         let event_name = self
             .hook_event_name
@@ -83,10 +77,8 @@ impl ClaudeHookPayload {
             .ok_or_else(|| "missing hook_event_name".to_owned())?;
         match event_name {
             "PreToolUse" => {
-                // Only Read is interesting for rule pre-injection. Other
-                // PreToolUse matches (Bash, Write, …) aren't wired — we
-                // fall through to an Err so the CLI logs + no-ops, keeping
-                // the hook advisory rather than a blocking enforcement path.
+                // Only Read is wired for rule pre-injection; other tools fall
+                // through to an Err so the hook stays advisory, not blocking.
                 let tool_name = self.tool_name.clone().unwrap_or_default();
                 if tool_name != "Read" {
                     return Err(format!(
@@ -107,11 +99,9 @@ impl ClaudeHookPayload {
             }
             "PostToolUse" => {
                 let tool_name = self.tool_name.clone().unwrap_or_default();
-                // Claude Code nests the edited path under
-                // `tool_input.file_path` for Edit/Write, which is the
-                // only shape we act on today. Everything else (Bash,
-                // Read, …) flows through with `file_path = None` so
-                // upstream logic can cheaply decide to ignore it.
+                // Edit/Write nest the edited path under `tool_input.file_path`,
+                // the only shape we act on. Everything else flows through with
+                // `file_path = None` so upstream logic can ignore it.
                 let file_path = self
                     .tool_input
                     .as_ref()
@@ -152,11 +142,9 @@ impl ClaudeHookPayload {
     }
 }
 
-/// Best-effort diff synthesis from Claude Code's tool payloads.
-///
-/// Claude Code does NOT hand us a unified diff — it gives us the raw
-/// input/output of the tool call. For `Edit` events `tool_input` carries
-/// `old_string` / `new_string`; for `Write`, just `content`. Line-prefix
+/// Best-effort diff synthesis from Claude Code's tool payloads. Claude Code
+/// gives raw tool input, not a unified diff: `Edit` carries
+/// `old_string`/`new_string`; `Write` carries just `content`. Line-prefix
 /// mechanics live in `synth::diff_old_new` / `synth::diff_content`.
 fn synthesise_diff(tool_input: Option<&Value>, _tool_response: Option<&Value>) -> Option<String> {
     let input = tool_input?;
@@ -191,20 +179,15 @@ impl PlatformAdapter for ClaudeCodeAdapter {
     }
 
     fn format_output(&self, result: HookResult) -> String {
-        // Claude Code uses camelCase keys at the top level. The
-        // `hookSpecificOutput` object is where "advisory context for
-        // the next turn" lives. Claude Code validates that
-        // `hookEventName` matches the event that fired the hook — a
-        // mismatch causes it to drop the entire injection with
-        // "Hook returned incorrect event name". Echo the dispatcher's
-        // event name when the caller threaded one through; fall back to
-        // `PostToolUse` for legacy callers that didn't.
+        // Claude Code uses camelCase keys and validates that `hookEventName`
+        // matches the event that fired the hook — a mismatch drops the entire
+        // injection with "Hook returned incorrect event name". Echo the
+        // dispatcher's event name, falling back to `PostToolUse` for legacy
+        // callers that didn't thread one through.
         let mut obj = json!({
             "continue": result.continue_,
         });
-        if let Some(msg) = result.system_message {
-            obj["systemMessage"] = Value::String(msg);
-        }
+        let _ = result.system_message;
         if let Some(ctx) = result.additional_context {
             let event_name = result.event_name.as_deref().unwrap_or("PostToolUse");
             obj["hookSpecificOutput"] = json!({
@@ -222,10 +205,8 @@ mod tests {
 
     #[test]
     fn parse_post_tool_use_edit_extracts_file_path_and_diff() {
-        // The happy path: Claude Code fires PostToolUse after an Edit
-        // that mutated `src/foo.rs`. We MUST pull the file path out of
-        // `tool_input.file_path` and synthesise a diff — this is the
-        // signal the rule retriever uses to scope its cascade.
+        // The file path and synthesised diff are the signal the rule retriever
+        // uses to scope its cascade, so both must come through.
         let adapter = ClaudeCodeAdapter;
         let raw = r#"{
             "hook_event_name": "PostToolUse",
@@ -265,9 +246,8 @@ mod tests {
 
     #[test]
     fn parse_write_event_synthesises_diff_from_content() {
-        // Write events carry `content` instead of old/new — the
-        // synthesiser should emit a `+`-prefixed block so the
-        // retriever has something to match against.
+        // Write events carry `content` instead of old/new; the synthesiser
+        // emits a `+`-prefixed block so the retriever has something to match.
         let adapter = ClaudeCodeAdapter;
         let raw = r#"{
             "hook_event_name": "PostToolUse",
@@ -288,9 +268,8 @@ mod tests {
 
     #[test]
     fn parse_unsupported_event_errors_without_panicking() {
-        // Future-proofing: if Claude Code adds a hook event we don't
-        // yet model, the adapter must return `Err` (so the CLI logs
-        // + no-ops) rather than panic and take the assistant down.
+        // An unmodelled hook event must return `Err` (CLI logs + no-ops) rather
+        // than panic and take the assistant down.
         let adapter = ClaudeCodeAdapter;
         let raw = r#"{"hook_event_name":"SomeFutureEventWeHaventHeardOf"}"#;
         let err = adapter.parse_stdin(raw).unwrap_err();
@@ -299,8 +278,8 @@ mod tests {
 
     #[test]
     fn parse_missing_event_name_errors() {
-        // A stdin payload without `hook_event_name` is structurally
-        // invalid — we must reject, not assume a default.
+        // A payload without `hook_event_name` is invalid — reject, don't assume
+        // a default.
         let adapter = ClaudeCodeAdapter;
         let raw = r#"{"session_id":"abc"}"#;
         let err = adapter.parse_stdin(raw).unwrap_err();
@@ -309,8 +288,7 @@ mod tests {
 
     #[test]
     fn format_output_noop_emits_continue_true_only() {
-        // The empty-result case — no context, no message. The stdout
-        // JSON must be minimal but structurally valid so Claude Code
+        // The empty result must emit minimal-but-valid JSON so Claude Code
         // doesn't render a spurious empty system message.
         let adapter = ClaudeCodeAdapter;
         let out = adapter.format_output(HookResult::noop());
@@ -321,10 +299,20 @@ mod tests {
     }
 
     #[test]
+    fn format_output_omits_system_message() {
+        let adapter = ClaudeCodeAdapter;
+        let mut result = HookResult::noop();
+        result.system_message = Some("DiffLore lifecycle note".to_owned());
+
+        let out = adapter.format_output(result);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert!(v.get("systemMessage").is_none());
+    }
+
+    #[test]
     fn format_output_with_context_nests_additional_context() {
-        // The context-injection case. Claude Code expects the extra
-        // context inside `hookSpecificOutput.additionalContext` — not
-        // at the top level.
+        // Claude Code expects the extra context inside
+        // `hookSpecificOutput.additionalContext`, not at the top level.
         let adapter = ClaudeCodeAdapter;
         let out = adapter.format_output(HookResult::with_context("Rule 1: X"));
         let v: Value = serde_json::from_str(&out).unwrap();
@@ -334,11 +322,9 @@ mod tests {
 
     #[test]
     fn format_output_echoes_event_name_so_pretooluse_injection_lands() {
-        // Regression for "Hook returned incorrect event name" — Claude
-        // Code drops the entire injection if `hookEventName` doesn't
-        // match the event that fired the hook. PreToolUse injections
-        // were being labelled `PostToolUse`, so the rule context never
-        // reached the agent before its first edit.
+        // Regression for "Hook returned incorrect event name": Claude Code
+        // drops the injection if `hookEventName` doesn't match the firing
+        // event, so PreToolUse responses must echo PreToolUse.
         let adapter = ClaudeCodeAdapter;
         let mut r = HookResult::with_context("Rule 1: cap log volume");
         r.event_name = Some("PreToolUse".into());
@@ -349,9 +335,8 @@ mod tests {
             "PreToolUse responses must echo the firing event name, not the legacy PostToolUse default; got: {out}"
         );
 
-        // Backwards-compat: when the dispatcher didn't thread an event
-        // name through (older callers, tests, etc.), keep the
-        // PostToolUse default so existing flows keep working.
+        // Backwards-compat: callers that didn't thread an event name through
+        // keep the PostToolUse default.
         let r2 = HookResult::with_context("legacy");
         let v2: Value = serde_json::from_str(&adapter.format_output(r2)).unwrap();
         assert_eq!(v2["hookSpecificOutput"]["hookEventName"], "PostToolUse");

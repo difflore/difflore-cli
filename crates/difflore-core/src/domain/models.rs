@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 
-// ── Settings ──
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextEngineRecord {
@@ -15,7 +13,6 @@ pub struct ContextEngineRecord {
     pub rule_token_budget: i32,
     #[serde(default)]
     pub allow_hosted_embeddings: bool,
-    // ── Semantic embedding provider (P3 MVP) ──
     /// Master switch for the real (non-SHA1) embedding provider.
     #[serde(default)]
     pub semantic_embedding: bool,
@@ -74,49 +71,35 @@ impl Default for ContextEngineRecord {
 pub struct ReviewEngineRecord {
     #[serde(default)]
     pub multi_perspective: bool,
-    /// Phase 2 review-memory: recall past verdicts for similar code and
-    /// inject them into the review prompt. Defaults to `true` so upgrade
-    /// paths get the feature automatically; users can opt out via
-    /// settings without touching any other flag.
+    /// Recall past verdicts for similar code and inject them into the review
+    /// prompt. Defaults to `true`; opt out via settings.
     #[serde(default = "default_past_verdict_recall")]
     pub past_verdict_recall: bool,
-    /// Phase 5.1 review-memory: run a second cheap-model "self-check"
-    /// pass over the merged issues to score confidence and drop obvious
-    /// false positives. Defaults to `true` so upgrade paths get the
-    /// feature automatically; users can opt out via settings.
+    /// Run a second cheap-model "self-check" pass over the merged issues to
+    /// score confidence and drop obvious false positives. Defaults to `true`.
     #[serde(default = "default_true")]
     pub self_check_enabled: bool,
-    /// Phase 5.3 review-memory: emit a one-line PR summary plus a
-    /// per-file walkthrough on each review. Defaults to `true` so
-    /// upgrade paths get the feature automatically.
+    /// Emit a one-line PR summary plus a per-file walkthrough on each review.
+    /// Defaults to `true`.
     #[serde(default = "default_true")]
     pub review_summary_enabled: bool,
-    /// Phase 4 (review depth): snap each issue's reported line to the exact
-    /// new-file line range by matching against the parsed diff hunks
-    /// (hunk-aware resolution, ported from open-code-review), instead of
-    /// trusting the model's claimed diff line. Defaults to `true`: the
-    /// resolver only ever *sharpens* a line number — it returns `None` (and
-    /// the model's claimed line is kept) whenever no hunk confidently matches,
-    /// so this never regresses attribution, only tightens `difflore fix`
-    /// patch precision. Set to `false` to fall back to claimed lines only.
+    /// Snap each issue's reported line to the exact new-file line range by
+    /// matching against parsed diff hunks, instead of trusting the model's
+    /// claimed line. Only ever sharpens a line number: when no hunk matches
+    /// the claimed line is kept, so it never regresses attribution. Defaults
+    /// to `true`; set `false` to use claimed lines only.
     #[serde(default = "default_true")]
     pub hunk_line_resolution: bool,
-    /// Review-depth: after rule recall, ask the review LLM provider, in one
-    /// extra batched call, whether each recalled rule's lesson actually
-    /// applies to THIS diff, then drop the rules it judges non-applicable
-    /// before they enter the review prompt. Higher-precision review with
-    /// fewer irrelevant injected rules, at the cost of one additional
-    /// latency-tolerant round-trip per review (only ever fired at review
-    /// time, never on the 800ms commit hook).
+    /// After rule recall, ask the review LLM in one extra batched call
+    /// whether each recalled rule applies to this diff, dropping the ones it
+    /// judges non-applicable before they enter the prompt. Fired only at
+    /// review time, never on the commit hook.
     ///
-    /// Defaults to `false`. Unlike the other review-depth flags this is NOT
-    /// on-by-default: it adds a whole extra LLM call, the existing intent
-    /// rerank + strict file-pattern cascade already prune most off-topic
-    /// rules, and a flaky judge response must never silently starve a review
-    /// of its rules. Keeping it opt-in means the default review path is
-    /// byte-for-byte unchanged. Enabling it also widens the recalled
-    /// candidate pool (so the judge has more to filter from) — see
-    /// `judge_candidate_pool_top_k` in the review pipeline.
+    /// Defaults to `false` (opt-in) because it adds a whole extra LLM call,
+    /// the existing rerank + file-pattern cascade already prune most
+    /// off-topic rules, and a flaky judge must never starve a review of its
+    /// rules. Enabling it also widens the candidate pool — see
+    /// `judge_candidate_pool_top_k`.
     #[serde(default)]
     pub rule_applicability_judge: bool,
 }
@@ -141,9 +124,8 @@ impl Default for ReviewEngineRecord {
     }
 }
 
-/// Per-file intent / walkthrough entry emitted by Phase 5.3 review
-/// summary. `intent` is a short (one-sentence) human-readable
-/// description of what the file's diff is trying to accomplish.
+/// Per-file walkthrough entry. `intent` is a one-sentence description of
+/// what the file's diff is trying to accomplish.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileIntent {
@@ -151,10 +133,9 @@ pub struct FileIntent {
     pub intent: String,
 }
 
-/// Phase 5.3 review summary: one-line PR description + per-file
-/// walkthrough + blocking / non-blocking issue counts. Attached to the
-/// top-level `ReviewCheckResult` as an `Option` so callers built before
-/// Phase 5.3 continue to see `None` and behave identically.
+/// Review summary: one-line PR description, per-file walkthrough, and
+/// blocking / non-blocking issue counts. Attached to `ReviewCheckResult`
+/// as an `Option`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewSummary {
@@ -246,14 +227,10 @@ impl Default for AppSettingsRecord {
     }
 }
 
-// ── Runtime Event ──
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RuntimeReadyEvent {
     pub runtime: String,
 }
-
-// ── Projects ──
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -278,8 +255,6 @@ pub struct AddProjectInput {
 pub struct RemoveProjectInput {
     pub id: String,
 }
-
-// ── Providers ──
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -320,8 +295,6 @@ pub struct ProviderSetActiveInput {
     pub id: String,
     pub is_active: bool,
 }
-
-// ── Skills ──
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -413,13 +386,10 @@ pub struct CreateLocalSkillInput {
     pub content: Option<String>,
 }
 
-/// Input for `skills::remember()` — the 4th human-feedback channel.
-///
-/// Records a rule the user told an AI agent (or themselves via CLI) to
-/// remember during a coding conversation. Stored locally with
-/// `origin = 'conversation'`, base confidence 0.6 (slightly below `manual`
-/// since the agent transcribed free-text), and `published = false` so it
-/// stays on this device until the user explicitly publishes it.
+/// Input for `skills::remember()`. Records a rule the user told an agent
+/// (or themselves via CLI) to remember during a conversation. Stored
+/// locally with `origin = 'conversation'`, base confidence 0.6, and
+/// `published = false` until the user explicitly publishes it.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RememberRuleInput {
@@ -468,8 +438,6 @@ pub struct SkillRepoRemoveInput {
     pub id: String,
 }
 
-// ── Confidence & Examples ──
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateConfidenceInput {
@@ -510,8 +478,6 @@ pub struct RuleExampleRecord {
     pub source: String,
     pub created_at: String,
 }
-
-// ── Git / Editor / Files ──
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

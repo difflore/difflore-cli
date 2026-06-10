@@ -112,7 +112,9 @@ async fn run_full_check() -> Result<StartupStatus, CoreError> {
             .reset_stale(crate::cloud::outbox::DEFAULT_STALE_SECONDS)
             .await
         {
-            eprintln!("[difflore] cloud_outbox reset_stale skipped: {e}");
+            if crate::env::debug_cloud() {
+                eprintln!("[difflore] cloud_outbox reset_stale skipped: {e}");
+            }
         }
     }
 
@@ -132,19 +134,10 @@ async fn run_full_check() -> Result<StartupStatus, CoreError> {
     let cloud_ok_at = {
         let client = crate::cloud::client::CloudClient::create().await;
         if client.is_logged_in() {
-            // Simple HEAD-equivalent: we don't have a dedicated ping
-            // endpoint, so call the cheapest logged-in-required probe
-            // we do have. On any error we record `None` and move on.
-            // The `recall_past_verdicts` surface already swallows
-            // network failures and returns `Ok(vec![])`, which makes
-            // it a perfect cache-probe proxy.
-            // Minimal probe: a fixed sentinel query that satisfies the
-            // server-side `min(1)` validation on `queryText`. Empty
-            // string used to be accepted but the Zod schema now requires
-            // ≥1 char; using `"_ping_"` keeps this a no-op-on-the-data
-            // round-trip while no longer spamming a 400 to stderr on
-            // every CLI command. We don't care about the contents of
-            // the response — we only care that the round-trip succeeded.
+            // No dedicated ping endpoint, so probe with the cheapest
+            // logged-in call we have. The `"_ping_"` sentinel satisfies
+            // the server's `min(1)` validation on `queryText`; only the
+            // round-trip succeeding matters, not the response body.
             let req = crate::cloud::api_types::RecallPastVerdictsRequest {
                 embedding: Vec::new(),
                 query_text: Some("_ping_".to_owned()),

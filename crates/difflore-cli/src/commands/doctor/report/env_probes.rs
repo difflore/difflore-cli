@@ -240,8 +240,8 @@ pub(super) fn hook_activity_section(s: &mut String) -> hook_runtime::HookFireSum
             .join(", ");
         sw!(s, "- by event: {by_event}");
     }
-    // Pre-instrumentation entries land in count_24h but not injected_fires,
-    // so the rate may dip right after upgrade.
+    // Entries predating the instrumentation count toward count_24h but not
+    // injected_fires, so the rate may dip right after upgrade.
     if hook_summary.count_24h > 0 {
         let pct = (hook_summary.injected_fires as f64 / hook_summary.count_24h as f64) * 100.0;
         let avg = if hook_summary.injected_fires > 0 {
@@ -585,7 +585,7 @@ fn cloud_flags_subsection(
     if !cloud_logged_in && hook_summary.count_24h > 0 {
         sw!(
             s,
-            "- ⚠ telemetry: {} hook fire(s) in 24h NOT reaching cloud (unauthenticated). Dashboard activity feed + weekly digest will stay empty until `difflore cloud login`.",
+            "- ! activity: {} hook fire(s) in 24h did not reach cloud (unauthenticated). Dashboard activity feed + weekly digest will stay empty until `difflore cloud login`.",
             hook_summary.count_24h,
         );
     }

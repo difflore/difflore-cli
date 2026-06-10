@@ -4,13 +4,12 @@ use sqlx::SqlitePool;
 use super::super::{McpState, build_cost_meta, estimate_tokens};
 use super::util::{MCP_TEXT_ARG_CHAR_LIMIT, validate_mcp_text_arg};
 
-// ── plan_pr (Layer 1 plan-time predictor) ──────────────────────────
+// plan_pr (Layer 1 plan-time predictor): given an issue/PR description,
+// predict likely file categories, median file count, and closest historical
+// PRs from the local review corpus.
 //
-// Given an issue/PR description, predict likely file categories, median
-// file count, and closest historical PRs from the local review corpus.
-//
-// Data source: local SQLite `review_items` rows from
-// `difflore import-reviews`, grouped by `(repo_full_name, pr_number)`.
+// Data source: local SQLite `review_items` rows from `difflore
+// import-reviews`, grouped by `(repo_full_name, pr_number)`.
 
 /// One historical PR record reconstructed from `review_items`.
 #[derive(Debug, Clone)]
@@ -773,8 +772,7 @@ pub(crate) async fn tool_plan_pr(state: &McpState, args: &Value) -> Result<Value
         }));
     }
 
-    // Format prediction for the agent. Keep it dense — predict.py's
-    // human renderer is the reference shape.
+    // Format prediction for the agent. Keep it dense.
     let median = prediction
         .get("predicted_file_count_median")
         .and_then(Value::as_u64)

@@ -13,5 +13,6 @@
     "code-review",
     "rules",
     "hooks"
-  ]
+  ],
+  "homepage": "https://github.com/difflore/difflore-cli#readme"
 }

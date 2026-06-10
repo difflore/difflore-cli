@@ -26,10 +26,8 @@ fn unique_repo_scopes(repo_scopes: &[String]) -> Vec<String> {
     unique
 }
 
-// `merge_scored_rule_chunks` is the canonical helper at
-// `difflore_core::context::retrieval::merge_scored_rule_chunks` —
-// shared with the orchestrator and the MCP tool helpers so the
-// dedup/limit policy stays in lock-step across all three callsites.
+// Canonical dedup/limit helper, shared with the orchestrator and MCP tool
+// helpers so the policy stays in lock-step across all three callsites.
 use difflore_core::context::retrieval::merge_scored_rule_chunks;
 
 const CLI_SEARCH_EMBEDDING_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2500);
@@ -68,8 +66,8 @@ fn exact_title_matches(
     if query_title.is_empty() {
         return Vec::new();
     }
-    // Allow up to 4 repo scopes so fork+upstream (and rare nested fork
-    // chains) all participate. Caller passes origin first, then upstream.
+    // Allow up to 4 repo scopes so fork+upstream (and rare nested fork chains)
+    // all participate.
     let repo_scopes: Vec<String> = unique_repo_scopes(repo_scopes)
         .into_iter()
         .take(4)
@@ -81,10 +79,9 @@ fn exact_title_matches(
         .map(|rule| difflore_core::context::retrieval::ScoredRuleChunk {
             skill_id: rule.skill_id.clone(),
             content: rule.content.clone(),
-            // Exact title lookup is a user-visible trust path: if a
-            // developer copies a rule title from `rules list` into
-            // `recall`, that same rule must be present. Keep this far
-            // above hybrid scores, but only for exact title equality.
+            // Exact title lookup is a trust path: a title copied from
+            // `rules list` into `recall` must surface. Score far above hybrid
+            // scores, but only for exact title equality.
             score: 10.0 + rule.confidence.clamp(0.0, 1.0),
             confidence: rule.confidence,
         })
@@ -104,9 +101,9 @@ pub(crate) fn rule_title(content: &str, fallback: &str) -> String {
         .find_map(|line| line.strip_prefix("Rule Name:").map(|s| s.trim().to_owned()))
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| fallback.to_owned());
-    // Apply display-time cleanup so titles minted by older binaries (which
-    // captured CodeRabbit emphasis/banners verbatim) render cleanly without
-    // requiring a DB migration. Idempotent for already-clean titles.
+    // Display-time cleanup so titles minted by older binaries (which captured
+    // CodeRabbit emphasis/banners verbatim) render cleanly without a DB
+    // migration. Idempotent for already-clean titles.
     crate::commands::review_text::clean_display_title(&raw, fallback)
 }
 

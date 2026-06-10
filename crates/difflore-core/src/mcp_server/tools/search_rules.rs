@@ -40,14 +40,13 @@ pub(crate) async fn tool_search_rules(
         .unwrap_or("mcp-server");
     validate_mcp_text_arg("file", file, MCP_TEXT_ARG_CHAR_LIMIT)?;
     validate_mcp_text_arg("intent", intent, MCP_TEXT_ARG_CHAR_LIMIT)?;
-    // Clamp `top_k` to the schema range; invalid over-asks still get a
-    // useful bounded response.
+    // Clamp `top_k` to the schema range so over-asks get a bounded response.
     let requested_top_k = args
         .get("top_k")
         .and_then(Value::as_u64)
         .map_or(5, |n| n.clamp(1, 50) as usize);
-    // Low-rate sampler: occasionally widen default serves from 5 to 8 so
-    // deeper ranks get measured. Explicit caller choices pass through.
+    // Low-rate sampler: occasionally widen default serves from 5 to 8 so deeper
+    // ranks get measured. Explicit caller choices pass through.
     let top_k = super::super::recall_sampler::maybe_bump_top_k(
         requested_top_k,
         crate::env::deep_recall_sample_rate(),
@@ -76,14 +75,15 @@ pub(crate) async fn tool_search_rules(
         {
             Ok(count) => count,
             Err(e) => {
-                eprintln!("[difflore-mcp] search_rules index freshness check failed: {e}");
+                if crate::env::debug_telemetry() {
+                    eprintln!("[difflore-mcp] search_rules index freshness check failed: {e}");
+                }
                 0
             }
         }
     };
-    // Gathered once post-index so every `_meta` return site (empty +
-    // success) reports the same embedding-health snapshot without
-    // re-querying the index pool per branch.
+    // Gathered once post-index so every `_meta` return site reports the same
+    // embedding-health snapshot without re-querying the index pool per branch.
     let embedding_diag: EmbeddingDiagnostics =
         gather_embedding_diagnostics_with_activity(&index_pool).await;
 
@@ -146,17 +146,16 @@ pub(crate) async fn tool_search_rules(
         &strict_skill_ids,
     );
 
-    // Drop topically adjacent rules whose directive does not share the
-    // query intent. Strong exact/title/lexical hits remain exempt.
+    // Drop topically adjacent rules whose directive does not share the query
+    // intent. Strong exact/title/lexical hits remain exempt.
     crate::context::retrieval::apply_intent_alignment_gate(&mut scored, intent);
 
-    // Final relevance gate for explicit recall. Wrong-file or low-signal
-    // queries should return no rules rather than weak filler; strong
-    // matches clear this floor by a wide margin.
+    // Final relevance gate for explicit recall: wrong-file or low-signal queries
+    // return no rules rather than weak filler; strong matches clear it easily.
     crate::context::retrieval::apply_explicit_recall_threshold(&mut scored);
 
-    // Cold-start fallback: only repos with no scoped memory can receive
-    // strict-file cross-repo suggestions.
+    // Cold-start fallback: only repos with no scoped memory get strict-file
+    // cross-repo suggestions.
     let mut cross_repo_starter = false;
     if scored.is_empty()
         && rules_indexed == 0
@@ -179,7 +178,7 @@ pub(crate) async fn tool_search_rules(
 
     if scored.is_empty() {
         crate::injection_log::record("mcp_tool", 0, target_file);
-        // Track empty results without blocking the MCP response.
+        // Track empty results without blocking the response.
         {
             let file = file.to_owned();
             let intent = intent.to_owned();
@@ -239,7 +238,9 @@ pub(crate) async fn tool_search_rules(
         )
         .await
         {
-            eprintln!("[difflore-mcp] search_rules serve record failed: {e}");
+            if crate::env::debug_telemetry() {
+                eprintln!("[difflore-mcp] search_rules serve record failed: {e}");
+            }
         }
         {
             let cloud = state.cloud.clone();
@@ -261,7 +262,9 @@ pub(crate) async fn tool_search_rules(
                     crate::cloud::observations::enqueue_and_flush_default(served_event, &cloud)
                         .await
                 {
-                    eprintln!("[difflore-mcp] search_rules served event failed: {e}");
+                    if crate::env::debug_telemetry() {
+                        eprintln!("[difflore-mcp] search_rules served event failed: {e}");
+                    }
                 }
             });
         }
@@ -288,9 +291,8 @@ pub(crate) async fn tool_search_rules(
     }
 
     // Batch-fetch skill metadata so each index entry gets title/origin/
-    // file_patterns without N+1 queries. The pipeline already returned
-    // `content` with the generated "Rule Name: …" header — we could parse
-    // it but a single SELECT IN (...) is cheaper and always correct.
+    // file_patterns without N+1 queries. A single SELECT IN (...) is cheaper and
+    // more reliable than parsing it back out of the generated content header.
     let skill_ids: Vec<String> = scored.iter().map(|s| s.skill_id.clone()).collect();
     let meta_map_fut = fetch_skills_by_ids(&state.db, &skill_ids);
     let trust_evidence_fut =
@@ -301,9 +303,8 @@ pub(crate) async fn tool_search_rules(
 
     let mut entries: Vec<RuleMatchEvidenceRecord> = Vec::with_capacity(scored.len());
     for s in &scored {
-        // Missing metadata is a soft skip: if a chunk is stale (skill row
-        // deleted but index not yet pruned) we'd rather drop it than
-        // return garbage. Keeps the result list trustworthy.
+        // Missing metadata is a soft skip: a stale chunk (skill row deleted but
+        // index not yet pruned) is dropped rather than returned as garbage.
         let Some(meta) = meta_map.get(&s.skill_id) else {
             continue;
         };
@@ -329,9 +330,9 @@ pub(crate) async fn tool_search_rules(
         // Refine the message when cross-repo suggestions include pack rules.
         let has_pack = entries.iter().any(|e| e.origin == "pack");
         let message = if has_pack {
-            "No memory is scoped to THIS repo yet. These are starter-pack suggestions (and transferable rules from your other repos), matched to this file — treat them as suggestions, not this repo's own judgment. Run `difflore import-reviews` to capture this repo's memory."
+            "No memory is scoped to THIS repo yet. These are starter-pack suggestions (and transferable rules from your other repos), matched to this file - treat them as suggestions, not this repo's own judgment. Run `difflore import-reviews` to capture this repo's memory."
         } else {
-            "No memory is scoped to THIS repo yet. These are transferable rules from your other repos, matched to this file — treat them as suggestions, not this repo's own judgment. Run `difflore import-reviews` to capture this repo's memory."
+            "No memory is scoped to THIS repo yet. These are transferable rules from your other repos, matched to this file - treat them as suggestions, not this repo's own judgment. Run `difflore import-reviews` to capture this repo's memory."
         };
         json!({
             "results": entries,
@@ -373,7 +374,9 @@ pub(crate) async fn tool_search_rules(
     )
     .await
     {
-        eprintln!("[difflore-mcp] search_rules serve record failed: {e}");
+        if crate::env::debug_telemetry() {
+            eprintln!("[difflore-mcp] search_rules serve record failed: {e}");
+        }
     }
     {
         let cloud = state.cloud.clone();
@@ -394,7 +397,9 @@ pub(crate) async fn tool_search_rules(
             if let Err(e) =
                 crate::cloud::observations::enqueue_and_flush_default(served_event, &cloud).await
             {
-                eprintln!("[difflore-mcp] search_rules served event failed: {e}");
+                if crate::env::debug_telemetry() {
+                    eprintln!("[difflore-mcp] search_rules served event failed: {e}");
+                }
             }
         });
     }
@@ -412,7 +417,7 @@ pub(crate) async fn tool_search_rules(
     crate::activity_stream::record(crate::activity_stream::ActivityPayload::RuleInjected {
         rule_count: u32::try_from(entries.len()).unwrap_or(u32::MAX),
         prompt_chars: u32::try_from(text.chars().count()).unwrap_or(u32::MAX),
-        intent_summary: format!("{file} · {intent}"),
+        intent_summary: format!("{file} | {intent}"),
     });
     // Estimate savings against fetching each full rule body.
     let tokens_if_full = Some(AVG_FULL_RULE_TOKENS * entries.len());
@@ -460,7 +465,9 @@ pub(crate) async fn tool_search_rules(
             if let Err(e) =
                 crate::cloud::observations::enqueue_and_flush_default(fired_event, &cloud).await
             {
-                eprintln!("[difflore-mcp] search_rules fired event failed: {e}");
+                if crate::env::debug_telemetry() {
+                    eprintln!("[difflore-mcp] search_rules fired event failed: {e}");
+                }
             }
             let _ = drain_mcp_query_outbox(&db, &cloud, 8).await;
         });
@@ -570,8 +577,8 @@ fn exact_title_strict_match_chunks(
         .map(|rule| ScoredRuleChunk {
             skill_id: rule.skill_id.clone(),
             content: rule.content.clone(),
-            // Exact title + strict file scope is stronger than fuzzy vector
-            // recall, especially during embedding fallback/rate limits.
+            // Exact title + strict file scope outranks fuzzy vector recall,
+            // especially during embedding fallback/rate limits.
             score: 2.0 + rule.confidence,
             confidence: rule.confidence,
         })

@@ -48,18 +48,14 @@ pub(super) fn repo_scopes_for_input(input: &ReviewCheckInput) -> Vec<String> {
     scopes
 }
 
-/// Candidate rule pool size requested at REVIEW time when the applicability
-/// judge is enabled. Review is latency-tolerant (unlike the 800ms commit
-/// hook), so it pulls a deeper pool than the production default
-/// ([`crate::context::DEFAULT_TOP_K_RULES`]) and lets the judge filter it
-/// down to the rules that actually apply. The assembler's `rule_token_budget`
-/// still bounds what reaches the prompt, so this only deepens the judge's
-/// candidate set, not the final injected-rule volume.
+/// Candidate rule pool size requested at review time when the applicability
+/// judge is enabled. Deeper than [`crate::context::DEFAULT_TOP_K_RULES`] since
+/// review is latency-tolerant; the judge then filters it down. The assembler's
+/// `rule_token_budget` still bounds what reaches the prompt.
 const JUDGE_CANDIDATE_POOL_TOP_K: usize = 18;
 
-/// Outcome of preparing the review's matched-rule context: the rendered
-/// rules text plus the parallel id/title/count bookkeeping the rest of the
-/// pipeline (attribution, trajectory, result) consumes.
+/// Prepared matched-rule context: rendered rules text plus the parallel
+/// id/title/count bookkeeping the rest of the pipeline consumes.
 struct PreparedReviewRules {
     rules_text: Option<String>,
     count: i32,
@@ -67,10 +63,9 @@ struct PreparedReviewRules {
     titles: Vec<String>,
 }
 
-/// Join a pool of rule items into the `rules_text` blob the review prompt
-/// expects (one rule's `content` per section, blank-line separated) — the
-/// same shape `intent_filter::maybe_rerank_for_review` produces. Used to
-/// rebuild the text after the applicability judge drops rules from the pool.
+/// Join rule items into the `rules_text` blob the review prompt expects (one
+/// rule's `content` per section, blank-line separated) — the same shape
+/// `intent_filter::maybe_rerank_for_review` produces.
 fn rules_text_from_items(
     items: &[crate::context::types::ContextSourceItemRecord],
 ) -> Option<String> {
@@ -89,17 +84,14 @@ fn rules_text_from_items(
 /// Shared matched-rule preparation for both the single-pass and
 /// multi-perspective review paths.
 ///
-/// Steps: (1) retrieve the candidate rule pool via the context orchestrator —
-/// deepened to [`JUDGE_CANDIDATE_POOL_TOP_K`] when the applicability judge is
-/// enabled; (2) apply the existing intent rerank; (3) when the judge is
-/// enabled, ask the review LLM which recalled rules actually apply to this
-/// diff and drop the rest, rebuilding `rules_text`/ids/titles from the
-/// survivors.
+/// Retrieves the candidate rule pool (deepened to
+/// [`JUDGE_CANDIDATE_POOL_TOP_K`] when the applicability judge is enabled),
+/// applies the intent rerank, and — when the judge is enabled — asks the
+/// review LLM which recalled rules apply to this diff, dropping the rest and
+/// rebuilding `rules_text`/ids/titles from the survivors.
 ///
-/// With the judge flag OFF this is behaviourally identical to the inline
-/// logic it replaced: same `DEFAULT_TOP_K_RULES` retrieval, same rerank, and
-/// the original `rules_text` is returned untouched (no rebuild), preserving
-/// byte-identical prompts.
+/// With the judge OFF, retrieval depth, rerank, and `rules_text` are unchanged
+/// so the prompt stays byte-identical.
 async fn prepare_review_rules(
     db: &sqlx::SqlitePool,
     input: &ReviewCheckInput,
@@ -119,8 +111,7 @@ async fn prepare_review_rules(
     }
 
     let judge_enabled = review_engine.rule_applicability_judge;
-    // Deepen the candidate pool only when the judge will filter it back down,
-    // so the flag-off path keeps the exact production retrieval depth.
+    // Deepen the candidate pool only when the judge will filter it back down.
     let top_k_override = judge_enabled.then_some(JUDGE_CANDIDATE_POOL_TOP_K);
 
     let pack = match crate::context::orchestrator::prepare_with_hint_and_repo_scopes_with_top_k(
@@ -137,7 +128,9 @@ async fn prepare_review_rules(
     {
         Ok(pack) => pack,
         Err(e) => {
-            eprintln!("[{log_tag}] context prepare failed: {e:?}, proceeding without rules");
+            if crate::env::debug_providers() {
+                eprintln!("[{log_tag}] context prepare failed: {e:?}, proceeding without rules");
+            }
             return PreparedReviewRules {
                 rules_text: None,
                 count: 0,
@@ -150,10 +143,8 @@ async fn prepare_review_rules(
     let reranked =
         crate::context::intent_filter::maybe_rerank_for_review(&pack.rule_context, retrieval_query);
 
-    // Flag-OFF fast path: reproduce the original inline bookkeeping exactly
-    // (rerank count from the reranked len, else the assembler's
-    // `metadata.rule_count`; ids/titles from whichever item set), so the
-    // default review path stays byte-for-byte identical.
+    // Judge-OFF path: count from the reranked len, else the assembler's
+    // `metadata.rule_count`; ids/titles from whichever item set.
     if !judge_enabled {
         let (rules_text, count, ids, titles) = if let Some((reranked, rules_text)) = reranked {
             let count = i32::try_from(reranked.len()).unwrap_or(i32::MAX);
@@ -172,12 +163,9 @@ async fn prepare_review_rules(
         };
     }
 
-    // Judge-ON path: resolve a concrete working pool (the reranked items when
-    // rerank is active, else the full retrieved context), let the judge drop
-    // non-applicable rules, then derive text/ids/titles from the FINAL pool so
-    // all three stay mutually consistent — `rules_text_from_items` joins rule
-    // `content` exactly as the rerank path does, so an unchanged pool yields
-    // the same text the rerank would have.
+    // Judge-ON path: take the reranked items (else the full retrieved
+    // context), let the judge drop non-applicable rules, then derive
+    // text/ids/titles from the final pool so all three stay consistent.
     let pool: Vec<_> = match reranked {
         Some((reranked, _reranked_text)) => reranked,
         None => pack.rule_context.clone(),
@@ -224,10 +212,9 @@ pub(in super::super) fn collect_diff_files(diff: &str) -> Vec<String> {
     out
 }
 
-/// How `run_review` talks to the LLM: remote HTTP provider when one is
-/// configured, else a local agent CLI driven through `gate4agent` (Claude
-/// Code, Codex, Gemini, or `OpenCode` — whichever is installed). Resolved
-/// once per review by `resolve_review_engine`.
+/// How `run_review` talks to the LLM: a remote HTTP provider when configured,
+/// else a local agent CLI driven through `gate4agent`. Resolved once per
+/// review by `resolve_review_engine`.
 #[derive(Debug, Clone)]
 pub enum ReviewEngine {
     HttpProvider {
@@ -238,8 +225,8 @@ pub enum ReviewEngine {
     },
     AgentCli {
         tool: CliTool,
-        /// Empty string lets the CLI default kick in. Populated when the
-        /// user explicitly configured a model in `providers setup`.
+        /// Empty string lets the CLI default kick in; populated when the user
+        /// configured a model in `providers setup`.
         model: String,
     },
 }
@@ -307,7 +294,6 @@ pub fn merge_perspective_issues(
                 .filter(|c| issue.perspectives.iter().any(|p| p == *c))
                 .map(ToString::to_string)
                 .collect();
-            // Append any non-canonical perspectives at the end (defensive).
             for p in &issue.perspectives {
                 if !sorted.iter().any(|s| s == p) {
                     sorted.push(p.clone());
@@ -490,17 +476,12 @@ fn apply_missing_rule_attributions(
     }
 }
 
-/// Apply hunk-aware line resolution to a batch of issues.
-///
-/// For each issue, parses the hunks of the file it touches out of the raw
-/// unified `diff`, then snaps `issue.line` to the exact new-file line via
-/// [`resolver::resolve_issue_lines`] using the model-supplied `snippets`
-/// (parallel to `issues`) and the issue's claimed line. Issues whose file
-/// can't be found in the diff, or that don't confidently match, are left
-/// untouched — this only ever sharpens a line number, never regresses it.
-///
-/// `snippets[i]` is the optional verbatim source for `issues[i]` (from
-/// `parse::extract_issue_snippets`); a shorter/empty slice is tolerated.
+/// Snap each issue's `issue.line` to the exact new-file line via
+/// [`resolver::resolve_issue_lines`], using the per-issue `snippets` (parallel
+/// to `issues`) and the claimed line. Issues whose file isn't in the diff, or
+/// that don't confidently match, are left untouched — this only ever sharpens
+/// a line number, never regresses it. A shorter/empty `snippets` slice is
+/// tolerated.
 fn apply_hunk_line_resolution(
     issues: &mut [ReviewIssueRecord],
     snippets: &[Option<String>],
@@ -508,7 +489,6 @@ fn apply_hunk_line_resolution(
 ) {
     use std::collections::HashMap;
 
-    // Parse hunks once per file path, lazily, and cache.
     let sections = split_diff_by_file(diff);
     let mut cache: HashMap<String, Vec<resolver::DiffHunk>> = HashMap::new();
 
@@ -592,7 +572,7 @@ pub async fn run_review_multi_with_trajectory(
 ) -> crate::Result<ReviewCheckResult> {
     let trace_id = uuid::Uuid::new_v4().to_string();
 
-    // 1. Get active provider (once — shared by all perspectives)
+    // Active provider, shared by all perspectives.
     let (provider_name, base_url, api_key, model) = get_active_provider(db).await?;
 
     let retrieval_intent = crate::context::intent_filter::build_review_intent_text(
@@ -606,13 +586,12 @@ pub async fn run_review_multi_with_trajectory(
     };
     let repo_scopes = repo_scopes_for_input(&input);
 
-    // Settings drive the (opt-in) applicability judge below and the
-    // past-verdict recall / self-check / summary gating further down.
+    // Settings gate the applicability judge below and the past-verdict recall
+    // / self-check / summary steps further down.
     let settings_for_recall = crate::settings::get().await.unwrap_or_default();
 
-    // 2. Get matched rules via context engine (once — shared by all
-    // perspectives). The applicability judge, when enabled, reuses the active
-    // provider through a dedicated `HttpReviewLlm` built from the same tuple.
+    // Matched rules, shared by all perspectives. The applicability judge, when
+    // enabled, reuses the active provider through its own `HttpReviewLlm`.
     let judge_llm = HttpReviewLlm {
         provider_name: provider_name.clone(),
         base_url: base_url.clone(),
@@ -648,7 +627,7 @@ pub async fn run_review_multi_with_trajectory(
         });
     }
 
-    // 3. Shared user prompt (once — identical across perspectives)
+    // Shared user prompt, identical across perspectives.
     let user_prompt = build_user_prompt(
         &input.diff_content,
         rules_text.as_deref(),
@@ -659,7 +638,7 @@ pub async fn run_review_multi_with_trajectory(
         .saturating_add(3))
         / 4;
 
-    // 4. Past-verdict recall. Preview callers need a bounded first answer;
+    // Past-verdict recall. Preview callers skip it for a bounded first answer;
     // they can inspect memory separately with `difflore recall --diff`.
     let past_verdicts = if input.fast_preview {
         Vec::new()
@@ -761,8 +740,6 @@ pub async fn run_review_multi_with_trajectory(
         (ReviewPerspective::ApiDesign, api_design_issues),
     ]);
 
-    // Provider tuple is no longer needed after the per-perspective fan-out,
-    // so move (don't clone) into the verify-pass LLM box.
     let llm: Box<dyn ReviewLlm> = Box::new(HttpReviewLlm {
         provider_name,
         base_url,
@@ -796,8 +773,8 @@ pub async fn run_review_multi_with_trajectory(
 
     let mut issues = issues;
     apply_missing_rule_attributions(&mut issues, &matched_rule_ids, &matched_rule_titles);
-    // Hunk-aware line snap (gated; default off). The multi-pass merge does not
-    // retain snippets, so this path snaps using the claimed line only.
+    // Hunk-aware line snap (gated; default off). The multi-pass merge drops
+    // snippets, so this path snaps using the claimed line only.
     if settings_for_recall.review_engine.hunk_line_resolution {
         apply_hunk_line_resolution(&mut issues, &[], &input.diff_content);
     }
@@ -1089,13 +1066,10 @@ index 3333333..4444444 100644
         );
     }
 
-    // === hunk_line_resolution end-to-end coverage (real captured diff) ===
-    //
-    // Real diff + real LLM response captured from a live `difflore fix
-    // --preview` run against difflore-test-e2e/hono/src/compose.ts
-    // (Sonnet via claude-cli). Ground-truth new-file lines: 42, 43, 52.
-    //
-    // This drives the EXACT production gate path: split_diff_by_file →
+    // hunk_line_resolution end-to-end coverage, using a real diff + LLM
+    // response captured from a live `difflore fix --preview` run against
+    // difflore-test-e2e/hono/src/compose.ts. Ground-truth new-file lines: 42,
+    // 43, 52. Drives the production gate path: split_diff_by_file →
     // parse_hunks → resolve_issue_lines, via apply_hunk_line_resolution.
     // OFF = claimed line untouched; ON = apply_hunk_line_resolution.
 
@@ -1457,13 +1431,12 @@ pub async fn run_review_with_trajectory(
     };
     let repo_scopes = repo_scopes_for_input(&input);
 
-    // Loaded before rule prep so the (opt-in) applicability judge can gate on
-    // it; reused for the recall / self-check / summary steps below.
+    // Gates the applicability judge below; reused for the recall / self-check
+    // / summary steps.
     let settings = crate::settings::get().await.unwrap_or_default();
 
-    // The applicability judge, when enabled, reuses the resolved review engine
-    // through its own `ReviewLlm` (the engine is consumed later by the main
-    // review call, so clone it here for the judge's separate round-trip).
+    // The judge reuses the resolved engine via its own `ReviewLlm`; clone here
+    // since the main review call consumes `engine` later.
     let judge_llm = make_review_llm(engine.clone());
     let prepared = prepare_review_rules(
         db,
@@ -1569,8 +1542,7 @@ pub async fn run_review_with_trajectory(
 
     let mut issues = parse_issues(&ai_response);
     // Snap each issue to its exact diff line before verification so the verify
-    // pass and `difflore fix` see the precise location. Gated by
-    // `review_engine.hunk_line_resolution` (default off -> no-op).
+    // pass and `difflore fix` see the precise location. Default off -> no-op.
     if settings.review_engine.hunk_line_resolution {
         let snippets = super::parse::extract_issue_snippets(&ai_response);
         apply_hunk_line_resolution(&mut issues, &snippets, &input.diff_content);

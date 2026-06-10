@@ -1,16 +1,9 @@
 //! Re-rank a list of retrieved rules by token overlap with the PR's
 //! intent (title, file paths, headline diff lines), then cap to top N.
 //!
-//! Why this exists: the cloud-side PR review bot dry-run
-//! (`difflore-cloud/scratch/pr_review_bot_dryrun.ts`) showed that
-//! filtering 1,785 cloud rules to file-pattern matches alone yields ~
-//! 387 rules for a 3-file PR — most of them noise. Adding a cheap
-//! intent-token-overlap secondary score (Jaccard-like) trims the list
-//! to the 5–10 a human reviewer would actually flag, with the highest-
-//! scoring rules being directly relevant to the PR (e.g. "Pin
-//! GitHub Actions refs to SHAs" surfaces top for a CI workflow PR).
-//!
-//! Pure function: caller decides whether to use it.
+//! A cheap intent-token-overlap secondary score (Jaccard-like) trims a
+//! file-pattern-matched candidate set (often hundreds of rules, mostly
+//! noise) down to the few a human reviewer would actually flag.
 
 use std::collections::HashSet;
 
@@ -147,10 +140,10 @@ pub fn rerank_by_intent(
     out
 }
 
-/// One audit run's persisted view: which rules matched, which earned a
-/// top-N slot. Append-only to `~/.difflore/audit-history.jsonl` so a
-/// Audit history records which rules consistently end up in the noise
-/// bucket across PRs — those are the strongest pruning candidates.
+/// One audit run's persisted view: which rules matched and which earned a
+/// top-N slot. Append-only to `~/.difflore/audit-history.jsonl`; rules that
+/// consistently land in the noise bucket across PRs are the strongest pruning
+/// candidates.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AuditRunRecord {
     pub ts_ms: i64,

@@ -44,9 +44,8 @@ pub(super) fn write_json_object(
 
 /// Merge `{ <servers_key>: { difflore: { command, args: ["mcp-server"] } } }`
 /// into a JSON object, preserving every other entry. `servers_key` is
-/// "mcpServers" for most tools, "servers" for Copilot CLI. Returns true if
-/// a prior `difflore` entry existed (i.e. this was an update, not a first
-/// install).
+/// "mcpServers" for most tools, "servers" for Copilot CLI. Returns true if a
+/// prior `difflore` entry existed (an update rather than a first install).
 fn merge_difflore_entry_with_key(
     config: &mut serde_json::Map<String, Value>,
     bin: &str,
@@ -186,13 +185,12 @@ pub(super) fn finish_json_install(
     }
 }
 
-// ── Rendered-block helpers ────────────────────────────────────────────────
+// Rendered-block helpers
 
-/// The exact `difflore` MCP-server *value* object DiffLore writes under
-/// `servers_key` — `{ "command": bin, "args": ["mcp-server"] }`. This is the
-/// subtree the install manifest hashes (not the whole co-owned file), built
-/// from the same `json!` [`merge_difflore_entry_with_key`] inserts so the hash
-/// matches what we wrote.
+/// The exact `difflore` MCP-server value object written under `servers_key`:
+/// `{ "command": bin, "args": ["mcp-server"] }`. This is the subtree the install
+/// manifest hashes (not the whole co-owned file), built from the same `json!`
+/// [`merge_difflore_entry_with_key`] inserts so the hash matches what we wrote.
 pub(super) fn render_mcp_json_block(bin: &str) -> Value {
     json!({
         "command": bin,
@@ -234,7 +232,7 @@ mod tests {
         serde_json::from_str(&s).expect("parse config")
     }
 
-    // ── Tier-3 JSON installers — table-driven across all clients ────────
+    // Tier-3 JSON installers — table-driven across all clients
 
     #[test]
     fn json_installers_write_difflore_under_servers_key() {
@@ -261,7 +259,7 @@ mod tests {
         }
     }
 
-    // ── Merge-preservation: reinstall, other entries left alone ─────────
+    // Merge-preservation: reinstall, other entries left alone
 
     #[test]
     fn reinstall_reports_updated_and_preserves_other_entries() {
@@ -284,7 +282,7 @@ mod tests {
         assert_eq!(v["mcpServers"]["difflore"]["command"], BIN);
     }
 
-    // ── Uninstall round-trips (inverse of the merge) ────────────────────
+    // Uninstall round-trips (inverse of the merge)
 
     #[test]
     fn uninstall_removes_difflore_and_preserves_other_entries() {

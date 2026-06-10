@@ -7,8 +7,6 @@ use super::types::{
     ReviewProjectInput, ReviewSourceInput, UpdateItemStatusInput,
 };
 
-// ── helper: fetch comments for a set of item IDs via json_each IN ────────────
-
 pub(super) async fn fetch_comments_for_items(
     pool: &sqlx::SqlitePool,
     items: &[ReviewItemRecord],
@@ -56,8 +54,6 @@ pub(super) fn attach_comments(
         .collect()
 }
 
-// ── public functions ─────────────────────────────────────────────────────────
-
 pub async fn list_by_project(
     db: &sqlx::SqlitePool,
     input: ReviewProjectInput,
@@ -74,9 +70,8 @@ pub async fn list_by_project(
     Ok(rows.into_iter().map(ReviewItemRecord::from).collect())
 }
 
-/// List the most recent review items across all sources. Used by the
-/// TUI Reviews tab where the user wants a cross-source activity feed,
-/// not a per-source filter.
+/// List the most recent review items across all sources (cross-source feed,
+/// not a per-source filter).
 pub async fn list_recent(
     db: &sqlx::SqlitePool,
     limit: i64,
@@ -287,9 +282,8 @@ pub async fn update_item_status(
 }
 
 pub async fn remove_item(db: &sqlx::SqlitePool, input: ReviewItemIdInput) -> crate::Result<()> {
-    // First clear dependent comments (zero-row case is fine — item might
-    // have had no comments). Then delete the item itself; that's the row
-    // count we care about for "did we actually find anything?".
+    // Clear dependent comments first (zero rows is fine); the item delete
+    // below is the row count we check for existence.
     sqlx::query!(
         "DELETE FROM review_comments WHERE review_item_id = ?",
         input.id

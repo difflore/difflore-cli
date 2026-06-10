@@ -176,9 +176,8 @@ async fn handle_request(state: &State, line: &str) -> Response {
     response
 }
 
-/// Cross-platform local-socket endpoint. `interprocess` interprets
-/// the same path as a Unix-domain socket on Unix and as a named-pipe-
-/// equivalent in the local namespace on Windows.
+/// Cross-platform local-socket endpoint: `interprocess` treats the same path as
+/// a Unix-domain socket on Unix and a named-pipe-equivalent on Windows.
 fn endpoint() -> anyhow::Result<std::path::PathBuf> {
     Ok(difflore_core::paths::data_home()
         .map_err(anyhow::Error::msg)?
@@ -210,9 +209,8 @@ async fn run_ipc_server(state: Arc<State>) -> anyhow::Result<()> {
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // On Unix the listener takes a real filesystem path; remove any
-    // stale socket file from a prior run. On Windows the named-pipe
-    // namespace doesn't have a file to remove, but the call is a noop.
+    // On Unix the listener takes a real filesystem path, so remove any stale
+    // socket file from a prior run; on Windows there is no file and this no-ops.
     let _ = std::fs::remove_file(&socket);
     let name = socket.to_fs_name::<GenericFilePath>()?;
     let listener = ListenerOptions::new().name(name).create_tokio()?;

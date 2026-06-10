@@ -7,10 +7,8 @@ use anyhow::bail;
 
 use super::{InstallState, TargetStatus, common::MCP_SERVER_ARG};
 
-/// Merge a `difflore` entry under the top-level `mcpServers:` block in a
-/// Goose YAML config. Mirrors claude-mem's `mergeGooseYamlConfig` —
-/// uses line-based string manipulation instead of pulling in a YAML
-/// parser. Returns true if an existing `difflore:` entry was replaced.
+/// Merge a `difflore` entry under the top-level `mcpServers:` block in a Goose
+/// YAML config. Returns true if an existing `difflore:` entry was replaced.
 pub(super) fn merge_goose_yaml_config(
     path: &PathBuf,
     bin: &str,
@@ -59,11 +57,10 @@ pub(super) fn merge_goose_yaml_config(
     Ok(replaced)
 }
 
-/// Inverse of [`merge_goose_yaml_config`]: remove the `  difflore:` block
-/// (and its deeper-indented children) from under `mcpServers:`. If that
-/// leaves `mcpServers:` with no remaining children, drop the now-empty
-/// `mcpServers:` header line too. Returns true if a `difflore:` block was
-/// present and removed. Missing file / no block is a no-op returning false.
+/// Inverse of [`merge_goose_yaml_config`]: remove the `  difflore:` block (and
+/// its deeper-indented children) from under `mcpServers:`. If that leaves
+/// `mcpServers:` empty, drop the now-orphaned header line too. Returns true if a
+/// block was removed; missing file / no block is a no-op returning false.
 pub(super) fn remove_goose_yaml_config(path: &PathBuf, dry_run: bool) -> Result<bool, String> {
     if !path.exists() {
         return Ok(false);
@@ -82,9 +79,9 @@ pub(super) fn remove_goose_yaml_config(path: &PathBuf, dry_run: bool) -> Result<
     Ok(true)
 }
 
-/// Remove the first `  difflore:` block under `mcpServers:` and every line
-/// indented deeper than two spaces that follows it (its children). Mirrors
-/// the scan in [`replace_goose_difflore_block`] but emits no replacement.
+/// Remove the first `  difflore:` block under `mcpServers:` and its
+/// deeper-indented children. Like [`replace_goose_difflore_block`] but emits no
+/// replacement.
 fn remove_goose_difflore_block(yaml: &str) -> anyhow::Result<String> {
     let mut out = String::new();
     let mut lines = yaml.split_inclusive('\n').peekable();
@@ -115,9 +112,8 @@ fn remove_goose_difflore_block(yaml: &str) -> anyhow::Result<String> {
     Ok(out)
 }
 
-/// If `mcpServers:` is now followed by no two-space-indented child key, the
-/// block is empty — drop the `mcpServers:` header line so we don't leave an
-/// orphaned section. Other top-level content is preserved verbatim.
+/// If `mcpServers:` has no remaining child key, drop the header line so we
+/// don't leave an orphaned section. Other top-level content is preserved.
 fn drop_empty_mcp_servers_block(yaml: &str) -> String {
     let mut out = String::new();
     let mut lines = yaml.split_inclusive('\n');
@@ -174,10 +170,9 @@ fn yaml_has_difflore_under_mcp_servers(yaml: &str) -> bool {
     false
 }
 
-/// Replace an existing `  difflore:\n    ...` block under `mcpServers:`
-/// with `replacement`. We scan line by line: once we hit the `difflore:`
-/// line (indented exactly two spaces), consume all following lines that
-/// are indented more than two spaces.
+/// Replace an existing `  difflore:` block under `mcpServers:` with
+/// `replacement`. The block is the `difflore:` line (indented two spaces) plus
+/// all following lines indented deeper.
 fn replace_goose_difflore_block(yaml: &str, replacement: &str) -> anyhow::Result<String> {
     let mut out = String::new();
     let mut lines = yaml.split_inclusive('\n').peekable();
@@ -190,8 +185,7 @@ fn replace_goose_difflore_block(yaml: &str, replacement: &str) -> anyhow::Result
             continue;
         }
         if !found && in_mcp_servers && is_two_space_indented_key(line, "difflore") {
-            // Emit replacement, then skip this line plus every following
-            // line that is indented deeper than two spaces (children).
+            // Emit the replacement, then skip this line and its children.
             out.push_str(replacement);
             found = true;
             while let Some(next) = lines.peek() {
@@ -212,10 +206,9 @@ fn replace_goose_difflore_block(yaml: &str, replacement: &str) -> anyhow::Result
 }
 
 /// Insert a new `  difflore:` block as the first child of the existing
-/// `mcpServers:` section.
+/// `mcpServers:` section. Scoped to the TOP-LEVEL `mcpServers:` line, not the
+/// first `mcpServers:` substring (which could match a comment or value).
 fn insert_under_mcp_servers(yaml: &str, entry_block: &str) -> anyhow::Result<String> {
-    // Insert as the first child of the TOP-LEVEL `mcpServers:` line — not the
-    // first `mcpServers:` substring, which could match a comment or a value.
     let mut offset = 0usize;
     for line in yaml.split_inclusive('\n') {
         if top_level_key(line) == Some("mcpServers") {
@@ -335,8 +328,8 @@ pub(super) fn probe_goose_install(
 // ── Rendered-block helpers ────────────────────────────────────────────────
 
 /// The exact `  difflore:` YAML block DiffLore writes under `mcpServers:`,
-/// byte-identical to the `entry_block` built in [`merge_goose_yaml_config`].
-/// This is the string the install manifest hashes for a Goose target.
+/// byte-identical to the `entry_block` in [`merge_goose_yaml_config`]. This is
+/// the string the install manifest hashes for a Goose target.
 pub(super) fn render_goose_block(bin: &str) -> String {
     format!(
         "  difflore:\n    command: {bin}\n    args:\n      - mcp-server\n",
@@ -345,11 +338,10 @@ pub(super) fn render_goose_block(bin: &str) -> String {
 }
 
 /// Re-extract the on-disk `  difflore:` block (header + deeper-indented
-/// children) as a single string for re-hashing, normalised to match
-/// [`render_goose_block`]: each line trimmed of trailing CR/LF and re-joined
-/// with `\n`, with a trailing newline. Returns `None` when the file is
-/// missing/unreadable or has no difflore block. The normalisation keeps the
-/// hash stable across CRLF/LF line endings (e.g. a Windows-edited config).
+/// children) for re-hashing, normalised to match [`render_goose_block`]: each
+/// line trimmed of trailing CR/LF and re-joined with `\n`. The normalisation
+/// keeps the hash stable across CRLF/LF line endings (e.g. a Windows-edited
+/// config). Returns `None` when the file is missing/unreadable or has no block.
 pub(super) fn extract_goose_block(path: &PathBuf) -> Option<String> {
     if !path.exists() {
         return None;

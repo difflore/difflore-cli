@@ -10,9 +10,6 @@ mod cloud;
 mod openai;
 mod sha1_embedder;
 
-// Per-provider impls live in their own files; re-export the concrete
-// embedders so external paths (`difflore_core::context::embedding::*`)
-// continue to resolve exactly as before the split.
 pub use cloud::CloudEmbedder;
 pub use openai::OpenAICompatEmbedder;
 pub use sha1_embedder::Sha1Embedder;
@@ -28,10 +25,8 @@ pub const CLOUD_MANAGED_SENTINEL: &str = "cloud-managed";
 
 /// Default dimensionality for `OpenAI` `text-embedding-3-small`.
 pub const DEFAULT_OPENAI_EMBEDDING_DIM: usize = 1536;
-// Cloud may absorb transient upstream embedding timeouts with its own
-// retry window; keep the client budget longer so it does not disconnect
-// early and force the caller into SHA1 fallback. `pub(crate)` so the
-// per-query cold-start retry budget can be asserted to stay under this cap.
+// Kept longer than cloud's own retry window so the client does not disconnect
+// early and force the caller into SHA1 fallback.
 pub(crate) const EMBEDDING_PROVIDER_TIMEOUT: Duration = Duration::from_secs(45);
 const EMBEDDING_RETRY_DELAYS_MS: &[u64] = &[100, 300, 700];
 pub const EMBEDDING_BATCH_SIZE: usize = 64;
@@ -48,9 +43,6 @@ fn embedding_http_client() -> reqwest::Client {
 }
 
 /// Abstract embedding provider.
-///
-/// Uses `#[async_trait]` to keep the trait object-safe
-/// (i.e. usable as `Box<dyn Embedder>`) while allowing `async fn` syntax.
 #[async_trait]
 pub trait Embedder: Send + Sync {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, CoreError>;
@@ -70,9 +62,8 @@ pub trait Embedder: Send + Sync {
     fn dim(&self) -> usize;
 
     /// Whether this embedder produces semantically meaningful vectors.
-    /// Defaults to `true` so real embedding providers don't have to opt
-    /// in; lexical-only fallbacks override to `false` so hybrid retrieval
-    /// knows to lean harder on the FTS baseline for keyword-heavy queries.
+    /// Lexical-only fallbacks override to `false` so hybrid retrieval leans
+    /// harder on the FTS baseline.
     fn is_semantic(&self) -> bool {
         true
     }
@@ -111,26 +102,19 @@ fn retryable_embedding_status(status: reqwest::StatusCode) -> bool {
 /// Resolve the configured embedder from settings.
 ///
 /// Priority chain (first match wins):
-///   1. `OpenAICompatEmbedder` — if the user explicitly configured a BYOK
-///      provider (`semantic_embedding=true` + a real `embedding_provider_url`,
-///      i.e. not the cloud-managed sentinel). This takes precedence over a
-///      stored cloud token: a user who ran `difflore embeddings setup` to
-///      bring their own key wants that provider used even while logged in.
-///   2. `CloudEmbedder` — if the user is logged in to cloud. Best-effort:
-///      we don't probe the network here, we just trust the stored token.
-///      On request failure the caller falls back to local SHA1 via
+///   1. `OpenAICompatEmbedder` — explicit BYOK provider (`semantic_embedding`
+///      on + a real non-sentinel `embedding_provider_url`). Takes precedence
+///      over a stored cloud token.
+///   2. `CloudEmbedder` — if logged in to cloud. The stored token is trusted
+///      without a network probe; request failures fall back to local SHA1 via
 ///      `embed_text_async`.
-///   3. [`Sha1Embedder`] — deterministic offline fallback.
+///   3. [`Sha1Embedder`] — deterministic offline fallback, also used on any
+///      settings error.
 ///
-/// Falls back to [`Sha1Embedder`] on any settings error, so callers never
-/// have to deal with embedder construction failures. Runtime paths should
-/// treat SHA1 as a degraded fallback after cloud/BYOK retries, never as the
-/// preferred path when cloud or BYOK is available. `probe_active_embedder`
-/// mirrors this same order — keep the two in sync.
+/// `probe_active_embedder` mirrors this same order — keep the two in sync.
 pub async fn get_embedder() -> Box<dyn Embedder> {
-    // Step 1 — explicit BYOK provider configured via settings takes
-    // precedence over a cloud token. The cloud-managed sentinel is not a real
-    // URL, so it is excluded here and handled by the cloud branch below.
+    // The cloud-managed sentinel is not a real URL, so it is excluded here and
+    // handled by the cloud branch below.
     if let Ok(settings) = crate::settings::get().await {
         let ce = &settings.context_engine;
         let byok_url = ce
@@ -141,18 +125,16 @@ pub async fn get_embedder() -> Box<dyn Embedder> {
         if ce.semantic_embedding
             && let Some(url) = byok_url
         {
-            // `embedding_provider_key` is a keyring storage identifier (a
-            // ciphertext hex blob produced by `store_embedding_key`).
-            // Decrypt it to get the real API key; on decrypt failure, warn
-            // and fall through to the cloud/SHA1 branches rather than sending
-            // empty credentials to the provider.
+            // `embedding_provider_key` is a keyring storage identifier; decrypt
+            // it to get the real API key. On decrypt failure, fall through to
+            // cloud/SHA1 rather than sending empty credentials to the provider.
             let key = match ce.embedding_provider_key.as_ref() {
                 Some(storage_key) if !storage_key.trim().is_empty() => {
                     if let Ok(plain) = load_embedding_key(storage_key) {
                         Some(plain)
                     } else {
                         eprintln!(
-                            "[embedder] failed to decrypt BYOK key; falling back to cloud/SHA1"
+                            "warning: DiffLore could not read the saved embedding key; using keyword matching for now."
                         );
                         None
                     }
@@ -171,23 +153,16 @@ pub async fn get_embedder() -> Box<dyn Embedder> {
         }
     }
 
-    // Step 2 — cloud-managed. Reads the same `cloud-auth.db` token used by the
-    // rest of the cloud client. No network probe at construction time: cheap
-    // and non-blocking. If the request later fails, the wrapper in
-    // `embed_text_async` falls back to local SHA1 after the provider retry
-    // path has been exhausted.
     if let Some(token) = crate::cloud::client::CloudClient::load_token().await {
         let base = crate::cloud::endpoints::api_base();
         return Box::new(CloudEmbedder::new(base, token));
     }
 
-    // Step 3 — deterministic offline SHA1 fallback.
     Box::new(Sha1Embedder::new())
 }
 
-/// Lightweight tag for the active embedder, returned by
-/// [`probe_active_embedder`] so callers can render the right hint copy without
-/// re-implementing the priority chain.
+/// Tag for the active embedder, returned by [`probe_active_embedder`] so
+/// callers can render the right hint copy without re-implementing the chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActiveEmbedderKind {
     Cloud {
@@ -223,18 +198,14 @@ impl ActiveEmbedderKind {
     }
 }
 
-/// Pure step shared by the async/sync probes: returns `Byok` iff settings
-/// select an explicit, usable BYOK provider (semantic_embedding on, a real
-/// non-sentinel URL, and a decryptable key if one is configured). `None` means
-/// BYOK does not apply — the caller then falls through to cloud, then SHA1,
-/// exactly like `get_embedder`.
+/// Returns `Byok` iff settings select an explicit, usable BYOK provider
+/// (semantic_embedding on, a real non-sentinel URL, and a decryptable key if
+/// one is configured). `None` means BYOK does not apply.
 ///
-/// Keeping this a separate, pure step lets [`probe_active_embedder`] defer the
-/// async cloud-token load until BYOK is ruled out, so a BYOK/`--no-key` user
-/// never triggers a `cloud-auth.db` decrypt / keyring access just to render
-/// status. This is the single source of truth for "is BYOK active" so
-/// diagnostics (`difflore doctor`), the TUI status bar, and the MCP hook never
-/// drift from the runtime resolver.
+/// Single source of truth for "is BYOK active", so diagnostics, the TUI status
+/// bar, and the MCP hook never drift from the runtime resolver. Pure, so
+/// [`probe_active_embedder`] can defer the async cloud-token load until BYOK is
+/// ruled out.
 fn byok_from_settings(
     ce: Option<&crate::models::ContextEngineRecord>,
 ) -> Option<ActiveEmbedderKind> {
@@ -273,18 +244,17 @@ fn byok_from_settings(
     })
 }
 
-/// Inspect the currently-resolved embedder and report its kind. Mirrors the
-/// priority chain in `get_embedder` (explicit BYOK → cloud → SHA1) without
-/// allocating the actual embedder. BYOK is checked first so a BYOK user never
-/// triggers a cloud-auth.db decrypt just to report status.
+/// Report the currently-resolved embedder kind, mirroring the priority chain
+/// in `get_embedder` (explicit BYOK → cloud → SHA1) without allocating the
+/// actual embedder.
 pub async fn probe_active_embedder() -> ActiveEmbedderKind {
     let settings = crate::settings::get().await.ok();
     if let Some(byok) = byok_from_settings(settings.as_ref().map(|s| &s.context_engine)) {
         return byok;
     }
-    // `load_token_quiet`: this probe is a read-only status check (the TUI polls
-    // it on a 500ms cache), so a corrupt token must not spam stderr. Real
-    // recall/cloud paths use the loud `load_token`.
+    // `load_token_quiet`: read-only status check (the TUI polls it on a 500ms
+    // cache), so a corrupt token must not spam stderr. Real recall/cloud paths
+    // use the loud `load_token`.
     if crate::cloud::client::CloudClient::load_token_quiet()
         .await
         .is_some()
@@ -298,12 +268,9 @@ pub async fn probe_active_embedder() -> ActiveEmbedderKind {
 }
 
 /// Sync sibling of [`probe_active_embedder`] for non-async render paths (the
-/// TUI status bar). Runs the authoritative async probe on a short-lived
-/// scratch runtime on its own thread, so it returns the EXACT same answer as
-/// the runtime resolver — real token load (`DIFFLORE_TOKEN` env + decrypted
-/// `cloud-auth.db` row) and BYOK key validation — with no separate sync
-/// detection logic that could drift. The caller caches the result, so this
-/// only spawns on a cache miss.
+/// TUI status bar). Runs the async probe on a short-lived scratch runtime on
+/// its own thread so it returns the exact same answer as the runtime resolver,
+/// with no separate sync detection logic that could drift.
 pub fn probe_active_embedder_sync() -> ActiveEmbedderKind {
     std::thread::scope(|scope| {
         scope
@@ -326,15 +293,13 @@ pub async fn active_embedding_profile() -> String {
 }
 
 fn url_host(s: &str) -> Option<&str> {
-    // Cheap parser — strip scheme then truncate at first `/` or `:port`.
     let after_scheme = s.split_once("://").map_or(s, |(_, rest)| rest);
     let host = after_scheme.split('/').next().unwrap_or(after_scheme);
     if host.is_empty() { None } else { Some(host) }
 }
 
-/// Synchronous SHA1 embedding — retained as the explicit local lexical
-/// embedder for offline users who have not configured cloud/BYOK semantic
-/// embeddings.
+/// Synchronous SHA1 lexical embedding — the local fallback for offline users
+/// without cloud/BYOK semantic embeddings.
 pub fn embed_text(text: &str) -> Vec<f32> {
     let mut vec = vec![0.0f32; EMBEDDING_DIM];
     for word in text.unicode_words() {
@@ -361,13 +326,9 @@ pub struct EmbeddedText {
     pub semantic: bool,
 }
 
-/// Async embedding helper that tries the configured embedder first and
-/// keeps retrieval usable if the provider is unavailable.
-///
-/// Callers that want a guaranteed `Vec<f32>` (never an error) should use
-/// this function. If the user has no semantic provider or a configured
-/// semantic provider fails after retry, this returns the local SHA1 vector
-/// as a degraded fallback.
+/// Async embedding helper that always returns a `Vec<f32>` (never an error).
+/// Falls back to the local SHA1 vector if there is no semantic provider or a
+/// configured provider fails after retry.
 pub async fn embed_text_async(text: &str) -> Vec<f32> {
     embed_text_async_with_timeout(text, None).await.vector
 }
@@ -474,18 +435,11 @@ fn sha1_fallback_embedding(text: &str) -> EmbeddedText {
 /// process per distinct cause.
 ///
 /// The activity event is recorded on EVERY call, not just the first: the
-/// freshness-skip and health diagnostics
-/// (`recent_embedding_fallback[_strict]`) read it to decide whether the remote
-/// provider is currently down. Deduping the *record* per process would let a
-/// long-lived MCP / hook server's down-signal go stale after the recency
-/// window, so the freshness skip would stop engaging and the futile corpus
-/// re-embed would resume for the rest of the process. Each failed embed records
-/// at most one event (the batch loop breaks on the first failure under a
-/// timeout), so this does not flood the capped activity log.
-///
-/// Only the console print is deduped: without it, a single `difflore recall`
-/// could emit one identical line per failed rule chunk. With it, the user sees
-/// one clear line + the recovery command per cause class per process.
+/// freshness-skip and health diagnostics read it to decide whether the remote
+/// provider is currently down, and deduping the record per process would let a
+/// long-lived server's down-signal go stale. Only the console print is deduped,
+/// so a single `difflore recall` shows one clear line per cause class rather
+/// than one per failed rule chunk.
 fn warn_embedding_fallback_once(reason: &str) {
     use std::collections::HashSet;
     use std::sync::Mutex;
@@ -501,17 +455,13 @@ fn warn_embedding_fallback_once(reason: &str) {
     if !set.insert(key.clone()) {
         return; // already printed this class of failure this process
     }
-    eprintln!("[embedding] {}", calm_fallback_summary(&key));
+    eprintln!("warning: {}", calm_fallback_summary(&key));
     eprintln!("{}", actionable_fix_for(&key));
 }
 
 /// A calm, user-facing summary of an embedding fallback, classified by the same
-/// stable key as [`actionable_fix_for`]. Mirrors the `status` line ("semantic
-/// vectors paused; recall still works with file-pattern + keyword matching") so
-/// a transient provider hiccup reads as graceful degradation rather than
-/// breakage. The raw transport error (URLs, internal "after N attempts" detail)
-/// is deliberately kept off the hot path — `difflore doctor` is the place for
-/// the verbose diagnostic.
+/// stable key as [`actionable_fix_for`]. The raw transport error is kept off
+/// the hot path; `difflore doctor` is the place for the verbose diagnostic.
 fn calm_fallback_summary(key: &str) -> &'static str {
     match key {
         "scope" | "forbidden" | "unauthorized" => {
@@ -537,10 +487,8 @@ fn calm_fallback_summary(key: &str) -> &'static str {
     }
 }
 
-/// Bucket the raw error string into a short stable key so we can dedup
-/// "provider failed (Internal error: cloud embedding endpoint returned
-/// 403 Forbidden; semantic recall will fall back...)" across call sites
-/// without writing the full message into the dedup set.
+/// Bucket the raw error string into a short stable key so failures can be
+/// deduped across call sites without storing the full message.
 fn classify_reason(reason: &str) -> String {
     let lower = reason.to_ascii_lowercase();
     if lower.contains("missing required scope") {
@@ -570,9 +518,7 @@ fn classify_reason(reason: &str) -> String {
     "other".to_owned()
 }
 
-/// Return an actionable next-step the user can run to recover. Tailored
-/// per failure class so the user doesn't get a generic "check your
-/// configuration" wall.
+/// Return an actionable recovery next-step tailored per failure class.
 fn actionable_fix_for(key: &str) -> &'static str {
     match key {
         "scope" => {
@@ -950,17 +896,11 @@ mod tests {
         );
     }
 
-    // ── keyring-encrypted embedding key round-trip ──
+    // keyring-encrypted embedding key round-trip.
     //
-    // These tests require the OS keyring to be available. On CI / headless
-    // environments (no Secret Service, no Windows Credential Manager) the
-    // keyring will fall back to the path-derived master key, which is
-    // still deterministic — so the round-trip should work on both Windows
-    // and Linux dev boxes. They are marked `#[ignore]` nonetheless so they
-    // never block headless test runs that lack access to any credential
-    // backend (e.g. sandboxed CI containers where `dirs::home_dir` is
-    // unavailable). Run locally with:
-    //   cargo test -p difflore-core embedding_key -- --ignored
+    // Marked `#[ignore]` so they never block headless runs that lack any
+    // credential backend (e.g. sandboxed CI without `dirs::home_dir`). Run
+    // locally with: cargo test -p difflore-core embedding_key -- --ignored
     #[test]
     #[ignore = "requires OS keyring or stable home dir; run with --ignored"]
     fn store_and_load_embedding_key_round_trip() {
@@ -978,12 +918,8 @@ mod tests {
         assert_eq!(recovered, plaintext);
     }
 
-    // ── CloudEmbedder ───────────────────────────────────────────
-    //
-    // Tests use a tiny TcpListener-backed HTTP/1.1 mock — adding a real
-    // mock-server crate (wiremock / mockito) just for these would bloat
-    // the dev-dep tree more than the test gains. The mock parses the
-    // first request, sends back a fixed response, and shuts down.
+    // CloudEmbedder tests use a tiny TcpListener-backed HTTP/1.1 mock rather
+    // than a mock-server crate, to avoid bloating the dev-dep tree.
 
     use std::io::{Read, Write};
     use std::net::TcpListener;

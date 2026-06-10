@@ -1,17 +1,16 @@
-//! Tier-1 hook integrations (Claude Code / Cursor / Gemini CLI / Windsurf).
+//! Hook integrations for Claude Code / Cursor / Gemini CLI / Windsurf.
 //!
-//! Unlike the Tier-3 JSON-only installers, these clients support *hook*
-//! lifecycles that let `DiffLore` proactively surface rules after file
-//! edits, shell runs, and session start/stop events. For each client we
+//! These clients support hook lifecycles that let `DiffLore` surface rules
+//! after file edits, shell runs, and session events. For each client we
 //! register a hook entry that invokes
 //!
 //! ```text
 //! <difflore-hook> --client <name>
 //! ```
 //!
-//! The shim forwards to the hot daemon over local IPC and falls back to
-//! the in-process hook runtime when the daemon is unavailable.
-//! Existing non-difflore hooks in the target config are preserved.
+//! The shim forwards to the hot daemon over local IPC, falling back to the
+//! in-process hook runtime when the daemon is down. Existing non-difflore
+//! hooks in the target config are preserved.
 
 use std::{fs, path::Path};
 
@@ -70,9 +69,8 @@ fn write_json_object_anyhow(
 
 // ── Claude Code hooks ────────────────────────────────────────────────────
 
-/// Merge `DiffLore` lifecycle hooks into `~/.claude/settings.json`.
-/// Returns `Ok(N)` where N is how many event matchers were added or
-/// refreshed. `Ok(0)` means everything was already wired correctly.
+/// Merge `DiffLore` lifecycle hooks into `~/.claude/settings.json`. Returns the
+/// number of event matchers added or refreshed (`Ok(0)` = already wired).
 pub(super) fn install_claude_code_hooks(bin: &str) -> CliResult<usize> {
     let settings_path = home_path(&[".claude", "settings.json"]).map_err(CliError::Message)?;
     merge_claude_code_hooks(&settings_path, bin).map_err(|e| CliError::Message(e.to_string()))
@@ -156,7 +154,7 @@ pub(super) fn merge_claude_code_hooks(settings_path: &Path, bin: &str) -> anyhow
 
 /// Inverse of [`install_claude_code_hooks`]: strip DiffLore's lifecycle hook
 /// groups from `~/.claude/settings.json`, preserving every user hook. Returns
-/// `Ok(N)` where N is how many event matchers had a DiffLore group removed.
+/// the number of event matchers that had a DiffLore group removed.
 pub(super) fn uninstall_claude_code_hooks(dry_run: bool) -> CliResult<usize> {
     let settings_path = home_path(&[".claude", "settings.json"]).map_err(CliError::Message)?;
     remove_claude_code_hooks(&settings_path, dry_run).map_err(|e| CliError::Message(e.to_string()))
@@ -483,9 +481,9 @@ pub(super) fn remove_gemini_cli_hooks(settings_path: &Path, dry_run: bool) -> an
     for event in empty_events {
         hooks_obj.remove(&event);
     }
-    // GEMINI.md context tag is intentionally left in place: it is inert
-    // placeholder text the user may have customized, and removing it risks
-    // clobbering their content (mirrors install's no-overwrite policy).
+    // GEMINI.md context tag is left in place: it may hold user-customized
+    // content, so removing it risks clobbering it (mirrors install's
+    // no-overwrite policy).
     if removed && !dry_run {
         write_json_object_anyhow(settings_path, &cfg)?;
     }
@@ -628,8 +626,8 @@ pub(super) fn remove_windsurf_hooks(hooks_path: &Path, dry_run: bool) -> anyhow:
     for event in empty_events {
         hooks_obj.remove(&event);
     }
-    // The `.windsurf/rules/difflore-context.md` file is left untouched for the
-    // same reason install never overwrites it: it may hold user content.
+    // The `.windsurf/rules/difflore-context.md` file is left untouched: like
+    // install, we never overwrite it since it may hold user content.
     if removed && !dry_run {
         write_json_object_anyhow(hooks_path, &cfg)?;
     }
@@ -777,16 +775,15 @@ pub(super) fn probe_json_hooks_by_nested_command(
 
 // ── Rendered-block extraction ─────────────────────────────────────────────
 //
-// `agents update` hashes the *exact* difflore block we author so it can tell
-// "unchanged since DiffLore wrote it" (safe to upgrade) from "the human edited
-// it" (must not clobber). These render fns reproduce, per client, the same
-// `json!` group objects the `merge_*` fns push above — in event order — so the
-// hash is a hash of *our render*, never of co-owned sibling entries. They MUST
-// stay in lockstep with the corresponding `merge_*` writer; the guard-rail
-// tests in `manifest.rs` install then re-extract and assert byte-equality.
+// `agents update` hashes the exact difflore block we author so it can tell
+// "unchanged since DiffLore wrote it" (safe to upgrade) from "human edited"
+// (must not clobber). These render fns reproduce, per client, the same `json!`
+// group objects the `merge_*` fns push, in event order, so the hash covers only
+// our render. They MUST stay in lockstep with the matching `merge_*` writer;
+// guard-rail tests in `manifest.rs` install, re-extract, and assert byte-equality.
 
-/// The Claude Code lifecycle-hook groups DiffLore contributes, in event order.
-/// Mirrors the `(event, matcher, timeout)` table in [`merge_claude_code_hooks`].
+/// The Claude Code hook groups DiffLore contributes, in event order. Must
+/// mirror the `(event, matcher, timeout)` table in [`merge_claude_code_hooks`].
 pub(super) fn render_claude_code_hook_block(bin: &str) -> Vec<Value> {
     let command = hook_command_string(bin, "claude-code");
     let event_matchers: &[(&str, Option<&str>)] = &[
@@ -823,7 +820,7 @@ pub(super) fn render_claude_code_hook_block(bin: &str) -> Vec<Value> {
 }
 
 /// The Cursor hook entries DiffLore contributes, one per [`CURSOR_HOOK_EVENTS`]
-/// event. Mirrors the `json!` pushed in [`merge_cursor_hooks`].
+/// event. Must mirror the `json!` pushed in [`merge_cursor_hooks`].
 pub(super) fn render_cursor_hook_block(bin: &str) -> Vec<Value> {
     let command = hook_command_string(bin, "cursor");
     CURSOR_HOOK_EVENTS
@@ -839,7 +836,7 @@ pub(super) fn render_cursor_hook_block(bin: &str) -> Vec<Value> {
 }
 
 /// The Gemini CLI hook groups DiffLore contributes, one per
-/// [`GEMINI_HOOK_EVENTS`] event. Mirrors the `json!` pushed in
+/// [`GEMINI_HOOK_EVENTS`] event. Must mirror the `json!` pushed in
 /// [`merge_gemini_cli_hooks`].
 pub(super) fn render_gemini_cli_hook_block(bin: &str) -> Vec<Value> {
     let command = hook_command_string(bin, "gemini-cli");
@@ -861,7 +858,7 @@ pub(super) fn render_gemini_cli_hook_block(bin: &str) -> Vec<Value> {
 }
 
 /// The Windsurf hook entries DiffLore contributes, one per
-/// [`WINDSURF_HOOK_EVENTS`] event. Mirrors the `json!` pushed in
+/// [`WINDSURF_HOOK_EVENTS`] event. Must mirror the `json!` pushed in
 /// [`merge_windsurf_hooks`].
 pub(super) fn render_windsurf_hook_block(bin: &str) -> Vec<Value> {
     let command = hook_command_string(bin, "windsurf");
@@ -876,17 +873,16 @@ pub(super) fn render_windsurf_hook_block(bin: &str) -> Vec<Value> {
         .collect()
 }
 
-/// Extract the difflore hook groups currently on disk for `client` from a hooks
-/// JSON file, in the file's event-iteration order, paired with their event.
-/// Used by `agents update` to re-hash what's there and compare against the
-/// manifest. Returns the matched group/entry `Value`s exactly as stored (so the
-/// hash sees the persisted form). A missing file / object yields an empty vec.
+/// Extract the difflore hook groups on disk for `client` from a hooks JSON file,
+/// in event-iteration order, exactly as stored (so the hash sees the persisted
+/// form). Used by `agents update` to re-hash and compare against the manifest.
+/// A missing file / object yields an empty vec.
 ///
 /// `client` selects the same matcher each `merge_*` / probe uses:
-/// - "claude-code" / "windsurf": match by nested/flat `command` containing the
-///   client shim marker;
-/// - "cursor": match the flat entry whose `name == "difflore"`;
-/// - "gemini-cli": match the group whose nested `hooks[].name == "difflore"`.
+/// - "claude-code" / "windsurf": nested/flat `command` containing the client
+///   shim marker;
+/// - "cursor": flat entry whose `name == "difflore"`;
+/// - "gemini-cli": group whose nested `hooks[].name == "difflore"`.
 pub(super) fn extract_hook_groups_on_disk(path: &Path, client: &str) -> Vec<Value> {
     let Ok(obj) = load_json_object(&path.to_path_buf()) else {
         return Vec::new();
@@ -909,8 +905,8 @@ pub(super) fn extract_hook_groups_on_disk(path: &Path, client: &str) -> Vec<Valu
 }
 
 /// Does a single hooks-array element belong to DiffLore for `client`? Reuses the
-/// exact predicates the `merge_*`/`remove_*` `retain(...)` closures use so
-/// extract and write agree on what "our block" is.
+/// same predicates as the `merge_*`/`remove_*` `retain(...)` closures so extract
+/// and write agree on what "our block" is.
 fn hook_value_is_difflore(v: &Value, client: &str) -> bool {
     match client {
         "cursor" => v.get("name").and_then(|n| n.as_str()) == Some("difflore"),
@@ -926,7 +922,7 @@ fn hook_value_is_difflore(v: &Value, client: &str) -> bool {
             .get("command")
             .and_then(|c| c.as_str())
             .is_some_and(|c| hook_command_matches_client(c, "windsurf")),
-        // claude-code uses nested group → hooks[].command.
+        // claude-code: nested group → hooks[].command.
         _ => v
             .get("hooks")
             .and_then(|h| h.as_array())

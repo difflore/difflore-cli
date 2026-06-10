@@ -2,17 +2,11 @@
 //! happened. Lives in its own module so the integration test can call
 //! [`build_import_command`] without driving a real child process.
 //!
-//! Why shell out instead of calling `commands::import_reviews::handle`
-//! directly? Two reasons:
-//!
-//!   1. The install path is sync — `import_reviews` requires a tokio
-//!      runtime + a fully-built `CommandContext` (sqlx pool, project
-//!      registration, the works). Spinning that up just for the offer
-//!      doubles install-time complexity and risks a recursive
-//!      `startup::ensure_ready` from inside the install flow.
-//!   2. Shelling out keeps the "you can run this yourself" promise
-//!      honest. The offer literally prints what it ran — the user can
-//!      copy/paste it later without reading our source.
+//! Shells out rather than calling `commands::import_reviews::handle`
+//! directly because the install path is sync, while `import_reviews` needs a
+//! tokio runtime and a fully-built `CommandContext` (and could re-enter
+//! `startup::ensure_ready`). Shelling out also lets the offer print the exact
+//! command the user can re-run themselves.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -20,10 +14,8 @@ use std::process::Command;
 
 use super::outcome::PostInstallScanOutcome;
 
-/// Pure: build the (program, argv) the runner will invoke. Public so
-/// tests can verify the import command stays in lock-step with the
-/// public `difflore import-reviews` CLI surface, without spawning a
-/// real binary or hitting the network.
+/// Build the (program, argv) the runner will invoke. Public so tests can
+/// verify the import command without spawning a real binary.
 #[must_use]
 pub fn build_import_command(exe: &Path, max_prs: u32) -> (PathBuf, Vec<OsString>) {
     let argv: Vec<OsString> = vec![
@@ -34,11 +26,8 @@ pub fn build_import_command(exe: &Path, max_prs: u32) -> (PathBuf, Vec<OsString>
     (exe.to_path_buf(), argv)
 }
 
-/// Locate the difflore binary we should re-invoke. Prefer
-/// `current_exe()` so a dev build (`cargo run -p difflore-cli`) re-uses
-/// the same binary it was launched from; fall back to `which` so a
-/// stripped install where `current_exe` returns a non-canonical path
-/// still works.
+/// Locate the difflore binary to re-invoke. Prefers `current_exe()` so a dev
+/// build re-uses the same binary it was launched from; falls back to `which`.
 pub fn resolve_self_binary() -> Result<PathBuf, String> {
     if let Ok(exe) = std::env::current_exe() {
         let canon = exe.canonicalize().unwrap_or(exe);
@@ -47,16 +36,13 @@ pub fn resolve_self_binary() -> Result<PathBuf, String> {
     which::which("difflore").map_err(|e| format!("could not locate `difflore` on PATH: {e}"))
 }
 
-/// Spawn `difflore import-reviews --max-prs <N>` in `cwd`, streaming
-/// child stdout/stderr through to our own. On success, returns an
-/// [`PostInstallScanOutcome::ImportedReviews`]; on non-zero exit,
-/// [`PostInstallScanOutcome::ImportFailed`] with the exit status text.
+/// Spawn `difflore import-reviews --max-prs <N>` in `cwd`, streaming the
+/// child's stdout/stderr through. Returns [`PostInstallScanOutcome::ImportedReviews`]
+/// on success, [`PostInstallScanOutcome::ImportFailed`] on non-zero exit.
 ///
-/// `pr_count` and `rule_count` in the success outcome are best-effort:
-/// we don't parse the child's stdout (that would couple us to the
-/// import's --json shape). Callers that need exact counts should run
-/// `difflore status --json` afterwards — same source of truth as the
-/// import path itself.
+/// `pr_count` / `rule_count` are best-effort: the child's stdout is not parsed
+/// (that would couple us to the import's `--json` shape). For exact counts run
+/// `difflore status --json` afterwards.
 pub fn run_import(exe: &Path, cwd: &Path, max_prs: u32) -> PostInstallScanOutcome {
     let (program, argv) = build_import_command(exe, max_prs);
 

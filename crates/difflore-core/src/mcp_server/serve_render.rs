@@ -1,32 +1,12 @@
-//! Shared, behavior-preserving fragments for full rule recall paths,
-//! including `get_rules` detail fetches and the in-process hook path
-//! (`hook::fetch_relevant_rules_for_hook`).
+//! Shared fragments for full rule recall paths: the `get_rules` detail fetch
+//! and the in-process hook path (`hook::fetch_relevant_rules_for_hook`).
 //!
-//! These two functions are *deliberately* parallel near-duplicates so the
-//! JSON-RPC tool surface and the hook surface can evolve independently
-//! (custom `_meta`, deterministic empty-retry, token-budget cap, different
-//! trailing summary wording). That parallelism is also the drift hazard:
-//! the per-rule **header / `learned from` provenance / `Proof:` line** and
-//! the **serve-ledger + `McpRuleServed` payload** must stay byte-identical
-//! across both paths or the product-facing rule body and the telemetry
-//! diverge silently.
-//!
-//! This module factors out exactly those two highest-drift fragments and
-//! nothing else. Each helper reproduces the pre-refactor output
-//! byte-for-byte; the two surfaces still own their own retrieval tuning,
-//! score floor / budget cap, trailing summary, and event dispatch.
-//!
-//! Intentionally NOT unified (would risk observable drift — see the
-//! function docs in `hook.rs`):
-//!   * retrieval args (`lexical_query`, `embedding_timeout`,
-//!     `adaptive_prune`, `candidate_limit`/`top_k`),
-//!   * the tool's deterministic empty-recall retry vs the hook's raw-score
-//!     floor,
-//!   * the hook's per-rule token-budget cap,
-//!   * the trailing one-line summary wording,
-//!   * the example bad/good markers (`❌`/`✅` tool vs `-`/`-` hook),
-//!   * event dispatch (tool: `tokio::spawn` + flush + outbox drain; hook:
-//!     `enqueue_default`).
+//! The two recall surfaces are parallel near-duplicates so each can evolve its
+//! own retrieval tuning, score floor / budget cap, trailing summary, and event
+//! dispatch. This module factors out only the two highest-drift fragments — the
+//! per-rule header/provenance/`Proof:` block and the serve-ledger +
+//! `McpRuleServed` payload — which MUST stay byte-identical across both paths
+//! or the rule body and the telemetry diverge silently.
 
 use sqlx::SqlitePool;
 
@@ -36,20 +16,15 @@ use crate::context::rule_source::RuleExample;
 
 use super::trust_proof::{RuleTrustMap, format_trust_evidence};
 
-/// Inputs for [`render_rule_block`]. The header, `← learned from <repo>`
-/// provenance segment, optional `Proof:` line, and rule body are emitted
-/// byte-identically for both surfaces; only the example bad/good marker
-/// labels differ between the MCP tool (`❌ Bad:` / `✅ Good:`) and the hook
-/// (`- Bad:` / `- Good:`), so those are parameterised rather than baked in.
+/// Inputs for [`render_rule_block`]. Only the example bad/good marker labels
+/// differ between the MCP tool (`❌ Bad:` / `✅ Good:`) and the hook (`- Bad:` /
+/// `- Good:`), so those are parameterised rather than baked in.
 pub(crate) struct RuleBlockArgs<'a> {
-    /// 1-based memory number shown in the `## Memory {n}:` header. The
-    /// tool uses the final enumerate index; the hook uses its
-    /// budget-gated `injected + 1`, so the caller passes the resolved
-    /// number rather than letting this helper guess it.
+    /// 1-based memory number shown in the `## Memory {n}:` header, resolved by
+    /// the caller (tool: enumerate index; hook: budget-gated `injected + 1`).
     pub position: usize,
-    /// Rank-relative score (`rule.score / max_score`, or `0.0`). Computed
-    /// by the caller over the exact slice it iterates so the displayed
-    /// `rank score` matches each surface's pre-refactor value.
+    /// Rank-relative score (`rule.score / max_score`, or `0.0`), computed by
+    /// the caller over the exact slice it iterates.
     pub rel: f64,
     pub rule: &'a ScoredRuleChunk,
     pub trust_evidence: &'a RuleTrustMap,
@@ -64,10 +39,6 @@ pub(crate) struct RuleBlockArgs<'a> {
 /// line (`## Memory N: <title> ← learned from <repo> (rank score: … · raw:
 /// …)`), an optional cloud `Proof:` line, the rule body, and any captured
 /// `### Examples`, terminated by the `\n---\n\n` separator.
-///
-/// Pure / synchronous. The output is byte-identical to the inline loop
-/// bodies used by full rule detail fetches and
-/// `fetch_relevant_rules_for_hook` (given the matching example labels).
 pub(crate) fn render_rule_block(args: &RuleBlockArgs<'_>) -> String {
     let &RuleBlockArgs {
         position,
@@ -79,10 +50,8 @@ pub(crate) fn render_rule_block(args: &RuleBlockArgs<'_>) -> String {
         example_good_label,
     } = args;
 
-    // Pull title out of the indexed body so the markdown header is
-    // self-describing — agents that cite "applying Rule 2" otherwise
-    // give the user no idea which rule they followed (rule numbers
-    // are call-local, titles are stable across calls).
+    // Pull the title out of the indexed body so the header is self-describing:
+    // rule numbers are call-local, titles are stable across calls.
     let title = rule
         .content
         .lines()
@@ -97,17 +66,13 @@ pub(crate) fn render_rule_block(args: &RuleBlockArgs<'_>) -> String {
         .map(str::trim)
         .filter(|s| !s.is_empty());
     // Use the same "<- learned from <repo>" framing as `fix --preview`,
-    // `recall`, the TUI, `init`, and the cloud rule-detail page so the
-    // agent reads the same provenance grammar everywhere. When the
-    // agent cites this in chat ("applying Rule 2 (learned from
-    // gin-gonic/gin)"), the user sees the consistent product wording
-    // surface in their main work tool — strongest free brand
-    // propagation we have.
+    // `recall`, the TUI, `init`, and the cloud rule-detail page so the agent
+    // reads the same provenance grammar everywhere.
     let source_seg = source
         .map(|s| format!(" \u{2190} learned from {s}"))
         .unwrap_or_default();
     let mut text = format!(
-        "## Memory {}: {}{} (rank score: {:.2} · raw: {:.3})\n\n",
+        "## Memory {}: {}{} (rank score: {:.2} | raw: {:.3})\n\n",
         position, title, source_seg, rel, rule.score
     );
     if let Some(proof) = trust_evidence.get(&rule.skill_id)
@@ -138,20 +103,15 @@ pub(crate) fn render_rule_block(args: &RuleBlockArgs<'_>) -> String {
 }
 
 /// Shared scalar inputs for the local serve ledger row and the cloud
-/// `McpRuleServed` event. Every numeric field is already typed as `i64`
-/// so the caller keeps full control of its own conversion (the tool does
-/// `i64::try_from(top_k).unwrap_or(i64::MAX)`; the hook passes the literal
-/// `5`), guaranteeing the recorded values are exactly what each surface
-/// recorded before this refactor.
+/// `McpRuleServed` event. Numeric fields are `i64` so the caller controls its
+/// own conversion.
 pub(crate) struct RuleServe<'a> {
     pub tool: &'a str,
-    /// Ledger `session_id` (nullable). Tool passes `Some("mcp-server")`;
-    /// hook passes its incoming `Option<&str>`.
+    /// Ledger `session_id` (nullable). Tool passes `Some("mcp-server")`; hook
+    /// passes its incoming `Option<&str>`.
     pub session_id: Option<&'a str>,
-    /// Cloud-event `session_id` (non-null). The caller resolves the
-    /// default so the helper does not bake one in: the tool passes its
-    /// `session_id` &str directly, the hook passes
-    /// `session_id.unwrap_or("hook")` — matching prior behavior exactly.
+    /// Cloud-event `session_id` (non-null), resolved by the caller (tool passes
+    /// its `session_id`; hook passes `session_id.unwrap_or("hook")`).
     pub event_session_id: &'a str,
     pub repo_full_name: Option<&'a str>,
     pub target_file: Option<&'a str>,
@@ -162,22 +122,14 @@ pub(crate) struct RuleServe<'a> {
     pub estimated_tokens: i64,
 }
 
-/// Record the local `mcp_rule_serves` ledger row, then return the
-/// constructed `ObservationEvent::McpRuleServed` for the caller to
-/// dispatch via whatever path semantics it requires (the tool spawns a
-/// task that flushes to cloud and drains the MCP query outbox; the hook
-/// uses `enqueue_default`). Dispatch is intentionally NOT centralized
-/// here because the two paths differ (spawn vs inline, drain vs no-drain).
+/// Record the local `mcp_rule_serves` ledger row, then return the constructed
+/// `ObservationEvent::McpRuleServed` for the caller to dispatch (the tool spawns
+/// a task that flushes to cloud and drains the outbox; the hook uses
+/// `enqueue_default`). Dispatch is not centralized here because the two paths
+/// differ (spawn vs inline, drain vs no-drain).
 ///
-/// `was_empty` is derived as `rule_ids.is_empty()`, which equals the
-/// literal/expression each call site used before (`true` with `&[]` in
-/// the tool's empty branch, `serve_rule_ids.is_empty()` in its success
-/// branch, `rule_ids.is_empty()` in the hook).
-///
-/// `record_err_prefix`: `Some(p)` → log `record` failures as
-/// `"{p}: {e}"` using the caller's tool-specific prefix;
-/// `None` → swallow the error silently, matching the hook's prior
-/// `let _ = …record(…).await;`.
+/// `record_err_prefix`: `Some(p)` logs `record` failures as `"{p}: {e}"`;
+/// `None` swallows the error silently.
 pub(crate) async fn serve_and_record(
     db: &SqlitePool,
     serve: RuleServe<'_>,

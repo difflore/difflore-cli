@@ -6,23 +6,16 @@ struct HookFireEntry {
     ts_ms: i64,
     client: String,
     event: String,
-    /// 2026-04-25: number of rules surfaced into the agent context for
-    /// this fire. Default 0 for old log entries that pre-date the
-    /// instrumentation. Lets `doctor --report` and external dashboards
-    /// answer "are these 1300+ rules actually being used?".
+    /// Number of rules surfaced into the agent context for this fire.
+    /// Defaults to 0 for log entries predating the instrumentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rules_injected: Option<usize>,
-    /// File path the agent was about to read/edit, if known. Helps
-    /// audit which `file_patterns` are firing rules vs sitting unused.
-    /// Truncated to 200 chars to keep the JSON log small.
+    /// File path the agent was about to read/edit, if known. Truncated to 200
+    /// chars to keep the JSON log small.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     file_path: Option<String>,
-    /// 2026-04-26: per-fire wall-clock spent inside the `DiffLore` hook
-    /// handler (rule retrieval, context formatting, etc). Default
-    /// `None` for old log entries — instrumentation lands incrementally
-    /// at each `remember_hook_fire_full` call site as we add timing
-    /// wrappers. Once populated, `doctor` can render a "median fire
-    /// took Xms over last 24h" line.
+    /// Per-fire wall-clock spent inside the `DiffLore` hook handler. `None` for
+    /// log entries predating the instrumentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     elapsed_ms: Option<i64>,
 }
@@ -39,23 +32,16 @@ pub(crate) struct HookFireSummary {
     pub(crate) count_24h: usize,
     pub(crate) by_client: std::collections::BTreeMap<String, usize>,
     pub(crate) by_event: std::collections::BTreeMap<String, usize>,
-    /// 2026-04-25: number of fires that surfaced ≥1 rule (out of
-    /// `count_24h`). Lets users immediately answer "are these 1300+
-    /// rules actually being used?" — if `injected_fires` ≪ `count_24h`
-    /// the corpus is sitting cold and rule coverage / `file_patterns`
+    /// Number of 24h fires that surfaced ≥1 rule. When `injected_fires` ≪
+    /// `count_24h`, the corpus is cold and rule coverage / `file_patterns`
     /// need attention.
     pub(crate) injected_fires: usize,
-    /// Total rules surfaced across all 24h fires. Helps quantify
-    /// per-edit injection volume.
+    /// Total rules surfaced across all 24h fires.
     pub(crate) total_rules_injected: usize,
-    /// 2026-04-26: median per-fire wall-clock spent inside the `DiffLore`
-    /// hook handler over fires that carry timing data. `None` until at
-    /// least one fire post-instrumentation lands. Surfaced in `doctor`
-    /// as a "median fire took Xms" line.
+    /// Median per-fire wall-clock in the hook handler over timed fires.
+    /// `None` until at least one timed fire lands.
     pub(crate) median_elapsed_ms: Option<i64>,
-    /// 2026-04-26: number of 24h fires that carry timing data. Lets
-    /// `doctor` show "(median over N fires)" so the reader knows the
-    /// sample size. `0` when no instrumented fires have landed yet.
+    /// Number of 24h fires that carry timing data (the median's sample size).
     pub(crate) timed_fires: usize,
     pub(crate) path: Option<PathBuf>,
     pub(crate) detail: Option<String>,

@@ -164,11 +164,9 @@ body text";
         assert!(!r2.enabled);
     }
 
-    // ── remember_rule content-hash + 30s window dedup ──
-    //
-    // These tests exercise the dedup window in `remember()`: a content-hash
-    // storm inside the window collapses to a single soft-accept bump; outside
-    // the window, title/body dedup or a fresh insert still applies.
+    // remember_rule content-hash + 30s window dedup: a content-hash storm
+    // inside the window collapses to a single soft-accept bump; outside the
+    // window, title/body dedup or a fresh insert still applies.
 
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::str::FromStr;

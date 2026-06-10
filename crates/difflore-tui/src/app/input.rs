@@ -23,10 +23,9 @@ impl App {
             return;
         }
 
-        // While the user is typing into the Rules-tab search bar, every
-        // keystroke (including `q`, digits, `Tab`) must go to the input.
-        // Critically: only `Editing` blocks globals; once `Filtering` the
-        // user is back in nav mode and `q` quits.
+        // While editing the Rules search bar, every keystroke (incl. `q`,
+        // digits, `Tab`) goes to the input. Only `Editing` blocks globals;
+        // once `Filtering` the user is back in nav mode and `q` quits.
         if self.active_tab == Tab::Rules && self.state.rules_search.is_editing() {
             self.handle_rules_key(code);
             return;
@@ -142,10 +141,9 @@ impl App {
     }
 
     pub(super) fn handle_settings_key(&mut self, code: KeyCode) {
-        // `i` and `l` need to spawn an interactive child process. We can't
-        // run those cleanly from inside the alt-screen — they print to stdout
-        // and may prompt. Record the intent, quit the loop, and let the CLI
-        // host dispatch the subprocess after the terminal is restored.
+        // `i`/`l` spawn interactive child processes that can't run cleanly
+        // inside the alt-screen. Record the intent and quit so the CLI host
+        // dispatches the subprocess after the terminal is restored.
         match code {
             KeyCode::Char('i') => {
                 self.pending_exit = crate::TuiExit::RunInit;
@@ -169,16 +167,15 @@ impl App {
         }
     }
 
-    /// Open the cloud rule page for the given rule ID with attribution
-    /// query-string so cloud-side analytics can measure how much of the
-    /// rule-edit funnel is fed by the TUI.
+    /// Open the cloud rule page for `rule_id` with an attribution query-string
+    /// so cloud-side analytics can attribute the rule-edit funnel to the TUI.
     fn open_rule_in_cloud(&mut self, rule_id: &str, intent: &str) {
         self.open_cloud_path(&format!("rules/{rule_id}?from=tui&intent={intent}"));
     }
 
     pub(super) fn handle_rules_key(&mut self, code: KeyCode) {
-        // Editing-mode swallows everything except Esc / Enter / Backspace —
-        // typing into the search bar must not also navigate the list.
+        // Editing mode swallows everything except Esc/Enter/Backspace so
+        // typing into the search bar doesn't also navigate the list.
         if let RulesSearch::Editing(mut q) = std::mem::take(&mut self.state.rules_search) {
             let mut reset_selection = false;
             match code {

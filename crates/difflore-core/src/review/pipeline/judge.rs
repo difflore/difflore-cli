@@ -1,44 +1,35 @@
-//! Review-depth: LLM rule-applicability judge.
+//! LLM rule-applicability judge for the review pipeline.
 //!
-//! After rule recall the review pipeline has a candidate pool of rules
-//! matched by lexical/semantic retrieval + intent rerank. Retrieval is
-//! recall-oriented: it will happily surface a rule that *mentions* a token
-//! from the diff even when the rule's actual lesson has nothing to do with
-//! the change. Those off-topic rules then leak into the review prompt and
-//! nudge the model toward irrelevant findings.
+//! Recall-oriented retrieval surfaces rules that merely *mention* a diff
+//! token even when their lesson is unrelated, leaking off-topic rules into
+//! the review prompt. This optional step (gated by
+//! `review_engine.rule_applicability_judge`, default off) asks the review
+//! LLM, in one batched call, whether each candidate rule applies to the
+//! diff, then drops the ones it judges non-applicable.
 //!
-//! This module adds an OPTIONAL, latency-tolerant step (gated by
-//! `review_engine.rule_applicability_judge`, default off) that asks the
-//! existing review LLM provider, in a single batched call, "does THIS
-//! rule's lesson apply to THIS diff?" for every candidate rule, then drops
-//! the rules the model judges non-applicable before they enter the review
-//! prompt. The result is higher-precision review with fewer irrelevant
-//! injected rules.
-//!
-//! Graceful degradation is the #1 invariant, mirroring `validate::verify_pass`:
-//! on ANY failure (disabled, empty, LLM error, parser error, or a response
-//! that would drop every single rule) the caller's candidate rules come back
-//! untouched. The judge can only ever *narrow* a pool of relevant rules; it
-//! must never silently starve a review of all of them.
+//! Graceful degradation is the #1 invariant, mirroring
+//! `validate::verify_pass`: on ANY failure (disabled, empty, LLM error,
+//! parser error, or a response that would drop every rule) the candidate
+//! pool comes back untouched. The judge can only narrow a pool, never
+//! empty it.
 
 use super::super::ReviewLlm;
 use crate::context::types::ContextSourceItemRecord;
 use std::collections::HashMap;
 
-/// Per-rule verdict parsed from the judge response: whether the rule's
-/// lesson applies to the diff, plus a 0..1 relevance score (used only for
-/// ordering / telemetry — the keep/drop decision is the boolean).
+/// Per-rule verdict from the judge: whether the rule applies, plus a 0..1
+/// relevance score used only for ordering/telemetry (the keep/drop
+/// decision is `applies`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct JudgeVerdict {
     pub applies: bool,
     pub relevance: f32,
 }
 
-/// System prompt for the applicability judge. Deliberately strict and
-/// narrow so a cheap model stays calibrated: it decides relevance only,
-/// never invents findings, and is told that when unsure it should keep the
-/// rule (false positives in the *review* are recoverable; dropping a rule
-/// that did apply is not).
+/// System prompt for the applicability judge. Strict and narrow so a cheap
+/// model stays calibrated: relevance only, no invented findings, and "when
+/// unsure, keep" (a recoverable review false positive beats dropping a rule
+/// that did apply).
 pub(super) const JUDGE_SYSTEM_PROMPT: &str = r#"You are a code-review rule-relevance judge. You are given a diff and a numbered list of candidate review rules. For EACH rule, decide whether that rule's lesson actually applies to THIS diff — i.e. the diff touches the kind of code, pattern, or concern the rule is about.
 
 Return ONLY a JSON array. Each element must be an object:
@@ -47,8 +38,8 @@ Return ONLY a JSON array. Each element must be an object:
 Judge relevance only — do NOT report code issues, do NOT invent rules, do NOT rewrite the rule. A rule "applies" when the diff plausibly involves the rule's subject, even if the diff does not necessarily violate it. When you are unsure, set "applies": true (keep the rule). Mark "applies": false only when the rule is clearly about unrelated code or concerns.
 Return the raw JSON array only, no markdown, no explanation."#;
 
-/// One candidate rule, flattened for the judge prompt. Borrows from the
-/// `ContextSourceItemRecord` so the caller doesn't have to clone the pool.
+/// One candidate rule flattened for the judge prompt, borrowing from the
+/// `ContextSourceItemRecord` to avoid cloning the pool.
 struct JudgeCandidate<'a> {
     title: &'a str,
     content: &'a str,
@@ -62,10 +53,9 @@ fn candidate_title(item: &ContextSourceItemRecord) -> &str {
         .unwrap_or(item.source_id.as_str())
 }
 
-/// Build the judge user-prompt: the diff (trimmed) + the candidate rules
-/// enumerated with stable `id` indices so the response can be matched back
-/// deterministically. Rule bodies are length-capped so a handful of verbose
-/// rules can't blow the prompt budget.
+/// Build the judge user-prompt: trimmed diff + candidate rules enumerated
+/// with stable `id` indices for deterministic matching. Rule bodies are
+/// length-capped so verbose rules can't blow the prompt budget.
 fn build_judge_user_prompt(diff: &str, candidates: &[JudgeCandidate<'_>]) -> String {
     const DIFF_LIMIT: usize = 8_000;
     const RULE_BODY_LIMIT: usize = 600;
@@ -90,11 +80,10 @@ fn build_judge_user_prompt(diff: &str, candidates: &[JudgeCandidate<'_>]) -> Str
     s
 }
 
-/// Parse a judge response into `{index → JudgeVerdict}`. Uses the exact
-/// three-tier extraction (`direct` → fenced code block → bracket scan) as
-/// `parse::parse_verify_response`, so it tolerates the same model-output
-/// noise. Returns `None` on any structural failure; an empty-but-valid
-/// array yields `Some(empty_map)`.
+/// Parse a judge response into `{index → JudgeVerdict}`. Uses the same
+/// three-tier extraction (direct → fenced block → bracket scan) as
+/// `parse::parse_verify_response`. Returns `None` on structural failure;
+/// an empty-but-valid array yields `Some(empty_map)`.
 pub(super) fn parse_judge_response(text: &str) -> Option<HashMap<usize, JudgeVerdict>> {
     let arr: Vec<serde_json::Value> =
         if let Ok(v) = serde_json::from_str::<Vec<serde_json::Value>>(text.trim()) {
@@ -126,8 +115,8 @@ pub(super) fn parse_judge_response(text: &str) -> Option<HashMap<usize, JudgeVer
         else {
             continue;
         };
-        // Default to keep when the field is missing/garbled — the system
-        // prompt's "when unsure, keep" contract, enforced at parse time.
+        // Default to keep when the field is missing/garbled — enforces the
+        // "when unsure, keep" contract at parse time.
         let applies = obj
             .get("applies")
             .and_then(serde_json::Value::as_bool)
@@ -147,16 +136,12 @@ pub(super) fn parse_judge_response(text: &str) -> Option<HashMap<usize, JudgeVer
     Some(out)
 }
 
-/// Pure filter step: given the candidate `rules` (in pool order) and the
-/// parsed `verdicts` keyed by pool index, return only the rules the judge
-/// kept, preserving order.
-///
-/// Backward-safety contract (verified by unit tests):
-/// * A rule the judge did NOT score is KEPT (the model skipped it; we never
-///   drop on silence).
-/// * If applying the verdicts would drop EVERY rule, the original pool is
-///   returned unchanged — a review must never lose all its rules because a
-///   single judge call was over-eager or malformed.
+/// Filter `rules` (in pool order) by `verdicts` keyed on pool index,
+/// preserving order. Contract:
+/// * A rule the judge did NOT score is kept (never drop on silence).
+/// * If the verdicts would drop every rule, the original pool is returned
+///   unchanged — a review must never lose all its rules to one bad judge
+///   call.
 pub(super) fn judge_filter_rules(
     rules: Vec<ContextSourceItemRecord>,
     verdicts: &HashMap<usize, JudgeVerdict>,
@@ -172,19 +157,17 @@ pub(super) fn judge_filter_rules(
         .collect();
 
     if kept.is_empty() {
-        // Every candidate was judged non-applicable. Refuse to strip the
-        // review of all rules — fall back to the full pool.
+        // Every candidate judged non-applicable — fall back to the full
+        // pool rather than strip the review of all rules.
         return rules;
     }
     kept
 }
 
-/// Run the applicability judge over a recalled rule pool.
-///
-/// Returns the (possibly narrowed) pool. On `enabled == false`, an empty
-/// pool, an LLM error, or an unparseable response, the input pool is
-/// returned untouched. Only ever drops rules the judge explicitly marked
-/// non-applicable, and never drops the entire pool (see
+/// Run the applicability judge over a recalled rule pool, returning the
+/// possibly narrowed pool. When disabled, empty, on LLM error, or on an
+/// unparseable response, the pool is returned untouched. Only drops rules
+/// explicitly marked non-applicable, never the whole pool (see
 /// [`judge_filter_rules`]).
 pub(super) async fn run_applicability_judge(
     llm: &dyn ReviewLlm,
@@ -195,9 +178,8 @@ pub(super) async fn run_applicability_judge(
     if !enabled {
         return rules;
     }
-    // A single rule (or none) isn't worth an extra round-trip: there is no
-    // precision to gain from filtering a one-element pool, and dropping it
-    // would just hit the "never empty" fallback anyway.
+    // A single rule (or none) isn't worth a round-trip: nothing to gain,
+    // and dropping it would just hit the "never empty" fallback.
     if rules.len() < 2 {
         return rules;
     }
@@ -217,7 +199,9 @@ pub(super) async fn run_applicability_judge(
     let response = match llm.chat(JUDGE_SYSTEM_PROMPT, &user_prompt).await {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[applicability_judge] judge call failed: {e:?}; keeping all rules");
+            if crate::env::fix_debug() {
+                eprintln!("[applicability_judge] judge call failed: {e:?}; keeping all rules");
+            }
             return rules;
         }
     };
@@ -225,9 +209,11 @@ pub(super) async fn run_applicability_judge(
     let verdicts = match parse_judge_response(&response) {
         Some(map) if !map.is_empty() => map,
         _ => {
-            eprintln!(
-                "[applicability_judge] could not parse judge response; keeping all rules unchanged"
-            );
+            if crate::env::fix_debug() {
+                eprintln!(
+                    "[applicability_judge] could not parse judge response; keeping all rules unchanged"
+                );
+            }
             return rules;
         }
     };
@@ -266,11 +252,11 @@ mod tests {
         JudgeVerdict { applies, relevance }
     }
 
-    // ── Mock provider (NEVER calls a real LLM) ──────────────────────────
+    // Mock provider (never calls a real LLM)
 
-    /// A `ReviewLlm` that returns a fixed canned response and records the
-    /// prompts it was handed, so tests can both drive the filter and assert
-    /// the judge actually invoked the provider with the expected payload.
+    /// A `ReviewLlm` that returns a canned response and records the prompts
+    /// it was handed, so tests can assert the judge invoked the provider
+    /// with the expected payload.
     struct MockReviewLlm {
         response: Result<String, ()>,
         calls: Mutex<Vec<(String, String)>>,
@@ -310,7 +296,7 @@ mod tests {
         }
     }
 
-    // ── parse_judge_response ────────────────────────────────────────────
+    // parse_judge_response
 
     #[test]
     fn parse_direct_json_array() {
@@ -376,7 +362,7 @@ mod tests {
         assert_eq!(map.get(&1).copied(), Some(v(true, 1.0)));
     }
 
-    // ── judge_filter_rules (pure core) ──────────────────────────────────
+    // judge_filter_rules (pure core)
 
     #[test]
     fn filter_drops_only_non_applicable_rules() {
@@ -450,7 +436,7 @@ mod tests {
         assert!(out.is_empty());
     }
 
-    // ── run_applicability_judge (end-to-end with mock) ──────────────────
+    // run_applicability_judge (end-to-end with mock)
 
     #[tokio::test]
     async fn judge_disabled_is_noop_and_makes_no_call() {

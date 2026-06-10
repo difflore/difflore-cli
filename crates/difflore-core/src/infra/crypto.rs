@@ -27,7 +27,7 @@ fn get_or_create_master_key() -> Result<[u8; 32], String> {
                     return Ok(key);
                 }
             eprintln!(
-                "[crypto] DIFFLORE_MASTER_KEY set but not 64-char hex; ignoring."
+                "warning: DIFFLORE_MASTER_KEY is not a valid 64-character hex key; using the local keyring instead."
             );
         }
 
@@ -47,17 +47,19 @@ fn get_or_create_master_key() -> Result<[u8; 32], String> {
                     ));
                 }
                 eprintln!(
-                    "[crypto] WARNING: OS keyring unavailable ({err}), using local fallback key derivation. \
-                     Stored secrets are protected with a weaker key."
+                    "warning: OS keyring unavailable; DiffLore will use local fallback encryption for stored secrets."
                 );
+                if crate::env::debug_providers() {
+                    eprintln!("[crypto] keyring unavailable: {err}");
+                }
                 Ok(derive_local_fallback_key())
             }
         }
     }).clone()
 }
 
-/// Common CI env vars. Used to refuse the silent fallback key path
-/// on hosts where the encrypted state wouldn't survive.
+/// True on common CI hosts, where the silent fallback key is refused because
+/// encrypted state wouldn't survive the next run.
 fn is_ci_environment() -> bool {
     const CI_ENV_FLAGS: &[&str] = &[
         "CI",
@@ -85,16 +87,20 @@ fn try_keyring_key() -> Result<[u8; 32], String> {
                     key.copy_from_slice(&bytes);
                     return Ok(key);
                 }
-                eprintln!(
-                    "[crypto] keyring: decoded bytes len={} (expected 32)",
-                    bytes.len()
-                );
-            } else {
+                if crate::env::debug_providers() {
+                    eprintln!(
+                        "[crypto] keyring: decoded bytes len={} (expected 32)",
+                        bytes.len()
+                    );
+                }
+            } else if crate::env::debug_providers() {
                 eprintln!("[crypto] keyring: hex decode failed");
             }
         }
         Err(e) => {
-            eprintln!("[crypto] keyring get_password failed: {e}");
+            if crate::env::debug_providers() {
+                eprintln!("[crypto] keyring get_password failed: {e}");
+            }
         }
     }
 
@@ -129,14 +135,11 @@ fn to_hex(bytes: &[u8]) -> String {
         })
 }
 
-/// SHA-256 a byte slice and return it as the prefixed digest string
-/// `"sha256:<lowercase-hex>"`. Used by `difflore-cli`'s MCP install manifest
-/// (item ⑤b) to hash the *exact* DiffLore config block we render, so a later
-/// `agents update` can tell "unchanged since DiffLore wrote it" (safe to
-/// upgrade) from "the human edited it" (must not clobber). Keeping the hashing
-/// here lets the CLI reuse the workspace `sha2` dep instead of pulling in a
-/// second hashing crate, and pins the algorithm choice to one place. The helper
-/// is pure — it never reads files, the keyring, or any repo-scoped state.
+/// SHA-256 a byte slice as the prefixed digest string `"sha256:<lowercase-hex>"`.
+/// Used by the MCP install manifest to hash the exact rendered config block, so
+/// a later `agents update` can tell "unchanged since DiffLore wrote it" (safe to
+/// upgrade) from "the human edited it" (must not clobber). Pure — never touches
+/// files, the keyring, or repo state.
 #[must_use]
 pub fn sha256_block_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -187,7 +190,6 @@ pub fn encrypt_secret(plaintext: &str) -> Result<String, String> {
 /// Which key successfully decrypted a stored secret.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecryptOrigin {
-    /// Decrypted with the current master key.
     CurrentKey,
 }
 

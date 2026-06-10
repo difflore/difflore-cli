@@ -71,14 +71,12 @@ pub(crate) async fn dispatch(command: Commands) {
         Commands::McpServer => {
             let ctx = runtime::CommandContext::new(runtime::OutputMode::Json).await;
             if let Err(e) = difflore_core::mcp_server::run(ctx.db).await {
-                eprintln!("[difflore] mcp server failed: {e}");
+                eprintln!("DiffLore memory server failed: {e}");
             }
         }
         Commands::Skills { command } => dispatch_skills(command).await,
         Commands::Packs { command } => dispatch_packs(command).await,
-        // Single-variant maintainer subcommand — matched inline (no helper) to
-        // avoid an owned-enum pass-by-value the other multi-variant dispatchers
-        // need but this one does not.
+        // Single-variant subcommand matched inline; no dispatch helper needed.
         Commands::Dist {
             command: DistCommands::Verify { json },
         } => commands::dist::handle_verify(json),

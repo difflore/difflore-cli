@@ -10,16 +10,12 @@ use crate::context::{EmbeddingDiagnostics, gather_embedding_diagnostics_with_act
 use crate::errors::CoreError;
 use crate::review_trajectory::TrajectoryStep;
 
-// ── Public entry point ─────────────────────────────────────────────
-
 /// Run the MCP server event loop. Reads JSON-RPC messages line-by-line
 /// from stdin and writes responses to stdout. Runs until stdin is closed.
 pub async fn run(db: SqlitePool) -> Result<(), Box<dyn std::error::Error>> {
     let cloud = CloudClient::create().await;
-    // Index pools are resolved per-call (by project) against
-    // `~/.difflore/projects/{hash}/context-index.db`, so there is no
-    // single pool to open here. The first tool call will lazily create
-    // the pool for whatever project the MCP client is rooted in.
+    // Index pools are resolved per-call (by project), so there is no single
+    // pool to open here; the first tool call lazily creates one.
     let state = McpState {
         db,
         cloud,
@@ -35,7 +31,6 @@ pub async fn run(db: SqlitePool) -> Result<(), Box<dyn std::error::Error>> {
         line.clear();
         let n = reader.read_line(&mut line).await?;
         if n == 0 {
-            // EOF — client disconnected
             break;
         }
 
@@ -72,26 +67,25 @@ fn jsonrpc_line_bytes(value: &Value) -> Vec<u8> {
             out
         }
         Err(e) => {
-            eprintln!("[difflore-mcp] failed to serialize JSON-RPC response: {e}");
+            if crate::env::debug_telemetry() {
+                eprintln!("[difflore-mcp] failed to serialize JSON-RPC response: {e}");
+            }
             b"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"serialize failed\"}}\n".to_vec()
         }
     }
 }
 
-/// Injectable rule context produced by `fetch_relevant_rules_for_hook`.
-///
-/// Callers render this as plain text for the assistant; the MCP server
-/// separately formats it as JSON-RPC `tools/call` output. Splitting the
-/// surface keeps the hook path from paying the JSON-RPC envelope cost.
+/// Injectable rule context produced by `fetch_relevant_rules_for_hook`. Kept
+/// separate from the MCP server's JSON-RPC formatting so the hook path doesn't
+/// pay the envelope cost.
 #[derive(Debug, Clone)]
 pub struct HookRuleContext {
-    /// Markdown-formatted rule block suitable for injection into the
-    /// assistant's next-turn context. Empty when no rules matched.
+    /// Markdown rule block for the assistant's next-turn context. Empty when no
+    /// rules matched.
     pub rendered: String,
-    /// Count of rules actually injected. `0` means "no relevant rules".
     pub rules_injected: usize,
-    /// Rule ids in injection order. Hook callers use this for compact
-    /// follow-up hints such as `rule_timeline(rule_id=...)`.
+    /// Rule ids in injection order, for follow-up hints like
+    /// `rule_timeline(rule_id=...)`.
     pub rule_ids: Vec<String>,
 }
 
@@ -111,21 +105,18 @@ fn hook_embedding_health_header(diag: &EmbeddingDiagnostics) -> String {
     )
 }
 
-/// Number of cross-repo starter rules the hook injects in the cold-start case.
-/// Conservative: a small, file-matched set, since these are transferable
-/// suggestions from other repos, not this repo's own ratified judgment.
+/// Cross-repo starter rules the hook injects in the cold-start case. Kept
+/// small since these are transferable suggestions from other repos, not this
+/// repo's own ratified judgment.
 const CROSS_REPO_STARTER_HOOK_TOP_K: usize = 3;
 
-/// Hook-path rule fetch. Returns rendered text + injection count without
-/// the JSON-RPC envelope so the hook shim (or any other in-process
-/// consumer) can pull rules in one function call.
+/// Hook-path rule fetch. Returns rendered text + injection count without the
+/// JSON-RPC envelope so an in-process consumer can pull rules in one call.
+/// Keep retrieval, formatting, telemetry, and token accounting aligned with
+/// the rule detail paths when changing this surface.
 ///
-/// Keep retrieval, formatting, telemetry, and token accounting semantics
-/// aligned with rule detail paths when changing this surface.
-///
-/// `intent` is a free-form short string describing why we're asking
-/// (e.g. `"post-edit"` for a `PostToolUse` hook). It feeds into the same
-/// retrieval query string the MCP tool uses.
+/// `intent` is a short string describing why we're asking (e.g. `"post-edit"`)
+/// and feeds into the same retrieval query the MCP tool uses.
 pub async fn fetch_relevant_rules_for_hook(
     db: &SqlitePool,
     index_pool: &SqlitePool,
@@ -149,7 +140,7 @@ pub async fn fetch_relevant_rules_for_hook(
     };
 
     // Short-circuit empty-prone post-edit extensions before the index
-    // round-trip. Pre-read stays on the full path.
+    // round-trip; pre-read stays on the full path.
     let ext_key = super::hook_short_circuit::extension_key(file);
     let short_circuit_mode = crate::env::hook_short_circuit_mode();
     let short_circuit_cache = super::hook_short_circuit::global_cache();
@@ -164,8 +155,8 @@ pub async fn fetch_relevant_rules_for_hook(
             }
         };
     if short_circuit_now {
-        // Synthesize a real empty serve without recording it, so the
-        // extension can recover when the corpus improves.
+        // Return empty without recording, so the extension can recover when
+        // the corpus improves.
         if trace {
             eprintln!(
                 "[difflore.hook.trace] short_circuit ext={ext_key} mode={short_circuit_mode:?} elapsed=0ms"
@@ -206,10 +197,9 @@ pub async fn fetch_relevant_rules_for_hook(
     // Ranking inputs are best-effort; SQL failures fall back to defaults.
     let ranking_inputs = crate::context::rule_source::load_rule_ranking_inputs(db).await;
     mark("load_rule_ranking_inputs");
-    // Hooks render at most 5 rules to keep unsolicited context small.
-    // ANN is enabled with a safe linear-scan fallback. A low-rate sampler
-    // occasionally asks for a wider candidate window so deeper ranks get
-    // measured without changing normal hook behavior.
+    // Hooks render at most 5 rules to keep unsolicited context small. A
+    // low-rate sampler occasionally widens the candidate window so deeper
+    // ranks get measured without changing normal hook behavior.
     let hook_top_k =
         super::recall_sampler::maybe_bump_top_k(5usize, crate::env::deep_recall_sample_rate());
     let candidate_limit = hook_top_k.saturating_mul(5).clamp(hook_top_k, 50);
@@ -429,15 +419,6 @@ pub async fn fetch_relevant_rules_for_hook(
     })
 }
 
-/// Best-effort detection of the current working dir's GitHub `owner/repo`s.
-/// Runs `git remote get-url <remote>` for `origin` then `upstream` and
-/// parses SSH / HTTPS URLs. Returns an empty list if no git repo, no
-/// matching remotes, or the remotes don't look like GitHub. When both
-/// remotes resolve to the same owner/repo (forks before push, mirrors,
-/// etc.) the duplicate is dropped while preserving origin-first order.
-///
-/// Keeps MCP recall scoped to the project even when the client does not
-/// pass `repo_full_name` explicitly.
 use super::serve_render::{RuleBlockArgs, RuleServe, render_rule_block, serve_and_record};
 use super::{
     McpState, emit_trajectory_step, estimate_tokens, handle_message, jsonrpc_error,
@@ -468,6 +449,18 @@ pub(crate) fn detect_git_remote_owner_repos() -> Vec<String> {
     repos
 }
 
+#[cfg(test)]
+pub(crate) fn set_detected_repos_for_current_dir_for_test(repos: Vec<String>) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut guard = repo_detection_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    guard.insert(cwd, repos);
+}
+
+/// Parse GitHub `owner/repo`s from `origin` then `upstream` remotes, dropping
+/// duplicates while preserving origin-first order. Empty when no git repo or no
+/// GitHub remotes. Keeps MCP recall scoped to the project.
 fn detect_git_remote_owner_repos_uncached() -> Vec<String> {
     let mut repos = Vec::new();
     for remote in ["origin", "upstream"] {
@@ -489,9 +482,8 @@ fn detect_git_remote_owner_repos_uncached() -> Vec<String> {
     repos
 }
 
-/// Accepts SSH (`git@github.com:owner/repo.git`), HTTPS
-/// (`https://github.com/owner/repo.git`), and their variants without `.git`.
-/// Returns Some("owner/repo") for GitHub-hosted remotes; None otherwise.
+/// `Some("owner/repo")` for GitHub-hosted SSH/HTTPS remotes (with or without
+/// `.git`); `None` otherwise.
 pub(crate) fn parse_github_owner_repo(url: &str) -> Option<String> {
     crate::git::parse_github_remote_url(url)
 }

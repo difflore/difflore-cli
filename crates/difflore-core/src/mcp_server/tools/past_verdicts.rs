@@ -18,8 +18,7 @@ pub(crate) async fn tool_get_past_verdicts(
         .and_then(|v| v.as_str())
         .ok_or((-32602, "Missing required parameter: query".to_owned()))?;
     validate_mcp_text_arg("query", query, MCP_TEXT_ARG_CHAR_LIMIT)?;
-    // Optional `file` enables server-side cascade ordering and concrete
-    // gap attribution.
+    // Optional `file` enables server-side cascade ordering.
     let target_file = args
         .get("file")
         .and_then(|v| v.as_str())
@@ -41,11 +40,9 @@ pub(crate) async fn tool_get_past_verdicts(
         detect_git_remote_owner_repos()
     };
 
-    // Send raw query text for server-side embedding, and retain per-repo
-    // provenance before merging fan-out responses.
+    // Retain per-repo provenance before merging fan-out responses.
     let mut repo_by_extraction: std::collections::HashMap<String, (String, f32)> =
         std::collections::HashMap::new();
-    // Cap fan-out at 4 to bound MCP latency.
     let cloud = &state.cloud;
     let cloud_status = crate::cloud::sync::fetch_cloud_status(cloud).await;
     if !cloud_status.logged_in {
@@ -68,6 +65,7 @@ pub(crate) async fn tool_get_past_verdicts(
     } else {
         PastVerdictScope::Personal
     };
+    // Cap fan-out at 4 repos to bound MCP latency.
     let recalls = repo_scopes.into_iter().take(4).map(|repo| {
         let target_file = target_file.clone();
         let team_id = team_id.clone();
@@ -121,8 +119,8 @@ pub(crate) async fn tool_get_past_verdicts(
         }));
     }
 
-    // Format verdicts into readable text. Each verdict carries a
-    // Include repo provenance when available.
+    // Format verdicts into readable text, including repo provenance when
+    // available.
     let mut text = String::from("## Past Review Verdicts\n\n");
     for (i, v) in verdicts.iter().enumerate() {
         let source_repo = repo_by_extraction
@@ -130,7 +128,7 @@ pub(crate) async fn tool_get_past_verdicts(
             .map(|(repo, _)| repo.as_str());
         let provenance = source_pr_label(v, source_repo)
             .or_else(|| source_repo.map(str::to_owned))
-            .map(|source| format!(" ← from {source}"))
+            .map(|source| format!(" <- from {source}"))
             .unwrap_or_default();
         text.push_str(&format!(
             "### {} [{}, similarity {:.2}]{}\n\n",

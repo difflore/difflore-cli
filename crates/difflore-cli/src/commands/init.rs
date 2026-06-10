@@ -30,7 +30,7 @@ impl InitOptions {
 ///
 /// Per the CLI redesign brief, `init` is the one safe command that
 /// gets a user to local value. Output is shaped as:
-///   `✓ DiffLore initialized for <repo>`
+///   `OK DiffLore initialized for <repo>`
 ///   `Readiness` block (repo / memory / agents / provider / cloud)
 ///   `Next best action` — one command.
 pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
@@ -52,32 +52,27 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
     }
 
     let remote_url = crate::commands::util::git_str(&["config", "--get", "remote.origin.url"]);
-    // detect_github_repo_full_names returns [fork, upstream(s)…] — same
-    // alias chain `fix --preview` uses for repo-scoped recall. Using it
-    // here means `init`'s memory preview will resolve to upstream
-    // (gin-gonic/gin) for a fork (difflore-fixtures/gin) when the user
-    // hasn't yet imported reviews under their own fork name.
+    // [fork, upstream(s)…] — the same alias chain `fix --preview` uses, so the
+    // memory preview resolves to upstream for a fork the user hasn't imported
+    // reviews under yet.
     let repo_aliases = difflore_core::git::detect_github_repo_full_names(&cwd.to_string_lossy());
 
     let db = &ctx.db;
-    // We call `ensure_project` for its side effect — registering the cwd
-    // in the projects table so later commands have a project_id to bind
-    // to. The returned record isn't user-facing here; prefix the binding
-    // with `_` instead of trailing a `let _ = project;` later.
+    // Called for its side effect: registering the cwd in the projects table so
+    // later commands have a project_id to bind to.
     let _project = ensure_project(db, &cwd_str).await;
 
     let repo_label = repo_aliases.first().cloned().unwrap_or_else(|| {
-        // Final fallback if detect failed AND remote_url didn't parse:
-        // show the directory name so the header is never empty.
+        // Fallback when detect failed and remote_url didn't parse: the
+        // directory name keeps the header non-empty.
         cwd.file_name().map_or_else(
             || "this repo".to_owned(),
             |s| s.to_string_lossy().into_owned(),
         )
     });
 
-    // Run requested setup steps quietly (each step prints its own
-    // detail). We collect snapshots AFTER setup so the readiness block
-    // reflects the post-init state, not the pre-init state.
+    // Run setup steps before collecting snapshots so the readiness block
+    // reflects the post-init state.
     if opts.run_agents() {
         mcp_install::install_all(false);
     }
@@ -89,7 +84,6 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
             providers_setup::run_setup(db).await;
         }
     }
-    // ── Header ──────────────────────────────────────────────────
     if opts.check {
         println!(
             "{} {} DiffLore would initialize for {}",
@@ -106,10 +100,8 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
     }
     println!();
 
-    // ── Readiness block ────────────────────────────────────────
     println!("{}", style::pewter("Readiness"));
 
-    // repo
     println!(
         "  {:<10} {}",
         style::pewter("repo"),
@@ -127,14 +119,13 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
     let cloud_client = ctx.cloud().await;
     let cloud_logged_in = cloud_client.is_logged_in();
 
-    // memory
     let total_rules = match difflore_core::skills::stats(db).await {
         Ok(s) => s.total,
         Err(_) => 0,
     };
     let memory_value = if total_rules == 0 {
         style::amber(&format!(
-            "0 rules — run `{}`",
+            "0 rules - run `{}`",
             memory_import_command(cloud_logged_in)
         ))
         .to_string()
@@ -148,18 +139,14 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
     };
     println!("  {:<10} {}", style::pewter("memory"), memory_value);
 
-    // First-look proof: when there ARE rules, print a top-3 sample so
-    // the user immediately sees concrete review judgments their team's
-    // PRs taught DiffLore. Prefer rules scoped to the current repo so
-    // `init` feels personalized, with a global fallback for newly-cloned
-    // forks whose source_repo string hasn't matched yet. Each line ends
-    // with `← from <repo>` (same framing as `fix --preview` and TUI),
-    // so a user runs `init` once and the AI's provenance is visible.
+    // Print a top-3 sample so the user sees concrete review judgments. Each
+    // line ends with `<- from <repo>` (same framing as `fix --preview` and the
+    // TUI) so the memory source is visible.
     if total_rules > 0 {
         let top = top_rules_preview(db, &repo_aliases, 3).await;
         for sample in &top {
             let suffix = sample.source_repo.as_deref().map_or_else(String::new, |r| {
-                format!("  {}", style::pewter(&format!("\u{2190} from {r}")))
+                format!("  {}", style::pewter(&format!("<- from {r}")))
             });
             println!(
                 "  {:<10} {} {}{suffix}",
@@ -170,7 +157,6 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
         }
     }
 
-    // agents
     let snapshot = mcp_install::collect_status_snapshot();
     let installed = snapshot
         .clients
@@ -190,7 +176,6 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
         }
     );
 
-    // provider
     let providers = difflore_core::providers::list(db).await.unwrap_or_default();
     let active = providers.iter().find(|p| p.is_active);
     let provider_value = match active {
@@ -199,10 +184,8 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
     };
     println!("  {:<10} {}", style::pewter("provider"), provider_value);
 
-    // cloud — tier badge that makes the OSS/Cloud split visible.
-    // Surfaces whether the user is on the open-source local runtime or
-    // a paid Cloud Team plan; the OSS line is the only place a casual
-    // user sees a single unobtrusive pointer to what cloud unlocks.
+    // Tier badge making the OSS/Cloud split visible — the OSS line is the only
+    // place a casual user sees a pointer to what cloud unlocks.
     let cloud_status = fetch_cloud_status_for_init(cloud_client).await;
     let on_cloud_team = is_cloud_team(&cloud_status);
     let cloud_value = tier_badge_line(&cloud_status);
@@ -213,15 +196,14 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
     };
     println!("  {:<10} {}", style::pewter("cloud"), styled_cloud);
 
-    // OSS-mode "what cloud adds" block — shown once, three lines, no nag.
-    // Anchored by the canonical pricing URL so users have one click to
-    // the conversion surface. Skipped on Cloud Team (already converted).
+    // OSS-mode "what cloud adds" block. Skipped on Cloud Team (already
+    // converted).
     if !on_cloud_team {
         let pricing = difflore_core::cloud::endpoints::pricing_url();
         println!();
         println!("{}", style::pewter("Cloud Team adds (paid):"));
         println!(
-            "  {} GitHub App review-memory ingest and team governance",
+            "  {} GitHub App team review history",
             style::pewter(sym::BULLET),
         );
         println!(
@@ -229,7 +211,7 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
             style::pewter(sym::BULLET),
         );
         println!(
-            "  {} Managed embeddings + accepted-proof impact dashboards",
+            "  {} Managed embeddings + accepted-edit dashboards",
             style::pewter(sym::BULLET),
         );
         println!("  {}", style::pewter(&pricing));
@@ -242,13 +224,12 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
         style::pewter(sym::BULLET),
     );
     println!(
-        "  {} Use {} to inspect the value loop, then {} to see exact recall.",
+        "  {} Use {} to inspect accepted edits, then {} to see exact recall.",
         style::pewter(sym::BULLET),
         style::cmd("difflore status"),
         style::cmd("difflore recall --diff"),
     );
 
-    // ── Next best action ──────────────────────────────────────
     let next = pick_next_best_action(total_rules, installed, active.is_some(), cloud_logged_in);
     println!();
     println!("{}", style::pewter("Next best action"));
@@ -299,21 +280,21 @@ async fn fetch_cloud_status_for_init(
 ///   - Cloud Team active → highlights what they're paying for
 pub(crate) fn tier_badge_line(status: &difflore_core::cloud::sync::CloudStatus) -> String {
     if is_cloud_team(status) {
-        "Cloud Team · multi-device sync + GitHub App ingest + managed extraction".to_owned()
+        "Cloud Team | multi-device sync + GitHub App team review history".to_owned()
     } else if status.logged_in {
-        "Cloud Free · logged in · local runtime + upgrade path".to_owned()
+        "Cloud Free | logged in | local runtime + upgrade path".to_owned()
     } else {
-        "OSS · local-only · agent recall + on-device fix".to_owned()
+        "OSS | local-only | agent recall + on-device fix".to_owned()
     }
 }
 
 /// Pick the single highest-leverage next command for this user state.
 ///
 /// Priority order:
-///   1. No memory → import local candidates, or cloud extraction if already logged in.
-///   2. Memory but no agents wired → wire an agent so recall is reachable.
-///   3. Memory + agents but no provider → set up a provider (unblocks fix).
-///   4. All set → preview recall on the current diff.
+///   1. No memory: import local candidates, uploading PR history if already logged in.
+///   2. Memory but no agents wired: wire an agent so recall is reachable.
+///   3. Memory + agents but no provider: set up a provider (unblocks fix).
+///   4. All set: preview recall on the current diff.
 const fn pick_next_best_action(
     total_rules: i64,
     installed_agents: usize,
@@ -347,13 +328,10 @@ struct RulePreview {
     source_repo: Option<String>,
 }
 
-/// Pick the top N rules to surface in the `init` memory section. When
-/// `current_repo` is supplied, we first look for rules whose stored
-/// `source_repo` matches the current `owner/repo`; this makes the
-/// readout feel personalized ("we already learned from your repo's
-/// PRs"). If that returns nothing — common for a fresh fork that
-/// hasn't been imported yet — we fall back to the highest-confidence
-/// active rules across the whole corpus so the section is never empty.
+/// Pick the top N rules for the `init` memory section. Prefers rules whose
+/// `source_repo` matches one of `repo_aliases`; falls back to the
+/// highest-confidence active rules corpus-wide (common for a fresh,
+/// not-yet-imported fork) so the section is never empty.
 async fn top_rules_preview(
     db: &difflore_core::SqlitePool,
     repo_aliases: &[String],
@@ -493,8 +471,7 @@ mod tests {
             let line = tier_badge_line(&s);
             assert!(line.starts_with("Cloud Team"), "unexpected: {line}");
             assert!(line.contains("multi-device sync"));
-            assert!(line.contains("GitHub App ingest"));
-            assert!(line.contains("managed extraction"));
+            assert!(line.contains("GitHub App team review history"));
         }
     }
 

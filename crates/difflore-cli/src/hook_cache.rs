@@ -1,8 +1,6 @@
-//! Small hot-path helpers for lifecycle hooks.
-//!
-//! The cache prevents repeated rule injections for the same file and
-//! event kind within a short window. It is deliberately advisory: any
-//! IO or parse failure returns "do not skip" so hooks keep working.
+//! Cache that suppresses repeated rule injections for the same file and
+//! event kind within a short window. Advisory only: any IO or parse
+//! failure returns "do not skip" so hooks keep working.
 
 use std::collections::BTreeMap;
 use std::fs;

@@ -37,10 +37,12 @@ impl ProviderRow {
         match crate::crypto::decrypt_secret(&self.api_key) {
             Ok(plaintext) => plaintext,
             Err(e) => {
-                eprintln!(
-                    "Failed to decrypt API key for provider {}: {e}. Returning empty string to avoid leaking ciphertext.",
-                    self.id
-                );
+                if crate::env::debug_providers() {
+                    eprintln!(
+                        "[providers] failed to decrypt API key for provider {}: {e}",
+                        self.id
+                    );
+                }
                 String::new()
             }
         }
@@ -196,7 +198,7 @@ pub async fn update(
     .await?;
     if result.rows_affected() == 0 {
         return Err(CoreError::NotFound(format!(
-            "provider '{}' not found — cannot update. List current providers with `difflore providers list`.",
+            "provider '{}' not found; cannot update. List current providers with `difflore providers list`.",
             provider.id
         )));
     }

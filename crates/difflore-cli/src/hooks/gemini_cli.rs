@@ -32,10 +32,9 @@
 //! }
 //! ```
 //!
-//! **ANSI escape stripping**: Gemini CLI is known to leak raw ANSI
-//! color sequences through tool output into system messages. Our
-//! `format_output` path strips them out of `systemMessage` before
-//! shipping so the user doesn't see `\x1b[31m` garbage in their UI.
+//! **Host-visible messages**: keep DiffLore lifecycle notes out of
+//! `systemMessage`; hosts can render that channel as event-name chatter in
+//! the user's transcript.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -44,7 +43,6 @@ use super::synth;
 use super::types::{HookEvent, HookResult};
 use super::{PayloadAdapter, PlatformAdapter};
 
-/// Zero-sized marker — no adapter state.
 pub struct GeminiCliAdapter;
 
 /// Typed view of Gemini CLI's hook stdin. Every field is optional:
@@ -81,9 +79,8 @@ impl GeminiHookPayload {
             .as_deref()
             .ok_or_else(|| "missing hook_event_name".to_owned())?;
         match event_name {
-            // SessionStart and BeforeAgent both signal "new session/turn
-            // starting" — collapse both into SessionStart so warmup logic
-            // in the CLI runs once either way.
+            // Both signal a new session/turn; collapse into SessionStart so
+            // CLI warmup runs once either way.
             "SessionStart" | "BeforeAgent" => Ok(HookEvent::SessionStart {
                 cwd: self.cwd.unwrap_or_default(),
                 session_id: None,
@@ -99,10 +96,9 @@ impl GeminiHookPayload {
                 transcript_path: None,
                 cwd: None,
             }),
-            // BeforeTool / PreCompress / Notification: Gemini fires
-            // these for every tool call / every compaction / every
-            // permission prompt — way too chatty for rule retrieval,
-            // which wants "after the code actually changed" signals.
+            // Ignored: these fire on every tool call / compaction / permission
+            // prompt — too chatty for rule retrieval, which only wants
+            // after-the-code-changed signals.
             "BeforeTool" | "PreCompress" | "Notification" => Err(format!(
                 "Gemini CLI event {event_name} is intentionally ignored"
             )),
@@ -111,18 +107,12 @@ impl GeminiHookPayload {
     }
 }
 
-/// Build a `PostToolUse` from Gemini's `AfterTool` payload.
+/// Build a `PostToolUse` from Gemini's `AfterTool` payload. Probes the
+/// common `tool_input` path keys so file-mutation tools get a `file_path`.
 ///
-/// The `tool_input` shape is tool-specific (Gemini's built-ins include
-/// `WriteFile`, `Edit`, `ReadFile`, `ShellCommand`, …). We probe the
-/// common path keys so typical file-mutation tools flow through with a
-/// `file_path` set.
-///
-/// Tool-name normalisation: the dispatch layer only acts on the
-/// canonical Claude Code names (`Edit`/`Write`/`MultiEdit`); Gemini's
-/// `WriteFile` would otherwise get noop'd and Gemini users would
-/// silently miss rule injection on every file write. Map it here so
-/// downstream callers don't need a per-platform allowlist.
+/// Maps Gemini's `WriteFile` to the canonical `Write`: the dispatch layer
+/// only acts on `Edit`/`Write`/`MultiEdit`, so without this every Gemini
+/// file write would be noop'd and miss rule injection.
 fn after_tool_event(p: GeminiHookPayload) -> HookEvent {
     let raw_tool_name = p.tool_name.clone().unwrap_or_default();
     let tool_name = match raw_tool_name.as_str() {
@@ -151,18 +141,11 @@ fn after_tool_event(p: GeminiHookPayload) -> HookEvent {
     }
 }
 
-/// Best-effort diff synthesis for Gemini tool payloads.
-///
-/// Handles three common shapes:
-///   - `{ "old_string", "new_string" }` (Edit)
-///   - `{ "content" }` (`WriteFile`)
-///   - `{ "command", "output" }` (`ShellCommand`) — surfaces both so
-///     rule retrievers keying off "npm install" or "curl" still match.
-///
-/// Any tool output that carries ANSI escape sequences (common with
-/// `ShellCommand`) is stripped before being folded into the diff;
-/// downstream text matching shouldn't have to care about terminal
-/// colour codes.
+/// Best-effort diff synthesis for Gemini tool payloads, handling three
+/// shapes: `{old_string, new_string}` (Edit), `{content}` (`WriteFile`),
+/// and `{command, output}` (`ShellCommand`, surfacing both so retrievers
+/// keying off "npm install" or "curl" still match). ANSI escapes in shell
+/// output are stripped so downstream text matching ignores colour codes.
 fn synthesise_diff(tool_input: Option<&Value>, tool_response: Option<&Value>) -> Option<String> {
     let input = tool_input?;
     if let (Some(old), Some(new)) = (
@@ -175,8 +158,6 @@ fn synthesise_diff(tool_input: Option<&Value>, tool_response: Option<&Value>) ->
         return Some(synth::diff_content(content));
     }
     if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
-        // Gemini stuffs shell output into `tool_response.output` — we
-        // sanitise ANSI before it lands in the retriever's text index.
         let cleaned = tool_response
             .and_then(|v| v.get("output"))
             .and_then(|v| v.as_str())
@@ -186,19 +167,11 @@ fn synthesise_diff(tool_input: Option<&Value>, tool_response: Option<&Value>) ->
     None
 }
 
-/// Strip ANSI escape sequences (CSI / OSC / ESC-prefixed control codes)
-/// from `s`. Implemented as a tiny state machine rather than via the
-/// `regex` crate so the CLI doesn't pick up an extra dependency just
-/// for this one call site.
-///
-/// Covers the cases claude-mem's regex targets:
-///   - CSI sequences `ESC [ … final-byte` where final-byte is
-///     `@ … ~` (0x40..=0x7E).
-///   - 8-bit CSI prefix (0x9B) with the same body.
-///   - Simple two-byte ESC sequences (e.g. `ESC 7`, `ESC M`).
-///
-/// Returns `s` unchanged on the fast path when neither ESC (0x1B) nor
-/// 8-bit CSI (0x9B) appears at all.
+/// Strip ANSI escape sequences from `s`. A tiny state machine (rather than
+/// the `regex` crate, to avoid an extra dependency) covering CSI sequences
+/// `ESC [ … final-byte`, the 8-bit CSI prefix (0x9B), and two-byte ESC
+/// sequences (e.g. `ESC 7`, `ESC M`). Fast-path returns `s` unchanged when
+/// neither ESC (0x1B) nor 8-bit CSI (0x9B) appears.
 pub(crate) fn strip_ansi(s: &str) -> String {
     if !s.contains('\x1b') && !s.contains('\u{009b}') {
         return s.to_owned();
@@ -214,16 +187,14 @@ pub(crate) fn strip_ansi(s: &str) -> String {
             i = skip_csi_body(bytes, i);
             continue;
         }
-        // ESC-prefixed sequence.
         if b == 0x1B {
             if i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-                // CSI: ESC [ … final-byte
                 i += 2;
                 i = skip_csi_body(bytes, i);
                 continue;
             }
-            // Two-byte ESC sequences (e.g. ESC M, ESC 7) — skip the
-            // ESC plus one more byte when present.
+            // Two-byte ESC sequence (e.g. ESC M, ESC 7): skip ESC plus one
+            // more byte when present.
             if i + 1 < bytes.len() {
                 i += 2;
             } else {
@@ -273,23 +244,17 @@ impl PlatformAdapter for GeminiCliAdapter {
     }
 
     fn format_output(&self, result: HookResult) -> String {
-        // Gemini CLI's documented output shape:
-        //   { continue, suppressOutput, systemMessage, hookSpecificOutput }
-        // `continue` is always included to prevent accidental agent
-        // termination on future Gemini builds that treat absence as
-        // "stop".
+        // `continue` is always emitted so future Gemini builds that treat
+        // its absence as "stop" don't accidentally terminate the agent.
         let mut obj = json!({
             "continue": result.continue_,
             "suppressOutput": false,
         });
-        if let Some(msg) = result.system_message {
-            obj["systemMessage"] = Value::String(strip_ansi(&msg));
-        }
+        let _ = result.system_message;
         if let Some(ctx) = result.additional_context {
-            // Gemini CLI pipes `hookSpecificOutput.additionalContext`
-            // back into the conversation transcript for SessionStart
-            // and AfterTool events — the natural place for advisory
-            // rule injection.
+            // Gemini pipes `hookSpecificOutput.additionalContext` back into
+            // the transcript for SessionStart/AfterTool — where advisory
+            // rule injection belongs.
             obj["hookSpecificOutput"] = json!({
                 "additionalContext": ctx,
             });
@@ -317,7 +282,6 @@ mod tests {
 
     #[test]
     fn parse_before_agent_maps_to_session_start() {
-        // Deliberate collapse: BeforeAgent triggers session warmup too.
         let adapter = GeminiCliAdapter;
         let raw = r#"{"hook_event_name":"BeforeAgent","cwd":"/home/me/p"}"#;
         assert_eq!(
@@ -374,10 +338,6 @@ mod tests {
 
     #[test]
     fn parse_after_tool_normalises_writefile_to_write() {
-        // Regression: Gemini's `WriteFile` tool was passed through
-        // unmapped, so the hook dispatcher's `Edit|Write|MultiEdit`
-        // allowlist noop'd every Gemini file write — silently skipping
-        // rule injection on the canonical Gemini editing surface.
         let adapter = GeminiCliAdapter;
         let raw = r#"{
             "hook_event_name": "AfterTool",
@@ -396,15 +356,11 @@ mod tests {
 
     #[test]
     fn parse_after_tool_shell_strips_ansi_from_output() {
-        // Regression: Gemini's ShellCommand often leaks ANSI colour
-        // codes — we must strip them before they reach rule retrieval.
-        // The JSON input uses `` unicode escapes (legal JSON) so
-        // serde accepts the payload; strip_ansi then cleans them up.
+        // ShellCommand output often leaks ANSI colour codes; strip them
+        // before they reach rule retrieval.
         let adapter = GeminiCliAdapter;
-        // Build the JSON via serde_json::json! so the ESC byte (0x1B)
-        // lives only in the produced string; the source file stays
-        // ASCII-clean and survives Edit / Write tools that strip C0
-        // control bytes from string literals.
+        // Build the JSON via serde_json::json! so the ESC byte (0x1B) lives
+        // only in the produced string and the source file stays ASCII-clean.
         let output = format!("{esc}[31mred{esc}[0m plain", esc = '\u{001b}');
         let payload = json!({
             "hook_event_name": "AfterTool",
@@ -425,9 +381,8 @@ mod tests {
 
     #[test]
     fn parse_ignored_events_error_loudly_so_cli_noops() {
-        // BeforeTool / PreCompress / Notification are deliberately
-        // not modelled. They must error (so the CLI no-ops) rather
-        // than silently returning Stop or anything else actionable.
+        // These events must error (so the CLI no-ops) rather than silently
+        // returning Stop or anything else actionable.
         let adapter = GeminiCliAdapter;
         for ev in ["BeforeTool", "PreCompress", "Notification"] {
             let raw = format!(r#"{{"hook_event_name":"{ev}"}}"#);
@@ -454,14 +409,12 @@ mod tests {
     }
 
     #[test]
-    fn format_output_strips_ansi_from_system_message() {
+    fn format_output_omits_system_message() {
         let adapter = GeminiCliAdapter;
         let mut r = HookResult::noop();
         r.system_message = Some("\u{001b}[31mred\u{001b}[0m OK".into());
         let out = adapter.format_output(r);
         let v: Value = serde_json::from_str(&out).unwrap();
-        let msg = v["systemMessage"].as_str().unwrap();
-        assert!(!msg.contains('\x1b'), "ANSI leaked: {msg:?}");
-        assert!(msg.contains("red OK"), "content lost: {msg:?}");
+        assert!(v.get("systemMessage").is_none());
     }
 }

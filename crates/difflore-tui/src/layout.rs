@@ -1,16 +1,9 @@
 //! Centred-rect helpers shared by the modal layer and the app chrome.
-//!
-//! There used to be six near-identical copies of this: the
-//! percentage-based `centered_rect` and the absolute `centered_rect_abs`
-//! in `app::render`, plus a byte-for-byte `center_rect` duplicated into
-//! each of the four modal files. Both capabilities now live here once.
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
-/// Centre a sub-rect sized as a percentage of `area` (both axes).
-///
-/// `percent_x` / `percent_y` are 0..=100. Used for modals that should
-/// scale with the terminal rather than pin to a fixed glyph size.
+/// Centre a sub-rect sized as a percentage of `area` on both axes.
+/// `percent_x` / `percent_y` are 0..=100.
 pub fn centered_rect_pct(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -31,9 +24,8 @@ pub fn centered_rect_pct(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-/// Centre a sub-rect of an absolute `width` × `height`, clamped to
-/// `area` so an oversized request never escapes the parent. Used for
-/// fixed-size art (modals, the help overlay).
+/// Centre a sub-rect of absolute `width` × `height`, clamped to `area` so
+/// an oversized request never escapes the parent.
 pub fn centered_rect_abs(width: u16, height: u16, area: Rect) -> Rect {
     let w = width.min(area.width);
     let h = height.min(area.height);

@@ -1,19 +1,14 @@
 //! Shared cleanup for AI-reviewer prose (CodeRabbit & friends) so noisy
-//! emphasis/banner markup never reaches user-visible surfaces (rule titles,
-//! recall listings, share-rule pages, agent context blocks).
+//! emphasis/banner markup never reaches user-visible surfaces.
 //!
 //! Two layers, applied in order:
 //!  - `strip_review_markdown_noise`: drops emoji, markdown emphasis runs
 //!    (`**`, `__`, `_`, `*`), and leading severity banners.
 //!  - `clean_display_title`: also drops the `Review:` ingest prefix when
-//!    nothing useful remains after the colon, and trims residual
-//!    delimiters left behind by stripping.
+//!    nothing useful remains after the colon, and trims residual delimiters.
 //!
-//! These are intentionally idempotent so we can apply them at *both*
-//! ingest time (in `import_reviews`) and display time (in `search` /
-//! `recall`) without double-stripping good text. Display-time application
-//! retroactively cleans rule titles imported by older binaries — no DB
-//! migration required.
+//! Both are idempotent so they can run at both ingest time (`import_reviews`)
+//! and display time (`search` / `recall`) without double-stripping good text.
 
 const SEVERITY_BANNERS: &[&str] = &[
     // Longer phrases first so the loop consumes the maximal prefix
@@ -32,10 +27,9 @@ const SEVERITY_BANNERS: &[&str] = &[
     "suggestion",
 ];
 
-/// Banners to strip ONLY at display time — kept visible during import-review
-/// ingestion so the high-signal gate can detect and reject PR overview bot
-/// summaries before they reach rule extraction. Display-time scrubbing
-/// happens in `clean_display_title`.
+/// Banners stripped ONLY at display time — kept visible during ingestion so
+/// the high-signal gate can reject PR-overview bot summaries before rule
+/// extraction.
 const DISPLAY_ONLY_BANNERS: &[&str] = &[
     "## pull request overview",
     "## pull-request overview",
@@ -155,16 +149,10 @@ fn strip_count_residue(input: &str) -> String {
     head.trim().to_owned()
 }
 
-/// Strip leading PR-overview / Summary section markers — display-only.
-/// At ingest time the section header is kept intact so the high-signal gate
-/// can detect and reject these bot summaries. Once we render a title we want
-/// to skip past the header to the first real sentence.
-///
-/// Also handles AI-reviewer count headers like `Actionable comments
-/// posted: 9** [` and `Nitpick comments (5)` — when a banner ends in
-/// `:` or `(`, consume the run of digits / asterisks / brackets that
-/// typically follows so the rendered title starts at the first real
-/// sentence, not at the count residue.
+/// Strip leading PR-overview / Summary section markers (display-only;
+/// ingest keeps them for the high-signal gate). Also consumes count residue
+/// from headers like `Actionable comments posted: 9** [` or
+/// `Nitpick comments (5)` so the title starts at the first real sentence.
 fn strip_display_only_banners(input: &str) -> String {
     let mut head = input.to_owned();
     loop {

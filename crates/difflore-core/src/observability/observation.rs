@@ -1,77 +1,56 @@
 //! `PostToolUse` observation classifier.
 //!
-//! Third supply line for candidate rules. When the Claude Code
-//! `PostToolUse` hook fires for an Edit / `MultiEdit` / Write tool, the
-//! CLI calls [`classify`] to turn the raw event into a structured
-//! [`Observation`] and enqueues it via `OutboxQueue` with
-//! `kind="observation"`. The cloud consumer clusters those rows by
-//! `content_hash` and feeds the rule-promoter alongside `remember_rule`
-//! captures and GitHub-App PR-merge signatures.
+//! [`classify`] turns an Edit / `MultiEdit` / Write hook event into a
+//! structured [`Observation`] for the cloud rule-promoter.
 //!
-//! Classification is deterministic and keyword-driven — no LLM call,
-//! sub-millisecond target. The heuristics are intentionally simple:
+//! Classification is deterministic and keyword-driven (no LLM call):
 //!
 //!   * `Write` of a brand-new file ⇒ `feature`
 //!   * Edit that strips a visible `FIXME` / `BUG` / `TODO` ⇒ `bugfix`
-//!   * Edit where the diff is whitespace-only (no semantic deltas) ⇒
-//!     `refactor`
+//!   * Edit where the diff is whitespace-only ⇒ `refactor`
 //!   * Anything else ⇒ `change`
-//!
-//! `discovery` and `decision` are declared as valid `obs_type` values
-//! for forward-compat but are never emitted from the local classifier
-//! (they need LLM or conversation context).
 //!
 //! Privacy guard: edits touching secret-bearing paths (`.env*`,
 //! `*.secrets*`, `*.key`, `*.pem`, `id_rsa*`, `credentials*`) are
-//! dropped *before* classification. The user cannot opt in — these
-//! files must never leave the local machine via the observation
-//! channel.
+//! dropped *before* classification and cannot be opted into — these
+//! files must never leave the local machine.
 
 use sha2::{Digest, Sha256};
 
 pub use crate::cloud::api_types::{Observation, ObservationScope};
 use crate::observability::privacy::strip_private_tagged_regions;
 
-/// Input payload for [`classify`]. Borrowed so the caller doesn't
-/// have to clone every string coming out of the hook event; the
-/// classifier only needs read access.
+/// Borrowed input payload for [`classify`].
 #[derive(Debug, Clone, Copy)]
 pub struct ClassifyInput<'a> {
-    /// Tool name as reported by the hook adapter: `"Edit" |
-    /// "MultiEdit" | "Write"`. Any other tool returns `None`.
+    /// Tool name: `"Edit" | "MultiEdit" | "Write"`. Any other tool
+    /// returns `None`.
     pub tool: &'a str,
     /// Target file path. `None` short-circuits the classifier.
     pub file_path: Option<&'a str>,
-    /// Adapter-synthesised unified-ish diff (e.g. `-old\n+new\n`
-    /// lines). Used for whitespace-only detection.
+    /// Adapter-synthesised diff (`-old\n+new\n` lines). Used for
+    /// whitespace-only detection.
     pub diff: Option<&'a str>,
-    /// Raw post-edit text (`new_string` / content). For Edit and
-    /// `MultiEdit` this is the replacement text.
+    /// Post-edit text (`new_string` / content).
     pub new_text: Option<&'a str>,
-    /// Raw pre-edit text (`old_string`). `None` for Write events.
+    /// Pre-edit text (`old_string`). `None` for Write events.
     pub old_text: Option<&'a str>,
-    /// Platform session id from the hook stdin payload. Empty
-    /// string when unknown.
+    /// Platform session id. Empty string when unknown.
     pub session_id: Option<&'a str>,
-    /// Optional timestamp override (mainly for tests). `None`
-    /// falls back to `SystemTime::now()`.
+    /// Timestamp override for tests. `None` falls back to
+    /// `SystemTime::now()`.
     pub ts_ms: Option<i64>,
 }
 
-/// Maximum size of the diff excerpt captured in the observation
-/// payload. The cloud side does its own heavier clustering; we ship
-/// just enough context for a human reviewer to recognise the edit.
+/// Maximum size of the diff excerpt captured in the observation payload.
 pub const DIFF_EXCERPT_MAX_BYTES: usize = 1024;
 
-/// Hard title length cap. Matches the `title` doc comment on
-/// `Observation`.
 pub const TITLE_MAX_CHARS: usize = 120;
 
-/// Hard narrative length cap.
 pub const NARRATIVE_MAX_CHARS: usize = 500;
 
-/// Patterns that short-circuit classification. Hardcoded on purpose
-/// — the user has no way to disable this guard from config.
+/// Secret-bearing path patterns that short-circuit classification.
+/// Hardcoded — the user cannot disable this guard from config.
 const PRIVACY_DENY_SUBSTRINGS: &[&str] =
     &[".env", ".secrets", ".key", ".pem", "id_rsa", "credentials"];
 
@@ -79,7 +58,6 @@ const PRIVACY_DENY_SUBSTRINGS: &[&str] =
 /// not produce an observation (non-edit tool, no file path, missing
 /// diff signal, or a privacy-denied path).
 pub fn classify(input: &ClassifyInput<'_>) -> Option<Observation> {
-    // Only file-mutating tools produce observations.
     if !matches!(input.tool, "Edit" | "MultiEdit" | "Write") {
         return None;
     }
@@ -89,8 +67,7 @@ pub fn classify(input: &ClassifyInput<'_>) -> Option<Observation> {
         return None;
     }
 
-    // At least one of diff / new_text must be present; otherwise the
-    // classifier has nothing to key off.
+    // Need at least one of diff / new_text to key off.
     if input.diff.is_none() && input.new_text.is_none() {
         return None;
     }
@@ -122,28 +99,20 @@ pub fn classify(input: &ClassifyInput<'_>) -> Option<Observation> {
     })
 }
 
-/// Heuristic core. Order matters: we check the most specific
-/// patterns first and fall through to the generic `change` label.
+/// Heuristic core. Order matters: most-specific patterns first,
+/// falling through to the generic `change` label.
 fn determine_obs_type(input: &ClassifyInput<'_>) -> String {
-    // Write of a new file → feature. Claude Code's Write tool only
-    // has new_text (no old_text), which is exactly the shape we use
-    // here. MultiEdit / Edit always carry old_text so they can't
-    // trip this branch.
+    // Write with no old_text is a new file (only Write has this shape).
     if input.tool == "Write" && input.old_text.is_none() {
         return "feature".to_owned();
     }
 
-    // Bugfix: a comment-removal pattern. We look at the old_text
-    // only — removing a bug-marker comment counts even when the
-    // replacement still has other comments.
     if let Some(old) = input.old_text
         && removes_bug_marker(old, input.new_text.unwrap_or(""))
     {
         return "bugfix".to_owned();
     }
 
-    // Refactor: whitespace-only diff. Strip whitespace from both
-    // sides of every changed hunk and check that they're equal.
     if let Some(diff) = input.diff {
         if diff_is_whitespace_only(diff) {
             return "refactor".to_owned();
@@ -158,15 +127,10 @@ fn determine_obs_type(input: &ClassifyInput<'_>) -> String {
     "change".to_owned()
 }
 
-/// `true` when the old text contains a visible bug marker (FIXME /
-/// BUG / TODO) and the new text no longer contains that same
-/// marker. Uppercase-only match — lowercase `todo` in code would
-/// produce way too many false positives.
-///
-/// Counts only standalone occurrences (alphanumeric/underscore
-/// neighbours rule them out). That keeps `DEBUG`/`debugger` from
-/// firing the `BUG` rule, which silently mislabelled refactors as
-/// bugfixes whenever a `DEBUG` line was removed.
+/// `true` when `old` has more standalone uppercase bug markers (FIXME /
+/// BUG / TODO) than `new`. Uppercase-only to avoid false positives on
+/// lowercase `todo`; word-boundary counting keeps `DEBUG` from matching
+/// `BUG`.
 fn removes_bug_marker(old: &str, new: &str) -> bool {
     const MARKERS: &[&str] = &["FIXME", "BUG", "TODO"];
     for marker in MARKERS {
@@ -206,9 +170,8 @@ const fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// `true` iff every `-` / `+` line in the diff has the same content
-/// after stripping whitespace. Lines that start with neither `-`
-/// nor `+` are ignored (context lines).
+/// `true` iff the `-` and `+` lines have identical content after
+/// stripping whitespace. Context lines are ignored.
 fn diff_is_whitespace_only(diff: &str) -> bool {
     let mut removed = String::new();
     let mut added = String::new();
@@ -230,15 +193,14 @@ fn diff_is_whitespace_only(diff: &str) -> bool {
     strip_ws(&removed) == strip_ws(&added)
 }
 
-/// Remove every ASCII whitespace character. Cheap and good enough
-/// for the refactor heuristic — reorderings would slip past, but so
-/// would a hand-written `rustfmt` tweak, which is the whole point.
+/// Remove all whitespace. Good enough for the refactor heuristic:
+/// reorderings slip past, but so do hand-written `rustfmt` tweaks.
 fn strip_ws(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
-/// Build a ≤ 120-char title. Shape: `"{tool} {file}: {hint}"` where
-/// the hint is derived from the `obs_type`. Truncation appends `"…"`.
+/// Build a ≤ 120-char `"{tool} {file}: {hint}"` title, where the hint
+/// derives from `obs_type`. Truncation appends `"…"`.
 fn build_title(tool: &str, file_path: &str, obs_type: &str) -> String {
     let hint = match obs_type {
         "feature" => "new file",
@@ -250,9 +212,7 @@ fn build_title(tool: &str, file_path: &str, obs_type: &str) -> String {
     truncate_chars(&base, TITLE_MAX_CHARS)
 }
 
-/// Build a ≤ 500-char narrative. We concatenate the first few diff
-/// lines so the cloud-side rule-promoter has something to display
-/// without loading the full payload.
+/// Build a ≤ 500-char narrative from the first few diff lines.
 fn build_narrative(input: &ClassifyInput<'_>) -> Option<String> {
     let diff = strip_private_tagged_regions(input.diff?);
     let mut collected = String::new();
@@ -268,8 +228,7 @@ fn build_narrative(input: &ClassifyInput<'_>) -> Option<String> {
     Some(truncate_chars(&collected, NARRATIVE_MAX_CHARS))
 }
 
-/// Truncate at a char boundary (not byte boundary — matters for
-/// UTF-8 inputs). Appends "…" when truncated.
+/// Truncate at a char boundary, appending "…" when truncated.
 fn truncate_chars(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         return s.to_owned();
@@ -279,14 +238,13 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
     out
 }
 
-/// Byte-level truncation for the diff excerpt. Diffs can be huge;
-/// we stash the first `DIFF_EXCERPT_MAX_BYTES` bytes plus a marker.
+/// Byte-level truncation for the diff excerpt: first
+/// `DIFF_EXCERPT_MAX_BYTES` bytes plus a marker.
 fn truncate_diff_excerpt(diff: &str) -> String {
     if diff.len() <= DIFF_EXCERPT_MAX_BYTES {
         return diff.to_owned();
     }
-    // Find the largest char boundary ≤ max so we don't split a
-    // multi-byte codepoint.
+    // Largest char boundary ≤ max, so we don't split a codepoint.
     let mut end = DIFF_EXCERPT_MAX_BYTES;
     while end > 0 && !diff.is_char_boundary(end) {
         end -= 1;
@@ -298,9 +256,8 @@ fn truncate_diff_excerpt(diff: &str) -> String {
 }
 
 /// `sha256(session_id|file|title|narrative)[:16]` as lowercase hex.
-/// Mirrors the 16-char convention used by `remember_rule` content
-/// hashes (skills.rs). Sixty-four bits is plenty for cloud-side
-/// dedup inside a per-user corpus.
+/// Matches the 16-char convention used by `remember_rule` content
+/// hashes for cloud-side dedup.
 pub(crate) fn compute_content_hash(
     session_id: &str,
     file_path: Option<&str>,
@@ -323,14 +280,11 @@ pub(crate) fn compute_content_hash(
     hex
 }
 
-/// `true` when the path matches one of the hardcoded secret
-/// patterns. Substring match (not full-glob) — good enough to cover
-/// `src/config/.env.local` and `infra/prod.credentials.json`.
+/// `true` when the path matches a hardcoded secret pattern. Lowercase
+/// substring match (not glob), covering both extensions and embedded
+/// tokens like `src/config/.env.local`.
 pub fn is_privacy_denied(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
-    // `.pem`, `.key`, `.secrets` should match as file extensions or
-    // embedded tokens; checking lowercase substring handles both.
-    // The full list is small and uppercase-insensitive.
     PRIVACY_DENY_SUBSTRINGS
         .iter()
         .any(|needle| lower.contains(needle))
@@ -393,9 +347,6 @@ mod tests {
 
     #[test]
     fn classify_write_new_file_returns_feature() {
-        // Claude Code's Write tool ships `content` but no
-        // `old_string`. The classifier must tag that shape as a
-        // new-file feature, not a generic change.
         let inp = input(
             "Write",
             "src/new_mod.rs",
@@ -416,9 +367,6 @@ mod tests {
 
     #[test]
     fn classify_edit_removing_fixme_returns_bugfix() {
-        // An Edit that drops a visible FIXME comment from the old
-        // code must be tagged bugfix — this is the strongest local
-        // signal we have that the user just shipped a real fix.
         let old = "// FIXME: panics on None\nfoo.unwrap();\n";
         let new = "if let Some(x) = foo { use_x(x); }\n";
         let diff =
@@ -430,10 +378,6 @@ mod tests {
 
     #[test]
     fn classify_edit_whitespace_only_returns_refactor() {
-        // rustfmt-style tweak: same tokens, different whitespace.
-        // The classifier must tag these as refactor so the cloud
-        // rule-promoter doesn't treat them as semantic change
-        // candidates.
         let old = "let x=1;let y=2;";
         let new = "let x = 1;\nlet y = 2;";
         let diff = "-let x=1;let y=2;\n+let x = 1;\n+let y = 2;\n";
@@ -445,9 +389,7 @@ mod tests {
     #[test]
     fn removing_debug_line_does_not_count_as_bug_marker_removal() {
         // Regression: substring matching let "DEBUG" trigger the "BUG"
-        // marker — removing a `// DEBUG: …` line silently mislabelled
-        // a refactor as a bugfix. Word-boundary counting keeps
-        // BUG/DEBUG distinct.
+        // marker. Word-boundary counting keeps BUG/DEBUG distinct.
         let old = "// DEBUG: tracing\nlog::trace!(\"x={x}\");\n";
         let new = "// (debug line removed)\n";
         let diff = "-// DEBUG: tracing\n-log::trace!(\"x={x}\");\n+// (debug line removed)\n";
@@ -461,9 +403,6 @@ mod tests {
 
     #[test]
     fn classify_edit_default_returns_change() {
-        // A plain-Jane semantic edit with no bug-marker removal and
-        // non-trivial content change must fall through to the safe
-        // `change` default.
         let old = "let x = 1;";
         let new = "let x = compute_answer();";
         let diff = "-let x = 1;\n+let x = compute_answer();\n";
@@ -474,9 +413,6 @@ mod tests {
 
     #[test]
     fn privacy_guard_blocks_env_files() {
-        // `.env.local` is the single most-common secret-bearing file
-        // an agent will touch. The guard must fire before classify
-        // returns so the observation never gets enqueued.
         let inp = input(
             "Write",
             "src/app/.env.local",
@@ -489,7 +425,6 @@ mod tests {
 
     #[test]
     fn privacy_guard_allows_normal_source_files() {
-        // Sanity check: ordinary `.rs` paths must NOT be denied.
         let inp = input(
             "Write",
             "src/foo.rs",
@@ -502,7 +437,6 @@ mod tests {
 
     #[test]
     fn privacy_guard_covers_pem_key_credentials() {
-        // Confirm every pattern in the hardcoded list triggers.
         for path in &[
             "config/.env",
             "app.secrets.json",
@@ -547,8 +481,6 @@ mod tests {
 
     #[test]
     fn content_hash_is_stable_and_file_sensitive() {
-        // Two observations from identical inputs produce the same hash
-        // (idempotent cloud insertion), but a file-path change breaks it.
         let old = "let x = 1;";
         let new = "let x = compute_answer();";
         let diff = "-let x = 1;\n+let x = compute_answer();\n";
@@ -564,20 +496,12 @@ mod tests {
 
     #[test]
     fn non_edit_tool_returns_none() {
-        // Read / Bash / anything-else-we-don't-recognise must
-        // short-circuit. The hook is responsible for filtering
-        // too, but defence in depth keeps noise out of the
-        // observation stream.
         let inp = input("Read", "src/foo.rs", None, None, None);
         assert!(classify(&inp).is_none());
     }
 
     #[test]
     fn missing_diff_and_new_text_returns_none() {
-        // If the adapter couldn't reconstruct a diff AND didn't
-        // give us new_text, there's nothing to classify. We MUST
-        // return None rather than emit an observation with empty
-        // content.
         let inp = input("Edit", "src/foo.rs", None, None, Some("old"));
         assert!(classify(&inp).is_none());
     }
@@ -634,10 +558,9 @@ mod tests {
         );
     }
 
-    /// Ignored-by-default helper that prints a wire-format example for
-    /// each `obs_type`. Run with `cargo test -p difflore-core --lib
+    /// Prints a wire-format example for each `obs_type`. Run with
+    /// `cargo test -p difflore-core --lib
     /// observation::tests::print_wire_samples -- --ignored --nocapture`.
-    /// Emits stable payload shapes without re-deriving them.
     #[test]
     #[ignore = "doc helper for sample wire output, run manually"]
     fn print_wire_samples() {
@@ -694,9 +617,6 @@ mod tests {
 
     #[test]
     fn diff_excerpt_truncates_large_diffs() {
-        // Build a 4 KB synthetic diff and confirm the excerpt caps
-        // at roughly DIFF_EXCERPT_MAX_BYTES (plus the truncation
-        // marker).
         let big: String = (0..4096).map(|_| 'x').collect();
         let diff = format!("-{big}\n+{big}Y\n");
         let inp = input("Edit", "src/foo.rs", Some(&diff), Some("yYY"), Some("xxx"));

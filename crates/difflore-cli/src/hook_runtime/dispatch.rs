@@ -1,7 +1,7 @@
 use crate::{hook_cache, hook_forward, hooks};
 
 use super::fire_log::remember_hook_fire_maybe_deferred;
-use super::stated_vs_actual::{read_last_assistant_text, stated_vs_actual_warning};
+use super::stated_vs_actual::read_last_assistant_text;
 
 pub(crate) async fn hook_output_for_raw(
     client_name: &str,
@@ -21,26 +21,21 @@ pub(crate) async fn hook_output_for_raw(
         }
     };
     let event_label = hook_event_label(&event).to_owned();
-    // 2026-04-25: capture the event's file_path BEFORE moving into
-    // dispatch so we can stamp it on the post-dispatch fire-log entry.
-    // Lets the audit answer "did the rules surface for the right file?".
+    // Capture file_path before the event moves into dispatch so we can stamp it
+    // on the fire-log entry (lets the audit answer "did rules surface for the
+    // right file?").
     let event_file_path = event.target_file_path();
 
-    // Do not run the general startup gate from lifecycle hooks. Even when
-    // cached, it is the wrong abstraction for a hot path: stale cache can
-    // trigger provider/cloud probes and make a PreToolUse hook wait on the
-    // network. The hook dispatcher below opens the local DB/index lazily and
-    // degrades to noop on any local failure.
+    // Do not run the general startup gate from lifecycle hooks: even cached, a
+    // stale entry can trigger provider/cloud probes and make a PreToolUse hook
+    // wait on the network. The dispatcher below opens the local DB/index lazily
+    // and degrades to noop on any local failure.
 
-    // Capture the wire-form event name before moving the event into the
-    // dispatcher; the adapter needs to echo it back in the response
-    // envelope (Claude Code rejects responses whose hookEventName
-    // doesn't match the firing event).
+    // Capture the wire-form event name before the event moves into the
+    // dispatcher; the adapter echoes it back in the response envelope (Claude
+    // Code rejects responses whose hookEventName doesn't match the firing event).
     let event_name = event.wire_name();
 
-    // Classify any error the core hook work surfaces so we never block
-    // the user's assistant session on a transient transport blip. See
-    // `PlatformAdapter::classify_error` for the bucketing rules.
     let trace_started = std::time::Instant::now();
     let trace = difflore_core::env::trace_hook();
     match dispatch_hook_event_with_state(event, hot_state).await {
@@ -54,9 +49,8 @@ pub(crate) async fn hook_output_for_raw(
             if result.event_name.is_none() {
                 result.event_name = Some(event_name.to_owned());
             }
-            // Persist the fire AFTER dispatch so we can record the
-            // injection count alongside the file path. Old code logged
-            // before dispatch and lost that signal.
+            // Persist the fire after dispatch so the injection count can be
+            // recorded alongside the file path.
             remember_hook_fire_maybe_deferred(
                 client_name.to_owned(),
                 event_label.clone(),
@@ -74,10 +68,9 @@ pub(crate) async fn hook_output_for_raw(
                     trace_started.elapsed().as_millis()
                 );
             }
-            // Even on dispatch failure we still record the fire so the
-            // doctor's 24h count reflects all reaches (with no injection
-            // count). Otherwise transport errors look like the hook
-            // silently dropped the event entirely.
+            // Record the fire even on dispatch failure (with no injection count)
+            // so the doctor's 24h count reflects all reaches; otherwise transport
+            // errors look like the hook silently dropped the event.
             remember_hook_fire_maybe_deferred(
                 client_name.to_owned(),
                 event_label.clone(),
@@ -91,10 +84,9 @@ pub(crate) async fn hook_output_for_raw(
     }
 }
 
-/// Translate a canonical `HookEvent` into the right `DiffLore` action and
-/// return the adapter-agnostic `HookResult`. Platform adapters call this
-/// via `handle_hook_run` — keeping it as a free function lets us unit-
-/// test the dispatch logic without threading stdio.
+/// Translate a canonical `HookEvent` into the right `DiffLore` action and return
+/// an adapter-agnostic `HookResult`. A free function so the dispatch logic is
+/// unit-testable without threading stdio.
 async fn dispatch_hook_event_with_state(
     event: hooks::types::HookEvent,
     hot_state: Option<&hook_forward::State>,
@@ -103,13 +95,11 @@ async fn dispatch_hook_event_with_state(
 
     match event {
         HookEvent::PreToolUseRead { .. } => {
-            // Pre-read injection retired 2026-04-27. Reading a file is too
-            // weak a signal to predict whether a rule will apply: most
-            // reads are exploratory and never produce an edit, so the
-            // hook paid full retrieval token cost (~800-1500 tokens of
-            // rule context per Read) for near-zero hit rate. Rule
-            // surfacing now happens only at PostToolUse, where the
-            // actual diff is in hand.
+            // No pre-read injection: a Read is too weak a signal to predict
+            // whether a rule applies (most reads are exploratory and never
+            // produce an edit), so it paid full retrieval token cost for a
+            // near-zero hit rate. Rule surfacing happens at PostToolUse, where
+            // the actual diff is in hand.
             Ok(HookResult::noop())
         }
         HookEvent::PostToolUse {
@@ -120,9 +110,8 @@ async fn dispatch_hook_event_with_state(
             new_text,
             old_text,
         } => {
-            // We only act on file-mutating tools — acting on Read/Bash
-            // would flood the agent with irrelevant rule context and
-            // burn tokens for zero value.
+            // Act only on file-mutating tools: acting on Read/Bash would flood
+            // the agent with irrelevant rule context for zero value.
             if !matches!(tool_name.as_str(), "Edit" | "Write" | "MultiEdit") {
                 return Ok(HookResult::noop());
             }
@@ -161,10 +150,9 @@ async fn dispatch_hook_event_with_state(
             )
             .await;
 
-            // Third supply line for candidate rules: classify this
-            // edit into a structured observation and enqueue via the
-            // outbox. Failures are swallowed — observation capture
-            // must never affect the rule-injection hook output.
+            // Classify this edit into a structured observation and enqueue via
+            // the outbox. Failures are swallowed: observation capture must never
+            // affect the rule-injection hook output.
             let obs_input = difflore_core::observation::ClassifyInput {
                 tool: &tool_name,
                 file_path: Some(&file),
@@ -182,11 +170,15 @@ async fn dispatch_hook_event_with_state(
                             .enqueue(difflore_core::cloud::outbox::kind::OBSERVATION, &payload)
                             .await
                         {
-                            eprintln!("[difflore.hook] observation enqueue failed: {e}");
+                            if difflore_core::env::debug_telemetry() {
+                                eprintln!("[difflore.hook] observation enqueue failed: {e}");
+                            }
                         }
                     }
                     Err(e) => {
-                        eprintln!("[difflore.hook] observation serialize failed: {e}");
+                        if difflore_core::env::debug_telemetry() {
+                            eprintln!("[difflore.hook] observation serialize failed: {e}");
+                        }
                     }
                 }
             }
@@ -203,11 +195,10 @@ async fn dispatch_hook_event_with_state(
             {
                 Ok(ctx) if ctx.rules_injected > 0 => {
                     hook_cache::remember_injection(&file, "post-edit", ctx.rules_injected);
-                    // No unconditional system_message: the assistant's
-                    // citation of "Rule N" in its actual reply is the
-                    // visible signal that DiffLore helped. Surfacing
-                    // "injected N rules" on every Edit pollutes the
-                    // user's view even when none of the rules applied.
+                    // No unconditional system_message: the assistant's citation
+                    // of "Rule N" in its reply is the visible signal. Surfacing
+                    // "injected N rules" on every Edit pollutes the user's view
+                    // even when none of the rules applied.
                     let mut result = HookResult::with_context(ctx.rendered);
                     result.rules_injected = Some(ctx.rules_injected);
                     Ok(result)
@@ -228,41 +219,20 @@ async fn dispatch_hook_event_with_state(
         } => {
             maybe_emit_rule_actual_citations(session_id.as_deref(), transcript_path.as_deref())
                 .await;
-            // Reuse the accepted-edit count just traced so the recap does not
-            // need a second query on this hot exit path.
-            let accepted_count =
+            let _accepted_count =
                 maybe_emit_fix_outcomes(session_id.as_deref(), cwd.as_deref()).await;
-            // End-of-session recap from rows already on disk; suppressed when
-            // nothing was recalled so quiet sessions stay silent.
-            let recalled_count = recalled_rule_count_for_session(session_id.as_deref()).await;
-            let recap = session_recap_line(recalled_count, accepted_count);
-            // Stated-vs-actual check: when both the transcript path and
-            // working directory are known (Claude Code provides both),
-            // compare the agent's last assistant message against the
-            // actual `git diff --name-only` and surface a one-line
-            // warning when they don't match. Any I/O or parse error
-            // falls back to noop — never break the hook on an audit
-            // path.
-            let warning = match (transcript_path.as_deref(), cwd.as_deref()) {
-                (Some(t), Some(c)) => stated_vs_actual_warning(t, c),
-                _ => None,
-            };
-            let mut result = HookResult::noop();
-            // Prefer the recap receipt; fall back to the stated-vs-actual
-            // warning when the session had nothing to recap. Both target
-            // the user-visible `systemMessage` channel, so we surface at
-            // most one line and never stack two messages.
-            result.system_message = recap.or(warning);
-            Ok(result)
+            // Keep lifecycle hooks quiet: hosts render `systemMessage` as
+            // event-name chatter that reads like an internal tool speaking.
+            Ok(HookResult::noop())
         }
         HookEvent::SessionStart { cwd, .. } => {
-            // Goal G2: warm the shared cross-repo starter index here, off the
-            // latency-critical PostToolUse path. This lets a repo with NO scoped
+            // Warm the shared cross-repo starter index here, off the
+            // latency-critical PostToolUse path. Lets a repo with no scoped
             // memory still get transferable, file-matched rules from the user's
-            // other repos injected on later edits (the PostToolUse hook only
-            // *uses* the starter if it is already current — it never builds it).
-            // Best-effort and freshness-gated: a cheap no-op once built, rebuilt
-            // only when the corpus changed, and any failure is swallowed.
+            // other repos on later edits (PostToolUse only uses the starter if
+            // it is already current — it never builds it). Best-effort and
+            // freshness-gated: a cheap no-op once built, rebuilt only when the
+            // corpus changed, failures swallowed.
             let db = if let Some(state) = hot_state {
                 state.db.clone()
             } else {
@@ -274,13 +244,12 @@ async fn dispatch_hook_event_with_state(
             let _ =
                 difflore_core::context::orchestrator::ensure_cross_repo_starter_indexed(&db).await;
 
-            // Since-last-session recap: if this repo gained rules since the
-            // last SessionStart, surface a short note via `additional_context`.
-            // The helper is self-budgeted and returns `None` on quiet sessions.
+            // Since-last-session recap: if this repo gained rules since the last
+            // SessionStart, surface a short note via `additional_context`. The
+            // helper is self-budgeted and returns `None` on quiet sessions.
             //
-            // `client_name` isn't threaded into the dispatcher; the banner
-            // only uses it for the watermark's debug trail (not the query),
-            // so a generic label is acceptable for v1 per the spec.
+            // `client_name` isn't threaded into the dispatcher; the banner uses
+            // it only for the watermark's debug trail, so a generic label is fine.
             let banner_ctx = hooks::session_banner::BannerContext {
                 cwd,
                 client_name: "agent".to_owned(),
@@ -402,11 +371,10 @@ fn rule_numbers_from_citation_text(text: &str) -> std::collections::BTreeSet<usi
     let bytes = lower.as_bytes();
     let mut out = std::collections::BTreeSet::new();
 
-    // Scan for both "rule N" (legacy) and "memory N" (current product
-    // language). Hook output instructs agents to cite as "applying Memory N",
-    // but older agent transcripts and external skills still use "Rule N".
-    // Accept both so the citation telemetry doesn't lose ground when the
-    // user-facing label changed.
+    // Scan for both "rule N" (legacy) and "memory N" (current product language).
+    // Hook output instructs agents to cite as "applying Memory N", but older
+    // transcripts and external skills still use "Rule N"; accept both so the
+    // citation telemetry doesn't lose ground.
     for needle in ["rule", "memory"] {
         let mut search_from = 0usize;
         while let Some(relative) = lower[search_from..].find(needle) {
@@ -506,12 +474,10 @@ async fn rule_ids_for_learned_sources(
 }
 
 /// Emit `FixOutcome` rows for every rule cited in an edit this session and
-/// return how many were marked `accepted` (i.e. the edit is still present in
-/// the working tree / index). The count feeds the end-of-session recap without
-/// a second DB pass — every
-/// returned number traces to a real `fix_outcome{accepted:true}` row we just
-/// enqueued. Returns `0` on any early bail (no emitter, no cited edits) so the
-/// recap stays honest and silent for sessions that produced no signal.
+/// return how many were marked `accepted` (the edit is still present in the
+/// working tree / index). The count feeds the end-of-session recap. Returns `0`
+/// on any early bail (no emitter, no cited edits) so the recap stays silent for
+/// sessions with no signal.
 async fn maybe_emit_fix_outcomes(session_id: Option<&str>, cwd: Option<&str>) -> usize {
     let session_id = session_id.unwrap_or("");
     let Ok(emitter) = difflore_core::cloud::observations::ObservationEmitter::open_default().await
@@ -536,16 +502,14 @@ async fn maybe_emit_fix_outcomes(session_id: Option<&str>, cwd: Option<&str>) ->
 
     let detected_repos = difflore_core::git::detect_github_repo_full_names(cwd.unwrap_or("."));
     let repo_full_name = detected_repos.first().map(String::as_str);
-    // 30-minute cross-link window: the accepted edit must follow the
-    // MCP serve closely enough that the agent context still plausibly
-    // included the rule. Wider than `RECENT_RULE_FIRE_WINDOW_MS` because
-    // `Stop`/`SessionEnd` can fire well after the last serve in long
-    // sessions, but tight enough that we do not stitch unrelated edits.
+    // 30-minute cross-link window: the accepted edit must follow the MCP serve
+    // closely enough that the agent context still plausibly included the rule.
+    // Wider than `RECENT_RULE_FIRE_WINDOW_MS` because `Stop`/`SessionEnd` can
+    // fire well after the last serve, but tight enough not to stitch unrelated
+    // edits.
     const SERVE_CROSS_LINK_WINDOW_MS: i64 = 30 * 60 * 1000;
-    // Count of newly-emitted `fix_outcome{accepted:true}` rows. Only freshly
-    // enqueued outcomes are counted — a rule that already had an outcome this
-    // session (the `has_fix_outcome` skip below) is not double-counted, so the
-    // recap line reflects what this Stop actually traced.
+    // Count only freshly enqueued outcomes; a rule that already had one this
+    // session (the `has_fix_outcome` skip below) is not double-counted.
     let mut accepted_count = 0usize;
     for (rule_id, files) in by_rule {
         if emitter
@@ -561,10 +525,9 @@ async fn maybe_emit_fix_outcomes(session_id: Option<&str>, cwd: Option<&str>) ->
         }
         let occurred_at = chrono::Utc::now();
         let file_path = accepted_file_path(cwd, &files);
-        // Best-effort: a SQL failure here downgrades to "no inline link"
-        // (legacy behaviour) rather than crashing the hook. The audit
-        // path still has the file_path/session_id heuristic to fall back
-        // on.
+        // Best-effort: a SQL failure here downgrades to "no inline link" rather
+        // than crashing the hook. The audit path still falls back on the
+        // file_path/session_id heuristic.
         let mcp_serve_event_ids = emitter
             .recent_mcp_serve_event_ids(
                 &rule_id,
@@ -589,58 +552,6 @@ async fn maybe_emit_fix_outcomes(session_id: Option<&str>, cwd: Option<&str>) ->
     let client = difflore_core::cloud::client::CloudClient::create().await;
     let _ = emitter.flush_to_cloud(&client).await;
     accepted_count
-}
-
-/// Count the distinct team memories recalled into this session. Prefers
-/// `cited_edits_for_session` (rules that were both served
-/// and cited in an actual edit — the strongest "recalled" signal) and falls
-/// back to the session's `latest_rule_fire_for_session` snapshot when no edit
-/// citation exists yet. Every counted id traces to a real `rule_cited_in_edit`
-/// or `rule_fired` row; we never model the number. Returns `0` on any early
-/// bail so the recap stays silent for quiet sessions.
-async fn recalled_rule_count_for_session(session_id: Option<&str>) -> usize {
-    let session_id = session_id.unwrap_or("");
-    let Ok(emitter) = difflore_core::cloud::observations::ObservationEmitter::open_default().await
-    else {
-        return 0;
-    };
-
-    if let Ok(cited) = emitter.cited_edits_for_session(session_id).await
-        && !cited.is_empty()
-    {
-        let distinct: std::collections::BTreeSet<String> =
-            cited.into_iter().map(|edit| edit.rule_id).collect();
-        return distinct.len();
-    }
-
-    // No edit-cited rule yet: fall back to the latest rule-fire snapshot so a
-    // session that recalled rules but hadn't produced an attributed edit still
-    // shows a non-zero recall count.
-    match emitter.latest_rule_fire_for_session(session_id).await {
-        Ok(Some(fire)) => {
-            let distinct: std::collections::BTreeSet<String> = fire
-                .rule_ids
-                .into_iter()
-                .filter(|id| !id.is_empty())
-                .collect();
-            distinct.len()
-        }
-        _ => 0,
-    }
-}
-
-/// Build the one-line, user-visible end-of-session recap. Returns `None`
-/// when nothing was recalled so quiet sessions stay silent.
-fn session_recap_line(recalled: usize, accepted: usize) -> Option<String> {
-    if recalled == 0 {
-        return None;
-    }
-    let memory_word = if recalled == 1 { "memory" } else { "memories" };
-    let edit_word = if accepted == 1 { "edit" } else { "edits" };
-    Some(format!(
-        "DiffLore: recalled {recalled} team {memory_word} this session · \
-         {accepted} accepted {edit_word} traced. Run `difflore status`.",
-    ))
 }
 
 fn accepted_file_path(cwd: Option<&str>, files: &[String]) -> Option<String> {
@@ -731,9 +642,8 @@ mod tests {
 
     #[test]
     fn rule_numbers_from_citation_text_extracts_memory_label_too() {
-        // Hook output now instructs agents to cite as "applying Memory N"
-        // (product language migration). Detection must accept both Rule and
-        // Memory so the citation telemetry doesn't drop to zero.
+        // Detection must accept both "Rule" and "Memory" so the citation
+        // telemetry doesn't drop to zero.
         let nums = rule_numbers_from_citation_text(
             "Applying Memory 3: Don't strip null. Memory #7 also applies.",
         );
@@ -745,8 +655,7 @@ mod tests {
 
     #[test]
     fn rule_numbers_from_citation_text_handles_mixed_rule_and_memory() {
-        // Backward compatibility: a single response might cite both labels
-        // (e.g., transcripts written before/after the rename).
+        // A single response might cite both labels.
         let nums = rule_numbers_from_citation_text("Applying Rule 1 and Memory 4 together.");
 
         assert!(nums.contains(&1));
@@ -778,44 +687,9 @@ mod tests {
     }
 
     #[test]
-    fn session_recap_line_suppressed_when_nothing_recalled() {
-        // A session that recalled no team memory produces no recap line.
-        assert!(session_recap_line(0, 0).is_none());
-        assert!(session_recap_line(0, 3).is_none());
-    }
-
-    #[test]
-    fn session_recap_line_pluralises_both_counts() {
-        // Singular memory + singular edit.
-        let one = session_recap_line(1, 1).expect("non-empty");
-        assert!(
-            one.contains("recalled 1 team memory this session"),
-            "got: {one}"
-        );
-        assert!(one.contains("1 accepted edit traced"), "got: {one}");
-        assert!(one.contains("Run `difflore status`"), "missing CTA: {one}");
-
-        // Plural memories + plural edits.
-        let many = session_recap_line(3, 2).expect("non-empty");
-        assert!(
-            many.contains("recalled 3 team memories this session"),
-            "got: {many}"
-        );
-        assert!(many.contains("2 accepted edits traced"), "got: {many}");
-
-        // Recalled but zero accepted: line still shows (recalled > 0) and the
-        // edit count reads as the plural "0 ... edits traced".
-        let zero_accepted = session_recap_line(2, 0).expect("non-empty");
-        assert!(
-            zero_accepted.contains("0 accepted edits traced"),
-            "got: {zero_accepted}"
-        );
-    }
-
-    #[test]
     fn rule_numbers_from_citation_text_respects_word_boundaries_and_guards() {
         // Substring inside a larger word must not match: "overrule 4" is not a
-        // citation, so the value-loop telemetry must not over-count it.
+        // citation.
         assert!(
             rule_numbers_from_citation_text("overrule 4 was ignored").is_empty(),
             "must not match 'rule' inside 'overrule'"

@@ -1,18 +1,16 @@
 use crate::context::types::PastVerdict;
 use crate::review_trajectory::RecalledVerdict;
 
-/// Convert a slice of recalled `PastVerdict`s into the `RecalledVerdict`
-/// shape the trajectory carries. Shared between `run_review` and
-/// `run_review_multi` so both pipelines emit an identical
-/// `past_verdicts_recalled` payload. `excerpt` is truncated to ~200
-/// characters (with a trailing `…`) to keep the trajectory JSON compact.
+/// Convert recalled `PastVerdict`s into the `RecalledVerdict` trajectory shape.
+/// `excerpt` is truncated to ~200 characters (with a trailing `…`) to keep the
+/// trajectory JSON compact.
 pub(super) fn build_recalled_verdicts(past_verdicts: &[PastVerdict]) -> Vec<RecalledVerdict> {
     const EXCERPT_MAX: usize = 200;
     past_verdicts
         .iter()
         .map(|pv| {
-            // Prefer the issue text's first non-empty line so the cloud
-            // detail row is human-readable; fall back to the id.
+            // First non-empty line of the issue text is more readable than the
+            // id; fall back to the id when there is none.
             let title = pv
                 .issue_text
                 .lines()
@@ -37,7 +35,6 @@ pub(super) fn build_recalled_verdicts(past_verdicts: &[PastVerdict]) -> Vec<Reca
         .collect()
 }
 
-/// Run past-verdict recall for review memory.
 pub(super) async fn recall_past_verdicts_for_review(
     settings: &crate::models::AppSettingsRecord,
     diff_content: &str,

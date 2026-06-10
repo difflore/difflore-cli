@@ -53,13 +53,10 @@ pub(crate) fn missing_file_hints_from_prediction(
             .then_with(|| a.source_rank.cmp(&b.source_rank))
             .then_with(|| a.path.cmp(&b.path))
     });
-    // Project-filesystem-aware filter: hints pointing at paths that
-    // don't exist in this fork's checkout are nearly always wrong
-    // (renamed, language-mismatched neighbour file, or stale corpus).
-    // Held-out validation showed ~75% of low-precision hints fail this
-    // basic existence check. Keep only hints whose path exists or
-    // whose parent dir exists (to allow the legitimate "you should
-    // add a sibling test file" case).
+    // Drop hints whose path doesn't exist in this checkout — they're
+    // nearly always wrong (renamed, language-mismatched, or stale corpus).
+    // Keep a hint if its path or its parent dir exists, so the legitimate
+    // "add a sibling test file" case still surfaces.
     candidates
         .into_iter()
         .filter(|c| hint_path_is_plausible(&c.path, project_root))
@@ -68,11 +65,9 @@ pub(crate) fn missing_file_hints_from_prediction(
         .collect()
 }
 
-/// Return true when the hinted path looks like it belongs in this
-/// project — either the file itself exists, or its parent directory
-/// does. The latter covers the "we know you should add `foo_test.rs`
-/// next to `foo.rs`" case where the hint file legitimately doesn't
-/// exist yet but the directory does.
+/// True when the hinted path or its parent directory exists. The parent
+/// case covers the "add `foo_test.rs` next to `foo.rs`" hint where the
+/// file doesn't exist yet but the directory does.
 fn hint_path_is_plausible(hint: &str, project_root: &Path) -> bool {
     let normalized = normalize_path(hint);
     let absolute = project_root.join(&normalized);
@@ -88,16 +83,10 @@ fn hint_path_is_plausible(hint: &str, project_root: &Path) -> bool {
 }
 
 fn ranked_coedit_files(prediction: &Value) -> Vec<&str> {
-    // Holdout validation (router/cli, 100 PRs each) found that corpus
-    // co-edit hints with `in_n_of_neighbors == 1` AND `score < 0.2`
-    // are essentially noise — a single historical PR co-touched the
-    // path once with a weak similarity. Per-hint precision jumps from
-    // ~14% (no filter) to ~30% on router (and ~44%→60% on cli) when
-    // we require either multiple neighbour confirmation OR a meaningful
-    // similarity score. Keep the threshold permissive (`>= 0.2` is
-    // the bottom of the historical hit-bucket distribution) so we
-    // don't crush recall on repos like cli where weaker hints sometimes
-    // land.
+    // Co-edit hints with `in_n_of_neighbors == 1` AND `score < 0.2` are
+    // noise (one historical PR weakly co-touched the path). Require either
+    // multiple neighbour confirmation or a meaningful score. The `>= 0.2`
+    // threshold is kept permissive to avoid crushing recall.
     prediction
         .get("coedit_file_hints")
         .and_then(Value::as_array)
@@ -201,14 +190,10 @@ fn local_adjacency_file_hints(changed_files: &[String], project_root: &Path) -> 
         for candidate in command_acceptance_fixture_hints(&changed, project_root) {
             push_existing_hint(&mut out, project_root, &candidate);
         }
-        // Holdout validation showed `relative_import_hints` is the
-        // dominant false-positive source on monorepo source files: when
-        // a non-test file like `router.ts` is touched, every relative
-        // import target (utils.ts, path.ts, lru-cache.ts, …) becomes
-        // a hint, but virtually none are actually co-edited (router 30-PR
-        // holdout: ~600 local hints, 0 hits attributable to relative
-        // imports). Restrict to test/spec changes — there the heuristic
-        // "the test imports the source it exercises" actually holds.
+        // For non-test source files, following relative imports produces
+        // mostly false positives (every import target becomes a hint, but
+        // almost none are co-edited). Restrict to test/spec changes, where
+        // "the test imports the source it exercises" holds.
         if is_test_path(&changed) {
             for candidate in relative_import_hints(&changed, project_root) {
                 push_existing_hint(&mut out, project_root, &candidate);
@@ -678,10 +663,8 @@ mod tests {
 
     #[test]
     fn adds_relative_import_targets_from_test_changes() {
-        // Tests that touch a spec file should hint at the source under
-        // test (the imported relative path). For non-test source files
-        // we deliberately do NOT follow imports — holdout validation
-        // showed it's the dominant false-positive source.
+        // A spec change should hint at the source it imports; non-test
+        // files deliberately do not follow imports.
         let root = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(root.path().join("packages/form-core/src")).expect("mkdir src");
         std::fs::create_dir_all(root.path().join("packages/form-core/tests")).expect("mkdir tests");
@@ -724,9 +707,7 @@ mod tests {
     #[test]
     fn drops_low_confidence_corpus_hints() {
         // A coedit hint with `in_n_of_neighbors == 1` AND `score < 0.2`
-        // is essentially noise (one PR weakly co-touched the path). The
-        // ranked_coedit_files filter should drop it. The high-confidence
-        // hint should still survive.
+        // should be dropped; the high-confidence hint should survive.
         let root = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(root.path().join("pkg/cmd")).expect("mkdir");
         std::fs::write(root.path().join("pkg/cmd/keep.go"), "").expect("keep");

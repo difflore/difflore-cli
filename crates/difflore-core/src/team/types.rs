@@ -98,10 +98,9 @@ pub struct TeamRulePublishInput {
     pub rule_id: String,
     pub enforcement: Option<String>,
     pub team_id: Option<String>,
-    /// 2026-04-20: input-channel provenance forwarded to the cloud so
-    /// the team Dashboard can show "this rule started life as a
-    /// conversation capture" instead of just "manual". Optional —
-    /// `publish_rule` will look it up from the local DB when omitted.
+    /// Input-channel provenance forwarded to the cloud so the Dashboard can
+    /// show a rule's origin (e.g. conversation capture vs. manual). Optional;
+    /// `publish_rule` looks it up from the local DB when omitted.
     #[serde(default)]
     pub origin: Option<String>,
 }

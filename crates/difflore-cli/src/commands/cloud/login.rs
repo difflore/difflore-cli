@@ -30,7 +30,6 @@ use tiny_http::{Header, Response, Server};
 const FLOW_TIMEOUT_SECS: u64 = 120;
 const POST_SUCCESS_LINGER_MS: u64 = 500;
 
-/// Result of a successful browser flow.
 pub struct BrowserLoginResult {
     pub token: String,
     pub refresh_token: Option<String>,
@@ -65,10 +64,9 @@ fn parse_callback_query(qs: &str) -> CallbackQuery {
     parsed
 }
 
-/// Test-only helper: runs the same callback server loop, but takes a
-/// pre-bound `Server` and known `state`, and exposes the worker thread's
-/// receiver so tests can drive a synthetic browser request and assert on
-/// the outcome without spinning up a real browser.
+/// Test-only callback loop over a pre-bound `Server` and known `state`,
+/// exposing the worker thread's receiver so tests can drive a synthetic
+/// browser request without a real browser.
 #[cfg(test)]
 fn run_callback_loop(
     server: Server,
@@ -125,9 +123,6 @@ fn run_callback_loop(
     rx
 }
 
-/// Thin wrapper around the central `endpoints::web_origin_from` so the
-/// browser login flow can keep its callsite signature stable while the
-/// stripping rule lives in one place.
 fn web_origin(api_base: &str) -> String {
     difflore_core::cloud::endpoints::web_origin_from(api_base)
 }
@@ -152,9 +147,8 @@ pub(crate) fn run_browser_login_with_cancel(
     let origin = web_origin(api_base);
     let state = random_state();
 
-    // 0.0.0.0 would be a (small) cross-machine exposure; bind explicitly to
-    // loopback. `:0` lets the OS pick a free port and also conveniently rules
-    // out the rare case of a stale server still squatting a hard-coded port.
+    // Bind loopback (not 0.0.0.0) to avoid cross-machine exposure; `:0` lets
+    // the OS pick a free port instead of squatting a hard-coded one.
     let server = Server::http("127.0.0.1:0")
         .map_err(|e| format!("Failed to start localhost callback server: {e}"))?;
 
@@ -176,17 +170,15 @@ pub(crate) fn run_browser_login_with_cancel(
         eprintln!("warning: could not auto-open browser ({e}). Open the URL above manually.");
     }
 
-    // Drive the request loop on a worker thread so the main thread can
-    // enforce the wall-clock timeout via mpsc::recv_timeout.
+    // Worker thread runs the request loop so the main thread can enforce the
+    // wall-clock timeout via mpsc::recv_timeout.
     let (tx, rx) = mpsc::channel::<Result<BrowserLoginResult, String>>();
     let expected_state = state;
     let server_cancel = Arc::clone(cancel);
 
     std::thread::spawn(move || {
-        // Loop just long enough to find one /callback hit. Anything else
-        // (favicon probes, port scanners, etc.) gets a 404 and we keep
-        // listening — we only consider the flow done when we see /callback
-        // *with* matching state.
+        // Loop until one /callback hit with matching state. Anything else
+        // (favicon probes, port scanners) gets a 404 and we keep listening.
         let deadline = Instant::now() + Duration::from_secs(FLOW_TIMEOUT_SECS);
         loop {
             if server_cancel.load(Ordering::Relaxed) {
@@ -217,7 +209,6 @@ pub(crate) fn run_browser_login_with_cancel(
                 continue;
             }
 
-            // Parse query string. tiny_http gives us the raw target line.
             let qs = url.split_once('?').map_or("", |(_, q)| q);
             let parsed = parse_callback_query(qs);
 
@@ -239,9 +230,8 @@ pub(crate) fn run_browser_login_with_cancel(
                 continue;
             };
 
-            // Constant-time-ish comparison; state is short so the cost of a
-            // simple eq is acceptable, but we still avoid a `==` length-leak
-            // on the off-chance a future state encoding becomes variable-length.
+            // Constant-time compare to avoid a `==` length-leak if a future
+            // state encoding becomes variable-length.
             if !ct_eq(&got, &expected_state) {
                 let _ = req.respond(html_response(
                     400,
@@ -268,10 +258,9 @@ pub(crate) fn run_browser_login_with_cancel(
                 200,
                 "<h1>Logged in</h1><p>You can close this tab and return to your terminal.</p>",
             ));
-            // Linger so the browser actually receives the body before we
-            // tear the listener down. Without this, fast browsers
-            // occasionally see ECONNRESET and render a "site can't be
-            // reached" page even though we did 200 them.
+            // Linger so the browser receives the body before we tear the
+            // listener down; otherwise fast browsers see ECONNRESET and render
+            // a "site can't be reached" page despite the 200.
             std::thread::sleep(Duration::from_millis(POST_SUCCESS_LINGER_MS));
             let _ = tx.send(Ok(BrowserLoginResult {
                 token,
@@ -376,8 +365,7 @@ fn htmlescape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Constant-time-ish string equality. Both args are short ASCII so this is
-/// purely defensive.
+/// Constant-time string equality, used defensively for the state nonce.
 fn ct_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;

@@ -38,13 +38,11 @@ use super::synth;
 use super::types::{HookEvent, HookResult};
 use super::{PayloadAdapter, PlatformAdapter};
 
-/// Zero-sized marker — no adapter-local state.
 pub struct CursorAdapter;
 
-/// Typed view of Cursor's hook stdin payload. Everything is optional:
-/// Cursor ships different subsets of fields per event, and we'd rather
-/// silently no-op on a missing field than reject a structurally-valid
-/// payload that just doesn't carry what we need.
+/// Typed view of Cursor's hook stdin payload. Every field is optional: Cursor
+/// ships different subsets per event, and a missing field should no-op rather
+/// than reject a structurally-valid payload.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) struct CursorHookPayload {
@@ -60,8 +58,7 @@ pub(crate) struct CursorHookPayload {
     tool_name: Option<String>,
     #[serde(default)]
     tool_input: Option<Value>,
-    /// Cursor's analogue of `tool_response`. Named differently from
-    /// Claude Code's schema — we keep the Cursor spelling here.
+    /// Cursor's analogue of `tool_response` (kept under the Cursor spelling).
     #[serde(default)]
     result_json: Option<Value>,
     /// Shell-command events ship these two in place of `tool_input` /
@@ -70,8 +67,8 @@ pub(crate) struct CursorHookPayload {
     command: Option<String>,
     #[serde(default)]
     output: Option<String>,
-    /// `beforeSubmitPrompt` payloads may carry the prompt under any of
-    /// several keys depending on Cursor version. We probe all of them.
+    /// `beforeSubmitPrompt` payloads carry the prompt under one of several keys
+    /// depending on Cursor version; all are probed.
     #[serde(default)]
     prompt: Option<String>,
     #[serde(default)]
@@ -80,15 +77,15 @@ pub(crate) struct CursorHookPayload {
     input: Option<String>,
     #[serde(default)]
     message: Option<String>,
-    /// Some Cursor events ship the edited path at the top level rather
-    /// than nested under `tool_input`.
+    /// Some Cursor events ship the edited path at the top level rather than
+    /// nested under `tool_input`.
     #[serde(default)]
     file_path: Option<String>,
 }
 
 impl CursorHookPayload {
-    /// Map the parsed Cursor payload into our canonical `HookEvent`.
-    /// See module docs for the event-name mapping.
+    /// Map the parsed Cursor payload into our canonical `HookEvent`. See module
+    /// docs for the event-name mapping.
     fn into_canonical(self) -> Result<HookEvent, String> {
         let event_name = self
             .hook_event_name
@@ -105,8 +102,8 @@ impl CursorHookPayload {
                 old_text: None,
             }),
             "afterShellExecution" => Ok(HookEvent::PostToolUse {
-                // Synthesise a Bash-shaped entry so downstream logic can
-                // uniformly recognise shell activity across clients.
+                // Synthesise a Bash-shaped entry so downstream logic recognises
+                // shell activity uniformly across clients.
                 tool_name: "Bash".to_owned(),
                 file_path: None,
                 diff: synth::diff_shell(self.command.as_deref(), self.output.as_deref()),
@@ -138,10 +135,9 @@ impl CursorHookPayload {
 
 /// Extract a `PostToolUse` for Cursor's `afterFileEdit`.
 ///
-/// Cursor's payload shapes vary across releases — the file path may
-/// live at the top level, under `tool_input.file_path`, or under
-/// `tool_input.path`. We probe all three so hooks keep working across
-/// Cursor updates without waiting for a `DiffLore` release.
+/// The file path may live at the top level, under `tool_input.file_path`, or
+/// under `tool_input.path` depending on Cursor release; all three are probed so
+/// hooks survive Cursor updates without a `DiffLore` release.
 fn post_tool_use_for_file_edit(p: CursorHookPayload) -> HookEvent {
     let file_path = p.file_path.clone().or_else(|| {
         p.tool_input
@@ -217,19 +213,16 @@ impl PlatformAdapter for CursorAdapter {
     }
 
     fn format_output(&self, result: HookResult) -> String {
-        // Cursor's minimum contract is `{ "continue": bool }`. Newer
-        // builds additionally pick up a `context` string for advisory
-        // injection; older builds ignore it, so we include it whenever
-        // we have one without version-sniffing Cursor.
+        // Cursor's minimum contract is `{ "continue": bool }`. Newer builds also
+        // pick up a `context` string for advisory injection; older builds ignore
+        // it, so include it whenever present rather than version-sniffing.
         let mut obj = json!({
             "continue": result.continue_,
         });
         if let Some(ctx) = result.additional_context {
             obj["context"] = Value::String(ctx);
         }
-        if let Some(msg) = result.system_message {
-            obj["systemMessage"] = Value::String(msg);
-        }
+        let _ = result.system_message;
         crate::commands::util::json_compact_or(&obj, "{\"continue\":true}")
     }
 }
@@ -240,7 +233,7 @@ mod tests {
 
     #[test]
     fn parse_after_file_edit_flat_form() {
-        // Old Cursor shape: old_string/new_string at top of tool_input.
+        // Old Cursor shape: old_string/new_string at the top of tool_input.
         let adapter = CursorAdapter;
         let raw = r#"{
             "hook_event_name": "afterFileEdit",
@@ -272,9 +265,8 @@ mod tests {
 
     #[test]
     fn parse_after_file_edit_array_form_with_edits() {
-        // Newer Cursor packs edits as an array; each entry has its own
-        // old/new pair. We must collect all of them into one synthesised
-        // diff so a single Edit call with N hunks isn't silently dropped.
+        // Newer Cursor packs edits as an array of old/new pairs; all must be
+        // collected into one diff so an Edit with N hunks isn't dropped.
         let adapter = CursorAdapter;
         let raw = r#"{
             "hook_event_name": "afterFileEdit",
@@ -329,8 +321,7 @@ mod tests {
 
     #[test]
     fn parse_before_submit_prompt_probes_alt_keys() {
-        // Regression guard for Cursor's multi-named prompt field. A
-        // version that ships `query` instead of `prompt` must not drop
+        // A Cursor version that ships `query` instead of `prompt` must not drop
         // the payload.
         let adapter = CursorAdapter;
         let raw = r#"{"hook_event_name":"beforeSubmitPrompt","query":"hello"}"#;
@@ -363,9 +354,20 @@ mod tests {
     }
 
     #[test]
+    fn format_output_omits_system_message() {
+        let adapter = CursorAdapter;
+        let mut result = HookResult::noop();
+        result.system_message = Some("DiffLore lifecycle note".to_owned());
+
+        let out = adapter.format_output(result);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert!(v.get("systemMessage").is_none());
+    }
+
+    #[test]
     fn format_output_with_context_includes_context_field() {
-        // Cursor's newer builds honour `context` at the top level — we
-        // always include it when we have advisory context to surface.
+        // Cursor's newer builds honour `context` at the top level; always
+        // include it when there is advisory context to surface.
         let adapter = CursorAdapter;
         let out = adapter.format_output(HookResult::with_context("Rule 1: X"));
         let v: Value = serde_json::from_str(&out).unwrap();

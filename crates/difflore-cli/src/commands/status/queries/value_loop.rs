@@ -1,7 +1,7 @@
-//! Buyer-grade "value loop" evidence: proof that one rule was *learned* from a
-//! PR review, *recalled* and *served* (causally, before the edit), and then
-//! produced an *accepted edit* in a different PR. The strict causal/file-match
-//! gating lives here; the source-proof half is delegated to `super::source_proof`.
+//! "Value loop" evidence: proof that one rule was learned from a PR review,
+//! recalled and served (causally, before the edit), and then produced an
+//! accepted edit in a *different* PR. Strict causal/file-match gating lives
+//! here; the source-proof half is delegated to `super::source_proof`.
 
 use super::super::transform::{
     ValueLoopAcceptedCandidate, normalize_repo, pr_number_for_value_loop,

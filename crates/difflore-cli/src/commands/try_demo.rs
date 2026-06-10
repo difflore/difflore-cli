@@ -1,26 +1,16 @@
 //! `difflore try` — a zero-config taste of the product.
 //!
-//! The cold-start problem is real: recall is repo-scoped, so a brand-new user
-//! (and even a power user standing in a fresh repo) sees "no memory for this
-//! repo yet" and has to run `import-reviews` — which needs `gh` auth and a repo
-//! with rich PR-review history — before anything fires. That gap is where
-//! people bounce before ever seeing the point.
-//!
-//! `try` collapses that gap to one command. It builds a tiny, **bundled**
-//! corpus of real review rules in a throwaway temp index, then runs the
-//! **real** retrieval engine (`retrieve_rules_with_confidence` — same RRF
-//! fusion + strict file-pattern rerank the live hot path uses) against a sample
-//! edit, and shows the memories that fire. Nothing here is faked: what the user
-//! sees is exactly the shape they'll get on their own repo after `import-reviews`.
+//! Builds a tiny bundled corpus of real review rules in a throwaway temp index,
+//! runs the real retrieval engine against a sample edit, and shows the memories
+//! that fire — the same shape a user gets on their own repo after
+//! `import-reviews`, without needing `gh` auth or PR history.
 //!
 //! Isolation guarantees (see `upsert_rule_chunks_isolated`): local SHA1
-//! embeddings only (no network, no cloud/BYOK dependency, deterministic), no
-//! ANN write (so a real repo's `~/.difflore/projects/{hash}/` index is never
-//! touched), and the index lives in a `TempDir` that is deleted on return. The
-//! canonical rule store (`data.db`) is read-only here — the retrieval path
-//! probes the active embedder config but the demo writes nothing to it and
-//! adds no rules. (The shared activity log does record one retrieval event,
-//! the same as any real recall.)
+//! embeddings only (no network, deterministic), no ANN write (a real repo's
+//! `~/.difflore/projects/{hash}/` index is never touched), and the index lives
+//! in a `TempDir` deleted on return. The canonical rule store (`data.db`) is
+//! read-only; the demo writes nothing and adds no rules. The shared activity
+//! log does record one retrieval event, the same as any real recall.
 
 use std::time::{Duration, Instant};
 
@@ -31,13 +21,13 @@ use globset::Glob;
 
 use crate::style::{self, sym};
 
-/// The file the imagined agent edit lands in. Drives the strict file-pattern
-/// rerank — `**/*.go` rules get the in-path boost, off-language rules don't.
+/// File the sample edit lands in. Drives the strict file-pattern rerank:
+/// `**/*.go` rules get the in-path boost, off-language rules don't.
 const SAMPLE_FILE: &str = "internal/server/upload.go";
 
-/// The lines the agent "just wrote" — a classic unbounded body read. This is
-/// both what we show the user and (with a one-line intent) the retrieval query,
-/// so the match is earned by real token + semantic overlap, not hand-tuned.
+/// The lines the agent "just wrote" — a classic unbounded body read. Shown to
+/// the user and also fed into the retrieval query, so the match is earned by
+/// real overlap, not hand-tuned.
 const SAMPLE_EDIT: &str = "data, err := io.ReadAll(r.Body)";
 
 /// Natural-language intent + the edit, mirroring how `recall --diff` builds a
@@ -45,9 +35,9 @@ const SAMPLE_EDIT: &str = "data, err := io.ReadAll(r.Body)";
 const SAMPLE_QUERY: &str =
     "handler reads the entire HTTP request body into memory with io.ReadAll(r.Body), no size limit";
 
-/// One bundled, real-world review rule. We keep the display metadata
-/// (`source_repo`, examples) here rather than re-deriving it from the indexed
-/// chunk so attribution is exact and the demo stays self-contained.
+/// One bundled, real-world review rule. Display metadata (`source_repo`,
+/// examples) is kept here rather than re-derived from the indexed chunk so
+/// attribution is exact and the demo stays self-contained.
 struct DemoRule {
     skill_id: &'static str,
     title: &'static str,
@@ -58,10 +48,9 @@ struct DemoRule {
     good: &'static str,
 }
 
-/// The bundled corpus. Go-flavoured so the sample edit has one or two
-/// slam-dunk hits plus genuine near-misses — a realistic top-K, not a single
-/// rigged result. Repos are recognisable so the "← learned from" attribution
-/// reads as credible.
+/// The bundled corpus. Go-flavoured so the sample edit yields a couple of
+/// strong hits plus genuine near-misses — a realistic top-K, not a rigged
+/// single result.
 const fn demo_corpus() -> &'static [DemoRule] {
     &[
         DemoRule {
@@ -138,9 +127,8 @@ const fn demo_corpus() -> &'static [DemoRule] {
 }
 
 impl DemoRule {
-    /// Build the indexed document. The `Rule Name:` line is what the retrieval
-    /// layer's title extractor reads; the body + examples become the FTS /
-    /// embedding text, so matches are earned on real rule content.
+    /// Build the indexed document. The `Rule Name:` line is read by the
+    /// retrieval title extractor; body + examples become the FTS/embedding text.
     fn to_document(&self) -> RuleDocument {
         let patterns_json = serde_json::to_string(self.file_patterns).unwrap_or_default();
         let content = format!(
@@ -159,14 +147,13 @@ impl DemoRule {
             content,
             confidence: 0.8,
             file_patterns: (!patterns_json.is_empty()).then_some(patterns_json),
-            // Left untagged on purpose: the search fanout derives a language
-            // filter from the sample file (`go`), and a NULL language always
-            // satisfies it — so the demo can't be silently emptied by a
-            // language-tag spelling mismatch. The `**/*.go` glob still scopes
+            // Untagged on purpose: a NULL language always satisfies the
+            // search fanout's language filter, so a tag-spelling mismatch
+            // can't silently empty the demo. The `**/*.go` glob still scopes
             // these to Go via the strict file cascade.
             language: None,
-            // Attribution metadata only — recall runs unscoped (no repo_scopes)
-            // so every bundled rule is eligible regardless of the demo CWD.
+            // Attribution metadata only — recall runs unscoped, so every rule
+            // is eligible regardless of the demo CWD.
             repo_scope: Some(self.source_repo.to_owned()),
         }
     }
@@ -186,7 +173,7 @@ pub async fn handle_try() {
     let started = Instant::now();
     let corpus = demo_corpus();
 
-    // Throwaway index in a temp dir — deleted when `_tmp` drops on return.
+    // Throwaway index in a temp dir, deleted when `tmp` drops on return.
     let tmp = match tempfile::tempdir() {
         Ok(t) => t,
         Err(e) => {
@@ -212,12 +199,10 @@ pub async fn handle_try() {
         return;
     }
 
-    // Use the same search entry point the CLI/MCP agent path uses
-    // (`retrieve_rules_for_search`) so the demo's ranking is the real one: RRF
-    // hybrid retrieval *plus* the lexical re-rank that the MCP tools apply.
-    // Running raw `retrieve_rules_with_confidence` here would undersell the
-    // product — it skips that re-rank, leaving SHA1's near-zero cosine to
-    // decide ties.
+    // Use the same entry point as the CLI/MCP agent path so the demo's ranking
+    // is the real one: RRF hybrid retrieval plus the MCP lexical re-rank.
+    // Raw `retrieve_rules_with_confidence` would skip the re-rank, leaving
+    // SHA1's near-zero cosine to decide ties.
     let hits = match retrieval::retrieve_rules_for_search(
         &pool,
         RuleSearchRetrievalOptions {
@@ -277,7 +262,7 @@ fn render(hits: &[retrieval::ScoredRuleChunk], elapsed: Duration) {
 
     if scoped.is_empty() {
         println!(
-            "  {} the demo corpus returned no match: this should not happen; please report it.",
+            "  {} demo memory returned no match: this should not happen; please report it.",
             style::warn(sym::WARN),
         );
         return;

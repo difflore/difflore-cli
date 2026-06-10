@@ -2,8 +2,7 @@
 //!
 //! Calls the user's installed agent CLI (Claude Code / Codex / cursor-
 //! agent / Gemini) via [`crate::agent_cli::dispatch_gate`] to decide
-//! whether a session contains a reusable rule. Mirrors hivemind's
-//! `src/skillify/gate-parser.ts`.
+//! whether a session contains a reusable rule.
 //!
 //! ## Prompt shape
 //!
@@ -79,17 +78,14 @@ const GATE_TIMEOUT: Duration = Duration::from_secs(90);
 /// `get_rules`; the worker just forwards the necessary subset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingRule {
-    /// Stable cloud rule id.
     pub rule_id: String,
     /// Title shown in MCP — the gate uses it to decide overlap.
     pub title: String,
-    /// First few sentences of the body. Trimmed to keep the prompt
-    /// short — full bodies would blow the context window once the
+    /// Trimmed body so full bodies don't blow the prompt budget once the
     /// user has 50+ rules.
     pub body_snippet: String,
 }
 
-/// Inputs accepted by [`run_gate`].
 #[derive(Debug, Clone)]
 pub struct GateArgs<'a> {
     pub session_id: &'a str,
@@ -220,7 +216,6 @@ contains a reusable, transferable rule about how to write code in this team's re
     out.push('\n');
 
     // Render pairs newest-last but drop oldest first if we overflow.
-    // Pre-render each pair so we can pop from the front cheaply.
     let mut rendered_pairs: Vec<String> = pairs
         .iter()
         .map(|p| {
@@ -239,7 +234,6 @@ contains a reusable, transferable rule about how to write code in this team's re
         if candidate_len <= body_budget {
             break;
         }
-        // Drop the oldest pair (front) and retry.
         rendered_pairs.remove(0);
     }
     if rendered_pairs.is_empty() {
@@ -510,8 +504,7 @@ mod tests {
         }
     }
 
-    // -- Prompt assembly --------------------------------------------------
-
+    // Prompt assembly
     #[test]
     fn prompt_includes_existing_rules_section_with_ids_and_titles() {
         let rules = vec![
@@ -596,8 +589,7 @@ mod tests {
         assert!(!prompt.contains(&format!("rule-{MAX_EXISTING_RULES_IN_PROMPT}:")));
     }
 
-    // -- JSON parsing -----------------------------------------------------
-
+    // JSON parsing
     #[test]
     fn parse_keep_minimal_shape() {
         let raw = r#"{"verdict":"KEEP","title":"Always validate","body":"Validate before enqueue.","file_patterns":["src/**/*.rs"]}"#;
@@ -628,9 +620,6 @@ mod tests {
 
     #[test]
     fn parse_tolerates_markdown_json_fence() {
-        // Common: agent CLIs occasionally wrap JSON in a fence despite
-        // instruction. Parser must tolerate ```json … ``` exactly so a
-        // misbehaving gate doesn't poison the worker.
         let raw = "```json\n{\"verdict\":\"SKIP\",\"reason\":\"covered\"}\n```";
         let parsed = parse_gate_json(raw).expect("parses through fence");
         assert_eq!(parsed.verdict, "SKIP");
@@ -664,7 +653,6 @@ mod tests {
 
     #[test]
     fn parse_rejects_malformed_payload_with_clean_error() {
-        // Total garbage. The function must Err cleanly, not panic.
         let raw = "this is not JSON at all";
         let err = parse_gate_json(raw).unwrap_err();
         match err {
@@ -701,8 +689,7 @@ mod tests {
         assert!(matches!(err, GateError::ParseFailure { .. }));
     }
 
-    // -- Verdict mapping --------------------------------------------------
-
+    // Verdict mapping
     #[test]
     fn keep_verdict_builds_session_mined_candidate() {
         let parsed = GateJson {
@@ -828,8 +815,7 @@ mod tests {
         assert!(matches!(err, GateError::ParseFailure { .. }));
     }
 
-    // -- Public surface ---------------------------------------------------
-
+    // Public surface
     #[tokio::test]
     async fn run_gate_rejects_empty_input_without_spawning() {
         // No pairs → no CLI call. The worker upstream already filters,

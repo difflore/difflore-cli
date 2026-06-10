@@ -220,9 +220,6 @@ impl App {
         let current_repo = project_root
             .to_str()
             .and_then(difflore_core::git::detect_github_repo_full_name);
-        // Default Memory tab to the current repo when one is detected so
-        // empty-state copy guides the user to scope-cycle. Falls back to
-        // All when not in a repo.
         let rules_repo_filter = if current_repo.is_some() {
             RulesRepoFilter::ThisRepo
         } else {

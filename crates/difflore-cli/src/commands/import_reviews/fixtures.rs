@@ -46,10 +46,10 @@ pub(super) async fn seed_imported_review_comments(
     seed_imported_review_comments_with_resolution(db, comments, true).await;
 }
 
-/// Like [`seed_imported_review_comments`] but lets a test choose whether the
-/// seeded thread is resolved. Unresolved directives carry no adoption signal,
-/// so the correctness-aware gate routes them to a pending candidate instead
-/// of auto-activating — exercise the medium-confidence path with `false`.
+/// Like [`seed_imported_review_comments`] but lets a test pick whether the
+/// thread is resolved. Unresolved directives carry no adoption signal, so the
+/// capture gate routes them to a pending candidate rather than auto-activating;
+/// pass `false` to exercise the medium-confidence path.
 pub(super) async fn seed_imported_review_comments_with_resolution(
     db: &sqlx::SqlitePool,
     comments: &[(&str, &str)],
@@ -110,8 +110,7 @@ pub(super) async fn seed_imported_review_comments_with_resolution(
                         "sourceRepoFullName": "acme/widgets",
                         "attachedRepoFullName": "acme/widgets",
                         // `resolved` is the v1 adoption proxy: when true the
-                        // correctness-aware capture gate treats these seeded
-                        // directives as adopted and auto-activates them.
+                        // capture gate treats the directive as adopted and auto-activates it.
                         "resolved": resolved,
                     })
                     .to_string(),
@@ -129,10 +128,10 @@ pub(super) async fn seed_imported_review_comments_with_resolution(
     }
 }
 
-/// Seed a single imported review item under `repo` for a specific PR number,
-/// carrying one resolved high-signal directive comment. Used to exercise
-/// per-PR filtering (e.g. `--exclude-prs`) where the seeded PR number must be
-/// controllable, unlike [`seed_imported_review_comments`] which pins PR #7.
+/// Seed one imported review item under `repo` for a given PR number with a
+/// single resolved directive comment. Unlike [`seed_imported_review_comments`]
+/// (which pins PR #7), the PR number is controllable to exercise per-PR
+/// filtering such as `--exclude-prs`.
 pub(super) async fn seed_pr_with_directive(
     db: &sqlx::SqlitePool,
     repo: &str,

@@ -4,13 +4,10 @@ use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Cloud-client debug noise (network errors on degraded paths) is gated
-/// behind `DIFFLORE_DEBUG_CLOUD=1`. The default is silent: when cloud is
-/// unavailable, every degraded endpoint here returns an empty/false sentinel
-/// and the caller carries on — printing the raw reqwest error to stderr just
-/// confuses users who are already getting a friendlier message from
-/// `format_cloud_err` at the top-level command. Devs flip the env var on to
-/// trace transport-layer issues.
+/// Whether `DIFFLORE_DEBUG_CLOUD=1` is set. Off by default so degraded
+/// cloud paths stay silent (each returns an empty/false sentinel); the
+/// raw reqwest error would only confuse users who already see a friendlier
+/// top-level message. Devs flip it on to trace transport issues.
 fn cloud_debug_enabled() -> bool {
     crate::env::debug_cloud()
 }
@@ -37,9 +34,7 @@ struct TokenRefreshResponse {
 /// transport error.
 #[derive(Clone, Copy)]
 enum SendPhase {
-    /// The first send, before any token refresh.
     Initial,
-    /// The single post-refresh retry send.
     Retry,
 }
 
@@ -52,12 +47,10 @@ fn escape_path_id(s: &str) -> String {
         .replace('?', "%3F")
 }
 
-/// Scrub every known auth token (≥8 chars) from a cloud-response body before it
-/// is logged or surfaced in an error. A hostile / compromised cloud could echo
-/// the bearer OR refresh token back inside an error body; without this the CLI
-/// would faithfully print the token to stderr / a returned error string. Tokens
-/// under 8 chars are skipped (false positives on common substrings; real tokens
-/// are always longer).
+/// Replace every known auth token (≥8 chars) in a cloud-response body
+/// before it is logged or surfaced, so a compromised cloud echoing the
+/// bearer/refresh token back can't leak it to stderr or an error string.
+/// Tokens under 8 chars are skipped to avoid redacting common substrings.
 fn scrub_tokens_from_body(body: &str, tokens: &[Option<&str>]) -> String {
     let mut out = body.to_owned();
     for &token in tokens.iter().flatten() {
@@ -75,23 +68,14 @@ fn truncate_for_error(body: &str, max_chars: usize) -> String {
     body.chars().take(max_chars).collect()
 }
 
-/// Distilled fingerprint of an upload that returned a non-2xx HTTP
-/// response. Held by [`OutboxFailure::Http`] so the outbox can write
-/// a human-greppable `last_error` (e.g. `"401 Unauthorized: …"`)
-/// instead of the historic — and useless — `"upload returned
-/// non-2xx"`.
+/// Fingerprint of an upload that returned a non-2xx HTTP response, held
+/// by [`OutboxFailure::Http`] so the outbox can write a greppable
+/// `last_error` (e.g. `"401 Unauthorized: …"`).
 ///
-/// `body_snippet` is the first ~200 chars of the response body with
-/// all runs of whitespace collapsed to a single space. The body is
-/// stored only inside this struct and only ever written into the
-/// local SQLite `last_error` column — it is never logged to
-/// stdout/stderr — so a stack-trace echo from the cloud cannot leak
-/// into a user's foreground output.
-///
-/// The response body is opaque to the client and could echo a token or
-/// other sensitive blob. Known auth tokens are scrubbed before the snippet is
-/// stored. Treat `last_error` as locally trusted diagnostic data, not as
-/// something to forward to third parties without review.
+/// `body_snippet` is the first ~200 chars of the body, whitespace
+/// collapsed and known auth tokens scrubbed. It is written only into the
+/// local SQLite `last_error` column, never to stdout/stderr, so a cloud
+/// stack-trace echo cannot leak into foreground output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HttpFailure {
     pub status: u16,
@@ -99,35 +83,27 @@ pub(crate) struct HttpFailure {
     pub body_snippet: String,
 }
 
-/// Outcome of a fire-and-forget POST whose dispatcher wants the
-/// status + body details (not just success/failure). Two flavours so
-/// the outbox can distinguish "the cloud rejected this with 401"
-/// from "we never reached the cloud" — collapsing the two used to
-/// hide stale-auth incidents inside a generic transport-error
-/// bucket.
+/// Outcome of a fire-and-forget POST whose dispatcher wants status +
+/// body details. The two variants let the outbox distinguish "cloud
+/// rejected this with 401" from "we never reached the cloud" — collapsing
+/// them would hide stale-auth incidents in a generic transport bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OutboxFailure {
     Http(HttpFailure),
-    /// Transport / DNS / TLS / timeout — the request never produced
-    /// a status code. The payload is the lossy `reqwest::Error`
-    /// description (already includes the underlying `kind`).
+    /// Transport / DNS / TLS / timeout — the request never produced a
+    /// status code. Payload is the `reqwest::Error` description.
     Transport(String),
 }
 
 impl OutboxFailure {
-    /// Format the failure into the spec-mandated shape for the
-    /// `cloud_outbox.last_error` column:
+    /// Format the failure for the `cloud_outbox.last_error` column.
     ///
-    /// * `Http(401, "Unauthorized", "{\"error\":\"…\"}")` →
-    ///   `"401 Unauthorized: {\"error\":\"…\"}"`
-    /// * `Http(500, "Internal Server Error", "")` →
-    ///   `"500 Internal Server Error"`
-    /// * `Transport("…connection refused…")` →
-    ///   `"transport: …connection refused…"`
+    /// * `Http(401, "Unauthorized", "{…}")` → `"401 Unauthorized: {…}"`
+    /// * `Http(500, "Internal Server Error", "")` → `"500 Internal Server Error"`
+    /// * `Transport("…connection refused…")` → `"transport: …connection refused…"`
     ///
-    /// The shape is deliberately greppable: `last_error LIKE '4__ %'`
-    /// finds every client-class HTTP failure across the queue, and
-    /// the leading status code parses with a one-line `awk`.
+    /// The shape is greppable: `last_error LIKE '4__ %'` matches every
+    /// client-class HTTP failure and the leading status code parses easily.
     pub fn format_for_outbox_last_error(&self) -> String {
         match self {
             Self::Http(http) => {
@@ -140,22 +116,17 @@ impl OutboxFailure {
                     )
                 }
             }
-            // Transport-class sentinel — distinct from any
-            // `{status_code} {reason}` shape so `classify_upload_issue`
-            // and grep can tell them apart at a glance.
+            // Transport-class sentinel, distinct from any
+            // `{status_code} {reason}` shape so callers can tell them apart.
             Self::Transport(msg) => format!("transport: {msg}"),
         }
     }
 }
 
-/// Collapse all runs of ASCII whitespace (including tabs / CR / LF)
-/// to a single space and truncate to at most `max_chars` Unicode
-/// scalar values, never splitting a UTF-8 codepoint. Returns an
-/// owned `String` because SQLite stores TEXT as UTF-8 and
-/// `last_error` is bounded by `outbox_core::truncate` downstream
-/// anyway. Used for HTTP body fragments embedded in `last_error` so
-/// a JSON error blob with embedded newlines still fits on a single
-/// grep line.
+/// Collapse all ASCII whitespace runs to a single space and truncate to
+/// at most `max_chars` Unicode scalar values (never splitting a
+/// codepoint). Keeps an HTTP body fragment on a single grep line in
+/// `last_error`.
 pub(crate) fn normalize_body_snippet(body: &str, max_chars: usize) -> String {
     let collapsed: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() <= max_chars {
@@ -249,8 +220,8 @@ impl CloudClient {
         // owner on Unix (Windows relies on the per-user profile ACL).
         crate::infra::db::restrict_sqlite_files(&path);
 
-        // cloud-auth.db is a two-column token store; create only the
-        // table it needs, idempotently and order-independently.
+        // cloud-auth.db is a two-column token store; create its one table
+        // idempotently.
         sqlx::query!(
             "CREATE TABLE IF NOT EXISTS auth (\
                 key TEXT PRIMARY KEY NOT NULL, \
@@ -344,9 +315,7 @@ impl CloudClient {
     }
 
     pub async fn load_token() -> Option<String> {
-        // Environment variable override — useful when OS keyring is unreliable.
-        // An explicit env token is the user's own intent for the current URL, so
-        // Env tokens are explicit user intent for the current URL.
+        // An explicit env token is the user's own intent for the current URL.
         if let Some(token) = crate::env::non_empty(crate::env::DIFFLORE_TOKEN) {
             return Some(token);
         }
@@ -454,18 +423,13 @@ impl CloudClient {
         Some(body.token)
     }
 
-    /// Single source of truth for the auth-refresh-retry dance shared by
-    /// every authenticated request path in this file.
+    /// Shared auth-refresh-retry path for every authenticated request.
     ///
-    /// `build` is invoked to produce the request: with `None` for the
-    /// initial attempt (the caller embeds its own token, which may be
-    /// absent) and with `Some(&refreshed_token)` for the single retry that
-    /// happens iff the first response is `401 Unauthorized` *and*
-    /// `refresh_saved_token()` succeeds. Behaviour is exactly one
-    /// refresh + one retry — no loop — so the security-sensitive 401
-    /// handling lives in one place instead of being copy-pasted across
-    /// `recall_past_verdicts`, `post_fire_and_forget_result`, `get_json`,
-    /// `post_json`, and `ApiClient::request`.
+    /// `build` produces the request: `None` for the initial attempt (the
+    /// caller embeds its own token, which may be absent) and
+    /// `Some(&refreshed_token)` for the single retry that happens iff the
+    /// first response is `401 Unauthorized` *and* `refresh_saved_token()`
+    /// succeeds. Exactly one refresh + one retry, never a loop.
     ///
     /// Errors carry the [`SendPhase`] so callers can distinguish initial
     /// send failures from retry failures.
@@ -499,19 +463,11 @@ impl CloudClient {
     }
 
     /// Call the cloud review-memory endpoint for semantically similar
-    /// past verdicts.
-    ///
-    /// This call is deliberately fault-tolerant:
-    /// * On HTTP 403 (e.g. team-scope recall without the team entitlement,
-    ///   or a capacity/permission limit) — returns `Ok(vec![])` so users
-    ///   proceed with a normal review. Personal review-memory recall is
-    ///   available on Cloud Free; paid plans expand capacity and team scope.
-    /// * On network / decode errors — logs and returns `Ok(vec![])`; a
-    ///   failing recall must NEVER block a review.
-    ///
-    /// The endpoint is hand-wired with `reqwest` rather than routed through
-    /// `openapi_contract::api!` because the request/response types carry
-    /// extra fields and derive traits beyond what the generated code provides.
+    /// past verdicts. Deliberately fault-tolerant — a failing recall must
+    /// NEVER block a review:
+    /// * On HTTP 403 (no team entitlement, or a capacity/permission limit)
+    ///   returns `Ok(vec![])` so the user proceeds with a normal review.
+    /// * On network / decode errors, logs and returns `Ok(vec![])`.
     pub async fn recall_past_verdicts(
         &self,
         req: RecallPastVerdictsRequest,
@@ -521,13 +477,10 @@ impl CloudClient {
         }
 
         let url = format!("{}/reviews/recall-past-verdicts", self.base_url);
-        // Past-verdict recall is the one best-effort endpoint that needs its
-        // own transient-failure handling: a 45s timeout plus a short backoff
-        // retry (see `send_recall_past_verdicts`). The shared
-        // `send_with_refresh` helper used by the other endpoints does not
-        // apply a timeout or retry network errors, so this site deliberately
-        // keeps its dedicated send path while still performing the standard
-        // one-shot 401 token-refresh retry below.
+        // Recall needs its own transient-failure handling: a 45s timeout
+        // plus backoff retry (see `send_recall_past_verdicts`), which the
+        // shared `send_with_refresh` does not provide. This site keeps its
+        // dedicated send path but still does the standard 401 refresh-retry.
         let mut resp = match self
             .send_recall_past_verdicts(&url, self.token.as_deref(), &req)
             .await
@@ -567,32 +520,24 @@ impl CloudClient {
             }
         }
         if status == reqwest::StatusCode::FORBIDDEN {
-            // plan_limit_exceeded or missing team feature — graceful no-op.
-            // Surface a single informational line (not an eprintln!'d error)
-            // per process so users understand *why* recall returned empty
-            // without turning every review into a warning spam.
-            static NOTIFIED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-            NOTIFIED.get_or_init(|| {
-                eprintln!(
-                    "[difflore] Past-verdict recall skipped: this request needs more review-memory capacity or team scope. \
-                     Personal Cloud Free recall still works for capped memory; see pricing at {} to expand team-wide recall.",
-                    pricing_url()
-                );
-            });
+            // Plan limit or missing team feature — graceful no-op.
+            if cloud_debug_enabled() {
+                static NOTIFIED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+                NOTIFIED.get_or_init(|| {
+                    eprintln!(
+                        "[difflore] Past-verdict recall skipped: this request needs more review-memory capacity or team scope. \
+                         Personal Cloud Free recall still works for capped memory; see pricing at {} to expand team-wide recall.",
+                        pricing_url()
+                    );
+                });
+            }
             return Ok(Vec::new());
         }
         if status == reqwest::StatusCode::UNAUTHORIZED {
-            // KNOWN: cloud-side auth-scope gap on /reviews/recall-past-verdicts (see difflore-cloud route authz); fail-safe empty
-            //
-            // The server returns 401 here for valid logged-in team
-            // sessions (notably the background reachability probe from
-            // `ensure_ready`). This is a cloud-side authz scope gap, not
-            // a client bug — recall stays fail-safe (empty) so a review
-            // is never blocked. We no longer SILENTLY swallow it: emit a
-            // diagnostic through the same `cloud_debug_enabled()` gate
-            // every other degraded path in this file uses, deduped once
-            // per process so `doctor`/`plan`/`recall` aren't spammed with
-            // a scary-looking 401.
+            // The server returns 401 here even for valid logged-in team
+            // sessions (a cloud-side authz scope gap, not a client bug),
+            // so recall stays fail-safe (empty). Diagnostic is deduped once
+            // per process so commands aren't spammed with a 401.
             if cloud_debug_enabled() {
                 static NOTIFIED_401: std::sync::OnceLock<()> = std::sync::OnceLock::new();
                 NOTIFIED_401.get_or_init(|| {
@@ -608,25 +553,15 @@ impl CloudClient {
         }
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            // Gate the verbose, scary-looking error behind debug so unrelated
-            // CLI commands (doctor, plan, etc.) don't spam users with a
-            // probe-failure message that has no bearing on their request.
-            // The first failure per process still surfaces a faded one-liner
-            // so genuine outages remain discoverable.
-            static NOTIFIED_OTHER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-            NOTIFIED_OTHER.get_or_init(|| {
-                if cloud_debug_enabled() {
+            if cloud_debug_enabled() {
+                static NOTIFIED_OTHER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+                NOTIFIED_OTHER.get_or_init(|| {
                     eprintln!(
                         "[difflore] Past-verdict recall unavailable ({status}). \
                          Continuing with local rules. Cloud response: {body}"
                     );
-                } else {
-                    eprintln!(
-                        "[difflore] Past-verdict recall unavailable ({status}); \
-                         continuing with local rules. Set DIFFLORE_DEBUG_CLOUD=1 for details."
-                    );
-                }
-            });
+                });
+            }
             return Ok(Vec::new());
         }
 
@@ -681,8 +616,7 @@ impl CloudClient {
         req: &RecallPastVerdictsRequest,
     ) -> Result<reqwest::Response, reqwest::Error> {
         // Retry with backoff: one attempt per configured delay, then a final
-        // attempt whose result (Ok or Err) is returned directly — so there is no
-        // stored-then-unwrapped "last error" to reason about.
+        // attempt whose result (Ok or Err) is returned directly.
         for &delay_ms in PAST_VERDICT_RETRY_DELAYS_MS {
             match self
                 .recall_past_verdicts_request(url, token)
@@ -703,10 +637,9 @@ impl CloudClient {
     }
 
     /// Shared helper for the fire-and-forget POST endpoints below. Returns
-    /// `true` iff the server accepted the payload (2xx). All of our upload
-    /// endpoints are fire-and-forget — transient failure must NOT bubble
-    /// up and kill the review/fix pipeline. Callers that want to know
-    /// success can inspect the bool; most ignore it.
+    /// `true` iff the server accepted the payload (2xx). Transient failure
+    /// must NOT bubble up and kill the review/fix pipeline; most callers
+    /// ignore the bool.
     async fn post_fire_and_forget<T: serde::Serialize>(
         &self,
         path: &str,
@@ -775,20 +708,15 @@ impl CloudClient {
         ))
     }
 
-    /// Sibling of [`post_fire_and_forget_result`] that surfaces the
-    /// HTTP status + body fragment as structured data so the outbox
-    /// can write a greppable `last_error`.
+    /// Like [`post_fire_and_forget_result`] but surfaces the HTTP status +
+    /// body fragment as structured data so the outbox can write a greppable
+    /// `last_error`.
     ///
-    /// Returns `Ok(())` on 2xx, `Err(OutboxFailure::Http(_))` for
-    /// any non-2xx response (including 401 after the standard
-    /// one-shot refresh+retry has been exhausted), and
-    /// `Err(OutboxFailure::Transport(_))` when the request never
-    /// produced a status — transport / DNS / TLS / timeout.
-    ///
-    /// Intentionally **does not** log anything to stdout/stderr: the
-    /// response body lands only in the returned struct, which the
-    /// caller writes into the local SQLite `last_error` column. The
-    /// fire-and-forget `bool` API stays unchanged for non-outbox callers.
+    /// Returns `Ok(())` on 2xx, `Err(OutboxFailure::Http(_))` for any
+    /// non-2xx (including 401 after refresh+retry is exhausted), and
+    /// `Err(OutboxFailure::Transport(_))` when the request never produced a
+    /// status. Logs nothing to stdout/stderr — the response body lands only
+    /// in the returned struct.
     async fn post_fire_and_forget_outcome<T: serde::Serialize>(
         &self,
         path: &str,
@@ -796,10 +724,8 @@ impl CloudClient {
         endpoint_label: &'static str,
     ) -> Result<(), OutboxFailure> {
         if !self.is_logged_in() {
-            // Pre-flight "not logged in" surfaces as a transport-
-            // class failure: there is no HTTP status to attach, and
-            // the remediation ("run `difflore cloud login`") is the
-            // same shape as other unreachable-cloud states.
+            // "Not logged in" is a transport-class failure: no HTTP status
+            // to attach, same remediation shape as other unreachable states.
             return Err(OutboxFailure::Transport(format!(
                 "{endpoint_label} skipped: not logged in"
             )));
@@ -838,9 +764,8 @@ impl CloudClient {
         }
 
         let status_code = status.as_u16();
-        // `canonical_reason()` is None only for unassigned status
-        // numbers; fall back to the numeric form so `last_error` is
-        // never an empty phrase.
+        // `canonical_reason()` is None for unassigned status numbers; fall
+        // back to the numeric form so `last_error` is never an empty phrase.
         let reason_phrase = status
             .canonical_reason()
             .map_or_else(|| status_code.to_string(), str::to_owned);
@@ -855,8 +780,7 @@ impl CloudClient {
         }))
     }
 
-    /// Outbox-friendly wrapper around [`save_trajectory`]: same
-    /// payload + endpoint, but returns the rich [`OutboxFailure`]
+    /// Outbox-friendly [`save_trajectory`]: returns [`OutboxFailure`]
     /// instead of a `bool` so the queue's `last_error` can carry the
     /// upstream status + body fragment.
     pub(crate) async fn save_trajectory_outcome(
@@ -928,16 +852,10 @@ impl CloudClient {
             .await
     }
 
-    /// POST `/reviews/{id}/metrics`.
-    ///
-    /// Uploads token usage + estimated cost + wall-clock duration for a
-    /// single review run. All fields on the request are optional; pass
-    /// `None` for anything the engine doesn't have and the server leaves
-    /// that column alone.
-    ///
-    /// This is fire-and-forget — a failed metrics upload must NEVER block
-    /// a review. Returns `true` on 2xx so unit tests can assert the happy
-    /// path, but every production caller should ignore the bool.
+    /// POST `/reviews/{id}/metrics`: upload token usage + estimated cost +
+    /// duration for one review run. All request fields are optional (`None`
+    /// leaves that column alone). Fire-and-forget — a failed upload must
+    /// NEVER block a review; production callers ignore the bool.
     pub async fn record_review_metrics(
         &self,
         review_id: &str,
@@ -948,12 +866,9 @@ impl CloudClient {
             .await
     }
 
-    /// POST `/reviews/{prReviewId}/trajectory`.
-    ///
-    /// Takes the serialized output of `TrajectoryBuilder::into_json()` and
-    /// hands it to the cloud side, which parses it with a Zod discriminated
-    /// union that mirrors the Rust enum in `review_trajectory.rs` exactly.
-    /// Fire-and-forget — a missing trajectory is never a review blocker.
+    /// POST `/reviews/{prReviewId}/trajectory`: send the serialized output
+    /// of `TrajectoryBuilder::into_json()`. Fire-and-forget — a missing
+    /// trajectory is never a review blocker.
     pub async fn save_trajectory(&self, pr_review_id: &str, steps: serde_json::Value) -> bool {
         let req = SaveTrajectoryRequest { steps };
         let path = format!("/reviews/{}/trajectory", escape_path_id(pr_review_id));
@@ -961,26 +876,17 @@ impl CloudClient {
             .await
     }
 
-    /// GET `/reviews/{prReviewId}/trajectory` for the
-    /// `difflore trajectory <review-id>` CLI renderer.
-    ///
-    /// Sibling of [`save_trajectory`]: it fetches the recorded decision
-    /// trail for one review and decodes it back into the canonical
-    /// [`crate::review_trajectory::TrajectoryStep`] enum. Unlike the recall
-    /// path this is **not** fail-safe-to-empty — the caller (an explicit,
-    /// user-invoked `trajectory` command) wants to know *why* a fetch
-    /// failed (not logged in, plan-gated, review not found, network down)
-    /// so it can print an actionable message. We therefore surface the
-    /// underlying error string from [`get_json`] verbatim:
+    /// GET `/reviews/{prReviewId}/trajectory` for the `difflore trajectory`
+    /// renderer. Unlike recall this is **not** fail-safe-to-empty — the
+    /// caller wants to know *why* a fetch failed, so the [`get_json`] error
+    /// string is surfaced verbatim:
     ///
     /// * `"not_logged_in"` when no cloud token is present, and
-    /// * `"[get_trajectory] returned 4xx: …"` for plan-limit / not-found /
-    ///   other HTTP failures.
+    /// * `"[get_trajectory] returned 4xx: …"` for HTTP failures.
     ///
-    /// The cloud returns a zero-UUID placeholder with `steps: []` (not a
-    /// 404) when a review exists but has no persisted trajectory, so an
-    /// `Ok` with an empty `steps` vec is the "nothing recorded yet" signal
-    /// the renderer handles gracefully.
+    /// A review with no persisted trajectory comes back as a zero-UUID
+    /// placeholder with `steps: []` (not a 404), so an empty `steps` vec is
+    /// the "nothing recorded yet" signal.
     pub async fn get_trajectory(
         &self,
         pr_review_id: &str,
@@ -989,15 +895,10 @@ impl CloudClient {
         self.get_json(&path, "get_trajectory").await
     }
 
-    /// POST `/dashboard/mcp-query` — live agent-activity telemetry.
-    ///
-    /// Called every time the MCP server answers a canonical rule-search tool
-    /// invocation. The cloud side appends a row to `metric_events` and the
-    /// dashboard's "Recent agent activity" card polls for new entries. Fire-
-    /// and-forget — a missing telemetry hit must never block the MCP response
+    /// POST `/dashboard/mcp-query` — live agent-activity telemetry, sent
+    /// each time the MCP server answers a rule-search tool call. Fire-and-
+    /// forget — a missing telemetry hit must never block the MCP response
     /// (agents time out on slow MCP tools).
-    ///
-    /// Kept flat to avoid churn in the outbox payload schema and callers.
     #[allow(clippy::too_many_arguments)]
     pub async fn track_mcp_query(
         &self,
@@ -1010,7 +911,7 @@ impl CloudClient {
         client_label: Option<&str>,
         repo_full_name: Option<&str>,
     ) -> bool {
-        // Keep the payload small: cap titles/ids at 10 (server rejects >10).
+        // Cap titles/ids at 10 — the server rejects more.
         let titles: Vec<String> = rule_titles.into_iter().take(10).collect();
         let ids: Vec<String> = rule_ids.into_iter().take(10).collect();
         let body = serde_json::json!({
@@ -1027,12 +928,10 @@ impl CloudClient {
             .await
     }
 
-    /// POST `/accepted-edits`.
-    ///
-    /// Called when the user locally accepts an edit (IDE / CLI). The cloud
-    /// side inserts a `fix_acceptances` row which the `rule-promoter`
-    /// worker later aggregates into candidate rules. Fire-and-forget: a
-    /// failed acceptance POST must never block the local accept UX.
+    /// POST `/accepted-edits`, called when the user locally accepts an edit.
+    /// The cloud inserts a `fix_acceptances` row that the `rule-promoter`
+    /// worker later aggregates into candidate rules. Fire-and-forget — must
+    /// never block the local accept UX.
     pub async fn record_accepted_edit(&self, req: RecordAcceptedEditRequest) -> bool {
         self.record_accepted_edit_response(req).await.map_or_else(
             |e| {
@@ -1045,12 +944,10 @@ impl CloudClient {
         )
     }
 
-    /// POST `/accepted-edits` and return the cloud attribution details.
-    ///
-    /// The response tells the CLI whether the raw accepted edit was also
-    /// linked to a team-scoped `fix_outcome` observation. That distinction
-    /// matters for Impact evidence: raw accepted rows prove usage, but
-    /// rule-linked observations prove the live fix path reused review memory.
+    /// POST `/accepted-edits` and return the cloud attribution details:
+    /// whether the accepted edit was also linked to a team-scoped
+    /// `fix_outcome` observation. That distinction matters for Impact
+    /// evidence — rule-linked observations prove the fix path reused memory.
     pub async fn record_accepted_edit_response(
         &self,
         req: RecordAcceptedEditRequest,
@@ -1059,11 +956,9 @@ impl CloudClient {
             .await
     }
 
-    /// POST `/reviews/import` — GitHub PR History Import.
-    ///
-    /// Uploads locally-imported PR review comments to the cloud for
-    /// team-wide recall and analytics. Fire-and-forget — a failed upload
-    /// must never block the local import pipeline.
+    /// POST `/reviews/import`: upload locally-imported PR review comments
+    /// for team-wide recall and analytics. Fire-and-forget — must never
+    /// block the local import pipeline.
     pub async fn upload_imported_reviews(&self, req: &UploadImportedReviewsRequest) -> bool {
         self.post_fire_and_forget("/reviews/import", req, "upload_imported_reviews")
             .await
@@ -1091,9 +986,9 @@ impl CloudClient {
     }
 
     /// Scrub the construction-time bearer, the current saved bearer (possibly
-    /// refreshed mid-call), AND the refresh token from a response body before
+    /// refreshed mid-call), and the refresh token from a response body before
     /// it is surfaced in an error. Async because it reads the latest saved
-    /// tokens — only hit on rare non-2xx error paths.
+    /// tokens; only hit on rare non-2xx error paths.
     async fn scrub_response_body(&self, body: &str) -> String {
         let saved = Self::load_token_quiet().await;
         let refresh = Self::load_refresh_token().await;
@@ -1146,10 +1041,9 @@ impl CloudClient {
             .map_err(|e| format!("[{label}] decode error: {e}"))
     }
 
-    /// POST helper that, unlike `post_fire_and_forget`, returns the
-    /// decoded body. Used by interactive endpoints (knowledge corpora,
-    /// future synchronous CLI flows) where the user wants the answer,
-    /// not just success/failure.
+    /// POST helper that returns the decoded body. Used by interactive
+    /// endpoints (knowledge corpora) where the user wants the answer, not
+    /// just success/failure.
     async fn post_json<B: serde::Serialize, R: serde::de::DeserializeOwned>(
         &self,
         path: &str,
@@ -1198,7 +1092,7 @@ impl CloudClient {
     }
 
     /// POST `/knowledge/corpus` — build a filtered snapshot of rules +
-    /// extractions into a new corpus. Cloud spec §3.16.
+    /// extractions into a new corpus.
     pub async fn build_corpus(
         &self,
         req: &super::api_types::BuildCorpusRequest,

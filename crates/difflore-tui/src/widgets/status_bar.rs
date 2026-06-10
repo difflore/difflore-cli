@@ -17,7 +17,6 @@ use ratatui::widgets::Paragraph;
 
 use crate::theme::Theme;
 
-/// Plan tier kept local to the status bar view model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PlanTier {
     Free,

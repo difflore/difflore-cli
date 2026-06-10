@@ -10,11 +10,9 @@ pub struct ClaudeCodeMemorySource;
 
 const ID: &str = "claude-code-memory";
 
-/// Convert an absolute repo path to Claude Code's project slug.
-///
-/// Claude Code stores Windows projects with the drive separator sanitized too
-/// (`C:\Users\alice` -> `C--Users-alice`), so replace path separators and
-/// filename-hostile characters.
+/// Convert an absolute repo path to Claude Code's project slug, replacing
+/// path separators and filename-hostile chars (including the Windows drive
+/// separator: `C:\Users\alice` -> `C--Users-alice`).
 fn project_slug(repo_root: &Path) -> Option<String> {
     let canonical = repo_root.canonicalize().ok()?;
     Some(project_slug_from_path_text(&canonical.to_string_lossy()))

@@ -45,11 +45,10 @@ use super::synth;
 use super::types::{HookEvent, HookResult};
 use super::{PayloadAdapter, PlatformAdapter};
 
-/// Zero-sized marker — no adapter state.
 pub struct WindsurfAdapter;
 
-/// Typed view of Windsurf's stdin envelope. All fields optional; we
-/// reject only when `agent_action_name` is absent (malformed payload).
+/// Typed view of Windsurf's stdin envelope. All fields optional; rejected only
+/// when `agent_action_name` is absent (malformed payload).
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) struct WindsurfHookPayload {
@@ -71,8 +70,8 @@ impl WindsurfHookPayload {
             .ok_or_else(|| "missing agent_action_name".to_owned())?;
         let info = self.tool_info.as_ref();
         match action {
-            // SessionStart variants: Windsurf has historically used
-            // both names. Either triggers our warmup path.
+            // Windsurf has used both names for SessionStart; either triggers
+            // the warmup path.
             "session_start" | "beforeAgentResponse" => Ok(HookEvent::SessionStart {
                 cwd: extract_cwd(info),
                 session_id: None,
@@ -143,8 +142,8 @@ fn extract_cwd(info: Option<&Value>) -> String {
         .to_owned()
 }
 
-/// Synthesise a diff from `post_write_code`'s edits array. Falls
-/// back to `content` for whole-file writes if edits is missing.
+/// Synthesise a diff from `post_write_code`'s edits array, falling back to
+/// `content` for whole-file writes when edits is missing.
 fn synthesise_write_diff(info: Option<&Value>) -> Option<String> {
     let info = info?;
     if let Some(edits) = info.get("edits").and_then(|v| v.as_array()) {
@@ -167,16 +166,15 @@ fn synthesise_write_diff(info: Option<&Value>) -> Option<String> {
     None
 }
 
-/// Diff-like summary for `post_run_command`. Windsurf ships the
-/// command under `command_line` and no output, so this is just `$ cmd`.
+/// Diff-like summary for `post_run_command`. Windsurf ships the command under
+/// `command_line` with no output, so this is just `$ cmd`.
 fn synthesise_command_diff(info: Option<&Value>) -> Option<String> {
     let cmd = info?.get("command_line").and_then(|v| v.as_str())?;
     synth::diff_shell(Some(cmd), None)
 }
 
-/// Summary for `post_mcp_tool_use`: we flatten the tool arguments and
-/// the result into a text blob so the retriever can match on keywords
-/// mentioned inside MCP tool I/O.
+/// Summary for `post_mcp_tool_use`: flattens the tool arguments and result into
+/// a text blob so the retriever can match on keywords inside MCP tool I/O.
 fn synthesise_mcp_diff(info: Option<&Value>) -> Option<String> {
     let info = info?;
     let mut out = String::new();
@@ -212,18 +210,15 @@ impl PlatformAdapter for WindsurfAdapter {
     }
 
     fn format_output(&self, result: HookResult) -> String {
-        // Advisory hooks in Windsurf ignore extra keys; we keep the
-        // body minimal and include `continue` so future Windsurf
-        // builds that treat absence as "block" still pass through.
+        // Advisory hooks in Windsurf ignore extra keys; include `continue` so
+        // future builds that treat its absence as "block" still pass through.
         let mut obj = json!({ "continue": result.continue_ });
         if let Some(ctx) = result.additional_context {
-            // Matches the key surface we use for Cursor — if a future
-            // Windsurf build picks up `context`, we're already emitting it.
+            // Matches the Cursor key surface, so a future Windsurf build that
+            // picks up `context` already receives it.
             obj["context"] = Value::String(ctx);
         }
-        if let Some(msg) = result.system_message {
-            obj["systemMessage"] = Value::String(msg);
-        }
+        let _ = result.system_message;
         crate::commands::util::json_compact_or(&obj, "{\"continue\":true}")
     }
 }
@@ -356,6 +351,17 @@ mod tests {
         let out = adapter.format_output(HookResult::noop());
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["continue"], true);
+    }
+
+    #[test]
+    fn format_output_omits_system_message() {
+        let adapter = WindsurfAdapter;
+        let mut result = HookResult::noop();
+        result.system_message = Some("DiffLore lifecycle note".to_owned());
+
+        let out = adapter.format_output(result);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert!(v.get("systemMessage").is_none());
     }
 
     #[test]

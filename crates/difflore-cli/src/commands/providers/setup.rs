@@ -1,16 +1,9 @@
 //! Interactive provider picker.
 //!
-//! Local review providers are agent CLIs the user already has logged in
-//! on their machine — Claude Code, Codex, Gemini, OpenCode. We don't
-//! prompt for API keys: cloud-side review uses cloud-managed keys, and
-//! the local CLI exists to reuse the user's existing agent auth, not to
-//! be another place where keys live.
-//!
-//! Detection (driven by `gate4agent`):
-//!   • Claude Code CLI    (`claude`   on PATH)
-//!   • Codex CLI          (`codex`    on PATH)
-//!   • Gemini CLI         (`gemini`   on PATH)
-//!   • `OpenCode` CLI     (`opencode` on PATH)
+//! Providers are local agent CLIs (Claude Code, Codex, Gemini, OpenCode)
+//! detected on PATH via `gate4agent`. We never prompt for API keys: the
+//! local CLI reuses the user's existing agent auth rather than storing
+//! keys of its own.
 
 use crate::style;
 use std::collections::HashMap;
@@ -22,9 +15,8 @@ use gate4agent::CliTool;
 use difflore_core::models::{ProviderAddInput, ProviderSetActiveInput};
 
 /// Default model per tool. Empty string means "let the CLI pick its own
-/// default" — the right move for tools whose CLI defaults already track
-/// the latest available model (Codex, `OpenCode`). For Claude we pin a
-/// sensible Sonnet alias to match the rest of difflore's review path.
+/// default", used for tools whose CLI default already tracks the latest
+/// model (Codex, `OpenCode`).
 const fn default_model_for(tool: CliTool) -> &'static str {
     match tool {
         CliTool::ClaudeCode => "claude-sonnet-4-6",

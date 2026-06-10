@@ -80,8 +80,7 @@ pub async fn resolve_rule_id_by_name(
 
     // 2) Normalized prefix match, same ranking. Handles names like
     //    "headChar returns wrong byte" matching
-    //    "headChar returns wrong byte (off-by-one)" — see the
-    //    polish-surface scan finding #1 for the real-world sample.
+    //    "headChar returns wrong byte (off-by-one)".
     let prefix: Result<Option<String>, _> = sqlx::query_scalar(
         "SELECT id FROM skills \
          WHERE LOWER(name) LIKE LOWER(?1) || '%' AND status = 'active' \

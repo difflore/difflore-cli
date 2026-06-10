@@ -159,7 +159,7 @@ pub(super) fn file_patterns_from_path(path: &str) -> Vec<String> {
         format!("{dir}/**/*.{ext}")
     };
     let mut out = vec![narrow];
-    // Monorepo broadening for sibling packages with the same file shape.
+    // Monorepo broadening for sibling packages with the same shape.
     for prefix in ["packages/", "apps/", "crates/", "pkg/", "examples/"] {
         if let Some(rest) = normalized.strip_prefix(prefix)
             && rest.contains('/')

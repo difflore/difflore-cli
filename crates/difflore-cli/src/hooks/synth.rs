@@ -1,21 +1,14 @@
 //! Shared diff-synthesis helpers for hook adapters.
 //!
-//! Every IDE adapter needs to turn a tool payload into a tiny "diff-like"
-//! string the rule retriever can grep against. The exact wire shape
-//! varies (Claude Code: `old_string`/`new_string`/`content`; Cursor:
-//! `edits[]`; Windsurf: `tool_info.edits[]`; Gemini: similar to Claude
-//! plus `command`/`output`). The output shape we feed downstream is the
-//! same: a string of `-old-line` / `+new-line` / `+content-line` /
-//! `$ command` rows. This module owns the line-prefix mechanics so all
-//! adapters look identical in that respect.
+//! Turns an IDE tool payload into a tiny "diff-like" string the rule
+//! retriever can grep against. Input wire shapes vary per IDE, but the
+//! output is always rows of `-old` / `+new` / `+content` / `$ command`.
 
 use serde_json::Value;
 
-/// Render an Edit-style hunk: every `old` line prefixed with `-`,
-/// every `new` line prefixed with `+`. No `@@` header — retrieval is
-/// text-based and ignores line numbers. Returns an empty string when
-/// both inputs are empty so callers can `is_empty()`-check before
-/// wrapping in `Some`.
+/// Render an Edit-style hunk: `old` lines prefixed `-`, `new` lines
+/// prefixed `+`. No `@@` header — retrieval is text-based. Empty inputs
+/// yield an empty string so callers can `is_empty()`-check.
 pub(crate) fn diff_old_new(old: &str, new: &str) -> String {
     let mut out = String::new();
     push_prefixed(&mut out, '-', old);
@@ -23,25 +16,23 @@ pub(crate) fn diff_old_new(old: &str, new: &str) -> String {
     out
 }
 
-/// In-place variant: append a hunk to an existing buffer (used when an
-/// adapter walks an `edits[]` array and wants every entry concatenated
-/// into one diff blob).
+/// Append a hunk to an existing buffer, for concatenating an `edits[]`
+/// array into one diff blob.
 pub(crate) fn append_old_new(out: &mut String, old: &str, new: &str) {
     push_prefixed(out, '-', old);
     push_prefixed(out, '+', new);
 }
 
-/// Render a Write-style synthetic diff: every line prefixed with `+`.
-/// Used when there is no prior content to compare against.
+/// Render a Write-style synthetic diff (every line prefixed `+`), used
+/// when there is no prior content to compare against.
 pub(crate) fn diff_content(content: &str) -> String {
     let mut out = String::new();
     push_prefixed(&mut out, '+', content);
     out
 }
 
-/// Render a shell-execution synthetic diff: `$ <cmd>` then every line
-/// of `out` prefixed with `+`. Returns `None` when both inputs are
-/// blank (so callers can short-circuit on `noop` events).
+/// Render a shell-execution synthetic diff: `$ <cmd>` then each `out`
+/// line prefixed `+`. Returns `None` when both inputs are blank.
 pub(crate) fn diff_shell(command: Option<&str>, output: Option<&str>) -> Option<String> {
     let cmd = command.unwrap_or("").trim();
     let out_text = output.unwrap_or("").trim();
@@ -60,15 +51,10 @@ pub(crate) fn diff_shell(command: Option<&str>, output: Option<&str>) -> Option<
 
 /// Pull `(old_text, new_text)` from a tool-input JSON value.
 ///
-/// Handles three shapes adapters share:
-///   1. `MultiEdit`: `{ edits: [{ old_string, new_string }, ...] }`
-///      → fold each edit's strings into one (old, new) pair separated
-///      by blank lines, so the classifier sees the aggregate mutation.
-///   2. Flat `{ old_string, new_string }` (Edit).
-///   3. `{ content }` (Write) → only the `new` slot is filled.
-///
-/// Returns `(None, None)` when the input is `None` or none of the
-/// expected shapes match — callers downcast that to "no edit metadata".
+/// Handles three shapes: `MultiEdit` (`edits[]`, folded blank-line-
+/// separated into one pair), flat `{ old_string, new_string }`, and
+/// Write `{ content }` (fills only `new`). Returns `(None, None)` when
+/// the input is `None` or no shape matches.
 pub(crate) fn extract_edit_strings(tool_input: Option<&Value>) -> (Option<String>, Option<String>) {
     let Some(input) = tool_input else {
         return (None, None);

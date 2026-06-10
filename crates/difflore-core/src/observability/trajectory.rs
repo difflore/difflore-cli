@@ -10,11 +10,10 @@
 //! that do not need trajectory data pass `None`.
 //!
 //! The JSON shape produced by `into_json()` is byte-compatible with the
-//! TypeScript discriminated union in
-//! `difflore-cloud/src/types/trajectory.ts`. When that shape changes,
-//! BOTH sides must be updated in lockstep — the `saveTrajectory` oRPC
-//! endpoint validates the payload with the matching Zod schema on
-//! ingress, so any drift fails the round-trip test.
+//! TypeScript discriminated union in `difflore-cloud/src/types/trajectory.ts`.
+//! When that shape changes, BOTH sides must be updated in lockstep — the
+//! `saveTrajectory` endpoint validates the payload against the matching Zod
+//! schema, so any drift fails the round-trip test.
 
 use serde::{Deserialize, Serialize};
 
@@ -28,11 +27,8 @@ pub enum RuleSource {
     Global,
 }
 
-/// One past verdict recalled from the review-memory store, surfaced on
-/// the cloud detail page so reviewers can see **which** prior decisions
-/// influenced the current run. Shape: `{ id, title, similarity, excerpt }`.
-/// The `excerpt` field is
-/// truncated by callers to ~200 characters (with a trailing `…`) so the
+/// One past verdict recalled from the review-memory store, shown on the cloud
+/// detail page. `excerpt` is truncated by callers to ~200 characters so the
 /// trajectory payload stays compact.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RecalledVerdict {
@@ -69,10 +65,9 @@ pub enum TrajectoryStep {
         raw_output: Option<String>,
     },
     /// Review Memory recall fetched `count` past verdicts with the given
-    /// top-k similarity scores. `recalled_items` carries the per-verdict
-    /// payload the cloud detail page renders (id/title/similarity/excerpt);
-    /// it is `#[serde(default)]` so older trajectories that only carry
-    /// `count` + `top_similarities` still round-trip cleanly.
+    /// top-k similarity scores. `recalled_items` is `#[serde(default)]` so
+    /// older trajectories carrying only `count` + `top_similarities` still
+    /// round-trip cleanly.
     PastVerdictsRecalled {
         count: usize,
         top_similarities: Vec<f32>,
@@ -87,29 +82,24 @@ pub enum TrajectoryStep {
         avg_confidence: f32,
     },
     /// Signature-based confidence adjustment applied after self-check.
-    /// Records per-issue adjustments so the cloud detail page can show
-    /// which past verdicts influenced confidence scoring.
     SignatureConfidenceAdjust {
-        /// Number of issues that received a positive bump (accepted match).
+        /// Issues that received a positive bump (accepted match).
         accepted_bumps: u32,
-        /// Number of issues that received a negative bump (rejected match).
+        /// Issues that received a negative bump (rejected match).
         rejected_bumps: u32,
     },
     /// Final decision: the issue IDs emitted to the user.
     FinalDecision { issue_ids_emitted: Vec<String> },
     /// MCP tool responded with `total_tokens` worth of payload, of which
-    /// `rules_injected` rules were included. Lets the cloud dashboard chart
-    /// MCP response sizes over time so we can spot token bloat early.
-    /// Token count is a coarse estimate (`byte_len` / 4).
+    /// `rules_injected` rules were included. Token count is a coarse estimate
+    /// (`byte_len` / 4).
     McpResponseSize {
         tool: String,
         total_tokens: usize,
         rules_injected: usize,
     },
-    /// Breakdown of which origins the hit rules came from. Aggregated
-    /// across one MCP response so downstream analytics can answer
-    /// "how much value are conversation captures vs extracted rules
-    /// actually driving in recall".
+    /// Breakdown of which origins the hit rules came from, aggregated across
+    /// one MCP response.
     RuleHitByOrigin {
         manual: u32,
         conversation: u32,
@@ -128,14 +118,11 @@ pub enum TrajectoryStep {
         emb_hits: u32,
         overlap: u32,
     },
-    /// HNSW ANN recall stats for a single retrieval call.
-    /// `used = true` means the ANN path produced candidates that fed
-    /// the RRF fusion; `used = false` means we fell back to the linear
-    /// cosine scan (empty index, dim mismatch, or any internal error).
-    /// `index_size` is the live (non-tombstoned) chunk count known to
-    /// the ANN graph at call time; `candidates` is how many top-k
-    /// results came back from `ann.search` before RRF de-duped and
-    /// re-ranked them.
+    /// HNSW ANN recall stats for a single retrieval call. `used = false` means
+    /// we fell back to the linear cosine scan (empty index, dim mismatch, or
+    /// internal error). `index_size` is the live (non-tombstoned) chunk count
+    /// in the ANN graph; `candidates` is how many top-k results `ann.search`
+    /// returned before RRF de-duped them.
     AnnRecall {
         used: bool,
         index_size: u32,
@@ -144,48 +131,37 @@ pub enum TrajectoryStep {
 }
 
 /// Ordered collector for `TrajectoryStep`s. Threaded through the review
-/// pipeline as `Option<&mut TrajectoryBuilder>` so absence is a no-op.
-///
-/// Construction is `Default::default()`; callers push steps in the order
-/// they happen and finish with `into_json()` to hand the serialized
-/// payload off to the cloud `saveTrajectory` endpoint.
+/// pipeline as `Option<&mut TrajectoryBuilder>` so absence is a no-op. Callers
+/// push steps in the order they happen and finish with `into_json()`.
 #[derive(Debug, Clone, Default)]
 pub struct TrajectoryBuilder {
     steps: Vec<TrajectoryStep>,
 }
 
 impl TrajectoryBuilder {
-    /// Start a fresh builder.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Append a single step. Preserves insertion order; callers control
-    /// the ordering so the resulting trajectory reads as a timeline.
+    /// Append a single step, preserving insertion order.
     pub fn push(&mut self, step: TrajectoryStep) {
         self.steps.push(step);
     }
 
-    /// Number of steps collected so far. Useful for tests + the final
-    /// decision step which wants to know "did anything at all happen".
     pub const fn len(&self) -> usize {
         self.steps.len()
     }
 
-    /// Convenience: true when no steps have been pushed.
     pub const fn is_empty(&self) -> bool {
         self.steps.is_empty()
     }
 
-    /// Borrow the steps collected so far — used by tests so they can
-    /// introspect without consuming the builder.
     pub fn steps(&self) -> &[TrajectoryStep] {
         &self.steps
     }
 
-    /// Consume the builder and serialize to `serde_json::Value`. The
-    /// returned value is an array (`Value::Array`) of step objects, one
-    /// per `push`. Matches the TS side's `TrajectoryStep[]` exactly.
+    /// Consume the builder and serialize to a `Value::Array` of step objects,
+    /// one per `push`. Matches the TS side's `TrajectoryStep[]` exactly.
     pub fn into_json(self) -> serde_json::Value {
         serde_json::to_value(self.steps).unwrap_or(serde_json::Value::Array(vec![]))
     }

@@ -104,14 +104,11 @@ pub(super) fn imported_review_upload(
 pub(super) const fn cloud_upload_next_step_commands() -> &'static [(&'static str, &'static str)] {
     &[
         ("difflore cloud sync", "# pull the new rules down"),
-        ("difflore status", "# see the shortest local proof path"),
-        (
-            "difflore recall --diff",
-            "# prove your agent can recall them",
-        ),
+        ("difflore status", "# see what is ready locally"),
+        ("difflore recall --diff", "# check what agents can recall"),
         (
             "difflore cloud impact",
-            "# show recall and accepted-proof value",
+            "# show recall and accepted-edit activity",
         ),
         (
             "difflore fix --preview",
@@ -179,9 +176,9 @@ pub(super) async fn run_upload(
 
     let cloud = ctx.cloud().await;
 
-    // Pre-flight: every batch will fail with a generic "failed batch" line if
-    // the user isn't logged in. Bail with a clear actionable message instead
-    // of looping through N silent auth failures.
+    // Pre-flight: without a session every batch fails with a generic "failed
+    // batch" line, so bail with one actionable message instead of N silent
+    // auth failures.
     if !cloud.is_logged_in() {
         style::report_error(
             "`--upload` requires a cloud session, but no token is on this machine.",
@@ -193,7 +190,7 @@ pub(super) async fn run_upload(
                 ),
             ],
         );
-        return Err("not logged in to cloud — `--upload` cannot proceed".to_owned());
+        return Err("not logged in to cloud; `--upload` cannot proceed".to_owned());
     }
 
     let total_reviews = upload_reviews.len();
@@ -227,10 +224,9 @@ pub(super) async fn run_upload(
     }
 
     if failed_batches == 0 {
-        // Honor --json: success summary belongs only in the structured payload
-        // emitted by `print_import_json`. Printing the human-friendly banner
-        // here would prepend non-JSON text to stdout and break any pipeline
-        // doing `... --json | jq`. Per-batch progress already routes to stderr.
+        // Under --json the success summary belongs only in the structured
+        // payload; printing the human banner here would prepend non-JSON text to
+        // stdout and break `... --json | jq`. Per-batch progress goes to stderr.
         if !json {
             print_next_steps(uploaded_reviews);
         }

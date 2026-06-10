@@ -1,18 +1,13 @@
-//! Single-table agent registry (Trellis `AI_TOOLS` pattern).
+//! Single-table agent registry driving detect + install + uninstall for every
+//! supported AI coding tool.
 //!
-//! `AGENTS` is the *one* source of truth that drives **detect + install +
-//! uninstall** for every supported AI coding tool. Adding an agent means
-//! adding one [`AgentSpec`] row here instead of touching a probe table, a
-//! per-agent install fn, an install dispatch list, an uninstall list, and the
-//! name/UX maps. Each row is *one surface* (an agent can contribute several:
-//! its MCP entry plus a hooks surface), so the 1:1 mapping with the legacy
-//! `PROBES`/`TargetStatus` names — and the tests that key off them — is kept
-//! byte-identical.
+//! `AGENTS` is the one source of truth: adding an agent means adding one
+//! [`AgentSpec`] row. Each row is one surface (an agent can contribute
+//! several, e.g. its MCP entry plus a hooks surface).
 //!
 //! The three drivers ([`detect`], [`install`], [`uninstall`]) each `match` over
-//! [`ConfigFormat`] and delegate to the existing leaf format engines
-//! (`json_config.rs`, `goose_yaml.rs`, `hooks_install.rs`) unchanged — this is a
-//! code-shape refactor only: no behaviour, redaction, or repo-isolation change.
+//! [`ConfigFormat`] and delegate to the leaf format engines (`json_config.rs`,
+//! `goose_yaml.rs`, `hooks_install.rs`).
 
 use std::path::PathBuf;
 
@@ -32,15 +27,10 @@ use super::{
     json_config::{finish_json_install, finish_json_uninstall},
 };
 
-// ── Block versioning ──────────────────────────────────────────────────────
-//
-// The `difflore` block each surface renders is a versionable asset that *will*
-// change (a new hook matcher, an extra MCP arg, a shim-invocation tweak). A
-// single source of truth here lets the install manifest stamp the version it
-// actually wrote per target, so `agents update` can answer "which targets are
-// behind?" purely from the *local* manifest — no telemetry, no fabricated
-// metric. Bump the relevant constant when (and only when) that block's
-// rendered shape changes; [`BlockKind::current_version`] reads them.
+// Block versioning: the install manifest stamps the version it wrote per
+// target, so `agents update` can tell which targets are behind purely from the
+// local manifest. Bump the relevant constant when a block's rendered shape
+// changes; [`BlockKind::current_version`] reads them.
 
 /// Version of the JSON MCP-server block (`{command, args:["mcp-server"]}`).
 pub(super) const MCP_JSON_BLOCK_VERSION: u32 = 1;
@@ -48,9 +38,9 @@ pub(super) const MCP_JSON_BLOCK_VERSION: u32 = 1;
 pub(super) const HOOKS_JSON_BLOCK_VERSION: u32 = 1;
 /// Version of the Goose YAML `difflore:` block.
 pub(super) const GOOSE_YAML_BLOCK_VERSION: u32 = 1;
-/// Version of the externally-CLI-managed shape we *ask* Claude/Codex for
-/// (the `mcp add … mcp-server` arg/shim shape). Bumping it re-issues the
-/// idempotent CLI add on the next `agents update`.
+/// Version of the externally-CLI-managed shape (the `mcp add … mcp-server`
+/// arg/shim shape). Bumping it re-issues the idempotent CLI add on the next
+/// `agents update`.
 pub(super) const CLI_DELEGATE_BLOCK_VERSION: u32 = 1;
 
 /// Which writer/reader pair a manifest target uses. Selecting on this (plus
@@ -79,11 +69,9 @@ impl BlockKind {
         }
     }
 
-    /// Parse a persisted manifest `block_kind` string back into the enum. Part
-    /// of the manifest's documented string round-trip (guarded by a unit test);
-    /// the live update path re-derives the kind from the authoritative
-    /// [`AgentSpec`] via [`block_kind_of`], so this reader currently has no
-    /// non-test caller.
+    /// Parse a persisted manifest `block_kind` string back into the enum.
+    /// Only exercised by the round-trip unit test; the live update path
+    /// re-derives the kind from [`AgentSpec`] via [`block_kind_of`].
     #[allow(dead_code)]
     pub(super) fn from_str(s: &str) -> Option<Self> {
         match s {
@@ -136,8 +124,6 @@ pub(super) const fn hook_surface_of(spec: &AgentSpec) -> Option<HookSurface> {
         _ => None,
     }
 }
-
-// ── The single-table data structure ──────────────────────────────────────
 
 /// Where the config file lives.
 pub(super) enum PathScope {
@@ -236,8 +222,8 @@ pub(super) enum DetectSignal {
 
 pub(super) struct AgentSpec {
     /// Surface display name == `TargetOutcome.name` == `TargetStatus.name`.
-    /// MUST stay byte-identical to the legacy strings (tests +
-    /// `canonical_target_key` + `client_name_for_surface` key off these).
+    /// `canonical_target_key` + `client_name_for_surface` (and their tests)
+    /// key off these exact strings.
     pub name: &'static str,
     /// Display client this surface rolls up into (`snapshot.rs` grouping). e.g.
     /// both "Cursor" and "Cursor hooks" roll up into client "Cursor".
@@ -254,9 +240,7 @@ pub(super) struct AgentSpec {
 }
 
 /// One row per surface. Order is load-bearing: `collect_agent_statuses`
-/// surfaces Claude Code → Claude Code hooks → Codex first, then the rest, so
-/// encoding it here drops the manual reshuffle that used to live in
-/// `snapshot.rs`.
+/// surfaces Claude Code → Claude Code hooks → Codex first, then the rest.
 pub(super) static AGENTS: &[AgentSpec] = &[
     AgentSpec {
         name: "Claude Code",
@@ -485,8 +469,6 @@ pub(super) fn find_spec(name: &str) -> Option<&'static AgentSpec> {
     AGENTS.iter().find(|spec| spec.name == name)
 }
 
-// ── Path resolution ───────────────────────────────────────────────────────
-
 /// Resolve a spec's config path under its [`PathScope`]. `Err` only on a home /
 /// cwd resolution failure, which the callers fold into an Unknown/error
 /// outcome the same way the legacy per-agent fns did.
@@ -497,10 +479,8 @@ pub(super) fn resolve_path(spec: &AgentSpec) -> Result<PathBuf, String> {
     }
 }
 
-// ── Detect driver ──────────────────────────────────────────────────────────
-
-/// Detection driver: produces the same `TargetStatus` the legacy `probe_one` /
-/// `probe_cli_mcp` calls did, reading every signal from `spec`.
+/// Detection driver: produces a `TargetStatus`, reading every signal from
+/// `spec`.
 pub(super) fn detect(spec: &AgentSpec, bin: &str) -> TargetStatus {
     match &spec.format {
         ConfigFormat::CliDelegate { cli, get_args, .. } => probe_cli_mcp(spec.name, cli, get_args),
@@ -519,8 +499,8 @@ pub(super) fn detect(spec: &AgentSpec, bin: &str) -> TargetStatus {
     }
 }
 
-/// Resolve `spec`'s path and run `f`, mapping a resolution failure to the same
-/// Unknown `TargetStatus` the legacy `probe_one` produced.
+/// Resolve `spec`'s path and run `f`, mapping a resolution failure to an
+/// Unknown `TargetStatus`.
 fn with_path<F: FnOnce(&PathBuf) -> TargetStatus>(spec: &AgentSpec, f: F) -> TargetStatus {
     match resolve_path(spec) {
         Ok(path) => f(&path),
@@ -533,33 +513,30 @@ fn with_path<F: FnOnce(&PathBuf) -> TargetStatus>(spec: &AgentSpec, f: F) -> Tar
     }
 }
 
-// ── Install driver ─────────────────────────────────────────────────────────
-
 /// Install driver: one row → one outcome. `mcp_bin` is written into JSON/YAML
-/// config; `cli_bin` is used to derive the hook shim path. Reproduces the
-/// detection gating + `Skipped(..)` reasons of the legacy per-agent fns
-/// verbatim and delegates the actual write to the existing leaf engines.
+/// config; `cli_bin` is used to derive the hook shim path. Applies the
+/// detection gating + `Skipped(..)` reasons, then delegates the write to the
+/// leaf engines.
 pub(super) fn install(
     spec: &AgentSpec,
     mcp_bin: &str,
     cli_bin: &str,
     dry_run: bool,
 ) -> TargetOutcome {
-    // Detection gate first (matches the legacy per-agent fns, which checked
-    // PATH / parent-dir before anything else). Hooks surfaces `RidesAlong` and
-    // do their own detection inside their installers, so this is a no-op for
-    // them. The skip reasons are reproduced verbatim from the old code.
+    // Detection gate first (PATH / parent-dir checks). Hooks surfaces
+    // `RidesAlong` and do their own detection inside their installers, so this
+    // is a no-op for them.
     if let Some(skip) = detect_gate(spec) {
         return skip;
     }
     // Claude (and only Claude) short-circuits when the plugin route already
-    // wired MCP + hooks; the CLI add would otherwise dupe the MCP entry. Runs
-    // *after* the PATH check, mirroring the legacy `install_claude_code` order.
+    // wired MCP + hooks; the CLI add would otherwise dupe the MCP entry. Must
+    // run after the PATH check.
     if spec.skip_if_plugin && claude_plugin_installed() {
         return TargetOutcome {
             name: spec.name,
             status: Status::Skipped(
-                "DiffLore plugin already installed — MCP + hooks auto-registered".into(),
+                "DiffLore plugin already installed; MCP + hooks auto-registered".into(),
             ),
             detail: "~/.claude/plugins/cache/.../difflore/".into(),
         };
@@ -605,8 +582,8 @@ pub(super) fn install(
         },
         ConfigFormat::Hooks { surface } => match surface {
             // Claude hooks are installed as a side effect of the Claude MCP
-            // `CliDelegate` arm (see `install_cli_delegate`); they have no
-            // standalone install step, mirroring the legacy dispatch list.
+            // `CliDelegate` arm (see `install_cli_delegate`); no standalone
+            // install step.
             HookSurface::Claude => TargetOutcome {
                 name: spec.name,
                 status: Status::Skipped("installed with Claude Code MCP".into()),
@@ -623,7 +600,7 @@ pub(super) fn install(
 /// already ran in [`install`]): render the dry-run string, otherwise
 /// `remove`-then-`add` (idempotent) through the agent's own CLI. Claude
 /// additionally piggybacks its lifecycle-hook merge so one install wires
-/// MCP + hooks (R3).
+/// MCP + hooks.
 #[allow(clippy::too_many_arguments)]
 // reason: the CliDelegate row's data (cli, add/remove args, dry-run + detail
 // strings) plus the two binaries are all genuinely independent inputs; bundling
@@ -707,10 +684,9 @@ fn install_cli_delegate(
     }
 }
 
-/// "mcp add" — the leading subcommand words of an add invocation, for error
-/// messages (`\`claude mcp add\` exit …`). Both delegates start `mcp add …`,
-/// so the legacy hardcoded `\`<cli> mcp add\`` strings are preserved by taking
-/// the first two words.
+/// The leading subcommand words of an add invocation, for error messages
+/// (`\`claude mcp add\` exit …`). Both delegates start `mcp add …`, so taking
+/// the first two words yields the `<cli> mcp add` label.
 fn add_command_label(add_args: &[&str]) -> String {
     add_args
         .iter()
@@ -721,12 +697,10 @@ fn add_command_label(add_args: &[&str]) -> String {
 }
 
 /// Evaluate a spec's [`DetectSignal`]; `Some(outcome)` means "skip, not
-/// detected" with the verbatim legacy reason. `None` means "proceed". Hooks
-/// surfaces that `RidesAlong` never reach here from install (their installer
-/// does its own detection), so they return `None`.
+/// detected". `None` means "proceed". Hooks surfaces that `RidesAlong` return
+/// `None` (their installer does its own detection).
 fn detect_gate(spec: &AgentSpec) -> Option<TargetOutcome> {
-    // `Some(reason)` => not detected, skip with this verbatim message;
-    // `None` => proceed with install.
+    // `Some(reason)` => not detected, skip; `None` => proceed.
     let skip_reason: Option<String> = match &spec.detect {
         DetectSignal::Cli { cli, skip_reason } => which::which(cli)
             .is_err()
@@ -768,11 +742,8 @@ fn any_sibling_exists(segments: &[&[&str]]) -> bool {
         .any(|seg| home_path(seg).ok().is_some_and(|p| p.exists()))
 }
 
-// ── Uninstall driver ───────────────────────────────────────────────────────
-
-/// Uninstall driver: the inverse of [`install`], consumed by `uninstall.rs`.
-/// Each format removes only DiffLore's own entry, leaving every other server /
-/// hook intact (delegated to the same leaf engines install uses).
+/// Uninstall driver: the inverse of [`install`]. Each format removes only
+/// DiffLore's own entry, leaving every other server / hook intact.
 pub(super) fn uninstall(spec: &AgentSpec, dry_run: bool) -> TargetOutcome {
     match &spec.format {
         ConfigFormat::CliDelegate {
@@ -802,9 +773,8 @@ pub(super) fn uninstall(spec: &AgentSpec, dry_run: bool) -> TargetOutcome {
             Err(e) => error_outcome(spec.name, e),
         },
         ConfigFormat::Hooks { surface } => match surface {
-            // Claude hooks are stripped inside the Claude MCP uninstall, so they
-            // have no standalone row in the selected-removers set (handled by
-            // `uninstall.rs`'s claude dispatch).
+            // Claude hooks are stripped inside the Claude MCP uninstall (handled
+            // by `uninstall.rs`'s claude dispatch).
             HookSurface::Claude => uninstall_claude_code_combined(spec, dry_run),
             HookSurface::Cursor => uninstall_cursor_hooks(dry_run),
             HookSurface::Gemini => uninstall_gemini_cli_hooks(dry_run),
@@ -871,18 +841,18 @@ fn uninstall_cli_delegate(
 /// Claude's combined uninstall: strip lifecycle hooks from
 /// `~/.claude/settings.json`, then `claude mcp remove` the MCP entry. The
 /// plugin route manages both itself, so we surface a hint and don't touch it.
-/// Reachable from both the `CliDelegate` (Claude Code) row and the `Hooks`
-/// (Claude Code hooks) row; the dispatch in `uninstall.rs` runs it once.
+/// Reachable from both the `CliDelegate` and `Hooks` Claude rows; the dispatch
+/// in `uninstall.rs` runs it once.
 fn uninstall_claude_code_combined(_spec: &AgentSpec, dry_run: bool) -> TargetOutcome {
-    // The outcome is always reported as the "Claude Code" surface (the combined
-    // MCP+hooks remover), regardless of which row dispatched here, so the
-    // canonical-record matching and client roll-up stay byte-identical.
+    // Always reported as the "Claude Code" surface regardless of which row
+    // dispatched here, so canonical-record matching and client roll-up stay
+    // consistent.
     let name = "Claude Code";
     if claude_plugin_installed() {
         return TargetOutcome {
             name,
             status: Status::Skipped(
-                "DiffLore plugin manages MCP + hooks — remove with `/plugin uninstall difflore` inside Claude Code".into(),
+                "DiffLore plugin manages MCP + hooks; remove with `/plugin uninstall difflore` inside Claude Code".into(),
             ),
             detail: "~/.claude/plugins/cache/.../difflore/".into(),
         };
@@ -944,11 +914,9 @@ fn uninstall_claude_code_combined(_spec: &AgentSpec, dry_run: bool) -> TargetOut
     }
 }
 
-// ── Name / UX table lookups (folded out of common.rs / diagnosis.rs) ───────
-
 /// Canonical lowercased key for a surface name, used to match against the
 /// canonical record's `installed_targets`. Derived from `AGENTS` so the
-/// normalization table lives in exactly one place.
+/// normalization table lives in one place.
 pub(super) fn canonical_target_key(name: &str) -> String {
     let trimmed = name.trim();
     // Special-case the CLI aliases that aren't surface display names: the

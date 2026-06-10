@@ -1,18 +1,17 @@
 use std::path::PathBuf;
 
-/// `~/.difflore` (or `$DIFFLORE_HOME` in production / shared test home in
-/// tests). All local data + config files live under this root.
+/// Root for all local data and config files: `~/.difflore`, overridden by
+/// `$DIFFLORE_HOME` in production or the shared test home in tests.
 pub fn data_home() -> Result<PathBuf, String> {
     crate::infra::db::difflore_dir()
 }
 
-/// Currently equals `data_home()`. Kept as a separate function so a future
-/// split (e.g. honoring XDG `$XDG_CONFIG_HOME`) doesn't break callers.
+/// Currently equals `data_home()`. Separate so a future split (e.g. honoring
+/// XDG `$XDG_CONFIG_HOME`) won't break callers.
 pub fn config_home() -> Result<PathBuf, String> {
     data_home()
 }
 
-/// `<config_home>/config.toml`.
 pub fn config_file() -> Result<PathBuf, String> {
     Ok(config_home()?.join("config.toml"))
 }
@@ -26,9 +25,8 @@ mod tests {
 
     #[test]
     fn data_home_resolves_to_existing_dir_under_test_home() {
-        // The shared test home is set up by db.rs's `shared_test_home()`
-        // singleton — `data_home()` must return that path so all test
-        // I/O lands in the per-process tempdir, never the user's real
+        // data_home() must resolve to the per-process test tempdir (from
+        // db.rs's shared_test_home() singleton), never the user's real
         // ~/.difflore.
         let home = data_home().expect("data_home should resolve in tests");
         assert!(home.is_absolute(), "expected absolute path, got {home:?}");

@@ -344,7 +344,7 @@ fn mcp_support_bundle_subsection(
                 .map_or("none".to_owned(), one_line);
             sw!(
                 s,
-                "tool call: {tool_name} | {injected} · {indexed} · top={top}"
+                "tool call: {tool_name} | {injected} | {indexed} | top={top}"
             );
         }
     } else {
@@ -364,7 +364,7 @@ fn mcp_support_bundle_subsection(
 
     let installed = report_installed_clients(snapshot);
     sw!(s, "installed clients: {}", report_list_or_none(&installed));
-    sw!(s, "value proof:");
+    sw!(s, "value summary:");
     for line in mcp_value_proof_lines(value_proof) {
         sw!(s, "- {line}");
     }
@@ -399,7 +399,7 @@ fn mcp_value_proof_lines(proof: &McpValueProof) -> Vec<String> {
     let memory = match (proof.active_rules, proof.imported_prs) {
         (Some(rules), Some(prs)) => {
             format!(
-                "synced memory: {rules} active rule{} ready for recall · {prs} imported PR{}",
+                "synced memory: {rules} active rule{} ready for recall | {prs} imported PR{}",
                 plural(rules),
                 plural(prs)
             )
@@ -418,7 +418,7 @@ fn mcp_value_proof_lines(proof: &McpValueProof) -> Vec<String> {
         |n| format!("{n} MCP tools"),
     );
     lines.push(format!(
-        "agent reach: {} installed client{} · {tools} served by the runtime",
+        "agent reach: {} installed client{} | {tools} served by the runtime",
         proof.installed_clients,
         plural_usize(proof.installed_clients),
     ));
@@ -434,7 +434,7 @@ fn mcp_value_proof_lines(proof: &McpValueProof) -> Vec<String> {
         let source_note = local_accepted_source_note(proof);
         let recall_note = local_accepted_recall_note(proof);
         lines.push(format!(
-            "local accepted proof: {local_accepted} accepted edit proof{}{} in the last 30d ({total} local outcome{}){recall_note} · {saved}",
+            "local accepted activity: {local_accepted} accepted edit{}{} in the last 30d ({total} local outcome{}){recall_note} | {saved}",
             plural(local_accepted),
             source_note,
             plural(total),
@@ -447,12 +447,12 @@ fn mcp_value_proof_lines(proof: &McpValueProof) -> Vec<String> {
             .as_deref()
             .unwrap_or("saved review time unavailable");
         lines.push(format!(
-            "remote Impact proof: {accepted}/{total} accepted edits in the last 30d · {saved}"
+            "remote Impact activity: {accepted}/{total} accepted edits in the last 30d | {saved}"
         ));
     } else if local_accepted > 0 {
-        lines.push("remote Impact proof: unavailable; local proof captured above".to_owned());
+        lines.push("remote Impact activity: unavailable; local activity captured above".to_owned());
     } else {
-        lines.push("remote Impact proof: unavailable in this report; run `difflore status` for local proof or `difflore cloud impact` after login".to_owned());
+        lines.push("remote Impact activity: unavailable in this report; run `difflore status` for local activity or `difflore cloud impact` after login".to_owned());
     }
 
     lines
@@ -497,7 +497,7 @@ fn local_accepted_recall_note(proof: &McpValueProof) -> String {
             .local_accepted_outcomes_linked_to_edit_attribution_last30
             .unwrap_or(0),
     );
-    format!(" · {linked} after prior memory-use proof{breakdown} within 7d")
+    format!(" | {linked} after prior memory recall{breakdown} within 7d")
 }
 
 const fn plural(n: i64) -> &'static str {
@@ -619,13 +619,10 @@ pub(super) fn footer_section(s: &mut String) {
     );
 }
 
-/// `## ✓ Embedding` section. Surfaces the active embedder source so a
-/// triage reader can distinguish "Cloud-managed Free hit the embedding cap"
-/// from "user is on BYOK with a custom proxy" from "no key configured,
-/// running on the local-lexical hash + FTS5 hybrid". Keys are never logged.
-///
-/// Classification delegates to `probe_active_embedder` (single source of
-/// truth), which mirrors the runtime resolver used by `get_embedder`.
+/// `## ✓ Embedding` section. Surfaces the active embedder source (cloud-managed,
+/// BYOK, or local-lexical) for triage; keys are never logged. Classification
+/// delegates to `probe_active_embedder`, mirroring the resolver `get_embedder`
+/// uses.
 pub(super) async fn embedding_section(ctx: &crate::runtime::CommandContext, s: &mut String) {
     use difflore_core::context::embedding::ActiveEmbedderKind;
 
@@ -745,12 +742,8 @@ fn embedding_activity_summary() -> EmbeddingActivitySummary {
     summary
 }
 
-// ── Secret redaction ─────────────────────────────────────────────────────
-
-/// Walk the parsed TOML and redact values whose key matches one of the
-/// secret-shaped patterns. Falls back to passthrough on parse failure rather
-/// than crashing — better to print a config than to swallow it because of
-/// one stray multi-line string.
+/// Walk the parsed TOML and redact values whose key matches a secret-shaped
+/// pattern. Falls back to passthrough on parse failure rather than crashing.
 pub(super) fn redact_secrets(raw: &str) -> String {
     let Ok(mut value) = raw.parse::<toml::Value>() else {
         return raw.to_owned();
@@ -919,18 +912,18 @@ mod tests {
         assert!(out.contains("### MCP support bundle"));
         assert!(out.contains("runtime: ok | stdio self-check served initialize + tools/list"));
         assert!(out.contains("tools: 2 | search_rules, get_rules"));
-        assert!(out.contains("tool call: search_rules | 1 injected · 3 indexed"));
+        assert!(out.contains("tool call: search_rules | 1 injected | 3 indexed"));
         assert!(out.contains("top=Review memory probe rule"));
         assert!(out.contains("installed clients: Cursor"));
         assert!(out.contains("synced memory: 3882 active rules ready for recall"));
-        assert!(out.contains("agent reach: 1 installed client · 2 MCP tools served"));
-        assert!(out.contains("local accepted proof: 4 accepted edit proofs"));
+        assert!(out.contains("agent reach: 1 installed client | 2 MCP tools served"));
+        assert!(out.contains("local accepted activity: 4 accepted edits"));
         assert!(out.contains("(3 signed local fixes + 1 agent/hook outcome)"));
         assert!(
-            out.contains("2 after prior memory-use proof (1 rule recall + 1 MCP serve) within 7d")
+            out.contains("2 after prior memory recall (1 rule recall + 1 agent recall) within 7d")
         );
         assert!(out.contains("16m review time saved"));
-        assert!(out.contains("remote Impact proof: 46/46 accepted edits in the last 30d"));
+        assert!(out.contains("remote Impact activity: 46/46 accepted edits in the last 30d"));
         assert!(out.contains("affected clients: none"));
         assert!(out.contains("Cursor: run `Developer: Reload Window`"));
         assert!(out.contains("installed surfaces:"));
@@ -960,12 +953,12 @@ mod tests {
 
         assert!(lines[0].contains("1 active rule ready for recall"));
         assert!(lines[0].contains("2 imported PRs"));
-        assert!(lines[1].contains("3 installed clients · 7 MCP tools"));
-        assert!(lines[2].contains("local accepted proof: 2 accepted edit proofs"));
+        assert!(lines[1].contains("3 installed clients | 7 MCP tools"));
+        assert!(lines[2].contains("local accepted activity: 2 accepted edits"));
         assert!(lines[2].contains("8m review time saved"));
         assert_eq!(
             lines[3],
-            "remote Impact proof: unavailable; local proof captured above"
+            "remote Impact activity: unavailable; local activity captured above"
         );
     }
 
@@ -990,15 +983,17 @@ mod tests {
         };
         let lines = mcp_value_proof_lines(&proof);
 
-        assert!(lines[2].contains("local accepted proof: 2 accepted edit proofs"));
+        assert!(lines[2].contains("local accepted activity: 2 accepted edits"));
         assert!(lines[2].contains("(2 agent/hook outcomes)"));
-        assert!(lines[2].contains(
-            "2 after prior memory-use proof (1 MCP serve + 1 edit attribution) within 7d"
-        ));
+        assert!(
+            lines[2].contains(
+                "2 after prior memory recall (1 agent recall + 1 accepted edit) within 7d"
+            )
+        );
         assert!(lines[2].contains("8m review time saved"));
         assert_eq!(
             lines[3],
-            "remote Impact proof: unavailable; local proof captured above"
+            "remote Impact activity: unavailable; local activity captured above"
         );
     }
 }

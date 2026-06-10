@@ -1,10 +1,11 @@
+#[cfg(test)]
+use difflore_core::stated_vs_actual;
+#[cfg(test)]
 use std::path::PathBuf;
 
-use difflore_core::stated_vs_actual;
-
-/// Read at most the last `MAX_TRANSCRIPT_BYTES` of a hook-controlled transcript.
-/// The scans only need recent turns at the tail; a partial first line after the
-/// seek boundary is skipped by the per-line parser.
+/// Read at most this many trailing bytes of a transcript. Scans only need
+/// recent tail turns; a partial first line after the seek boundary is skipped
+/// by the per-line parser.
 const MAX_TRANSCRIPT_BYTES: u64 = 32 * 1024 * 1024;
 
 fn read_transcript_tail_capped(path: &str) -> Option<String> {
@@ -20,24 +21,20 @@ fn read_transcript_tail_capped(path: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// Compare the agent's last assistant message against the actual
-/// `git diff --name-only` in `cwd`. Returns a short user-visible warning
-/// when the agent claimed to edit files that aren't in the diff. Returns
-/// `None` on any error (missing transcript, JSONL parse failure, git not
-/// available, no mismatch found). Designed to be a strictly advisory
-/// audit step — must never block a hook.
+/// Compare the agent's last assistant message against `git diff --name-only`
+/// in `cwd`. Returns a short user-visible warning when the agent claimed to
+/// edit files absent from the diff, or `None` on any error (missing transcript,
+/// parse failure, git unavailable, no mismatch). Strictly advisory — must never
+/// block a hook.
+#[cfg(test)]
 pub(super) fn stated_vs_actual_warning(transcript_path: &str, cwd: &str) -> Option<String> {
     let claim_text = read_last_assistant_text(transcript_path)?;
     if claim_text.trim().is_empty() {
         return None;
     }
-    // Short-circuit zero-edit turns. The validator's purpose is catching
-    // "agent claimed to edit X, didn't" — but every assistant reply that
-    // merely *mentions* a filename in prose (status reports, error
-    // diagnostics, commit-message drafts, citations) gets flagged the
-    // same way. Skip the prose comparison entirely when the assistant
-    // didn't fire any edit-class tool in the most recent turn — those
-    // rows can't have produced or claimed an edit anyway.
+    // Skip turns where the assistant fired no edit-class tool: a reply that
+    // merely mentions a filename in prose (status report, diagnostic, commit
+    // draft, citation) would otherwise be flagged as a missing-edit claim.
     if !last_assistant_turn_invoked_edit_tool(transcript_path) {
         return None;
     }
@@ -47,19 +44,16 @@ pub(super) fn stated_vs_actual_warning(transcript_path: &str, cwd: &str) -> Opti
     Some(format!("⚠ DiffLore: {}", finding.summary_for_user()?))
 }
 
-/// True if any `tool_use` entry in the most recent assistant turn (i.e.
-/// since the last user message in the transcript) names an edit-class
-/// tool. Conservative — unknown tools and parse failures count as
-/// "no edit", so a malformed transcript silently suppresses the
-/// warning rather than mis-firing it.
+/// True if any `tool_use` in the most recent assistant turn (since the last
+/// user message) names an edit-class tool. Conservative: unknown tools and
+/// parse failures count as "no edit", so a malformed transcript suppresses the
+/// warning rather than mis-firing.
 ///
-/// Recognised edit-class tools mirror the Claude Code surface:
-///   - `Edit` / `MultiEdit` / `Write` / `NotebookEdit`: direct file mutations
-///   - `Bash`: only when the command name matches a writing shell verb
-///     (`echo >`, `tee`, `cp`, `mv`, `sed -i`, `git apply`, `git commit -m`,
-///     etc.). We use a coarse keyword list rather than a real shell parser
-///     because the goal is "did the agent likely write something to disk",
-///     not "what exactly did the command do".
+/// Edit-class tools are `Edit`/`MultiEdit`/`Write`/`NotebookEdit`, plus `Bash`
+/// when the command matches a coarse writing-verb keyword (`>`, `tee`, `cp`,
+/// `mv`, `sed -i`, `git apply`, `git commit`, …). The goal is "did the agent
+/// likely write to disk", not exact command semantics.
+#[cfg(test)]
 fn last_assistant_turn_invoked_edit_tool(transcript_path: &str) -> bool {
     const EDIT_TOOLS: &[&str] = &["Edit", "MultiEdit", "Write", "NotebookEdit"];
     const BASH_WRITE_KEYWORDS: &[&str] = &[
@@ -88,8 +82,7 @@ fn last_assistant_turn_invoked_edit_tool(transcript_path: &str) -> bool {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        // Reset the window each time we see a user row — only the
-        // most recent assistant turn (since last user) counts.
+        // Reset on each user row — only the most recent assistant turn counts.
         let role = v
             .get("message")
             .and_then(|m| m.get("role"))
@@ -133,11 +126,10 @@ fn last_assistant_turn_invoked_edit_tool(transcript_path: &str) -> bool {
     found_edit
 }
 
-/// Read the last assistant message's concatenated text content from a
-/// Claude-Code-style session JSONL. Each line is one JSON object with a
-/// `type` field (`"user"` / `"assistant"` / `"system"` / …) and a
-/// `message` object whose `content` is an array of typed parts. We only
-/// keep parts where `type == "text"` and concatenate their `text` values.
+/// Concatenated text content of the last assistant message in a
+/// Claude-Code-style session JSONL. Each line is a JSON object with a `message`
+/// whose `content` is an array of typed parts; only `type == "text"` parts are
+/// kept and joined.
 pub(super) fn read_last_assistant_text(transcript_path: &str) -> Option<String> {
     let body = read_transcript_tail_capped(transcript_path)?;
     let mut last_text: Option<String> = None;
@@ -150,9 +142,9 @@ pub(super) fn read_last_assistant_text(transcript_path: &str) -> Option<String> 
             Ok(v) => v,
             Err(_) => continue, // skip malformed lines, keep walking
         };
-        // Claude Code's session JSONL marks the row type two ways
-        // depending on version: a top-level `"type":"assistant"` and/or
-        // a nested `"message":{"role":"assistant"}`. Accept either.
+        // Row type is marked two ways across Claude Code versions: top-level
+        // `"type":"assistant"` and/or nested `"message":{"role":"assistant"}`.
+        // Accept either.
         let is_assistant = v.get("type").and_then(|t| t.as_str()) == Some("assistant")
             || v.get("message")
                 .and_then(|m| m.get("role"))
@@ -184,13 +176,13 @@ pub(super) fn read_last_assistant_text(transcript_path: &str) -> Option<String> 
     last_text
 }
 
-/// Run `git diff --name-only HEAD` in `cwd` and return the changed paths
-/// plus untracked-but-not-gitignored new files. Without the
-/// `ls-files --others` step, the validator would flag any agent-created
-/// new file as "hallucinated" because `diff --name-only HEAD` only sees
-/// tracked-file modifications. Untracked-but-listed-in-gitignore files
-/// are excluded so agent claims about generated artefacts (e.g. `dist/`,
-/// `.output/`) don't fire either.
+/// Changed paths in `cwd` (`git diff --name-only HEAD`) plus untracked,
+/// non-gitignored new files. The `ls-files --others` step is needed because
+/// `diff --name-only HEAD` only sees tracked-file modifications, so without it
+/// any agent-created new file would be flagged "hallucinated". Gitignored files
+/// stay excluded so claims about generated artefacts (`dist/`, `.output/`)
+/// don't fire.
+#[cfg(test)]
 fn git_changed_files(cwd: &str) -> Option<Vec<PathBuf>> {
     let mut paths: Vec<PathBuf> = Vec::new();
 
@@ -203,10 +195,9 @@ fn git_changed_files(cwd: &str) -> Option<Vec<PathBuf>> {
         }
     }
 
-    // Untracked-but-not-gitignored files. Run separately because git
-    // doesn't combine "modified tracked" + "new untracked" into one
-    // command; failures here are non-fatal — better to under-report
-    // (some new-file false positives) than refuse the whole audit.
+    // Untracked, non-gitignored files: a separate command since git can't
+    // combine modified-tracked and new-untracked. Failures here are non-fatal —
+    // better to under-report than refuse the whole audit.
     if let Some(untracked) =
         crate::commands::util::git_str_in(cwd, &["ls-files", "--others", "--exclude-standard"])
     {

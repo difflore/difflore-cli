@@ -1,20 +1,13 @@
-//! Shared file-pattern glob matcher (B8).
+//! Shared file-pattern glob matcher.
 //!
-//! Two call sites need the *same* "does this path satisfy a rule's
-//! JSON-encoded `file_patterns` glob list?" logic but with deliberately
-//! **opposite** error handling:
+//! Two call sites share the "does this path satisfy a rule's JSON-encoded
+//! `file_patterns` glob list?" logic but want **opposite** error handling,
+//! expressed via [`GlobErrorPolicy`]:
 //!
-//! * Rule retrieval (`context::retrieval::rules`) over-recalls: a parse
-//!   error or an unbuildable glob set must NOT silently drop a rule —
-//!   better to surface a maybe-irrelevant rule than to lose real signal
-//!   on a corrupt `file_patterns` blob.
-//! * Observation attribution (`cloud::observations::dedup`) drops: a
-//!   parse error means we cannot prove the rule applies to the touched
-//!   file, so the safe call for attribution is to NOT credit it.
-//!
-//! The matching algorithm is identical; only the error verdict differs.
-//! That divergence is now an explicit [`GlobErrorPolicy`] argument
-//! instead of two drifting copies.
+//! * Rule retrieval over-recalls: a corrupt blob must NOT silently drop a
+//!   rule — surfacing a maybe-irrelevant rule beats losing real signal.
+//! * Observation attribution drops: a corrupt blob can't prove the rule
+//!   applies, so the safe call is to NOT credit it.
 
 use globset::{Glob, GlobSetBuilder};
 

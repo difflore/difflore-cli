@@ -19,8 +19,6 @@ pub(super) mod rule_timeline;
 pub(super) mod search_rules;
 pub(super) mod util;
 
-// Re-export the per-tool entry points so the parent `mcp_server` module
-// can keep its existing `pub(crate) use tools::{…}` surface intact.
 pub(super) use get_rules::tool_get_rules;
 pub(super) use past_verdicts::tool_get_past_verdicts;
 pub(super) use plan_pr::tool_plan_pr;

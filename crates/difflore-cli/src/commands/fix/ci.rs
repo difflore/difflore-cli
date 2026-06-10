@@ -28,8 +28,8 @@ pub(super) fn exit_after_output(code: i32) -> ! {
     exit_code(code);
 }
 
-// Default: only fail on confident patches. Structured outputs share this
-// exit-code contract.
+// Only fails on confident patches unless `strict`; structured outputs share
+// this exit-code contract.
 pub(super) fn finish_ci_mode(suggestions: &[&ReviewIssueRecord], strict: bool, scope_label: &str) {
     let blocking = ci_blocking_suggestions(suggestions, strict);
     if blocking.is_empty() {

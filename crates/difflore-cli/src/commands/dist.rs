@@ -1,9 +1,8 @@
 //! Distribution and marketplace manifest verification.
 //!
-//! This is a small, dependency-light guardrail for release drift. It
-//! checks that the repo's plugin manifests agree with the CLI package
-//! version and that the plugin bundle still contains the runtime files
-//! the marketplaces expect.
+//! A guardrail against release drift: checks that the repo's plugin manifests
+//! agree with the CLI package version and that the plugin bundle still contains
+//! the runtime files the marketplaces expect.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -76,7 +75,6 @@ pub fn find_repo_root_from(start: &Path) -> Option<PathBuf> {
 pub fn verify_from_cwd() -> Result<DistCheckReport, String> {
     let cwd = std::env::current_dir().map_err(|e| format!("could not resolve cwd: {e}"))?;
     // `dist verify` only has work inside a difflore source checkout.
-    // Outside it, report the mismatch explicitly.
     let root = find_repo_root_from(&cwd).ok_or_else(|| {
         format!(
             "`difflore dist verify` is a maintainer command — run it from a checkout \
@@ -140,6 +138,7 @@ pub fn verify_repo(root: &Path) -> DistCheckReport {
     check_json_manifest(root, ".claude-plugin/plugin.json", &mut report);
     check_json_manifest(root, "plugin/.claude-plugin/plugin.json", &mut report);
     check_json_manifest(root, ".codex-plugin/plugin.json", &mut report);
+    check_manifest_consistency(root, &mut report);
     check_marketplace(root, &mut report);
     check_mcp_bundle(root, &mut report);
     check_hook_bundle(root, &mut report);
@@ -195,6 +194,30 @@ fn check_json_manifest(root: &Path, rel: &str, report: &mut DistCheckReport) {
             DistSeverity::Warning,
             rel,
             &format!("repository does not point at {canonical}"),
+        );
+    }
+}
+
+/// The repo root manifest (direct-install path) and the bundle manifest
+/// (marketplace path) describe the same plugin; any field drift between them
+/// ships inconsistent metadata to one of the two install flows.
+fn check_manifest_consistency(root: &Path, report: &mut DistCheckReport) {
+    let rel_root = ".claude-plugin/plugin.json";
+    let rel_bundle = "plugin/.claude-plugin/plugin.json";
+    let read = |rel: &str| -> Option<Value> {
+        let raw = fs::read_to_string(root.join(rel)).ok()?;
+        serde_json::from_str(&raw).ok()
+    };
+    // Unreadable or invalid manifests are already reported by check_json_manifest.
+    let (Some(root_manifest), Some(bundle_manifest)) = (read(rel_root), read(rel_bundle)) else {
+        return;
+    };
+    if root_manifest != bundle_manifest {
+        push(
+            report,
+            DistSeverity::Error,
+            rel_bundle,
+            &format!("manifest drifted from {rel_root}; keep both files identical"),
         );
     }
 }
@@ -384,6 +407,33 @@ mod tests {
         )
         .expect("write");
         assert_eq!(read_crate_version(&path).as_deref(), Some("0.1.0"));
+    }
+
+    #[test]
+    fn manifest_consistency_flags_drift_between_root_and_bundle() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        fs::create_dir_all(root.join(".claude-plugin")).expect("mkdir");
+        fs::create_dir_all(root.join("plugin/.claude-plugin")).expect("mkdir");
+        let manifest = r#"{"name":"difflore","version":"0.1.0"}"#;
+        fs::write(root.join(".claude-plugin/plugin.json"), manifest).expect("write");
+        fs::write(root.join("plugin/.claude-plugin/plugin.json"), manifest).expect("write");
+
+        let mut report = DistCheckReport {
+            repo_root: root.display().to_string(),
+            expected_version: None,
+            issues: Vec::new(),
+        };
+        check_manifest_consistency(root, &mut report);
+        assert!(report.issues.is_empty());
+
+        fs::write(
+            root.join("plugin/.claude-plugin/plugin.json"),
+            r#"{"name":"difflore","version":"0.2.0"}"#,
+        )
+        .expect("write");
+        check_manifest_consistency(root, &mut report);
+        assert_eq!(report.error_count(), 1);
     }
 
     #[test]

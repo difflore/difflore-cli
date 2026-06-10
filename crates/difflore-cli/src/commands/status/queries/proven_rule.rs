@@ -1,6 +1,6 @@
 //! "Proven rule" drilldown: the single rule (repo-scoped, else best-on-machine)
 //! with the most accepted-edit proofs, merging signed local fix outcomes with
-//! agent-hook accepted outcomes. Feeds the `provenRuleDrilldown` envelope key.
+//! agent-hook accepted outcomes.
 
 use std::collections::HashMap;
 

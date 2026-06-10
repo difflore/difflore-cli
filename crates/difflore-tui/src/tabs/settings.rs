@@ -1,16 +1,6 @@
-//! Settings tab — the conversion compass.
-//!
-//! Per the redesign, Settings is the single passive surface that always
-//! tells the user (a) what plan they're on, (b) what's wired up, and
-//! (c) where to go next. Every row that has a "next step" surfaces a
-//! key badge that opens the right CLI command or cloud URL — so this
-//! tab doubles as the keyboard-driven control panel for the install +
-//! conversion path.
-//!
-//! Data plumbing is intentionally thin right now: we render what the
-//! TUI already loads (project root, rule total, plan tier). The richer
-//! "agents X/Y installed" / "provider configured" rows belong here too
-//! and will land once the App pre-loads them at startup (current Phase).
+//! Settings tab: a passive surface showing the current plan, what's wired
+//! up, and where to go next. Each row with a next step surfaces a key badge
+//! that opens the right CLI command or cloud URL.
 
 use std::path::Path;
 

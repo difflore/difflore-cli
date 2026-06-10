@@ -1,6 +1,6 @@
-//! `difflore cloud impact`: fetch the cloud Impact panels (banner, weekly
-//! trend, top rules, coverage, fix scorecard) and render them, plus the
-//! JSON payload and the "not logged in / session unverified" fallbacks.
+//! `difflore cloud impact`: fetch and render the cloud Impact panels (banner,
+//! weekly trend, top rules, coverage, fix scorecard), the JSON payload, and
+//! the "not logged in / session unverified" fallbacks.
 //!
 //! Agent-usage evidence helpers (shared with `cloud status`) live in
 //! [`super`]; this module only renders them.
@@ -21,7 +21,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                 style::pewter(style::sym::BULLET)
             );
             println!(
-                "  Impact shows accepted-fix counts, top recalled rules, and review-effort trends —"
+                "  Impact shows accepted-fix counts, top recalled rules, and review-effort trends."
             );
             println!("  none of which are computable from local-only data.");
             println!();
@@ -125,10 +125,10 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         && agent_usage.rule_fires > 0
     {
         println!();
-        println!("  {}", "Agent usage — last 7 days".bold());
+        println!("  {}", "Agent usage - last 7 days".bold());
         let pending = if agent_usage.pending_uploads > 0 {
             format!(
-                " · {} pending upload{}",
+                " | {} pending upload{}",
                 agent_usage.pending_uploads,
                 if agent_usage.pending_uploads == 1 {
                     ""
@@ -176,7 +176,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         println!("  {}  (max {})", style::emerald(&bar), max);
         println!(
             "  {}",
-            style::pewter("rules sedimented · past verdicts recalled · fixes accepted")
+            style::pewter("rules learned | past verdicts recalled | fixes accepted")
         );
     }
 
@@ -196,7 +196,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
             };
             for rule in &r.rules {
                 let meta = match (&rule.severity, &rule.language) {
-                    (Some(s), Some(l)) => format!(" [{s} · {l}]"),
+                    (Some(s), Some(l)) => format!(" [{s} | {l}]"),
                     (Some(s), None) => format!(" [{s}]"),
                     (None, Some(l)) => format!(" [{l}]"),
                     _ => String::new(),
@@ -204,9 +204,9 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                 let trust = rule.trust_rate.map_or_else(String::new, |rate| {
                     let pct = (rate * 100.0).round() as i64;
                     if rule.cited_count > 0 {
-                        format!(" · trust {pct}% ({} cited)", rule.cited_count)
+                        format!(" | trust {pct}% ({} cited)", rule.cited_count)
                     } else {
-                        format!(" · trust {pct}%")
+                        format!(" | trust {pct}%")
                     }
                 });
                 let proof = crate::commands::impact_payload::accepted_proof_source_label(
@@ -214,25 +214,25 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                         .as_deref()
                         .or_else(|| local_proof_sources.get(&rule.id).map(String::as_str)),
                 )
-                .map_or_else(String::new, |label| format!(" · {}", style::pewter(label)));
+                .map_or_else(String::new, |label| format!(" | {}", style::pewter(label)));
                 let agent_ready = crate::commands::impact_payload::agent_ready_proof_label(
                     rule.reviewer_proof_ready_count,
                 )
-                .map_or_else(String::new, |label| format!(" · {}", style::pewter(&label)));
+                .map_or_else(String::new, |label| format!(" | {}", style::pewter(&label)));
                 let reviewer_context =
                     crate::commands::impact_payload::reviewer_context_proof_label(
                         rule.reviewer_context_serves,
                         rule.reviewer_mentions,
                     )
-                    .map_or_else(String::new, |label| format!(" · {}", style::pewter(&label)));
+                    .map_or_else(String::new, |label| format!(" | {}", style::pewter(&label)));
                 let source_repo = rule
                     .source_repo
                     .as_deref()
                     .map_or_else(String::new, |repo| {
-                        format!(" · {}", style::pewter(&format!("learned from {repo}")))
+                        format!(" | {}", style::pewter(&format!("learned from {repo}")))
                     });
                 println!(
-                    "    {} {}{} — {} accepted, {} user{}{trust}{proof}{agent_ready}{reviewer_context}{source_repo}",
+                    "    {} {}{} - {} accepted, {} user{}{trust}{proof}{agent_ready}{reviewer_context}{source_repo}",
                     style::pewter(style::sym::BULLET),
                     rule.name.bold(),
                     style::pewter(&meta),
@@ -280,12 +280,12 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
     match &coverage {
         Ok(c) => {
             let ai_label = if c.ai_reviewer_comments_indexed > 0 {
-                format!(" · {} AI reviewer signals", c.ai_reviewer_comments_indexed)
+                format!(" | {} AI reviewer signals", c.ai_reviewer_comments_indexed)
             } else {
                 String::new()
             };
             println!(
-                "    {} repos · {} PRs · {} review comments{} · {} files",
+                "    {} repos | {} PRs | {} review comments{} | {} files",
                 style::emerald(&c.repos.to_string()),
                 style::emerald(&c.prs.to_string()),
                 style::emerald(&c.review_comments_indexed.to_string()),
@@ -301,7 +301,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
     }
 
     println!();
-    println!("  {}", "Fix acceptance — last 30 days".bold());
+    println!("  {}", "Fix acceptance - last 30 days".bold());
     match &fix {
         Ok(f) => {
             let rate = if f.last30.total > 0 {
@@ -311,7 +311,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
             };
             let rate_str = match rate {
                 Some(r) => format!("{r:.0}%"),
-                None => "—".to_owned(),
+                None => "-".to_owned(),
             };
             let mut line = format!(
                 "    {} ({} / {} fixes accepted)",
@@ -322,11 +322,11 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
             if let Some(label) = crate::commands::impact_payload::saved_review_time_label(
                 crate::commands::impact_payload::saved_review_minutes_for_scorecard(f),
             ) {
-                line.push_str(&format!(" {}", style::pewter(&format!("· {label}"))));
+                line.push_str(&format!(" {}", style::pewter(&format!("| {label}"))));
             }
             if let Some(t) = f.trend_pct {
-                let arrow = if t >= 0.0 { "▲" } else { "▼" };
-                let trend = format!(" {} {:.0}% vs prior 30d", arrow, t.abs());
+                let sign = if t >= 0.0 { "+" } else { "-" };
+                let trend = format!(" {sign}{:.0}% vs prior 30d", t.abs());
                 line.push_str(&if t >= 0.0 {
                     style::emerald(&trend).to_string()
                 } else {
@@ -347,6 +347,28 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
     let prs = coverage.as_ref().map_or(0, |c| c.prs);
     let fixes_total = fix.as_ref().map_or(0, |f| f.last30.total);
     let has_signal = prs > 0 || fixes_total > 0;
+    let team_ready = super::team::accepted_fix_proof_ready(
+        cloud_status.logged_in,
+        cloud_status.team_name.as_deref(),
+    );
+
+    if !team_ready {
+        println!("  {}", "Next steps".bold());
+        println!(
+            "    {} next: {}",
+            style::pewter(style::sym::BULLET),
+            style::cmd(super::team::team_workspace_next_command(
+                cloud_status.logged_in,
+                cloud_status.team_name.as_deref()
+            ))
+        );
+        println!(
+            "    {} then: {}",
+            style::pewter(style::sym::BULLET),
+            style::cmd("difflore cloud sync")
+        );
+        return;
+    }
 
     if !has_signal {
         println!("  {}", "Next steps".bold());
@@ -375,7 +397,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
             let team_suffix = cloud_status
                 .team_name
                 .as_deref()
-                .map(|t| format!(" · team `{t}`"))
+                .map(|t| format!(" | team `{t}`"))
                 .unwrap_or_default();
             println!(
                 "  {} {} {}{}",
@@ -398,7 +420,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
             if fixes_total >= 5 {
                 println!(
                     "    {} local fix outcome{} were recorded in 30d. Cloud plans add \
-                     shared review memory, GitHub App ingest, Reviewer Context, governance, \
+                     shared review memory, GitHub App ingest, Reviewer Context, team controls, \
                      and impact analytics.",
                     style::emerald(&fixes_total.to_string()),
                     if fixes_total == 1 { "" } else { "s" }
@@ -417,7 +439,7 @@ fn impact_logged_out_value() -> serde_json::Value {
     impact_needs_login_value(
         "needs_cloud_login",
         "cloud_login_required",
-        "Impact needs cloud-linked evidence to show accepted-fix counts, top recalled rules, and review-effort trends.",
+        "Impact needs cloud-linked activity to show accepted-fix counts, top recalled rules, and review-effort trends.",
     )
 }
 

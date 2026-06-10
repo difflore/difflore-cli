@@ -1,10 +1,9 @@
 // Centralized accessors for environment-derived runtime configuration.
 //
-// All env reads in non-test code should funnel through this module so that:
-//   * The list of recognised env vars is discoverable in one place.
-//   * Tests can shadow values by setting the var before first access (each
-//     accessor caches per-process via `OnceLock`).
-//   * Bool/integer parsing happens in one place.
+// All non-test env reads funnel through this module so the recognised vars
+// are discoverable in one place and bool/integer parsing happens once. Most
+// accessors cache per-process via `OnceLock`, so tests must set a var before
+// its first access.
 
 use std::ffi::OsString;
 use std::sync::OnceLock;
@@ -22,28 +21,23 @@ pub const DIFFLORE_TRACE_HOOK: &str = "DIFFLORE_TRACE_HOOK";
 pub const DIFFLORE_HOOK_CACHE_TTL_MS: &str = "DIFFLORE_HOOK_CACHE_TTL_MS";
 /// Controls the per-process `hook_post_edit` short-circuit cache.
 ///
-/// `auto` (default): apply the empirical heuristic — once a file extension
-/// has produced ≥10 hook serves in the trailing window with ≥90% empties,
-/// skip the index round-trip and return an empty rule list immediately.
-/// `off`: always run the full retrieval path (debugging / regression check).
-/// `force`: always short-circuit on the FIRST call for every extension —
-/// diagnostic-only; the agent gets no rules so cite this from a flag, not
-/// production config.
+/// `auto` (default): once a file extension has ≥10 hook serves in the trailing
+/// window with ≥90% empties, skip the index round-trip and return an empty
+/// rule list. `off`: always run full retrieval (debugging). `force`: always
+/// short-circuit on the first call for every extension (diagnostic only — the
+/// agent gets no rules).
 ///
-/// The cache is in-process and does NOT persist across CLI invocations:
-/// every fresh daemon launch re-learns. Short-circuited calls deliberately
-/// do not write to `mcp_rule_serves` or `cloud_outbox`, so a recovering
-/// corpus quality can let the extension recover the next launch.
+/// The cache is in-process only; every fresh daemon launch re-learns.
+/// Short-circuited calls don't write `mcp_rule_serves` or `cloud_outbox`, so an
+/// extension can recover on the next launch.
 pub const DIFFLORE_HOOK_SHORT_CIRCUIT: &str = "DIFFLORE_HOOK_SHORT_CIRCUIT";
 pub const DIFFLORE_HOOK_CLIENT: &str = "DIFFLORE_HOOK_CLIENT";
 pub const DIFFLORE_HOOK_FORWARD: &str = "DIFFLORE_HOOK_FORWARD";
 pub const DIFFLORE_DEBUG_HOOKS: &str = "DIFFLORE_DEBUG_HOOKS";
 pub const DIFFLORE_HOOK_SHIM_TRACE: &str = "DIFFLORE_HOOK_SHIM_TRACE";
-/// Opt-in: allow the post-edit / pre-read hook to fall back to cross-repo
-/// "starter" rules when the current repo has no scoped memory. Default OFF —
-/// the hook is repo-level only: it surfaces THIS repo's own memory or stays
-/// silent, never auto-injecting transferable rules from other repos on every
-/// edit. (The explicit `difflore recall` command keeps its own starter path.)
+/// Opt-in: allow the hook to fall back to cross-repo "starter" rules when the
+/// current repo has no scoped memory. Default OFF — the hook surfaces only this
+/// repo's own memory. (The `difflore recall` command keeps its own starter path.)
 pub const DIFFLORE_HOOK_CROSS_REPO_STARTER: &str = "DIFFLORE_HOOK_CROSS_REPO_STARTER";
 pub const DIFFLORE_MASTER_KEY: &str = "DIFFLORE_MASTER_KEY";
 pub const DIFFLORE_HOME: &str = "DIFFLORE_HOME";
@@ -51,8 +45,8 @@ pub const DIFFLORE_MCP_HOME: &str = "DIFFLORE_MCP_HOME";
 pub const DIFFLORE_NO_WELCOME: &str = "DIFFLORE_NO_WELCOME";
 pub const DIFFLORE_CLOUD_TOKEN: &str = "DIFFLORE_CLOUD_TOKEN";
 /// API key for `difflore embeddings setup` (BYOK), read from env/stdin so it
-/// stays out of shell history. The runtime resolver uses the encrypted key
-/// stored by that command — not a raw env var at embed time.
+/// stays out of shell history. At embed time the runtime resolver uses the
+/// encrypted key stored by that command, not this env var.
 pub const DIFFLORE_EMBEDDING_KEY: &str = "DIFFLORE_EMBEDDING_KEY";
 pub const DIFFLORE_TOKEN: &str = "DIFFLORE_TOKEN";
 pub const DIFFLORE_DEBUG_CLOUD: &str = "DIFFLORE_DEBUG_CLOUD";
@@ -72,6 +66,7 @@ pub const DIFF_LORE_CLOUD_URL: &str = "DIFF_LORE_CLOUD_URL";
 pub const NO_COLOR: &str = "NO_COLOR";
 pub const COLORTERM: &str = "COLORTERM";
 pub const TERM: &str = "TERM";
+pub const COLUMNS: &str = "COLUMNS";
 pub const PATH: &str = "PATH";
 pub const COLORFGBG: &str = "COLORFGBG";
 pub const DIFFLORE_THEME: &str = "DIFFLORE_THEME";
@@ -117,11 +112,8 @@ pub fn trace_hook() -> bool {
     *CACHED.get_or_init(|| flag_set(DIFFLORE_TRACE_HOOK))
 }
 
-/// Whether the hook may inject cross-repo "starter" rules when the current repo
-/// has no scoped memory. Default OFF: the hook is repo-level only — it surfaces
-/// THIS repo's own memory or stays silent, instead of injecting transferable
-/// rules from other repos on every edit. Set `DIFFLORE_HOOK_CROSS_REPO_STARTER`
-/// to a truthy value to opt back into cold-start starter hints in the hook.
+/// Whether the hook may inject cross-repo "starter" rules. See
+/// [`DIFFLORE_HOOK_CROSS_REPO_STARTER`]; default OFF.
 #[must_use]
 pub fn hook_cross_repo_starter_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
@@ -178,9 +170,8 @@ impl HookShortCircuitMode {
 
 /// Resolve [`DIFFLORE_HOOK_SHORT_CIRCUIT`] into a tri-state mode.
 ///
-/// Read directly from the env on every call so tests can flip behaviour
-/// without racing a `OnceLock` cache. The check is cheap (one
-/// `std::env::var` lookup) compared to the rest of the hook hot path.
+/// Read from the env on every call (no `OnceLock` cache) so tests can flip
+/// behaviour without racing; one `std::env::var` lookup is negligible here.
 #[must_use]
 pub fn hook_short_circuit_mode() -> HookShortCircuitMode {
     match var(DIFFLORE_HOOK_SHORT_CIRCUIT) {
@@ -192,10 +183,9 @@ pub fn hook_short_circuit_mode() -> HookShortCircuitMode {
 /// Default deep-recall sample rate when the env var is unset (2%).
 pub const DEFAULT_DEEP_RECALL_SAMPLE_RATE: f32 = 0.02;
 
-/// Maximum permitted deep-recall sample rate (10%). Anything higher would
-/// substantially shift the cost/token profile of the hot recall path; the
-/// whole point of the sampler is "cheap occasional probe", not a knob the
-/// caller can crank into a second production mode.
+/// Maximum permitted deep-recall sample rate (10%). Higher rates would shift
+/// the cost/token profile of the hot recall path; the sampler is a cheap
+/// occasional probe, not a second production mode.
 pub const MAX_DEEP_RECALL_SAMPLE_RATE: f32 = 0.10;
 
 /// Parse a raw `DIFFLORE_DEEP_RECALL_SAMPLE_RATE` string into a validated
@@ -207,10 +197,9 @@ pub const MAX_DEEP_RECALL_SAMPLE_RATE: f32 = 0.10;
 /// * negative values,
 /// * values above `MAX_DEEP_RECALL_SAMPLE_RATE`.
 ///
-/// Empty / whitespace input is rejected too — an explicit
-/// `DIFFLORE_DEEP_RECALL_SAMPLE_RATE=` is almost always a typo, and silently
-/// falling back to the default would mask it; the caller can simply unset the
-/// var to get the default.
+/// Empty / whitespace input is rejected: an explicit
+/// `DIFFLORE_DEEP_RECALL_SAMPLE_RATE=` is almost always a typo. Unset the var
+/// to get the default.
 pub fn parse_deep_recall_sample_rate(raw: &str) -> Result<f32, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -242,14 +231,10 @@ pub fn parse_deep_recall_sample_rate(raw: &str) -> Result<f32, String> {
 
 /// Resolve [`DIFFLORE_DEEP_RECALL_SAMPLE_RATE`] into a validated probability.
 ///
-/// Read on every call (no `OnceLock` cache) so tests can flip the rate
-/// per-test without racing. The read is one `std::env::var` lookup and a
-/// short parse — negligible against the rest of the recall hot path.
-///
-/// An invalid env value falls back to [`DEFAULT_DEEP_RECALL_SAMPLE_RATE`]
-/// after logging a single `eprintln!` to stderr. Recall must never fail
-/// because of a malformed observability knob; the caller-visible behaviour
-/// degrades to "no sampling beyond the default", which is the safe default.
+/// Read on every call (no `OnceLock` cache) so tests can flip the rate without
+/// racing. An invalid env value logs once to stderr and falls back to
+/// [`DEFAULT_DEEP_RECALL_SAMPLE_RATE`] — recall must never fail because of a
+/// malformed observability knob.
 #[must_use]
 pub fn deep_recall_sample_rate() -> f32 {
     match var(DIFFLORE_DEEP_RECALL_SAMPLE_RATE) {

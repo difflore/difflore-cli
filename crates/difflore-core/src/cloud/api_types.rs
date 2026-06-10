@@ -1,7 +1,5 @@
 openapi_contract::generate_types!("openapi-spec.json");
 
-// ── Review-memory recall types ──
-//
 // Hand-written DTOs for fields and derives not provided by the generated
 // OpenAPI types.
 
@@ -10,9 +8,9 @@ openapi_contract::generate_types!("openapi-spec.json");
 #[serde(rename_all = "camelCase")]
 pub struct RecallPastVerdictsRequest {
     /// Embedding vector of the current chunk / diff. Must be 1024 floats
-    /// (Voyage `voyage-code-3`) when present. Optional when
-    /// `query_text` is provided — the server will embed server-side,
-    /// which avoids any algorithm/dim drift between client and server.
+    /// (Voyage `voyage-code-3`) when present. Optional when `query_text` is
+    /// provided, in which case the server embeds it to avoid client/server
+    /// algorithm or dimension drift.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub embedding: Vec<f32>,
     /// Raw query text for server-side embedding. Prefer this when the
@@ -30,23 +28,17 @@ pub struct RecallPastVerdictsRequest {
     pub team_id: Option<String>,
     /// Max number of verdicts to return.
     pub k: u32,
-    /// Target file path so the cloud can:
-    ///
-    /// 1. Run the file-pattern cascade (rules whose patterns match
-    ///    this path surface first).
-    /// 2. Attribute zero-result calls to a concrete file in the
-    ///    `mcp.gap` telemetry stream (otherwise gap detection
-    ///    drops the call as "unattributable").
-    ///
-    /// Optional: callers without file context still recall, just
-    /// without cascade ordering or gap attribution.
+    /// Target file path. Drives the file-pattern cascade (matching rules
+    /// surface first) and gap-telemetry attribution. Optional: callers
+    /// without it still recall, just without cascade ordering or gap
+    /// attribution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_file: Option<String>,
 }
 
-/// A single past-verdict row as returned by the cloud endpoint. Mirrors
-/// `context::types::PastVerdict`; the two are intentionally kept separate
-/// so the wire type can evolve independently of the in-memory type.
+/// A single past-verdict row as returned by the cloud endpoint. Kept
+/// separate from `context::types::PastVerdict` so the wire type can evolve
+/// independently of the in-memory type.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PastVerdictDto {
@@ -72,21 +64,15 @@ pub struct PastVerdictDto {
     pub source_pr_url: Option<String>,
 }
 
-// ── Review metrics upload ──
-//
-// POSTed by the Rust review engine after `run_review_multi` / `run_review`
-// completes so the cloud can render the "this review cost you $X, ran
-// against M perspectives, recalled K past verdicts" footer without any
-// guesswork. The cloud-side endpoint is `POST /reviews/{id}/metrics`,
+// POSTed by the review engine after a review completes so the cloud can
+// render the review-cost footer. Server endpoint `POST /reviews/{id}/metrics`,
 // handled by `recordReviewMetrics` in `difflore-cloud/src/orpc/reviews.ts`.
 //
-// All fields except `review_id` are optional: pass `None` for any metric
-// the engine doesn't have, and the server will leave the corresponding
-// column unchanged. This lets the CLI patch individual fields as data
-// arrives (e.g. token counts after the LLM responds, duration at the end).
+// All fields are optional: a `None` leaves the corresponding column
+// unchanged, so the CLI can patch individual fields as data arrives.
 
-/// Request body for `POST /reviews/{id}/metrics`. Note that `id` lives in
-/// the URL, not the body, so this struct is just the payload fields.
+/// Request body for `POST /reviews/{id}/metrics`. `id` lives in the URL,
+/// not the body.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordReviewMetricsRequest {
@@ -105,21 +91,18 @@ pub struct RecordReviewMetricsRequest {
     pub past_verdicts_used: Option<u32>,
 }
 
-// ── Save trajectory ──
-//
-// POSTed after `TrajectoryBuilder` finishes collecting steps for a review
-// run. The server endpoint `saveTrajectory` on
-// `difflore-cloud/src/orpc/reviews.ts` validates the step payload with
-// a Zod discriminated union whose field names match this shape exactly.
+// Server endpoint `saveTrajectory` in `difflore-cloud/src/orpc/reviews.ts`
+// validates the step payload with a Zod discriminated union whose field
+// names must match this shape exactly.
 
 /// Request body for `POST /reviews/{prReviewId}/trajectory`. `prReviewId`
 /// lives in the URL; the body only carries the steps array.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveTrajectoryRequest {
-    /// Serialized trajectory steps. The `TrajectoryBuilder::into_json()`
-    /// return value is byte-compatible with the server's Zod schema, so
-    /// we hand it off as an opaque `serde_json::Value`.
+    /// Serialized trajectory steps. `TrajectoryBuilder::into_json()` is
+    /// byte-compatible with the server's Zod schema, so it is passed through
+    /// as an opaque `serde_json::Value`.
     pub steps: serde_json::Value,
 }
 
@@ -127,17 +110,14 @@ pub struct SaveTrajectoryRequest {
 /// `getTrajectory` oRPC endpoint in
 /// `difflore-cloud/src/orpc/reviews/trajectory.ts`.
 ///
-/// The outer envelope keys are camelCase (oRPC/Drizzle convention), so the
-/// struct carries `#[serde(rename_all = "camelCase")]`. The `steps` array
-/// reuses the canonical [`crate::review_trajectory::TrajectoryStep`] enum:
-/// every step object is tagged `kind` with snake_case fields, exactly the
-/// shape the cloud's Zod discriminated union validates and re-emits, so the
-/// nested deserialize round-trips without further coercion.
+/// Outer envelope keys are camelCase; the `steps` array reuses the
+/// [`crate::review_trajectory::TrajectoryStep`] enum, whose `kind`-tagged
+/// snake_case fields match the cloud's Zod union so the nested deserialize
+/// round-trips without coercion.
 ///
-/// When a review has no persisted trajectory the cloud returns a
-/// zero-UUID placeholder with an empty `steps` array (see the handler's
-/// `if (!row)` branch) rather than a 404; the CLI renderer detects the
-/// empty array and prints a graceful "no trajectory recorded" message.
+/// When a review has no persisted trajectory the cloud returns a zero-UUID
+/// placeholder with an empty `steps` array rather than a 404; the CLI
+/// renderer detects the empty array and prints a graceful message.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetTrajectoryResponse {
@@ -148,12 +128,9 @@ pub struct GetTrajectoryResponse {
     pub created_at: String,
 }
 
-// ── Record accepted edit ──
-//
 // POSTed when the user accepts an edit locally (IDE / CLI). Feeds the
-// rule-candidate pipeline the same way a GitHub PR approval does, so
-// locally accepted edits contribute to Rule candidate promotion.
-// Server: `POST /accepted-edits` → `acceptedEdits.record` in
+// rule-candidate pipeline the same way a GitHub PR approval does. Server:
+// `POST /accepted-edits` → `acceptedEdits.record` in
 // `difflore-cloud/src/orpc/accepted-edits.ts`.
 
 pub fn accepted_edit_diff_signature(before: &str, after: &str) -> String {
@@ -222,8 +199,6 @@ pub struct RecordAcceptedEditResponse {
     pub error: Option<String>,
 }
 
-// ── GitHub PR history import upload ──
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UploadImportedReviewsRequest {
@@ -265,11 +240,8 @@ mod tests {
     };
     use crate::review_trajectory::TrajectoryStep;
 
-    /// The `getTrajectory` GET envelope is camelCase, but the `steps`
-    /// array uses the canonical `kind`-tagged snake_case step shape. Lock
-    /// that the Rust DTO decodes a realistic cloud payload into the shared
-    /// `TrajectoryStep` enum without coercion — this is exactly the bytes
-    /// `difflore trajectory <review-id>` consumes.
+    /// The GET envelope is camelCase but `steps` uses the `kind`-tagged
+    /// snake_case step shape; verify the DTO decodes both without coercion.
     #[test]
     fn get_trajectory_response_decodes_cloud_envelope_and_steps() {
         let payload = r#"{
@@ -531,12 +503,10 @@ mod tests {
     }
 }
 
-// ── Impact report (CLI `difflore cloud impact`) ──
-//
-// GET endpoints under /impact/* on the cloud. Hand-written mirrors of
-// `src/orpc/schemas/impact.ts`. Kept separate from the generated OpenAPI
-// types for the same reason as `PastVerdictDto` — the oRPC routes are not
-// yet in the shared spec.
+// Impact report (CLI `difflore cloud impact`): GET endpoints under
+// /impact/* on the cloud. Hand-written mirrors of
+// `src/orpc/schemas/impact.ts`, kept separate from the generated OpenAPI
+// types because the oRPC routes are not yet in the shared spec.
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -650,41 +620,15 @@ pub struct ImpactFixScorecardDto {
     pub roi: Option<ImpactRoiDto>,
 }
 
-// ── PostToolUse observations (third supply line for candidate rules) ──
+// PostToolUse observations: a supply line for candidate rules. The
+// PostToolUse hook captures a file mutation, classifies it into an
+// observation type, and enqueues an `Observation` via `OutboxQueue` with
+// `kind="observation"`. The cloud consumer drains
+// `cloud_outbox WHERE kind='observation'`, clusters by `content_hash`, and
+// feeds the rule-promoter pipeline.
 //
-// Whenever the Claude Code PostToolUse hook captures a file mutation
-// (Edit / MultiEdit / Write), the CLI classifies it into one of six
-// observation types (bugfix / feature / refactor / change / discovery /
-// decision) and enqueues an `Observation` payload via `OutboxQueue`
-// with `kind="observation"`. The cloud-side consumer (task #8b) drains
-// `cloud_outbox WHERE kind='observation'`, clusters by `content_hash`,
-// and feeds the rule-promoter pipeline alongside `remember_rule` and
-// GitHub-App PR-merge signatures.
-//
-// Wire format: the payload JSON is exactly the `Observation` struct
-// below serialised with `serde_json::to_string` (snake_case keys, no
-// envelope). Example row in `cloud_outbox.payload_json`:
-//
-// ```json
-// {
-//   "session_id": "sess_abc",
-//   "ts_ms": 1_714_000_000_000,
-//   "obs_type": "bugfix",
-//   "tool": "Edit",
-//   "file_path": "src/foo.rs",
-//   "scope": {
-//     "anchor_kind": "file",
-//     "anchor_key": "src/foo.rs",
-//     "parent_path": "src",
-//     "display_name": "foo.rs"
-//   },
-//   "title": "Edit src/foo.rs: remove FIXME",
-//   "narrative": "- // FIXME: crash on None\n+ guard against None",
-//   "diff_excerpt": "-// FIXME: crash on None\n+if let Some(x) = v {",
-//   "content_hash": "3f1c0a2b4d5e6f70"
-// }
-// ```
-//
+// Wire format: the payload JSON is the `Observation` struct below
+// serialised with snake_case keys and no envelope.
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ObservationScope {
@@ -749,13 +693,10 @@ pub struct Observation {
     pub content_hash: String,
 }
 
-// ── Knowledge-Agent Corpus (cloud spec §3.16) ────────────────────────
-//
-// Wraps `POST /knowledge/corpus`, `POST /knowledge/corpus/{id}/prime`,
-// `POST /knowledge/corpus/{id}/query`, and `GET /knowledge/corpora`.
-// Wire format mirrors the cloud Zod schema 1:1; field names are
-// camelCase because the cloud is oRPC + Drizzle which serialises that
-// way.
+// Knowledge-Agent Corpus: wraps `POST /knowledge/corpus`,
+// `POST /knowledge/corpus/{id}/prime`, `POST /knowledge/corpus/{id}/query`,
+// and `GET /knowledge/corpora`. Field names are camelCase to mirror the
+// cloud's oRPC + Drizzle serialization.
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]

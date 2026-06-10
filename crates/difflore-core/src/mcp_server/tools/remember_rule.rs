@@ -151,14 +151,15 @@ pub(crate) async fn tool_remember_rule(
         .execute(&state.db)
         .await
         {
-            eprintln!("[difflore-mcp] remember_rule source_repo update failed: {e}");
+            if crate::env::debug_telemetry() {
+                eprintln!("[difflore-mcp] remember_rule source_repo update failed: {e}");
+            }
         }
     }
 
-    // Re-index the rule store so the very next `search_rules` call
-    // can recall it. Route through the shared project-scoped index refresh
-    // so cloud/SHA1 embedding profiles and repo filtering stay consistent
-    // with CLI recall and MCP search.
+    // Re-index so the next `search_rules` call can recall the rule. Route
+    // through the shared project-scoped refresh so embedding profiles and repo
+    // filtering stay consistent with CLI recall and MCP search.
     if let Ok(index_pool) = state.resolve_index_pool().await {
         if let Err(e) = crate::context::orchestrator::ensure_rules_indexed_with_embedding_timeout(
             &state.db,
@@ -167,7 +168,9 @@ pub(crate) async fn tool_remember_rule(
         )
         .await
         {
-            eprintln!("[difflore-mcp] remember_rule index refresh failed: {e}");
+            if crate::env::debug_telemetry() {
+                eprintln!("[difflore-mcp] remember_rule index refresh failed: {e}");
+            }
         }
     }
 
@@ -177,7 +180,7 @@ pub(crate) async fn tool_remember_rule(
     // doesn't become a silent flood.
     let warn_suffix = if outcome.captures_today >= skills::REMEMBER_WARN_THRESHOLD {
         format!(
-            "\n\n⚠️ {} conversation captures today (cap: {}). \
+            "\n\nWarning: {} conversation captures today (cap: {}). \
              Audit with `difflore status --json`.",
             outcome.captures_today,
             skills::REMEMBER_DAILY_LIMIT,
@@ -193,9 +196,9 @@ pub(crate) async fn tool_remember_rule(
         // bump is `MIN(1.0, current + 0.05)` — when the current value
         // is already near the cap the displayed delta is wrong.
         format!(
-            "Already had a matching rule **{}** (`{}`) — strengthened by +0.05 (now at {:.2} confidence). \
+            "Already had a matching rule **{}** (`{}`) - strengthened for future matches. \
              Inspect local memory with `difflore status --json`.",
-            skill.name, skill.id, outcome.confidence_after,
+            skill.name, skill.id,
         )
     } else {
         let pattern_hint = if skill.tags.iter().any(|t| t.contains('*')) {
@@ -204,11 +207,11 @@ pub(crate) async fn tool_remember_rule(
             " (repo-wide)"
         };
         format!(
-            "Remembered as **{}** (`{}`) at confidence {:.2}{}.\n\n\
+            "Remembered as **{}** (`{}`){}.\n\n\
              The rule is local on this device until your next cloud sync publishes eligible memory with the team. \
              Next time DiffLore reviews a matching file or your agent calls `search_rules` then `get_rules`, this rule will be in scope. \
              Inspect local memory with `difflore status --json`.",
-            skill.name, skill.id, outcome.confidence_after, pattern_hint,
+            skill.name, skill.id, pattern_hint,
         )
     };
 

@@ -11,23 +11,19 @@
 //!
 //! State is persisted at
 //! `<DIFFLORE_HOME>/projects/<project-hash>/session-mine-state.json`
-//! so the watermark survives process exits. Two concurrent hook
-//! processes racing on the same file is benign — we read, increment,
-//! write, and the worst case is a double-fire (handled cheaply on
-//! the worker side via the gate's MERGE verdict).
+//! so the watermark survives process exits. Two concurrent hook processes
+//! racing on the same file is benign: worst case is a double-fire, handled
+//! cheaply on the worker side via the gate's MERGE verdict.
 
 use std::path::{Path, PathBuf};
 
-/// How many turns may pass between mid-session fires before the
-/// turn-watermark trigger kicks in. Borrowed from hivemind's
-/// `skillify-worker.ts` constant; tuned high enough that idle
-/// sessions don't churn the gate, low enough that a long debug
-/// session doesn't go un-mined.
+/// How many turns may pass between mid-session fires before the turn-watermark
+/// trigger kicks in. High enough that idle sessions don't churn the gate, low
+/// enough that a long debug session doesn't go un-mined.
 pub const TURNS_PER_FIRE: i64 = 20;
 
-/// On-disk state file shape. Kept as plain JSON so the user can
-/// `cat` it during debugging and `rm` it without breaking the
-/// invariants (next fire just starts a new file).
+/// On-disk state file shape. Plain JSON so the user can `cat` or `rm` it during
+/// debugging without breaking invariants (next fire just starts a new file).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SessionMineState {
     /// Unix-ms of the last successful fire. `0` for "never".
@@ -47,28 +43,19 @@ pub struct SessionMineState {
 
 /// Decide whether the session-mine worker should fire right now.
 ///
-/// `state_path` is the JSON state file; the function reads it,
-/// applies the bump rule, persists the new state, and returns the
-/// decision in one shot so callers can't accidentally fire without
-/// updating the watermark.
+/// Reads `state_path`, applies the bump rule, persists the new state, and
+/// returns the decision in one shot so callers can't fire without updating
+/// the watermark. `turn_count` is the caller's current `turns_since_fire`;
+/// when it is `>= TURNS_PER_FIRE` the trigger fires and resets the counter.
 ///
-/// `turn_count` is the *current* `turns_since_fire` value the caller
-/// has on hand (the hook bumps this on every assistant turn). When
-/// the count is `>= TURNS_PER_FIRE`, the trigger fires and the
-/// counter is reset to zero before being written back.
-///
-/// Use [`should_trigger_now_with_force`] when the caller knows the
-/// current event is a session-end signal (the hook dispatcher does
-/// this on `SessionEnd` / `Stop` so an expiring session still gets
-/// one last mine attempt regardless of the watermark).
+/// Use [`should_trigger_now_with_force`] for session-end signals.
 pub fn should_trigger_now(state_path: &Path, turn_count: i64) -> bool {
     should_trigger_now_with_force(state_path, turn_count, false)
 }
 
-/// Generalised entry point used by both the per-turn watermark
-/// callers (which always pass `force_session_end = false`) and the
-/// hook dispatcher's SessionEnd / Stop branch (which passes `true`
-/// to skip the watermark).
+/// Generalised entry point. Per-turn callers pass `force_session_end = false`;
+/// the hook dispatcher's SessionEnd / Stop branch passes `true` to skip the
+/// watermark.
 pub fn should_trigger_now_with_force(
     state_path: &Path,
     turn_count: i64,
@@ -86,11 +73,10 @@ pub fn should_trigger_now_with_force(
     fire
 }
 
-/// Compute the canonical state-file path for the current project.
-/// Mirrors `difflore_core::infra::db::project_index_dir(...)` so the
-/// per-project namespace is shared. Errors propagate so callers can
-/// drop the trigger silently when the data home isn't resolvable
-/// (e.g. test sandbox with no DIFFLORE_HOME).
+/// Canonical state-file path for the current project, sharing the per-project
+/// namespace via `difflore_core::infra::db::project_index_dir`. Errors
+/// propagate so callers can drop the trigger silently when the data home isn't
+/// resolvable (e.g. a test sandbox with no DIFFLORE_HOME).
 pub fn state_file_for_cwd() -> Result<PathBuf, String> {
     let root = difflore_core::infra::db::current_project_root();
     let hash = difflore_core::infra::db::project_hash_from_root(&root);
@@ -133,10 +119,8 @@ mod tests {
 
     #[test]
     fn first_call_under_threshold_does_not_fire() {
-        // Goal: a fresh session that has only done a handful of turns
-        // should not pay LLM gate cost. The trigger must read the
-        // missing-file case as "never fired", bump the counter, and
-        // hold off.
+        // A fresh session under the threshold must not pay LLM gate cost: read
+        // the missing file as "never fired", bump the counter, and hold off.
         let (_dir, path) = tmp_state_path();
         assert!(!should_trigger_now(&path, 5));
         let state = read_state(&path).expect("state must persist");
@@ -146,10 +130,8 @@ mod tests {
 
     #[test]
     fn reaching_turn_threshold_fires_and_resets() {
-        // Crossing TURNS_PER_FIRE must (a) return true and (b) reset
-        // the persisted counter to zero so the very next call doesn't
-        // re-fire immediately. Without the reset, every subsequent
-        // hook would pay gate cost.
+        // Crossing TURNS_PER_FIRE must fire and reset the counter to zero, or
+        // every subsequent hook would re-fire and pay gate cost.
         let (_dir, path) = tmp_state_path();
         assert!(should_trigger_now(&path, TURNS_PER_FIRE));
         let state = read_state(&path).expect("state must persist");
@@ -159,12 +141,8 @@ mod tests {
 
     #[test]
     fn force_session_end_fires_regardless_of_turn_count() {
-        // The hook dispatcher passes force_session_end=true on
-        // SessionEnd / Stop so the last turns of an expiring
-        // conversation still get mined even if the watermark hasn't
-        // reached the threshold yet. Using an explicit parameter
-        // (rather than a global env var) keeps the contract testable
-        // without any process-wide state mutation.
+        // force_session_end=true (set on SessionEnd / Stop) must mine the last
+        // turns of an expiring conversation even below the watermark.
         let (_dir, path) = tmp_state_path();
         let fired = should_trigger_now_with_force(&path, 1, true);
         assert!(fired, "session-end must short-circuit the turn watermark");
@@ -174,10 +152,8 @@ mod tests {
 
     #[test]
     fn malformed_state_file_is_treated_as_fresh() {
-        // If the user `rm`'d or hand-edited the file into garbage, the
-        // trigger must not panic — it must fall back to the default
-        // state. Otherwise a single bad file would brick session-mine
-        // forever for that project.
+        // A garbage state file must fall back to default state, not panic;
+        // otherwise one bad file would brick session-mine for that project.
         let (_dir, path) = tmp_state_path();
         std::fs::write(&path, "{ not json").unwrap();
         assert!(!should_trigger_now(&path, 1));
@@ -185,11 +161,9 @@ mod tests {
 
     #[test]
     fn turn_count_below_persisted_value_does_not_decrement() {
-        // The watermark tracks the highest turn count the hook has
-        // reported so far. If the hook restarts and forgets its
-        // in-memory counter, a fresh `turn_count = 1` must not
-        // overwrite a persisted `5` — otherwise we'd silently lose
-        // accumulated turns. The trigger should keep the larger value.
+        // The watermark tracks the highest reported turn count. If the hook
+        // restarts and forgets its counter, a fresh `turn_count = 1` must not
+        // overwrite a persisted `5` and lose accumulated turns.
         let (_dir, path) = tmp_state_path();
         let _ = should_trigger_now(&path, 5);
         let _ = should_trigger_now(&path, 1);

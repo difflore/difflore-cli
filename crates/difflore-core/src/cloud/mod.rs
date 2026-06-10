@@ -4,8 +4,7 @@ pub mod client;
 pub mod endpoints;
 pub mod observations;
 pub mod outbox;
-/// Shared, behaviour-identical primitives for the two outbox queues
-/// (`outbox` and `observations`). Crate-internal only.
+/// Shared primitives for the two outbox queues (`outbox` and `observations`).
 pub(crate) mod outbox_core;
 pub mod session_mined;
 pub mod sync;

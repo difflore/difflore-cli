@@ -114,12 +114,17 @@ fn parse_engines_column(raw: &str) -> Vec<String> {
                 .filter(|engine| is_known_engine(engine))
                 .collect();
             if fallback.is_empty() {
-                eprintln!("[difflore] malformed skills.engines JSON ({e}); falling back to claude");
+                eprintln!("warning: DiffLore could not read skills.engines; using claude.");
+                if crate::env::debug_telemetry() {
+                    eprintln!("[difflore] malformed skills.engines JSON: {e}");
+                }
                 vec!["claude".to_owned()]
             } else {
-                eprintln!(
-                    "[difflore] malformed skills.engines JSON ({e}); parsed legacy list syntax"
-                );
+                if crate::env::debug_telemetry() {
+                    eprintln!(
+                        "[difflore] malformed skills.engines JSON ({e}); parsed legacy list syntax"
+                    );
+                }
                 fallback
             }
         }

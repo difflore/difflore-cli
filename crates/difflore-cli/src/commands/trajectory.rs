@@ -1,26 +1,17 @@
 //! `difflore trajectory <review-id>` — local replay of a recorded review
 //! trajectory.
 //!
-//! The cloud already persists a rich decision trail for every review run
-//! (`difflore-cloud/src/orpc/-trajectory-types.ts` ↔ the Rust enum in
-//! `difflore_core::review_trajectory`): chunks retrieved → rules applied →
-//! past verdicts recalled → llm_call (per perspective) → self_check →
-//! final_decision.
+//! Fetches one review's trajectory via [`CloudClient::get_trajectory`] (the
+//! cloud's `getTrajectory` oRPC GET, mirroring the Rust enum in
+//! `difflore_core::review_trajectory`) and renders it as a readable step
+//! ladder so every emitted issue traces back to its memory evidence: chunks
+//! retrieved, rules applied (with `← learned from <repo>` provenance from the
+//! local `skills` table), past verdicts recalled, each `llm_call`, the
+//! self-check, and the final issue ids.
 //!
-//! This command fetches one review's trajectory through the existing cloud
-//! client ([`CloudClient::get_trajectory`], which wraps the `getTrajectory`
-//! oRPC GET) and renders it as a readable **step ladder** so every emitted
-//! issue is traceable back to its memory evidence: which chunks were
-//! retrieved, which rules fired (with `← learned from <repo>` provenance
-//! pulled from the local `skills` table), which past verdicts were recalled,
-//! each `llm_call`'s perspective + token usage, the self-check keep/drop +
-//! average confidence, and the final issue ids.
-//!
-//! The renderer ([`render_trajectory`]) is a **pure function**
-//! (`steps + provenance → Vec<String>`) with no I/O and no color, so it is
-//! unit-tested against fixtures. The handler does the fetch + provenance
-//! lookup + printing; `--json` bypasses the renderer and emits the raw
-//! trajectory document.
+//! The renderer ([`render_trajectory`]) is a pure function with no I/O and no
+//! color so it is unit-tested against fixtures. `--json` bypasses it and emits
+//! the raw trajectory document.
 
 use std::collections::HashMap;
 

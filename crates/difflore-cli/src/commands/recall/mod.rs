@@ -41,12 +41,10 @@ use retrieval::{
 /// `embeddings status` / `status` surfaces read, so all three agree on whether
 /// recall ranking is semantic or keyword-only.
 struct RecallSemanticState {
-    /// True when a real embedding provider (cloud-managed or BYOK) is active, so
-    /// recall ranking uses semantic vectors. False for the local SHA1 lexical
-    /// hash — the "no provider configured" baseline.
+    /// True when a real embedding provider (cloud-managed or BYOK) is active.
+    /// False for the local SHA1 lexical hash (no provider configured).
     semantic: bool,
-    /// Stable snake_case tag: `cloud` | `byok` | `keyword`. Lets a `--json`
-    /// consumer branch without parsing prose.
+    /// Stable snake_case tag for `--json`: `cloud` | `byok` | `keyword`.
     mode: &'static str,
 }
 
@@ -68,16 +66,15 @@ impl RecallSemanticState {
         }
     }
 
-    /// Honest one-line note for the human surfaces when ranking is keyword-only.
-    /// `None` when a semantic provider is active (no note needed — recall is
-    /// already semantic). Mirrors `difflore embeddings status` / `difflore
-    /// status` wording so the three surfaces read consistently.
+    /// One-line note for human surfaces when ranking is keyword-only; `None`
+    /// when a semantic provider is active. Mirrors the `embeddings status` /
+    /// `status` wording so the surfaces read consistently.
     const fn keyword_only_note(&self) -> Option<&'static str> {
         if self.semantic {
             None
         } else {
             Some(
-                "semantic ranking off; these matched by keyword (enable with `difflore embeddings setup` or `difflore cloud login`)",
+                "semantic matching off; these matched by keyword (enable with `difflore embeddings setup` or `difflore cloud login`)",
             )
         }
     }
@@ -221,7 +218,7 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
                 recall_diagnostics_json(diagnostics),
             );
         }
-        // Goal G2: include cross-repo starter suggestions for the cold-start
+        // Include cross-repo starter suggestions for the cold-start
         // (no scoped memory) case so proof pipelines can see the fallback fired.
         if local.matches.is_empty()
             && local.rules_indexed == 0
@@ -255,7 +252,7 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
         {
             println!("  {} {}", style::amber(sym::WARN), style::pewter(note));
         }
-        // Goal G2 cold-start fallback: no scoped memory here → offer transferable,
+        // Cold-start fallback: no scoped memory here → offer transferable,
         // file-pattern-matched rules from other repos, clearly labeled (a separate
         // "from other repos" section, never presented as this repo's own memory).
         if local.matches.is_empty()
@@ -270,12 +267,9 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
     }
 
     println!();
-    // Affirmation bridge. The whole point of `recall` is to verify what
-    // an agent will see; closing without saying "and now your wired
-    // agents really will receive these" leaves the buyer-evidence loop
-    // open. Only fires on the success path with at least one match —
-    // the empty branch already routes to import-reviews and adding an
-    // affirmation there would be misleading.
+    // Affirmation bridge confirming wired agents will receive these rules.
+    // Only fires when there is at least one match; the empty branch already
+    // routes to import-reviews.
     if !local.matches.is_empty() {
         let snapshot = mcp_install::collect_status_snapshot();
         let installed: Vec<&'static str> = snapshot
@@ -314,7 +308,7 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
         println!(
             "next: {}  {}",
             style::cmd("difflore status"),
-            style::pewter("see recall, MCP serve, and accepted-proof readiness"),
+            style::pewter("see matched memories, agent readiness, and accepted edits"),
         );
     }
 }
@@ -501,9 +495,9 @@ async fn handle_recall_copy(
             .source_repo
             .as_deref()
             .filter(|repo| !repo.trim().is_empty())
-            .unwrap_or("review evidence");
+            .unwrap_or("review memory");
         println!(
-            "- **{}** \u{2190} learned from `{}`",
+            "- **{}** <- learned from `{}`",
             truncate_one_line(&hit.title, 110),
             source,
         );
@@ -517,9 +511,9 @@ async fn handle_recall_copy(
         );
         for verdict in &cloud.verdicts {
             let source = source_label(verdict, cloud.repo_full_name.as_deref())
-                .unwrap_or_else(|| "review evidence".to_owned());
+                .unwrap_or_else(|| "review memory".to_owned());
             println!(
-                "- **{}** \u{2190} learned from `{}`",
+                "- **{}** <- learned from `{}`",
                 truncate_one_line(&verdict.issue_text, 110),
                 source,
             );
@@ -559,11 +553,9 @@ async fn recall_local_and_cloud(
             && local.rules_indexed > 0
             && strict_match_count_for_file(&local, Some(primary_file)) == 0
         {
-            // Use the real `git diff --name-only` list passed in from
-            // `--diff` resolution; the old code parsed `intent` for a
-            // literal "changes in ..." prefix that
-            // `build_review_intent_text` never emits, so this fallback
-            // was effectively dead for typical `recall --diff` runs.
+            // Drive the fallback off the real `git diff --name-only` list,
+            // since `build_review_intent_text` never emits a parseable
+            // "changes in ..." prefix.
             for candidate_file in candidate_fallback_files(diff_files, primary_file) {
                 let mut candidate =
                     recall_local_rules(ctx, intent, Some(candidate_file), top_k).await;
@@ -589,14 +581,9 @@ fn strict_match_count_for_file(local: &LocalRecallResult, file: Option<&str>) ->
         .count()
 }
 
-/// Synthetic parser kept only as a unit-test fixture. The candidate-file
-/// fallback in `recall_local_and_cloud` used to call this against the
-/// resolved intent, but `build_review_intent_text` never emits a
-/// `"changes in ..."` prefix, so the fallback was effectively dead.
-/// The new code path uses `git diff --name-only` directly via the
-/// `diff_files` argument; this helper survives so the existing test
-/// (`synthetic_diff_files_extracts_ordered_files_from_diff_intent`)
-/// keeps documenting that synthetic shape.
+/// Synthetic parser kept only as a unit-test fixture documenting the
+/// `"changes in ..."` intent shape. Production uses `git diff --name-only`
+/// via the `diff_files` argument instead.
 #[cfg(test)]
 fn synthetic_diff_files(intent: &str) -> Vec<String> {
     let Some(rest) = intent.strip_prefix("changes in ") else {
@@ -643,11 +630,10 @@ pub(super) struct LocalRuleHit {
     pub(super) file_patterns: Vec<String>,
     pub(super) source_repo: Option<String>,
     /// Full rule body and structured examples, hydrated from the DB after
-    /// retrieval (see `hydrate_full_rule_bodies`). `None` until hydration runs
-    /// — the cross-repo-starter path leaves it unset, so its `--json` keeps the
-    /// chunk-only shape it had before. When present this is what makes
-    /// `recall --json` surface the actual team memory (fix/bad/good code) rather
-    /// than a headline with NULL bodies.
+    /// retrieval (see `hydrate_full_rule_bodies`). `None` until hydration runs;
+    /// the cross-repo-starter path leaves it unset, keeping the chunk-only
+    /// `--json` shape. When present, `recall --json` surfaces the actual
+    /// fix/bad/good code rather than a headline with NULL bodies.
     pub(super) body: Option<RenderedRuleBody>,
 }
 
@@ -924,11 +910,8 @@ fn is_reviewable_config_file(file: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Helpers exercised only by these tests; the parent module's production
-    // imports stay minimal, so pull the test-only items from the `retrieval`
-    // submodule explicitly (matching the explicit-import convention in
-    // `commands/fix`). Items already imported at module scope reach here via the
-    // `use super::*;` above and are not repeated.
+    // Test-only helpers pulled from the `retrieval` submodule explicitly so the
+    // parent module's production imports stay minimal.
     use super::retrieval::{
         ExampleSide, build_local_hits, classify_example_heading, content_only_file_scope_fallback,
         divergent_example_lines, extract_rule_examples, filter_starter_by_relevance,
@@ -951,7 +934,7 @@ mod tests {
         assert_eq!(state.mode, "keyword");
         let note = state.keyword_only_note().expect("keyword path has a note");
         assert!(
-            note.contains("semantic ranking off"),
+            note.contains("semantic matching off"),
             "note must say semantic is off: {note}"
         );
         // The note must name the enablement paths so it is actionable and reads

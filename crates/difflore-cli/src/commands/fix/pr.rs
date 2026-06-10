@@ -105,8 +105,7 @@ pub(super) async fn prepare_pr_fix(
     let preview_command_timeout = preview_command_timeout(options.preview);
     let mut meta = fetch_pr_metadata(&repo_root, &spec, preview_command_timeout)?;
     if let Some(base) = options.base_override {
-        // Reject option-looking base overrides before git can parse them as
-        // flags on the --no-checkout path.
+        // Reject option-looking base overrides before git parses them as flags.
         difflore_core::infra::git::reject_option_like_revision(base, "PR base override")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         meta.base_ref = base.to_owned();
@@ -294,8 +293,8 @@ fn fetch_pr_metadata(
         format!("{head_url}.git")
     };
 
-    // GitHub-supplied refs/OIDs flow into git as revisions. Reject values
-    // git could misparse as options before any downstream call sees them.
+    // GitHub-supplied refs/OIDs flow into git as revisions; reject values git
+    // could misparse as options before any downstream call sees them.
     for (value, what) in [
         (&view.base_ref_name, "PR base ref"),
         (&view.base_ref_oid, "PR base SHA"),

@@ -35,9 +35,8 @@ impl CommandContext {
         }
     }
 
-    /// Lazily construct the cloud client on first access. `CloudClient`
-    /// itself is always constructible; a missing/unconfigured token
-    /// surfaces as `client.token.is_none()`.
+    /// Lazily construct the cloud client on first access. Construction always
+    /// succeeds; a missing/unconfigured token surfaces as `client.token.is_none()`.
     pub async fn cloud(&self) -> &CloudClient {
         self.cloud_cell
             .get_or_init(|| async { CloudClient::create().await })
@@ -56,9 +55,8 @@ mod tests {
     use std::sync::OnceLock;
     use tempfile::TempDir;
 
-    /// Mirror `commands::rules::mod::ensure_test_home`: pin `DIFFLORE_HOME`
-    /// to a single tempdir for the whole test process so all `init_db`
-    /// callers share the same on-disk state without racing on env writes.
+    /// Pin `DIFFLORE_HOME` to one tempdir for the whole test process so all
+    /// `init_db` callers share on-disk state without racing on env writes.
     fn ensure_test_home() {
         static HOME: OnceLock<TempDir> = OnceLock::new();
         HOME.get_or_init(|| {

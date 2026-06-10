@@ -6,8 +6,8 @@ use crate::style;
 
 use super::Cli;
 
-// Built in code (not via `#[derive]`) so the help / version templates
-// can use the truecolor wordmark, computed lazily at first use.
+// Built in code rather than via `#[derive]` so the help/version templates can
+// use the truecolor wordmark, computed lazily at first use.
 pub(crate) fn build_cli() -> clap::Command {
     let cmd = Cli::command();
     cmd.override_help(help_template()).version(version_string())
@@ -16,16 +16,15 @@ pub(crate) fn build_cli() -> clap::Command {
 static HELP_TEMPLATE: OnceLock<String> = OnceLock::new();
 static VERSION_STRING: OnceLock<String> = OnceLock::new();
 
-// Clap prefixes the command name (`difflore`) onto whatever we return
-// here, so we just supply the bare version.
+// Clap prefixes the command name onto this, so supply the bare version.
 fn version_string() -> &'static str {
     VERSION_STRING
         .get_or_init(|| env!("CARGO_PKG_VERSION").to_owned())
         .as_str()
 }
 
-// Hand-rolled help template (clap `override_help`) keeps the top-level
-// surface curated while still honoring `NO_COLOR`.
+// Hand-rolled help template (clap `override_help`) keeps the top-level surface
+// curated while still honoring `NO_COLOR`.
 fn help_template() -> &'static str {
     HELP_TEMPLATE
         .get_or_init(|| {
@@ -33,7 +32,7 @@ fn help_template() -> &'static str {
             let use_ = style::pewter("USE").to_string();
             let support = style::pewter("SUPPORT").to_string();
             let more = format!(
-                "{} Run any command with --help for details · docs.difflore.dev",
+                "{} Run any command with --help for details | docs.difflore.dev",
                 style::emerald(style::sym::TIP),
             );
             format!(

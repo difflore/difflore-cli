@@ -69,7 +69,7 @@ async fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             Err(e) if mode == ForwardMode::Always => {
-                eprintln!("[difflore-hook] forwarder required but unavailable: {e}");
+                eprintln!("DiffLore hook could not start its background helper: {e}");
                 return ExitCode::from(2);
             }
             Err(_) => {}
@@ -181,7 +181,9 @@ async fn fallback_to_runtime(client: &str, raw: &str) {
     match difflore_cli::hook_runtime::output_for_raw(client, raw, debug).await {
         Ok(output) => println!("{output}"),
         Err(e) => {
-            eprintln!("[difflore-hook] runtime fallback failed: {e:#}");
+            if debug {
+                eprintln!("[difflore-hook] runtime fallback failed: {e:#}");
+            }
             println!("{{\"continue\":true}}");
         }
     }

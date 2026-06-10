@@ -121,7 +121,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &OnboardingState, theme:
         let n = u8::try_from(i + 1).unwrap_or(5);
         match n.cmp(&cur) {
             std::cmp::Ordering::Less => {
-                // Done — strikethrough pewter, leading ✓.
                 rail.push(Line::from(vec![
                     Span::styled(" ✓ ", accent),
                     Span::styled(
@@ -131,14 +130,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &OnboardingState, theme:
                 ]));
             }
             std::cmp::Ordering::Equal => {
-                // Current — emerald, leading ▶.
                 rail.push(Line::from(vec![
                     Span::styled(" ▶ ", accent.add_modifier(Modifier::BOLD)),
                     Span::styled((*label).to_owned(), strong),
                 ]));
             }
             std::cmp::Ordering::Greater => {
-                // Pending — subtle dot.
                 rail.push(Line::from(vec![
                     Span::styled(" · ", muted),
                     Span::styled((*label).to_owned(), muted),

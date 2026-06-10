@@ -22,7 +22,7 @@ get_rules(ids=["conv-a1f9c"], file="src/worker.rs")
 ```
 
 Skip `rule_timeline` when the top hit is clearly relevant. Use it when the user
-asks why a rule exists, when confidence is low, or when a rule may be stale.
+asks why a rule exists, when the match is uncertain, or when a rule may be stale.
 
 ## Avoid
 

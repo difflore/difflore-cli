@@ -40,9 +40,8 @@ type AnnCacheKey = (String, usize);
 type SharedAnnIndex = Arc<Mutex<AnnIndex>>;
 type AnnCache = std::sync::Mutex<HashMap<AnnCacheKey, SharedAnnIndex>>;
 
-/// On-disk basename. `hnsw_rs` writes two files: `hnsw.hnsw.graph` and
-/// `hnsw.hnsw.data`. The sidecar meta lives next to them as
-/// `hnsw.meta.json`.
+/// On-disk basename. `hnsw_rs` writes `hnsw.hnsw.graph` and
+/// `hnsw.hnsw.data`; the sidecar meta lives next to them as `hnsw.meta.json`.
 const HNSW_BASENAME: &str = "hnsw";
 const META_FILENAME: &str = "hnsw.meta.json";
 
@@ -50,11 +49,10 @@ const META_FILENAME: &str = "hnsw.meta.json";
 /// an index with a different version is treated as stale and rebuilt.
 const META_VERSION: u32 = 1;
 
-/// HNSW construction parameters. These are "reasonable defaults" from
-/// the `hnsw_rs` docs / the Malkov+Yashunin paper; we don't expose them
-/// to callers because retrieval quality is more sensitive to our own
-/// RRF weighting than to these knobs in the size range (≤ 100K chunks)
-/// we target.
+/// HNSW construction parameters: defaults from the `hnsw_rs` docs /
+/// Malkov+Yashunin paper. Not exposed to callers — retrieval quality is
+/// dominated by our RRF weighting rather than these knobs at our scale
+/// (≤ 100K chunks).
 const MAX_NB_CONNECTION: usize = 16;
 const EF_CONSTRUCTION: usize = 200;
 const MAX_LAYER: usize = 16;
@@ -62,32 +60,26 @@ const DEFAULT_EF_SEARCH: usize = 64;
 const MAX_SEARCH_TOP_K: usize = 50;
 const MAX_RAW_SEARCH_CANDIDATES: usize = 150;
 
-/// Meta file serialised to `hnsw.meta.json`. A schema mismatch (version
-/// or dim) causes the reload path to drop the on-disk index and return
-/// an empty in-memory one, which the retrieval path then treats as a
-/// fallback cue.
+/// Sidecar meta for the on-disk index. A version or dim mismatch causes
+/// the reload path to drop the index and return an empty one, which
+/// retrieval treats as a fallback cue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AnnMeta {
     version: u32,
     dim: usize,
-    /// Number of elements inserted (including tombstoned ones that are
-    /// hidden from search but still live in the graph).
+    /// Elements inserted, including tombstoned ones still live in the graph.
     size: u32,
-    /// ISO-8601 timestamp of the most recent `save()` call.
     built_at: String,
-    /// SHA-1 of the (id, content, embedding dim) signature from the
-    /// `rule_chunks` table at build time. Included so higher layers can
-    /// detect a divergence between the graph and the source DB. Not
-    /// currently consulted by retrieval (which always trusts the graph
-    /// and falls back on empty results).
+    /// SHA-1 of the (id, content, embedding dim) signature at build time,
+    /// so higher layers can detect graph/DB divergence. Not consulted by
+    /// retrieval, which always trusts the graph and falls back on empty.
     schema_hash: String,
-    /// Ordered list of chunk ids by internal HNSW point id. Required
-    /// because `hnsw_rs`'s `DataId` is a `usize` but our chunks are keyed
-    /// on stable string ids.
+    /// Chunk ids ordered by internal HNSW point id. Needed because
+    /// `hnsw_rs`'s `DataId` is a `usize` but our chunks use string ids.
     id_map: Vec<String>,
-    /// Chunk ids that were overwritten after insertion and so should be
-    /// filtered out of search results. Allows `upsert()` to be cheap
-    /// (no graph edit) at the cost of a small `HashSet` lookup per hit.
+    /// Chunk ids overwritten after insertion; filtered out of search
+    /// results. Keeps `upsert()` cheap (no graph edit) at the cost of a
+    /// `HashSet` lookup per hit.
     tombstones: Vec<String>,
 }
 
@@ -100,14 +92,12 @@ pub struct AnnIndex {
     /// `chunk_id` -> most recent internal `DataId` (later one wins; older
     /// ids land in `tombstones`)
     reverse: HashMap<String, usize>,
-    /// Chunk ids whose embeddings were superseded by an `upsert` and so
-    /// should not appear in search output.
+    /// Chunk ids superseded by an `upsert`; excluded from search output.
     tombstones: HashSet<String>,
     dim: usize,
     dirty: bool,
     project_hash: String,
-    /// Cached schema hash from the last successful load/build, carried
-    /// back into `save()` without recomputing. Pure bookkeeping.
+    /// Schema hash from the last load/build, carried back into `save()`.
     schema_hash: String,
 }
 
@@ -122,13 +112,12 @@ impl AnnIndex {
         let graph_path = dir.join(format!("{HNSW_BASENAME}.hnsw.graph"));
         let data_path = dir.join(format!("{HNSW_BASENAME}.hnsw.data"));
 
-        // Short-circuit: if nothing on disk, return an empty index.
         if !meta_path.exists() || !graph_path.exists() || !data_path.exists() {
             return Ok(Self::empty(project_hash.to_owned(), dim));
         }
 
-        // Try to parse the meta. A corrupt / missing file falls through
-        // to an empty index rather than failing retrieval.
+        // A corrupt / missing meta falls through to an empty index rather
+        // than failing retrieval.
         let meta: AnnMeta = match std::fs::read(&meta_path) {
             Ok(bytes) => match serde_json::from_slice(&bytes) {
                 Ok(m) => m,
@@ -138,19 +127,16 @@ impl AnnIndex {
         };
 
         // Version or dim drift => wipe and start fresh. Dim mismatch is
-        // the safety net for the embedder-swap case (user flips from
-        // SHA1 fallback to real 1536-dim provider mid-flight).
+        // the safety net for an embedder swap (e.g. SHA1 fallback to a
+        // real 1536-dim provider mid-flight).
         if meta.version != META_VERSION || meta.dim != dim {
             return Ok(Self::empty(project_hash.to_owned(), dim));
         }
 
-        // hnsw_rs dumps into two files named by basename; reload via
-        // HnswIo. The returned `Hnsw<'b, T, D>` borrows from the reloader
-        // (lifetime `'a: 'b`) even when we're not using mmap, so we
-        // `Box::leak` the reloader to get a `'static` handle. Cost is a
-        // small one-time leak per project per process — acceptable
-        // because load_or_empty runs at most once per `ann_cache()`
-        // entry across the whole process.
+        // The reloaded `Hnsw` borrows from the `HnswIo` reloader even
+        // without mmap, so `Box::leak` the reloader for a `'static`
+        // handle. The one-time leak is bounded: load_or_empty runs at
+        // most once per `ann_cache()` entry per process.
         let reloader: &'static mut HnswIo = Box::leak(Box::new(HnswIo::new(&dir, HNSW_BASENAME)));
         let Ok(hnsw) = reloader.load_hnsw::<f32, DistCosine>() else {
             return Ok(Self::empty(project_hash.to_owned(), dim));
@@ -158,8 +144,8 @@ impl AnnIndex {
 
         let mut reverse: HashMap<String, usize> = HashMap::with_capacity(meta.id_map.len());
         for (idx, id) in meta.id_map.iter().enumerate() {
-            // Later entries with the same chunk id overwrite earlier
-            // ones in reverse — matches the tombstone semantics.
+            // Later entries for the same chunk id win — matches the
+            // tombstone semantics.
             reverse.insert(id.clone(), idx);
         }
         let tombstones: HashSet<String> = meta.tombstones.iter().cloned().collect();
@@ -184,9 +170,8 @@ impl AnnIndex {
         project_hash: &str,
         chunks: &[(String, Vec<f32>)],
     ) -> Result<Self, CoreError> {
-        // Dim is inferred from the first non-empty embedding — a corpus
-        // with only empty vectors yields an empty index, which is
-        // semantically the same as "fall back to linear".
+        // Dim is inferred from the first non-empty embedding; a corpus of
+        // only empty vectors yields an empty index (== fall back to linear).
         let dim = chunks
             .iter()
             .find(|(_, v)| !v.is_empty())
@@ -208,8 +193,7 @@ impl AnnIndex {
         let mut reverse: HashMap<String, usize> = HashMap::with_capacity(chunks.len());
         for (chunk_id, emb) in chunks {
             if emb.len() != dim {
-                // Heterogeneous dims within the same project — skip
-                // rather than corrupt the graph.
+                // Skip heterogeneous dims rather than corrupt the graph.
                 continue;
             }
             let internal_id = id_map.len();
@@ -232,8 +216,6 @@ impl AnnIndex {
         })
     }
 
-    /// Cheap construction helper — used as the fallback whenever
-    /// `load_or_empty` can't find a valid on-disk index.
     fn empty(project_hash: String, dim: usize) -> Self {
         Self {
             inner: None,
@@ -278,22 +260,11 @@ impl AnnIndex {
         if embedding.len() != self.dim {
             return;
         }
-        // Previous id for this chunk (if any) becomes a tombstone.
+        // The chunk's previous id (if any) becomes a tombstone: it marks
+        // the chunk as having stale slots. `search()` keeps only the hit
+        // whose internal id matches the latest `reverse` entry.
         if let Some(_prev) = self.reverse.get(chunk_id) {
             self.tombstones.insert(chunk_id.to_owned());
-            // A tombstoned id_map entry still points to the old string,
-            // but search filters by the chunk_id returned; since we map
-            // internal->chunk_id, we need the OLD internal slot to map
-            // to a distinct "dead" chunk_id so it can't collide with
-            // the new insertion. Simplest approach: keep the old slot
-            // pointing at the same chunk_id and rely on tombstones to
-            // hide it. But then the NEW insertion would also inherit
-            // the tombstone — so we clear it after tagging.
-            //
-            // Concretely: treat `tombstones` as "previously seen this
-            // chunk_id" and on every hit, compare the hit's internal
-            // id against the most recent `reverse` entry — if it
-            // doesn't match, drop the hit. See `search()` below.
         }
         #[allow(clippy::expect_used)]
         // reason: invariant — `self.inner` was just set on the empty branch above.
@@ -305,10 +276,9 @@ impl AnnIndex {
         self.dirty = true;
     }
 
-    /// Mark a chunk as removed. The underlying HNSW entry is NOT
-    /// physically deleted (`hnsw_rs` has no public `remove` API); instead
-    /// we tombstone it so search skips it. Full reclamation happens on
-    /// the next `build_from_chunks`.
+    /// Mark a chunk as removed. The HNSW entry is not physically deleted
+    /// (`hnsw_rs` has no public `remove`); it's tombstoned so search skips
+    /// it. Reclaimed on the next `build_from_chunks`.
     pub fn remove(&mut self, chunk_id: &str) {
         if self.reverse.remove(chunk_id).is_some() {
             self.tombstones.insert(chunk_id.to_owned());
@@ -332,9 +302,8 @@ impl AnnIndex {
         let Some(hnsw) = self.inner.as_ref() else {
             return Vec::new();
         };
-        // Over-fetch so tombstones + duplicate-id filtering still leaves
-        // us with ≈ top_k survivors. 3x is enough headroom for realistic
-        // tombstone ratios (< 30% of the graph).
+        // Over-fetch so tombstone + duplicate-id filtering still leaves
+        // ≈ top_k survivors. 3x covers realistic tombstone ratios (< 30%).
         let raw_k = top_k.saturating_mul(3).min(MAX_RAW_SEARCH_CANDIDATES);
         let ef = DEFAULT_EF_SEARCH.max(top_k.saturating_mul(2));
         let raw = hnsw.search(query, raw_k, ef);
@@ -345,8 +314,8 @@ impl AnnIndex {
             let Some(chunk_id) = self.id_map.get(internal_id) else {
                 continue;
             };
-            // Dedup — if a chunk_id has a tombstone AND a fresh copy,
-            // only the freshest one (latest `reverse` mapping) wins.
+            // If a chunk_id has both a tombstone and a fresh copy, only
+            // the latest `reverse` mapping wins.
             if self.tombstones.contains(chunk_id) {
                 if let Some(&current) = self.reverse.get(chunk_id) {
                     if current != internal_id {
@@ -369,13 +338,11 @@ impl AnnIndex {
     }
 
     /// Persist the index + sidecar to `~/.difflore/projects/{hash}/`.
-    /// A best-effort operation — directory-create and graph-dump errors
-    /// bubble up so callers can log them, but the typical caller
-    /// (`upsert_rule_chunks`) swallows the error. Sets `dirty = false`
-    /// on success.
+    /// Directory-create and graph-dump errors bubble up; sets
+    /// `dirty = false` on success.
     pub async fn save(&mut self) -> Result<(), CoreError> {
         let Some(hnsw) = self.inner.as_ref() else {
-            // Empty index => nothing to persist. Still write a meta
+            // Empty index => nothing to persist, but still write a meta
             // file so `load_or_empty` sees a consistent state.
             let dir = crate::db::project_index_dir(&self.project_hash);
             std::fs::create_dir_all(&dir)?;
@@ -407,36 +374,30 @@ impl AnnIndex {
         Ok(())
     }
 
-    /// Has the in-memory state diverged from disk? Callers can gate
-    /// expensive `save()` calls on this.
+    /// Has the in-memory state diverged from disk? Used to gate `save()`.
     pub const fn is_dirty(&self) -> bool {
         self.dirty
     }
 
-    /// Number of live (non-tombstoned) chunks in the index. Used by the
-    /// trajectory emitter so the cloud dashboard can chart index growth.
+    /// Number of live (non-tombstoned) chunks in the index.
     pub fn live_size(&self) -> u32 {
         u32::try_from(self.reverse.len()).unwrap_or(u32::MAX)
     }
 
-    /// Total chunk count including tombstones. Mostly for tests /
-    /// diagnostics.
+    /// Total chunk count including tombstones.
     pub fn total_size(&self) -> u32 {
         u32::try_from(self.id_map.len()).unwrap_or(u32::MAX)
     }
 
-    /// Dimensionality of the stored vectors. Zero means "unset" (empty
-    /// index that has never been written to).
+    /// Dimensionality of the stored vectors; zero means unset.
     pub const fn dim(&self) -> usize {
         self.dim
     }
 }
 
-/// Compute a stable schema hash from the first up-to-64 chunks. Not a
-/// security construct; the only purpose is to distinguish "same corpus
-/// across runs" from "corpus has changed". Storing every chunk in the
-/// hash would be expensive and the meta file is already large enough
-/// with the `id_map`.
+/// Stable schema hash from the first up-to-64 chunks. Not a security
+/// construct; only distinguishes "same corpus across runs" from "corpus
+/// changed". Capped at 64 to keep the meta file small.
 fn compute_schema_hash(chunks: &[(String, Vec<f32>)], dim: usize) -> String {
     use sha1::{Digest, Sha1};
     let mut hasher = Sha1::new();
@@ -461,9 +422,8 @@ fn ann_cache() -> &'static AnnCache {
     CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
-/// Get-or-load the ANN for a project + embedding dimension. Cheap on the hot path (cache
-/// hit); cold-path cost is whatever `load_or_empty` pays (either an
-/// empty struct alloc or an `hnsw_rs` file reload). Never errors.
+/// Get-or-load the ANN for a project + embedding dimension. Cheap on a
+/// cache hit; cold path pays `load_or_empty`. Never errors.
 pub async fn get_ann_for_project(
     project_hash: &str,
     dim: usize,
@@ -488,8 +448,7 @@ pub async fn get_ann_for_project(
     Ok(Arc::clone(entry))
 }
 
-/// Drop the cached entry for a project. Tests call this to force a
-/// cold reload; production code should never need it.
+/// Drop the cached entry for a project, forcing a cold reload.
 #[cfg(test)]
 pub fn invalidate_cache(project_hash: &str) {
     #[allow(clippy::expect_used)]
@@ -513,8 +472,7 @@ mod tests {
     use super::*;
 
     fn unique_hash(tag: &str) -> String {
-        // Include a timestamp + thread id so tests don't collide on
-        // the process-wide ann_cache.
+        // Timestamp-keyed so tests don't collide on the process-wide ann_cache.
         use std::time::{SystemTime, UNIX_EPOCH};
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -548,9 +506,6 @@ mod tests {
 
     #[tokio::test]
     async fn empty_index_search_returns_empty() {
-        // Test isolation is provided by `unique_hash()` below — every
-        // test runs against a different `projects/<hash>` subdir under
-        // the crate-wide `shared_test_home()`. No env mutation needed.
         let _home = crate::db::shared_test_home();
         let hash = unique_hash("empty-search");
         let idx = AnnIndex::load_or_empty(&hash, 16).await.unwrap();
@@ -561,9 +516,6 @@ mod tests {
 
     #[tokio::test]
     async fn build_and_search_returns_nearest() {
-        // Test isolation is provided by `unique_hash()` below — every
-        // test runs against a different `projects/<hash>` subdir under
-        // the crate-wide `shared_test_home()`. No env mutation needed.
         let _home = crate::db::shared_test_home();
         let hash = unique_hash("build-search");
         let dim = 32;
@@ -594,9 +546,6 @@ mod tests {
 
     #[tokio::test]
     async fn save_and_load_roundtrip() {
-        // Test isolation is provided by `unique_hash()` below — every
-        // test runs against a different `projects/<hash>` subdir under
-        // the crate-wide `shared_test_home()`. No env mutation needed.
         let _home = crate::db::shared_test_home();
         let hash = unique_hash("roundtrip");
         let dim = 24;
@@ -622,9 +571,6 @@ mod tests {
 
     #[tokio::test]
     async fn upsert_replaces_existing_chunk_embedding() {
-        // Test isolation is provided by `unique_hash()` below — every
-        // test runs against a different `projects/<hash>` subdir under
-        // the crate-wide `shared_test_home()`. No env mutation needed.
         let _home = crate::db::shared_test_home();
         let hash = unique_hash("upsert");
         let dim = 8;
@@ -668,9 +614,6 @@ mod tests {
 
     #[tokio::test]
     async fn remove_drops_from_search_results() {
-        // Test isolation is provided by `unique_hash()` below — every
-        // test runs against a different `projects/<hash>` subdir under
-        // the crate-wide `shared_test_home()`. No env mutation needed.
         let _home = crate::db::shared_test_home();
         let hash = unique_hash("remove");
         let dim = 12;
@@ -698,9 +641,6 @@ mod tests {
 
     #[tokio::test]
     async fn dim_mismatch_triggers_fallback() {
-        // Test isolation is provided by `unique_hash()` below — every
-        // test runs against a different `projects/<hash>` subdir under
-        // the crate-wide `shared_test_home()`. No env mutation needed.
         let _home = crate::db::shared_test_home();
         let hash = unique_hash("dim-mismatch");
         let dim = 16;
@@ -728,9 +668,6 @@ mod tests {
         // overwhelming majority of runs — we assert "within top 10"
         // as a recall smoke-check rather than top-1 because HNSW is
         // approximate.
-        // Test isolation is provided by `unique_hash()` below — every
-        // test runs against a different `projects/<hash>` subdir under
-        // the crate-wide `shared_test_home()`. No env mutation needed.
         let _home = crate::db::shared_test_home();
         let hash = unique_hash("recall10");
         let dim = 32;
@@ -780,9 +717,6 @@ mod tests {
 
     #[tokio::test]
     async fn persistence_meta_version_bump_invalidates() {
-        // Test isolation is provided by `unique_hash()` below — every
-        // test runs against a different `projects/<hash>` subdir under
-        // the crate-wide `shared_test_home()`. No env mutation needed.
         let _home = crate::db::shared_test_home();
         let hash = unique_hash("meta-bump");
         let dim = 8;
@@ -811,9 +745,6 @@ mod tests {
 
     #[tokio::test]
     async fn get_ann_for_project_caches_across_calls() {
-        // Test isolation is provided by `unique_hash()` below — every
-        // test runs against a different `projects/<hash>` subdir under
-        // the crate-wide `shared_test_home()`. No env mutation needed.
         let _home = crate::db::shared_test_home();
         let hash = unique_hash("cache");
         let a = get_ann_for_project(&hash, 16).await.unwrap();

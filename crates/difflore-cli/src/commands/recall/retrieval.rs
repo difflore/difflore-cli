@@ -20,11 +20,9 @@ use super::{
     strict_file_pattern_match, truncate_one_line,
 };
 
-/// Bounded embedding budget for the interactive recall/ask index pass.
-/// On an unreachable cloud provider this caps each batch's wait so the
-/// command falls back to local SHA1 + FTS in seconds instead of hanging
-/// through the full provider retry budget. Matches the bounded budget the
-/// MCP and query paths already use.
+/// Bounded embedding budget for the interactive recall/ask index pass. Caps
+/// each batch's wait so an unreachable cloud provider falls back to local
+/// SHA1 + FTS in seconds instead of hanging through the full retry budget.
 const RECALL_INDEX_EMBEDDING_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2500);
 
 pub(super) async fn recall_local_rules(
@@ -52,8 +50,8 @@ pub(super) async fn recall_local_rules(
     };
     let mut rules_indexed = 0usize;
     // Detect both origin and upstream so recall can use imported review
-    // history from either remote. `repo_full_name` remains the primary
-    // display label; `repo_scopes` carries the full list into retrieval.
+    // history from either remote. `repo_full_name` is the display label;
+    // `repo_scopes` carries the full list into retrieval.
     let detected_repo_full_names =
         difflore_core::git::detect_github_repo_full_names(&project_path());
     let repo_full_names = difflore_core::skills::expand_repo_scopes_with_source_aliases(
@@ -114,10 +112,9 @@ pub(super) async fn recall_local_rules(
     };
     let ranking_inputs = difflore_core::context::rule_source::load_rule_ranking_inputs(db).await;
 
-    // Pull a wider candidate pool than top_k so the strict-pattern
-    // re-rank below has room to surface file-pattern matches that the
-    // content-only retriever would otherwise drop. We truncate back to
-    // top_k after the sort.
+    // Pull a wider candidate pool than top_k so the strict-pattern re-rank
+    // below has room to surface file-pattern matches the content-only
+    // retriever would drop; truncated back to top_k after the sort.
     let pool_k = candidate_pool_size(top_k);
     let scored = match crate::commands::search::retrieve_rules_for_search(
         &index_pool,
@@ -148,35 +145,23 @@ pub(super) async fn recall_local_rules(
         pool_k,
     );
 
-    // Intent-alignment gate (precision fix), kept consistent with the MCP
-    // `search_rules` tool. Drops candidates whose DIRECTIVE addresses a
-    // different action/subject than the query intent — the topically-
-    // adjacent rules (same file area, shared topical token, wrong subject)
-    // that the leak-free A/B identified as distracting the agent. Strongly
-    // scored hits (exact-title matches, lexically-boosted) are exempt, so a
-    // genuinely strong match is never suppressed. Run before the relevance
-    // floor so the floor operates on the intent-aligned set.
+    // Intent-alignment gate (consistent with the MCP `search_rules` tool):
+    // drops candidates whose directive addresses a different action/subject than
+    // the query intent. Strongly scored hits (exact-title, lexically-boosted) are
+    // exempt. Run before the relevance floor so the floor sees the aligned set.
     difflore_core::context::retrieval::apply_intent_alignment_gate(&mut scored, intent);
 
-    // Launch-blocker ③ — adaptive relevance gate on the explicit CLI
-    // recall path, kept consistent with the MCP `search_rules` tool and
-    // the hook injection path. A wrong-file / low-relevance query that
-    // previously surfaced ~5 weak filler rules now returns zero, so the
-    // command renders its existing zero-match diagnostics ("no relevant
-    // memory") instead of confident-but-irrelevant noise. Applied on the
-    // score-sorted candidate set (post exact-title merge) before the
-    // strict-file re-rank, so a genuinely strong match — which clears the
-    // floor by a wide margin — is never suppressed.
+    // Adaptive relevance gate: a low-relevance query returns zero so the command
+    // renders its zero-match diagnostics instead of irrelevant noise. Applied
+    // after the exact-title merge but before the strict-file re-rank.
     difflore_core::context::retrieval::apply_explicit_recall_threshold(&mut scored);
 
     let ids: Vec<String> = scored.iter().map(|hit| hit.skill_id.clone()).collect();
     let metas = difflore_core::skills::fetch_search_meta(db, &ids).await;
     let mut hits = build_local_hits(&scored, &metas);
-    // Stable re-rank: rules whose file_patterns strictly cover the queried
-    // file come above content-only matches, preserving relative order within
-    // each group. Repo scoping prevents cross-project leakage; this overlay
-    // keeps useful same-repo generic rules available while highlighting
-    // file-specific evidence first.
+    // Stable re-rank: rules whose file_patterns strictly cover the queried file
+    // come above content-only matches, preserving relative order within each
+    // group, so file-specific evidence is highlighted first.
     if file.is_some() {
         hits.sort_by(|a, b| {
             let a_strict = strict_file_pattern_match(&a.file_patterns, file);
@@ -185,12 +170,10 @@ pub(super) async fn recall_local_rules(
         });
     }
     hits.truncate(top_k);
-    // Hydrate each surviving hit with its FULL rule body + structured examples
-    // straight from the DB. The retrieval chunk only carries the indexed body
-    // text (whose example section is often absent), so without this the
-    // fix/bad/good bodies came back NULL in `recall --json` — agents saw
-    // headlines, not the team memory. Done once on the final, truncated set so
-    // we pay one batched query for the rules we actually return.
+    // Hydrate each surviving hit with its full rule body + structured examples
+    // from the DB; the retrieval chunk only carries the indexed body text (whose
+    // example section is often absent). Done once on the truncated set so we pay
+    // one batched query for the rules we actually return.
     hydrate_full_rule_bodies(db, &mut hits).await;
     let file_scope_fallback = content_only_file_scope_fallback(&hits, file);
     LocalRecallResult {
@@ -220,20 +203,16 @@ pub(super) fn build_local_hits(
     scored
         .iter()
         .filter_map(|hit| {
-            // Missing metadata is a soft skip, matching the MCP `search_rules`
-            // path: a chunk whose `skills` row was deleted/deactivated but not
-            // yet pruned from the index is stale. Dropping it keeps `difflore
-            // recall` and `search_rules` in agreement instead of surfacing a
-            // ghost rule with empty file_patterns and a raw skill_id title.
+            // Missing metadata is a soft skip: a chunk whose `skills` row was
+            // deleted/deactivated but not yet pruned from the index is stale.
+            // Dropping it avoids surfacing a ghost rule with empty file_patterns
+            // and a raw skill_id title.
             let meta = metas.get(&hit.skill_id)?;
             let rank_score = if max_score > 0.0 {
                 hit.score / max_score
             } else {
                 0.0
             };
-            // Pull the bad→fix snippets out of the FULL rule body (not the
-            // truncated preview) so real recall shows the same sharp, concrete
-            // contrast the `difflore try` demo does — the #1 "felt value".
             let (bad, fix) = extract_rule_examples(&hit.content);
             Some(LocalRuleHit {
                 id: hit.skill_id.clone(),
@@ -246,9 +225,8 @@ pub(super) fn build_local_hits(
                 confidence: hit.confidence,
                 file_patterns: meta.file_patterns.clone(),
                 source_repo: meta.source_repo.clone(),
-                // Filled in by `hydrate_full_rule_bodies` once we know the
-                // final result set; chunk-only construction can't see the
-                // `rule_examples` rows the full body needs.
+                // Filled in by `hydrate_full_rule_bodies`; chunk-only
+                // construction can't see the `rule_examples` rows.
                 body: None,
             })
         })
@@ -258,17 +236,13 @@ pub(super) fn build_local_hits(
 /// Attach the full rule body (rendered code-spec + structured examples + the
 /// fix/check/trigger fields) to each hit, loaded in one batch from the DB.
 ///
-/// This is the fix for "recall --json returns only titles/previews with bodies
-/// NULL": the retrieval `ScoredRuleChunk` carries the indexed body string but
-/// NOT the `rule_examples` rows, so the heuristic `bad`/`fix` extraction over
-/// the chunk content frequently came up empty even when the rule had real
-/// bad/good code. Here we reuse the same public renderer + example loader the
-/// MCP `get_rules` detail path uses, then prefer the authoritative DB example
-/// code for the `bad`/`fix` snippet lines so the human and JSON surfaces agree.
+/// The retrieval `ScoredRuleChunk` carries the indexed body string but NOT the
+/// `rule_examples` rows, so reuse the same renderer + example loader the MCP
+/// `get_rules` detail path uses, preferring the DB example code for the
+/// `bad`/`fix` snippet lines so the human and JSON surfaces agree.
 ///
-/// Best-effort: a DB error or a stale (already-pruned) id simply leaves that
-/// hit's `body` as `None`, degrading to the prior chunk-only display rather
-/// than failing the recall.
+/// Best-effort: a DB error or a stale (already-pruned) id leaves that hit's
+/// `body` as `None`, degrading to chunk-only display rather than failing.
 pub(super) async fn hydrate_full_rule_bodies(
     db: &difflore_core::SqlitePool,
     hits: &mut [LocalRuleHit],
@@ -284,16 +258,10 @@ pub(super) async fn hydrate_full_rule_bodies(
         let Some(rendered) = bodies.remove(&hit.id) else {
             continue;
         };
-        // The `rule_examples` bad/good code is the authoritative source for the
-        // one-line `bad`/`fix` snippets the human + JSON headlines show. We run
-        // it through the SAME divergence walk the chunk-content extractor uses
-        // (`divergent_example_lines`) so the snippet stays a single concise line
-        // — e.g. the first line that actually changes for a before/after of the
-        // same function — keeping the human `bad`/`fix` rows consistent rather
-        // than dumping a multi-line block. The full multi-line code remains in
-        // the JSON `examples[]`/`body`. We only overwrite a side when the DB
-        // carries a non-empty example for it, so a rule with no examples keeps
-        // whatever the chunk heuristic found.
+        // Run the DB `rule_examples` code through the same `divergent_example_lines`
+        // walk the chunk extractor uses so the snippet stays one line. Only
+        // overwrite a side when the DB carries a non-empty example for it, so a
+        // rule with no examples keeps whatever the chunk heuristic found.
         let db_bad = rendered.first_bad_code();
         let db_fix = rendered.first_good_code();
         if db_bad.is_some() || db_fix.is_some() {
@@ -321,24 +289,20 @@ pub(super) enum ExampleSide {
 /// tolerating the many shapes real rules use. Returns `None` for any line that
 /// is not a recognized heading.
 ///
-/// Matching is case-insensitive and markdown-aware. The decision rule:
+/// Matching is case-insensitive and markdown-aware:
 ///   1. The line must be keyword-led (after stripping `#`/`*`/`-`/`>` and the
 ///      ❌/✅ glyphs): `bad`/`wrong`/`anti(-pattern)`/… → Bad,
 ///      `good`/`correct`/`right`/`fix`/`better`/… → Fix.
 ///   2. A keyword-led line counts as a heading when EITHER it carries markdown
-///      decoration (started with `#`, `*`, `-`, `>`, or held a ❌/✅ glyph) — so
-///      `### ❌ Anti-pattern: Separate state` and `### ✅ Better: do X` are
-///      headings even with a descriptive title — OR, for an undecorated line,
-///      the remainder after the keyword is only qualifier words
-///      (`example`/`code`/`pattern`/…). The latter accepts bare `Bad:` /
-///      `Good example:` / `Fix:` while rejecting inline prose like
-///      `Bad: this silently leaks a file descriptor`, which would otherwise be
-///      mistaken for a section marker.
+///      decoration (`#`, `*`, `-`, `>`, or a ❌/✅ glyph) — so `### ❌ Anti-pattern:
+///      Separate state` is a heading even with a descriptive title — OR, for an
+///      undecorated line, only qualifier words (`example`/`code`/`pattern`/…)
+///      follow the keyword. The latter accepts bare `Bad:` / `Fix:` while
+///      rejecting inline prose like `Bad: this silently leaks a file descriptor`.
 pub(super) fn classify_example_heading(line: &str) -> Option<ExampleSide> {
     let trimmed = line.trim();
-    // Decoration = markdown heading/list/quote markers or the example glyphs.
-    // Its presence is what lets a heading carry a descriptive title without
-    // being confused for an inline-prose sentence.
+    // Decoration (markdown heading/list/quote markers or example glyphs) is what
+    // lets a heading carry a descriptive title without being mistaken for prose.
     let decorated = trimmed.starts_with('#')
         || trimmed.starts_with('*')
         || trimmed.starts_with('-')
@@ -380,9 +344,8 @@ pub(super) fn classify_example_heading(line: &str) -> Option<ExampleSide> {
     }
     // Only unambiguous example markers are accepted. Weak words like `avoid`,
     // `do`, `don't`, `prefer`, `before`, `after` are deliberately EXCLUDED: rule
-    // titles and prose routinely start with them (`# Avoid unbounded reads`,
-    // `Prefer guard clauses`), so treating them as section headings produces
-    // false positives that swallow the title's prose as the "bad" snippet.
+    // titles and prose routinely start with them, so treating them as headings
+    // would swallow the title's prose as the "bad" snippet.
     match *first {
         "bad" | "wrong" | "incorrect" | "anti" | "antipattern" => Some(ExampleSide::Bad),
         "good" | "correct" | "right" | "fix" | "fixed" | "better" => Some(ExampleSide::Fix),
@@ -394,28 +357,23 @@ pub(super) fn classify_example_heading(line: &str) -> Option<ExampleSide> {
 /// example heading, in source order.
 ///
 /// Skips ``` / ~~~ fence markers and blank / bare-bullet lines, and STOPS at the
-/// first markdown section heading (`#`/`##`/`###` …) or horizontal rule (`---`)
-/// so a block that over-extends into trailing prose (e.g. a `✅ Good` example
-/// that is the last heading and runs to the end of the body, through the closing
-/// fence and into a later `## How to Apply` section) never captures a heading.
-/// This also makes the helper robust to the dominant real format where ❌/✅
-/// markers are inline comments inside ONE shared code fence: the block starts
-/// mid-fence, so the lone closing ``` is just skipped and the code lines win.
+/// first markdown section heading or horizontal rule so a block that over-extends
+/// into trailing prose never captures a heading. This also handles the common
+/// format where ❌/✅ markers are inline comments inside one shared code fence:
+/// the lone closing ``` is skipped and the code lines win.
 ///
-/// Returns every retained line trimmed; the result is used both for the first
-/// snippet line and (by the divergence walk) to find where a bad/good pair that
-/// shares a leading signature actually differs.
+/// Returns every retained line trimmed; used for the first snippet line and (by
+/// the divergence walk) to find where a bad/good pair sharing a leading
+/// signature actually differs.
 pub(super) fn meaningful_example_code_lines(block: &str) -> Vec<String> {
     let mut lines = Vec::new();
     for raw in block.lines() {
         let trimmed = raw.trim();
-        // A new markdown section heading or horizontal rule marks the end of the
-        // example — stop rather than wander into prose.
+        // A new section heading or horizontal rule ends the example.
         if is_markdown_section_break(trimmed) {
             break;
         }
-        // Fence markers (``` / ~~~, with or without a language tag) and empty /
-        // bare-bullet lines are not content; skip them.
+        // Skip fence markers and empty / bare-bullet lines.
         if trimmed.is_empty()
             || trimmed.starts_with("```")
             || trimmed.starts_with("~~~")
@@ -429,12 +387,10 @@ pub(super) fn meaningful_example_code_lines(block: &str) -> Vec<String> {
     lines
 }
 
-/// Extract the first meaningful code line from a block of body text that
-/// follows an example heading. Thin wrapper over `meaningful_example_code_lines`
-/// (the first retained line); returns `None` when the block has no usable code
-/// line. Kept as a `#[cfg(test)]` helper that pins the section-break/fence-skip
-/// contract of `meaningful_example_code_lines` from the first-line angle; the
-/// production path consumes the full line list directly.
+/// First meaningful code line of a block (or `None`). Thin `#[cfg(test)]`
+/// wrapper over `meaningful_example_code_lines` that pins its
+/// section-break/fence-skip contract from the first-line angle; the production
+/// path consumes the full line list directly.
 #[cfg(test)]
 pub(super) fn first_example_code_line(block: &str) -> Option<String> {
     meaningful_example_code_lines(block).into_iter().next()
@@ -456,23 +412,16 @@ pub(super) fn is_markdown_section_break(trimmed: &str) -> bool {
             .is_some_and(char::is_whitespace)
 }
 
-/// PURE: pull the (bad, fix) example snippets out of a rule's full body text.
+/// Pull the (bad, fix) example snippets out of a rule's full body text,
+/// tolerating the many heading shapes real rules use (case-insensitive,
+/// markdown-aware): `Bad:`/`Good:`, `### ❌ Bad:`/`### ✅ Good:`, `Wrong:`/
+/// `Correct:`, `Bad:`/`Fix:`, etc.
 ///
-/// Real rules carry examples in many shapes; this tolerates all of them
-/// (case-insensitive, markdown-aware). Recognized section headings include:
-///   - `Bad:` / `Good:` (the `try` demo + bundled-corpus format)
-///   - `### Examples` then `❌ Bad:` ```code``` `✅ Good:` ```code```
-///     (the dominant generated/imported-review format)
-///   - `### ❌ Wrong` / `### ✅ Correct` (or `✅ Right`), with or without `###`
-///   - `Bad example:` / `Good example:`, `Wrong:` / `Correct:`, `Bad:` / `Fix:`
-///
-/// For each side we take the text from just after its heading up to the next
-/// recognized heading (or end of body) and return that block's first
-/// meaningful code line (fences + markers stripped). Either side may be present
-/// without the other. When no recognizable example heading exists at all, both
-/// are `None` and the caller degrades to today's preview-only output.
+/// For each side, takes the text from just after its heading up to the next
+/// recognized heading (or end of body) and returns that block's first
+/// meaningful code line. Either side may be absent. When no recognizable
+/// heading exists, both are `None` and the caller degrades to preview-only.
 pub(super) fn extract_rule_examples(content: &str) -> (Option<String>, Option<String>) {
-    // Locate every example heading and the side it introduces, in order.
     let lines: Vec<&str> = content.lines().collect();
     let mut headings: Vec<(usize, ExampleSide)> = Vec::new();
     for (idx, line) in lines.iter().enumerate() {
@@ -486,13 +435,12 @@ pub(super) fn extract_rule_examples(content: &str) -> (Option<String>, Option<St
 
     // Capture the FULL first block for each side (not just its first line) so we
     // can compute where bad and good actually diverge below. The first
-    // occurrence of each side wins (matches how `try` shows one pair).
+    // occurrence of each side wins.
     let mut bad_block: Option<String> = None;
     let mut fix_block: Option<String> = None;
     for (n, &(start, side)) in headings.iter().enumerate() {
-        // The block for this heading runs until the next heading (any side) or
-        // the end of the body, so a `bad` block never bleeds into the `fix`
-        // code and vice versa.
+        // Each block runs until the next heading or end of body, so a `bad`
+        // block never bleeds into the `fix` code and vice versa.
         let end = headings
             .get(n + 1)
             .map_or(lines.len(), |&(next_start, _)| next_start);
@@ -506,25 +454,22 @@ pub(super) fn extract_rule_examples(content: &str) -> (Option<String>, Option<St
     divergent_example_lines(bad_block.as_deref(), fix_block.as_deref())
 }
 
-/// PURE: turn a (bad block, fix block) pair into the (bad, fix) snippet lines.
+/// Turn a (bad block, fix block) pair into the (bad, fix) snippet lines.
 ///
-/// Normally each side's snippet is just its first meaningful code line. But when
-/// a rule's bad and good examples are a before/after of the SAME function, both
-/// first lines are the identical signature (e.g. both
-/// `func apply(opts *Options) {`) and the rendered `bad`/`fix` look broken
-/// because they show the same text. In that case we advance BOTH sides past the
-/// shared leading lines and surface the first line where they actually diverge —
-/// a minimal diff that shows the real change.
+/// Normally each side's snippet is its first meaningful code line. But when the
+/// bad and good examples are a before/after of the SAME function, both first
+/// lines are the identical signature and the rendered `bad`/`fix` look broken.
+/// In that case advance both sides past the shared leading lines and surface the
+/// first line where they actually diverge — a minimal diff of the real change.
 ///
 /// Rules:
 ///   - One side missing → return the present side's first line (other `None`).
-///   - First lines already differ (the common, demo-style case) → return them.
-///   - First lines equal → walk both line lists, skipping leading lines that are
-///     identical on both sides (after trimming), and return the first divergent
-///     pair. If the fix side has extra lines (bad is a strict prefix), surface
-///     the bad block's first line on the bad side and the first added line on the
-///     fix side. If only the bad side has extra trailing lines (fix is a strict
-///     prefix), there is no new fix line to show, so keep the first lines.
+///   - First lines already differ → return them.
+///   - First lines equal → skip identical leading lines and return the first
+///     divergent pair. If the fix side adds lines (bad is a strict prefix),
+///     surface the bad first line and the first added fix line. If only the bad
+///     side has extra trailing lines, there is no new fix line, so keep the
+///     first lines.
 ///   - Single-line / fully-identical blocks → keep the first lines as-is.
 pub(super) fn divergent_example_lines(
     bad_block: Option<&str>,
@@ -544,7 +489,7 @@ pub(super) fn divergent_example_lines(
         return (bad_first, fix_first);
     };
 
-    // First lines already differ → demo-style behavior, return them unchanged.
+    // First lines already differ → return them unchanged.
     if bad_head.trim() != fix_head.trim() {
         return (Some(bad_head), Some(fix_head));
     }
@@ -572,14 +517,11 @@ pub(super) fn divergent_example_lines(
 
 /// Minimum retrieval score a cross-repo starter hit must clear to be shown.
 ///
-/// Starter rules come from OTHER repos, so the bar to surface one as a useful
-/// suggestion is higher than for in-scope recall: a rule that merely matches the
-/// file extension (e.g. any `**/*.go` rule on a Go file) but shares no intent
-/// signal is noise, not memory — and on a cold-start repo, noise labelled as
-/// "what your team already learned" actively erodes trust. We drop starter hits
-/// whose intent relevance falls below this floor so a cold-start repo sees
-/// genuinely transferable rules or nothing, never confident-but-irrelevant
-/// filler. In-scope recall is unaffected (the user has real memory there).
+/// Starter rules come from OTHER repos, so the bar to surface one is higher than
+/// for in-scope recall: a rule that merely matches the file extension but shares
+/// no intent signal is noise, not memory, and erodes trust on a cold-start repo.
+/// Hits below this floor are dropped so cold-start shows genuinely transferable
+/// rules or nothing. In-scope recall is unaffected.
 const STARTER_RELEVANCE_FLOOR: f64 = 0.12;
 
 /// Drop cross-repo starter hits whose intent relevance (`raw_score`) is below
@@ -593,18 +535,15 @@ pub(super) fn filter_starter_by_relevance(
         .collect()
 }
 
-/// Goal G2 cold-start fallback: when the current repo has no scoped memory,
-/// retrieve transferable rules from the shared cross-repo starter index — but
-/// keep ONLY those whose `file_patterns` strict-match the edited file AND that
-/// clear `STARTER_RELEVANCE_FLOOR`, so a `**/*.go` rule surfaces on Go code only
-/// when it is actually relevant to the intent, not as arbitrary cross-repo
-/// noise. Each returned hit carries its `source_repo` for the "↪ from {repo}"
-/// label.
+/// Cold-start fallback: when the current repo has no scoped memory, retrieve
+/// transferable rules from the shared cross-repo starter index, keeping ONLY
+/// those whose `file_patterns` strict-match the edited file AND clear
+/// `STARTER_RELEVANCE_FLOOR`. Each returned hit carries its `source_repo` for
+/// the "↪ from {repo}" label.
 ///
-/// The per-project scope invariant is untouched: the caller invokes this only
-/// when the scoped index is empty, and these hits are presented as a clearly
-/// labeled, separate "from other repos" suggestion — never as this repo's own
-/// memory and never silently injected.
+/// The per-project scope invariant holds: the caller invokes this only when the
+/// scoped index is empty, and these hits are presented as a separate, labeled
+/// "from other repos" suggestion — never as this repo's own memory.
 pub(super) async fn cross_repo_starter_hits(
     ctx: &CommandContext,
     intent: &str,
@@ -628,8 +567,8 @@ pub(super) async fn cross_repo_starter_hits(
         ranking_inputs.confidence_map.as_ref(),
         ranking_inputs.age_days_map.as_ref(),
         Some(file),
-        // No repo scope: every repo's rules are eligible in the starter index.
-        // Transferability is enforced by the strict file-pattern filter below.
+        // No repo scope: every repo's rules are eligible in the starter index;
+        // the strict file-pattern filter below enforces transferability.
         &[],
     )
     .await
@@ -640,9 +579,8 @@ pub(super) async fn cross_repo_starter_hits(
     let metas = difflore_core::skills::fetch_search_meta(db, &ids).await;
     let mut hits = build_local_hits(&scored, &metas);
     hits.retain(|hit| strict_file_pattern_match(&hit.file_patterns, Some(file)));
-    // Intent-relevance gate: a file-extension match alone is not memory. Drop
-    // hits with no real intent signal so cold-start surfaces transferable rules
-    // or nothing — never confident-but-irrelevant filler.
+    // A file-extension match alone is not memory; drop hits with no real intent
+    // signal so cold-start surfaces transferable rules or nothing.
     let mut hits = filter_starter_by_relevance(hits, STARTER_RELEVANCE_FLOOR);
     hits.truncate(top_k);
     hits
@@ -695,18 +633,17 @@ pub(super) fn build_zero_match_diagnostics(
     let mut possible_causes = Vec::new();
     let mut next_steps = Vec::new();
 
-    // A missing repo scope is a more fundamental cause than an empty corpus: a
-    // no-remote / non-GitHub checkout also reports rules_indexed == 0 (the scope
-    // filter copies nothing into the per-project index), so diagnose the missing
-    // scope FIRST. Otherwise such a checkout is mislabeled "corpus empty, import
-    // reviews" when the real fix is adding a GitHub remote.
+    // A no-remote / non-GitHub checkout also reports rules_indexed == 0 (the
+    // scope filter copies nothing in), so diagnose a missing scope FIRST.
+    // Otherwise it is mislabeled "no memory, import reviews" when the real fix is
+    // adding a GitHub remote.
     let no_scope = local.repo_full_name.is_none();
     let empty_corpus = !no_scope && local.rules_indexed == 0;
 
     if no_scope {
         possible_causes.push(DiagnosticItem {
             code: "repo_scope_missing",
-            message: "No GitHub origin/upstream remote was detected; local recall scopes rules by repo, so an unscoped checkout retrieves nothing. This is by design, not an empty corpus.".to_owned(),
+            message: "No GitHub origin/upstream remote was detected; local recall scopes rules by repo, so an unscoped checkout retrieves nothing. This is by design, not empty local memory.".to_owned(),
         });
     } else if empty_corpus {
         possible_causes.push(DiagnosticItem {
@@ -781,8 +718,7 @@ pub(super) fn build_zero_match_diagnostics(
 
     if no_scope {
         // Without a recognized GitHub remote there is no scope to attach
-        // imported rules to, so the actionable first step is the remote — not
-        // import-reviews, which would also find no scope.
+        // imported rules to, so the first step is the remote, not import-reviews.
         next_steps.push(DiagnosticStep {
             command: Some("git remote -v".to_owned()),
             message: "local recall is repo-scoped; add a GitHub origin/upstream remote (or run inside a repo that has one) so this checkout has memory to retrieve".to_owned(),
@@ -900,9 +836,8 @@ pub(super) async fn recall_cloud_review_memory(
         };
     }
 
-    // Mirror local-rules multi-scope recall in the cloud path. Repo probes
-    // are independent HTTP calls, so run them together; CLI latency should
-    // be bounded by the slowest scope, not their sum.
+    // Repo probes are independent HTTP calls, so run them together; CLI latency
+    // is bounded by the slowest scope, not their sum.
     let repos: Vec<String> = repo_full_names.iter().take(4).cloned().collect();
     let groups = match repos.as_slice() {
         [] => Vec::new(),

@@ -70,15 +70,10 @@ pub enum HookEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         old_text: Option<String>,
     },
-    /// Assistant is about to read a file. The CLI uses this as the
-    /// earliest signal we have of the agent's focus, and proactively
-    /// 2026-04-27: rule injection on Read is retired — the dispatcher
-    /// now returns noop for this event. The variant is kept so the
-    /// platform adapter can still parse incoming PreToolUse:Read
-    /// payloads without erroring; the retrieval branch was removed
-    /// after measuring ~800-1500 tokens of injection per Read with
-    /// near-zero hit rate (most reads are exploratory and never
-    /// produce an edit).
+    /// Assistant is about to read a file. The dispatcher returns noop for
+    /// this event (rule injection on Read had near-zero hit rate). The
+    /// variant is kept so the adapter can still parse PreToolUse:Read
+    /// payloads without erroring.
     PreToolUseRead {
         file_path: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,9 +100,8 @@ pub enum HookEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
         /// Optional absolute path to the platform-native transcript JSONL.
-        /// Claude Code provides this on every event. Reserved for the
-        /// stated-vs-actual validator (see
-        /// `difflore_core::stated_vs_actual`) — runtime not yet wired.
+        /// Reserved for the stated-vs-actual validator (see
+        /// `difflore_core::stated_vs_actual`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         transcript_path: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -159,10 +153,8 @@ pub struct HookResult {
     /// the name simply ignore this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_name: Option<String>,
-    /// 2026-04-25: how many rules ended up in `additional_context`. Lets
-    /// the dispatcher write it into the hook-fires log so doctor reports
-    /// can answer "are these rules actually being surfaced?". Skipped on
-    /// the wire — this is a local audit field, never sent to the agent.
+    /// How many rules ended up in `additional_context`, for the hook-fires
+    /// log. Local audit field, skipped on the wire — never sent to the agent.
     #[serde(default, skip)]
     pub rules_injected: Option<usize>,
 }

@@ -25,17 +25,16 @@ pub enum CoreError {
     Internal(String),
     #[error("API error: {0}")]
     Api(#[from] openapi_contract::ApiError),
-    // Cloud-managed embedding cap hit. Free tier reaches its rule cap;
-    // callers fall back to lexical retrieval for the offending embed call
-    // so recall keeps functioning. `cap` is the user's tier ceiling (e.g.
-    // 200); `used` is the current count from the cloud's response.
+    // Cloud embedding cap hit; callers fall back to lexical retrieval for the
+    // offending embed call. `cap` is the tier ceiling, `used` the current count
+    // from the cloud's response.
     #[error("Embedding cap reached: {used}/{cap}")]
     EmbedCapReached { cap: u32, used: u32 },
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;
 
-// Backwards-compatible re-export so `crate::errors::*` paths keep working.
+// Re-export so `crate::errors::*` paths keep working.
 pub mod errors {
     pub use super::{CoreError, Result};
 }

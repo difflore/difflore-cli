@@ -78,7 +78,7 @@ When reporting back to the user, summarize:
 - any rules that look relevant
 - the next concrete action
 
-Do not dump raw file lists unless the user asks.
+Do not dump full file lists unless the user asks.
 
 ## Read Gate Interaction
 

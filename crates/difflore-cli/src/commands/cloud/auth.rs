@@ -370,7 +370,7 @@ async fn try_handle_login_with_refresh(
         return Err(
             "Token rejected by cloud (auth probe failed).\n\n  \
              Mint a fresh one by re-running `difflore cloud login` (browser flow).\n  \
-             If the cloud is unreachable, retry later — local CLI features keep working offline.\n  \
+             If the cloud is unreachable, retry later - local CLI features keep working offline.\n  \
              Your previous login (if any) was preserved."
                 .to_owned(),
         );
@@ -448,31 +448,28 @@ async fn try_handle_login_with_refresh(
     if let Some(line) =
         super::agent_usage_pending_upload_line(super::load_agent_usage_summary().await.as_ref())
     {
-        println!("  Proof uploads: {}", style::pewter(&line));
+        println!("  Activity uploads: {}", style::pewter(&line));
     }
 
     println!();
-    // Onboarding bridge. The original close hard-coded `difflore cloud sync`,
-    // which is the right next step only for users joining an existing
-    // team. A first-device-on-a-fresh-team user has nothing to sync —
-    // they need to *create* rules first via import-reviews. Surface both
-    // paths with one line each so the user picks based on their context
-    // without bouncing back to `difflore init` to figure it out.
+    // Surface both onboarding paths: `cloud sync` for users joining an
+    // existing team, `import-reviews` for a first device on a fresh team
+    // that has nothing to sync yet.
     println!("  {} What's next:", style::emerald(style::sym::TIP));
     println!(
         "    {}                {}",
         style::cmd("difflore cloud sync"),
-        style::pewter("# joining a team — pull existing rules"),
+        style::pewter("joining a team - pull existing memories"),
     );
     println!(
         "    {}      {}",
         style::cmd("difflore import-reviews --upload"),
-        style::pewter("# first device — turn PR review history into rules"),
+        style::pewter("first device - turn PR review history into memories"),
     );
     println!(
         "    {}                {}",
         style::cmd("difflore init --check"),
-        style::pewter("# see your full readiness state"),
+        style::pewter("see your full readiness state"),
     );
     Ok(())
 }

@@ -241,7 +241,6 @@ pub struct ReviewCheckResult {
     pub stats: Option<ReviewStats>,
 }
 
-/// Review stats surfaced to the IDE.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewStats {

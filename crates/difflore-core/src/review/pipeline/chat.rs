@@ -21,13 +21,11 @@ pub(in super::super) struct ProviderRow {
     pub is_active: i64,
 }
 
-/// Probe whether `command` is locatable as an executable. A pre-flight
-/// check before falling back to an agent CLI: lets us fail with an
-/// actionable error ("install one of the supported CLIs, or run
-/// `difflore providers setup`") instead of a cryptic OS-level "program
-/// not found" emerging mid-review.
+/// Whether `command` is locatable as an executable. Pre-flight before
+/// falling back to an agent CLI, so we fail with an actionable error
+/// instead of a cryptic mid-review "program not found".
 ///
-/// Absolute paths short-circuit on `Path::exists`. Bare names go through
+/// Absolute paths short-circuit on `Path::exists`; bare names go through
 /// `where` on Windows / `which` on Unix.
 pub(super) fn command_exists_on_path(command: &str) -> bool {
     let path = std::path::Path::new(command);
@@ -41,11 +39,10 @@ pub(super) fn command_exists_on_path(command: &str) -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
-/// Pick the HTTP provider when active, otherwise fall back to whichever
-/// supported agent CLI is installed locally. Detection order — Claude
-/// Code, Codex, Gemini, OpenCode — matches the priority of "what most
-/// difflore users have lying around" and gives Claude users a zero-config
-/// experience. `gate4agent` owns the actual spawn.
+/// Pick the active HTTP provider, otherwise fall back to the first
+/// installed supported agent CLI. Detection order (Claude Code, Codex,
+/// Gemini, OpenCode) prioritizes what most users already have, giving
+/// Claude users a zero-config path. `gate4agent` owns the spawn.
 pub(in super::super) async fn resolve_review_engine(
     db: &sqlx::SqlitePool,
 ) -> crate::Result<ReviewEngine> {
@@ -70,8 +67,7 @@ pub(in super::super) async fn resolve_review_engine(
                     });
                 }
             }
-            // First-run failure mode: no HTTP provider AND no agent CLI
-            // available. Spell out exactly how to get out of it.
+            // No HTTP provider and no agent CLI — spell out the way out.
             Err(CoreError::Validation(
                 "no LLM provider configured and no supported agent CLI found on PATH \
                 (looked for: claude, codex, gemini, opencode).\n\n  \
@@ -103,10 +99,9 @@ pub(super) fn make_review_llm(engine: ReviewEngine) -> Box<dyn ReviewLlm> {
     }
 }
 
-/// Dispatch the main review LLM call across engines. HTTP path goes through
-/// the segmented provider call (preserving Anthropic `cache_control`);
-/// agent-CLI path flattens the segmented prompt and sends it through
-/// `gate4agent`.
+/// Dispatch the main review LLM call. HTTP goes through the segmented
+/// provider call (preserving Anthropic `cache_control`); the agent-CLI
+/// path flattens the segmented prompt through `gate4agent`.
 pub(super) async fn call_review_engine(
     engine: &ReviewEngine,
     segmented: &SegmentedPrompt,
@@ -166,9 +161,7 @@ pub(super) async fn get_active_provider(
             if row.name.to_lowercase().contains("anthropic")
                 || row.name.to_lowercase().contains("claude")
             {
-                // Match the default `providers setup` writes for Claude
-                // providers. Newer Sonnet rev gives better recall; pricing
-                // is identical.
+                // Match the default `providers setup` writes for Claude.
                 "claude-sonnet-4-6".to_owned()
             } else {
                 "gpt-4o".to_owned()
@@ -189,14 +182,12 @@ pub(super) struct PerspectiveRun<'a> {
     pub past_verdicts: &'a [PastVerdict],
 }
 
-/// Run a single perspective pass against the AI provider and parse the
-/// response into issues. All shared state is passed by reference so the
-/// caller can prepare it exactly once and fan out multiple perspectives
-/// concurrently.
+/// Run a single perspective pass and parse the response into issues.
+/// Shared state is passed by reference so the caller prepares it once and
+/// fans out perspectives concurrently.
 ///
-/// A failed provider call or unparseable response is logged and returns an
-/// empty `Vec`, preserving the "one bad perspective shouldn't kill the
-/// whole review" fault tolerance.
+/// A failed call or unparseable response is logged and returns an empty
+/// `Vec`, so one bad perspective doesn't kill the whole review.
 pub(super) async fn run_one_perspective(run: PerspectiveRun<'_>) -> Vec<ReviewIssueRecord> {
     // Always build a segmented prompt so the Anthropic path can apply
     // cache_control on the stable prefix. OpenAI-compatible providers
@@ -239,11 +230,13 @@ pub(super) async fn run_one_perspective(run: PerspectiveRun<'_>) -> Vec<ReviewIs
             parsed
         }
         Err(e) => {
-            eprintln!(
-                "[review_check_multi] perspective {} failed: {:?}",
-                run.perspective.name(),
-                e
-            );
+            if crate::env::fix_debug() {
+                eprintln!(
+                    "[review_check_multi] perspective {} failed: {:?}",
+                    run.perspective.name(),
+                    e
+                );
+            }
             Vec::new()
         }
     }

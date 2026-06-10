@@ -40,17 +40,13 @@ pub struct RenderProps<'a> {
 /// Build the sorted + filtered rule slice that drives BOTH the rendered
 /// list and selection-derived state (`selected_rule`, cursor clamp).
 ///
-/// This is the single source of truth: the list painted in the left pane
-/// and `App::selected_rule()` index into the *same* `Vec` so the
-/// highlighted row and the `e/p/s` cloud CTAs can never disagree. The
-/// previous split — `state.rs` did `rules.iter().filter().nth(idx)` over
-/// the *unsorted* corpus while the list sorted by
-/// `distribution_sort_key → repo → name` — meant any non-corpus order
-/// pointed the CTAs at the wrong rule's cloud page.
+/// Single source of truth: the list and `App::selected_rule()` index into
+/// the *same* `Vec`, so the highlighted row and the cloud CTAs can never
+/// disagree.
 ///
 /// Ordering: origin (`distribution_sort_key`) → source_repo → name. Repo
-/// as the second key keeps e.g. `tokio-rs/tokio` rules contiguous within
-/// the cloud-origin band so the visual scan matches the mental model.
+/// as the second key keeps a repo's rules contiguous within the
+/// cloud-origin band.
 pub(crate) fn ordered_filtered_rules<'a>(
     rules: &'a [SkillRecord],
     origin_filter: &RulesOriginFilter,

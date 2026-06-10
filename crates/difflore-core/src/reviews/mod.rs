@@ -21,10 +21,9 @@ pub(super) const fn default_explainability_schema_version() -> u8 {
     EXPLAINABILITY_SCHEMA_VERSION
 }
 
-// Borrow-only serialize mirrors of the metadata records. Both functions
-// stringify and discard, so the wrapper never needs ownership of the
-// underlying review fields. The owned structs in `types.rs` stay around
-// for the deserialize side.
+// Borrow-only serialize mirrors of the metadata records: these
+// stringify and discard, so no ownership is needed. The owned structs
+// in `types.rs` cover the deserialize side.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ReviewIssueSnippetRef<'a> {
@@ -191,7 +190,7 @@ mod tests {
         let items = vec![make_item("a")];
         let mut by_item: HashMap<String, Vec<ReviewCommentRecord>> = HashMap::new();
         by_item.insert("a".into(), vec![make_comment("c1", "a")]);
-        // Orphan bucket for non-existent item — should be ignored, not crash.
+        // Orphan bucket for a non-existent item must be ignored, not crash.
         by_item.insert("ghost".into(), vec![make_comment("c2", "ghost")]);
         let result = attach_comments(items, by_item);
         assert_eq!(result.len(), 1);

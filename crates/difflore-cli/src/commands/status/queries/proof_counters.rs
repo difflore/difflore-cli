@@ -24,8 +24,8 @@ pub(in crate::commands::status) struct LocalAcceptedProof {
     pub(in crate::commands::status) accepted_outcomes_linked_to_mcp_rule_serve: i64,
     pub(in crate::commands::status) accepted_outcomes_linked_to_edit_attribution: i64,
     pub(in crate::commands::status) estimated_saved_review_minutes: i64,
-    /// Whole-machine accepted outcomes that actually applied. The
-    /// repo-scoped fields above stay stable for existing dashboards.
+    /// Whole-machine accepted outcomes that actually applied (the
+    /// repo-scoped fields above remain repo-scoped).
     pub(in crate::commands::status) accepted_and_applied: i64,
     /// Accepted outcomes whose patch never reached disk.
     pub(in crate::commands::status) accepted_but_failed: i64,

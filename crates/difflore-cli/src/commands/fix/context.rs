@@ -122,8 +122,8 @@ fn normalize_target_path(repo_root: &std::path::Path, path: &std::path::Path) ->
     relative.to_string_lossy().replace('\\', "/")
 }
 
-// Prefer a representative source path so retrieval has a language signal
-// instead of only diff headers and import noise.
+// Prefer a real source file so retrieval has a language signal rather than
+// only diff headers and import noise.
 pub(super) fn primary_file_for_retrieval(diff_records: &[DiffContentRecord]) -> Option<String> {
     let first_changed = diff_records.iter().find_map(non_empty_file_path);
     diff_records

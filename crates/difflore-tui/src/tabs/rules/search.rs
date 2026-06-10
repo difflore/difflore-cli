@@ -52,10 +52,10 @@ pub(super) fn draw_list(
         .collect();
 
     let border_color = focus_border_color(focus, RulesFocus::List);
-    // Title differentiates the two search states so users can tell "I'm
-    // typing" from "filter is locked, I'm navigating":
-    //   Editing(q)   → ` rules (12) · /q_ `   ← `_` is the cursor hint
-    //   Filtering(q) → ` rules (12) · ⌕ q `   ← lens icon, no cursor
+    // Title differentiates the search states so users can tell "I'm typing"
+    // from "filter is locked, I'm navigating":
+    //   Editing(q)   → ` rules (12) · /q_ `   (`_` is the cursor hint)
+    //   Filtering(q) → ` rules (12) · ⌕ q `   (lens icon, no cursor)
     //   Off          → ` rules (12) `
     let title = match search {
         RulesSearch::Editing(q) => format!(" rules ({}) · /{q}_ ", rules.len()),
@@ -107,8 +107,8 @@ pub(super) fn draw_filter_no_results(
         active.push(("scope", scope.filter_label.to_owned(), "r cycles"));
     }
 
-    // ThisRepo-only state gets the launch brief's "No Current Repo
-    // Matches" framing instead of the generic "no rules match".
+    // ThisRepo-only state gets a repo-specific framing instead of the generic
+    // "no rules match".
     let scoped_only = matches!(origin_filter, RulesOriginFilter::All)
         && search.query().is_none_or(str::is_empty)
         && matches!(scope.filter, RulesRepoFilter::ThisRepo);

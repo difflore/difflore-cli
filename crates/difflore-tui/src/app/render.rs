@@ -41,8 +41,8 @@ impl App {
     }
 
     fn draw_header(&self, frame: &mut ratatui::Frame<'_>, area: Rect, t: &Theme) {
-        // Value strip per launch brief; segments collapse from the right
-        // when the terminal is narrow.
+        // Value strip; segments collapse from the right when the terminal is
+        // narrow.
         let memory_count = cloud_memory_rule_count(&self.state.rules);
         let raw_count = raw_local_rule_count(&self.state.rules);
         let primary_count = if memory_count > 0 {
@@ -60,8 +60,7 @@ impl App {
         } else {
             "Cloud sync off".to_owned()
         };
-        // FixOutcomeSummary tracks `applied` (patch accepted + applied);
-        // brief calls this "accepted fixes".
+        // `applied` = patch accepted and applied; shown as "accepted fixes".
         let accepted_fixes = self
             .state
             .fix_outcome_summary
@@ -198,8 +197,6 @@ impl App {
     }
 
     fn context_hint(&self) -> String {
-        // Page-specific actions first, then the always-on `? help · q quit
-        // · Tab next`.
         let always = "? help · q quit · Tab next";
         match self.active_tab {
             Tab::Rules => {
@@ -268,8 +265,8 @@ SETUP TAB\n\
 Press ? or Esc to close.";
 
 /// Paint a solid scrim across the full frame so a centred panel reads as a
-/// modal. ratatui has no real alpha — `crust` is the darkest tone in the
-/// palette and visually mutes whatever was rendered underneath.
+/// modal. ratatui has no real alpha, so `crust` (the darkest palette tone)
+/// visually mutes whatever was rendered underneath.
 pub(super) fn draw_backdrop(frame: &mut ratatui::Frame<'_>, area: Rect, t: &Theme) {
     let scrim = Block::default().style(Style::default().bg(t.crust));
     frame.render_widget(scrim, area);

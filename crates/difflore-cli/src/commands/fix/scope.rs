@@ -46,7 +46,7 @@ pub(super) fn parse_diff_scope(raw: Option<&str>) -> anyhow::Result<RequestedSco
 }
 
 // Auto: staged first, fall back to worktree if index is clean.
-// All: union of both, labelled Staged so the index-sync apply path stays engaged.
+// All: union of both, labelled Staged to keep the index-sync apply path engaged.
 pub(super) async fn collect_diff(
     path: &std::path::Path,
     requested: RequestedScope,

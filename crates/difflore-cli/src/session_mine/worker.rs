@@ -1,15 +1,13 @@
 //! Session-mine top-level worker.
 //!
-//! Composes [`super::trigger`], [`super::extract`], [`super::gate`]
-//! and the `cloud_outbox` enqueue path. The hook dispatcher spawns
-//! [`run_worker_detached`] when the trigger fires; the function is
-//! `'static` and `Send`-friendly so it can be polled on a detached
-//! tokio task.
+//! Composes [`super::extract`], [`super::gate`] and the cloud-outbox
+//! enqueue path. The hook dispatcher spawns [`run_worker_detached`]
+//! when the trigger fires.
 //!
-//! Failure policy: every error along the way is swallowed (logged to
-//! stderr at most). Session-mine is an out-of-band evidence channel
-//! — it must never block the user's hook output or surface a panic
-//! into the agent session.
+//! Failure policy: every error is swallowed (logged to stderr at
+//! most). Session-mine is an out-of-band evidence channel and must
+//! never block the user's hook output or surface a panic into the
+//! agent session.
 
 use difflore_core::cloud::outbox::{OutboxQueue, kind as outbox_kind};
 use difflore_core::cloud::session_mined::SessionMinedCandidate;
@@ -18,56 +16,43 @@ use difflore_core::infra::db::current_project_root;
 use super::extract::Pair;
 use super::gate::{ExistingRule, GateArgs, GateVerdict, run_gate};
 
-/// Cap on how many existing rules we forward to the gate prompt. The
-/// gate truncates again internally, but capping here keeps the SQL
-/// round-trip + cloning cost bounded when a team has thousands of
-/// active rules.
+/// Cap on existing rules forwarded to the gate prompt. Bounds the SQL
+/// round-trip and cloning cost when a team has thousands of rules.
 const MAX_EXISTING_RULES_FOR_GATE: usize = 24;
 
-/// Per-rule body snippet cap fed into the gate's "existing rules" digest.
-/// Full bodies bloat the prompt; the gate only needs a sense of what each
-/// rule covers, not the full text.
+/// Per-rule body snippet cap in the gate's "existing rules" digest.
 const EXISTING_RULE_BODY_SNIPPET_CHARS: usize = 280;
 
-/// Spawn the worker as a detached tokio task. Returns immediately so
-/// the caller (the hook dispatcher) doesn't pay any waiting cost.
+/// Spawn the worker as a detached tokio task, returning immediately.
 ///
 /// `client_name` is the platform string the hook reports
-/// (`"claude-code"`, `"cursor"`, …); used for the extract platform
-/// dispatch.
-///
-/// `transcript_path` is the path the hook receives in stdin for
-/// SessionEnd / Stop / PostToolUse — passed through verbatim.
-///
-/// `session_id` is the platform session id.
-///
-/// `cwd` is the working directory the hook event reports. Used to
-/// derive `source_repo` via the git remote. If `cwd` is `None` we
-/// fall back to `current_project_root()`.
+/// (`"claude-code"`, `"cursor"`, …), used for extract dispatch.
+/// `cwd` derives `source_repo` via the git remote; `None` falls back
+/// to `current_project_root()`.
 pub fn run_worker_detached(
     client_name: String,
     transcript_path: Option<String>,
     session_id: Option<String>,
     cwd: Option<String>,
 ) {
-    // Use `tokio::spawn` so the worker runs on the existing tokio
-    // runtime (the hook dispatcher is `#[tokio::main]`). If we're
-    // somehow called from outside a runtime (test harness or
-    // shutdown path), `spawn` will panic; catch via a thread fallback.
+    // Prefer the existing tokio runtime (hook dispatcher is
+    // `#[tokio::main]`); outside a runtime (e.g. test harness),
+    // `spawn` would panic, so fall back to a dedicated thread.
     let task = async move {
         if let Err(e) =
             run_worker_inner(&client_name, transcript_path.as_deref(), session_id.as_deref(), cwd.as_deref())
                 .await
         {
-            eprintln!("[difflore.session_mine] worker failed: {e}");
+            if difflore_core::env::debug_telemetry() {
+                eprintln!("[difflore.session_mine] worker failed: {e}");
+            }
         }
     };
     if tokio::runtime::Handle::try_current().is_ok() {
         tokio::spawn(task);
     } else {
-        // No runtime — likely a unit-test sandbox. Run synchronously
-        // on a temporary runtime so callers get the same observable
-        // behaviour without panicking on `spawn`.
+        // No runtime: run on a temporary one so callers get the same
+        // observable behaviour without panicking on `spawn`.
         std::thread::spawn(move || {
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -75,7 +60,9 @@ pub fn run_worker_detached(
             {
                 Ok(rt) => rt,
                 Err(e) => {
-                    eprintln!("[difflore.session_mine] cannot build fallback runtime: {e}");
+                    if difflore_core::env::debug_telemetry() {
+                        eprintln!("[difflore.session_mine] cannot build fallback runtime: {e}");
+                    }
                     return;
                 }
             };
@@ -84,8 +71,8 @@ pub fn run_worker_detached(
     }
 }
 
-/// Body of the worker. Separated from the spawn helper so unit tests
-/// can exercise it with a controlled environment.
+/// Body of the worker, separated from the spawn helper so tests can
+/// exercise it with a controlled environment.
 async fn run_worker_inner(
     client_name: &str,
     transcript_path: Option<&str>,
@@ -94,17 +81,13 @@ async fn run_worker_inner(
 ) -> Result<(), String> {
     let pairs = extract_pairs(client_name, transcript_path);
     if pairs.is_empty() {
-        // No conversational data — nothing to mine. Common on
-        // platforms whose extractor isn't built yet, or on the
-        // very first turn before the transcript exists on disk.
+        // No conversational data to mine.
         return Ok(());
     }
 
     let Some(source_repo) = resolve_source_repo(cwd) else {
         // Project Scope Invariant: never enqueue a scopeless
-        // candidate. Common when the user runs DiffLore from a
-        // bare cwd outside any git repo; we silently no-op rather
-        // than fabricate a fake `source_repo` value.
+        // candidate. We no-op rather than fabricate a `source_repo`.
         return Ok(());
     };
 
@@ -113,13 +96,14 @@ async fn run_worker_inner(
         return Ok(());
     }
 
-    // Open the local DB once: we use it to read existing rules for
-    // the gate prompt AND to enqueue the candidate on Keep. Failing
-    // here is best-effort — log + drop the session.
+    // One DB handle for both reading existing rules and enqueuing on
+    // Keep. Best-effort: log and drop the session on failure.
     let db = match difflore_core::db::init_db().await {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[difflore.session_mine] DB open failed: {e}");
+            if difflore_core::env::debug_telemetry() {
+                eprintln!("[difflore.session_mine] DB open failed: {e}");
+            }
             return Ok(());
         }
     };
@@ -139,7 +123,9 @@ async fn run_worker_inner(
     let verdict = match run_gate(args).await {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("[difflore.session_mine] gate failed: {e}");
+            if difflore_core::env::debug_telemetry() {
+                eprintln!("[difflore.session_mine] gate failed: {e}");
+            }
             return Ok(());
         }
     };
@@ -148,34 +134,35 @@ async fn run_worker_inner(
         GateVerdict::Keep { candidate } => match enqueue_candidate(&db, &candidate).await {
             Ok(_) => Ok(()),
             Err(e) => {
-                eprintln!("[difflore.session_mine] enqueue failed: {e}");
+                if difflore_core::env::debug_telemetry() {
+                    eprintln!("[difflore.session_mine] enqueue failed: {e}");
+                }
                 Ok(())
             }
         },
         GateVerdict::Merge { rule_id, .. } => {
-            // Merge handling is deferred — the cloud-side endpoint
-            // already accepts `"MERGE:<id>"` verdicts but the worker
-            // doesn't yet have the file_patterns of the existing rule
-            // to reconstruct a complete `SessionMinedCandidate`. Log
-            // and drop; a follow-up PR can lift the file_patterns
-            // from the local rule row and enqueue properly.
-            eprintln!("[difflore.session_mine] gate MERGE for {rule_id} — handling deferred");
+            // Merge handling is deferred: the worker doesn't yet have
+            // the existing rule's file_patterns needed to build a
+            // complete `SessionMinedCandidate`. Log and drop.
+            if difflore_core::env::debug_telemetry() {
+                eprintln!("[difflore.session_mine] gate MERGE for {rule_id}; handling deferred");
+            }
             Ok(())
         }
         GateVerdict::Skip { reason } => {
-            eprintln!("[difflore.session_mine] gate SKIP: {reason}");
+            if difflore_core::env::debug_telemetry() {
+                eprintln!("[difflore.session_mine] gate SKIP: {reason}");
+            }
             Ok(())
         }
     }
 }
 
-/// Read active rules from the local DB and project them into the
-/// `ExistingRule` shape the gate expects. Filters by `source_repo`
-/// when the rule has a `repo_owner` / `repo_name` pair that resolves
-/// to the same scope; rules without that metadata are included as a
-/// permissive default (they wouldn't be in the cloud-side scope
-/// anyway). Failures collapse to an empty list — the gate handles
-/// "no existing rules" as a valid input.
+/// Read active rules and project them into the `ExistingRule` shape
+/// the gate expects. Rules with a `repo_owner`/`repo_name` pair are
+/// kept only when they match `source_repo`; rules without that
+/// metadata are included permissively. Failures collapse to an empty
+/// list, which the gate treats as valid input.
 async fn load_existing_rules(db: &sqlx::SqlitePool, source_repo: &str) -> Vec<ExistingRule> {
     let Ok(skills) = difflore_core::skills::list(db).await else {
         return Vec::new();
@@ -211,15 +198,9 @@ fn extract_pairs(client_name: &str, transcript_path: Option<&str>) -> Vec<Pair> 
     super::extract::extract_recent_session_pairs(args).unwrap_or_default()
 }
 
-/// Resolve `source_repo` per the Project Scope Invariant.
-///
-/// Order:
-///
-/// 1. `cwd` (or `current_project_root()`) → git origin → `owner/repo`.
-/// 2. Same path → cwd basename, lowercased and trimmed.
-///
-/// Returns `None` only when *both* fail (e.g. running from `/` with
-/// no git, which would never be a real DiffLore workspace).
+/// Resolve `source_repo` per the Project Scope Invariant. Tries the
+/// git origin `owner/repo` first, then the lowercased cwd basename.
+/// Returns `None` only when both fail (e.g. running from `/`).
 fn resolve_source_repo(cwd: Option<&str>) -> Option<String> {
     let path = cwd.map_or_else(current_project_root, std::path::PathBuf::from);
     let path_str = path.to_string_lossy().to_string();
@@ -242,9 +223,7 @@ fn resolve_source_repo(cwd: Option<&str>) -> Option<String> {
 }
 
 /// Serialize the candidate and append it to the cloud outbox under
-/// `kind = "session_mined_candidate"`. Public so the future gate
-/// implementation can call it directly without reaching into
-/// `run_worker_inner`.
+/// `kind = "session_mined_candidate"`.
 pub async fn enqueue_candidate(
     db: &sqlx::SqlitePool,
     candidate: &SessionMinedCandidate,
@@ -284,12 +263,8 @@ mod tests {
 
     #[test]
     fn enqueue_helper_validates_payload_before_touching_the_db() {
-        // Pure-rust slice of the enqueue contract that does NOT
-        // require a live SqlitePool. The DB round-trip is covered
-        // in the difflore-core test suite where the migrations
-        // build cleanly. Here we lock the validation gate so a
-        // future refactor cannot accidentally allow an invalid
-        // payload onto the outbox path.
+        // Lock the validation gate so a refactor cannot let an invalid
+        // payload onto the outbox path. (No live SqlitePool needed.)
         let mut bad = candidate();
         bad.requires_human_approval = false;
         let err = bad.validate().unwrap_err();
@@ -302,11 +277,8 @@ mod tests {
 
     #[test]
     fn candidate_round_trips_through_json_with_kind_string() {
-        // The outbox stores the payload as JSON keyed by
-        // `outbox_kind::SESSION_MINED_CANDIDATE`. The wire shape is
-        // load-bearing for the eventual cloud-side endpoint, so
-        // lock the round-trip here even before the DB layer is
-        // exercised.
+        // The wire shape is load-bearing for the cloud-side endpoint,
+        // so lock the JSON round-trip and the outbox kind string.
         let cand = candidate();
         let payload = serde_json::to_string(&cand).expect("serialize");
         let kind = outbox_kind::SESSION_MINED_CANDIDATE;
@@ -321,9 +293,8 @@ mod tests {
 
     #[test]
     fn resolve_source_repo_prefers_git_remote_then_basename() {
-        // Outside a git repo we still get *something* — the cwd
-        // basename — so the Project Scope Invariant only drops the
-        // candidate in the truly pathological "no name at all" case.
+        // Outside a git repo, the cwd basename still satisfies the
+        // Project Scope Invariant.
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path();
         let repo = resolve_source_repo(Some(path.to_str().unwrap()));

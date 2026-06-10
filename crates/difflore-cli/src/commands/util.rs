@@ -24,6 +24,7 @@ pub(crate) fn git_str(args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
+#[cfg(test)]
 pub(crate) fn git_str_in(cwd: &str, args: &[&str]) -> Option<String> {
     let out = process::Command::new("git")
         .args(args)
@@ -36,9 +37,8 @@ pub(crate) fn git_str_in(cwd: &str, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-/// Resolve the active project root for CLI commands. Routes through
-/// `difflore_core::paths::current_project_root` so we get the git
-/// toplevel with cwd as a safe fallback.
+/// Resolve the active project root for CLI commands: the git toplevel, with
+/// cwd as fallback (via `difflore_core::paths::current_project_root`).
 pub(crate) fn project_path() -> String {
     difflore_core::paths::current_project_root()
         .to_string_lossy()
@@ -61,12 +61,12 @@ pub(crate) fn format_recall_edit_proof_breakdown(
 ) -> String {
     let mut parts = Vec::new();
     push_counted(&mut parts, rule_recall, "rule recall", "rule recalls");
-    push_counted(&mut parts, mcp_rule_serve, "MCP serve", "MCP serves");
+    push_counted(&mut parts, mcp_rule_serve, "agent recall", "agent recalls");
     push_counted(
         &mut parts,
         edit_attribution,
-        "edit attribution",
-        "edit attributions",
+        "accepted edit",
+        "accepted edits",
     );
     if parts.is_empty() {
         String::new()
@@ -85,10 +85,9 @@ fn push_counted(parts: &mut Vec<String>, count: i64, singular: &str, plural: &st
     ));
 }
 
-/// Reject obviously-malformed OWNER/REPO values before they're pasted
-/// into a GitHub query or used as a SQL filter. Format: exactly one
-/// slash, both halves non-empty, characters limited to alphanumeric /
-/// `.` / `-` / `_` (matching what GitHub allows in repo names).
+/// Reject malformed OWNER/REPO before it reaches a GitHub query or SQL
+/// filter. Requires exactly one slash, non-empty halves, and characters
+/// limited to alphanumeric / `.` / `-` / `_` (what GitHub allows).
 pub(crate) fn validate_owner_repo(s: &str) -> Result<(), &'static str> {
     let (owner, repo) = s
         .split_once('/')
@@ -106,10 +105,9 @@ pub(crate) fn validate_owner_repo(s: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Gate a destructive command per the Destructive Command Policy in the
-/// CLI redesign brief: skip the prompt when `--yes` is passed, otherwise
+/// Gate a destructive command: skip the prompt with `--yes`, otherwise
 /// require an interactive y/N. Non-TTY without `--yes` is a hard error so
-/// scripts don't accidentally hang or auto-proceed.
+/// scripts don't hang or auto-proceed.
 pub(crate) fn confirm_destructive(yes: bool, prompt: &str) {
     if yes {
         return;
@@ -117,13 +115,7 @@ pub(crate) fn confirm_destructive(yes: bool, prompt: &str) {
     use std::io::{BufRead, IsTerminal, Write};
     let stdin = std::io::stdin();
     if !stdin.is_terminal() {
-        // Previously hinted at "or `--dry-run` (preview only)" too, but
-        // `--dry-run` is only wired on a subset of destructive commands
-        // (`ingest`, `rules dedup`, etc.) — `candidates accept` and
-        // others don't accept it, so following the hint produced
-        // `error: unexpected argument '--dry-run' found`. Sticking to
-        // the universally-available flag keeps the message truthful for
-        // every caller.
+        // Don't hint `--dry-run`: only some destructive commands accept it.
         exit_err(
             "destructive action requires confirmation. \
              Re-run with `--yes` to skip the prompt (non-interactive).",
@@ -148,12 +140,10 @@ pub(crate) async fn init_db() -> difflore_core::SqlitePool {
     match difflore_core::db::init_db().await {
         Ok(pool) => pool,
         Err(e) => {
-            // Detect the stale-DB-across-versions case: sqlx surfaces a
-            // very opaque "migration NNNN was previously applied but is
-            // missing in the resolved migrations" error when the on-disk
-            // DB has a migration history a fresh binary doesn't know
-            // about. Translate to actionable copy instead of dumping the
-            // raw sqlx wording.
+            // Stale-DB-across-versions case: sqlx surfaces an opaque
+            // "migration NNNN was previously applied but is missing" when the
+            // on-disk DB has migrations this binary doesn't know about.
+            // Translate to actionable copy.
             if e.contains("was previously applied but is missing") {
                 exit_err(
                     "DiffLore's local database was created by a different version and can't be \
@@ -168,10 +158,8 @@ pub(crate) async fn init_db() -> difflore_core::SqlitePool {
     }
 }
 
-/// Clamp a numeric CLI arg into `[lo, hi]` and emit a one-line stderr
-/// warning when the value was actually adjusted. Skipped under `--json`
-/// so structured consumers don't choke on the extra line. Phrasing
-/// matches the original ad-hoc blocks in `search.rs` / `import_reviews`.
+/// Clamp a numeric CLI arg into `[lo, hi]`, warning on stderr when adjusted.
+/// Skipped under `--json` so structured consumers don't see the extra line.
 pub(crate) fn clamp_with_warn<T: Copy + Ord + std::fmt::Display>(
     name: &str,
     value: T,
@@ -189,17 +177,14 @@ pub(crate) fn clamp_with_warn<T: Copy + Ord + std::fmt::Display>(
     clamped
 }
 
-/// Pretty-print `value` as JSON, falling back to `fallback` on serializer error.
-/// JSON serialization of types in this crate effectively never fails — the
-/// fallback exists for the rare case (NaN floats, etc.) and to keep call
-/// sites concise.
+/// Pretty-print `value` as JSON, falling back to `fallback` on serializer
+/// error (rare: NaN floats, etc.).
 pub(crate) fn json_or(value: &impl serde::Serialize, fallback: &'static str) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| fallback.to_owned())
 }
 
-/// Compact-JSON sibling of [`json_or`] — uses `serde_json::to_string` (no
-/// indentation), used by hook adapters whose output is consumed by host
-/// tooling line-by-line.
+/// Compact-JSON sibling of [`json_or`] (no indentation), for hook adapters
+/// whose output is consumed line-by-line.
 pub(crate) fn json_compact_or(value: &impl serde::Serialize, fallback: &'static str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| fallback.to_owned())
 }

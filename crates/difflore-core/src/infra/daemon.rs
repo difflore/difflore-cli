@@ -27,20 +27,15 @@ use crate::cloud::outbox::{DEFAULT_STALE_SECONDS, OutboxQueue, drain_outbox};
 use crate::db::init_db;
 use crate::paths;
 
-/// Path of the PID file used by the internal daemon helpers.
 pub fn pid_path() -> Result<PathBuf, String> {
     Ok(paths::data_home()?.join("daemon.pid"))
 }
 
-/// Report the daemon liveness state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonStatus {
-    /// A PID file exists and the process is still alive.
     Running { pid: i32 },
-    /// A PID file exists but no process by that PID responds to
-    /// `kill(pid, 0)`. The file is effectively orphaned.
+    /// PID file exists but no process by that PID responds to `kill(pid, 0)`.
     Stale { pid: i32 },
-    /// No PID file found.
     NotRunning,
 }
 
@@ -54,7 +49,6 @@ impl DaemonStatus {
     }
 }
 
-/// Probe the PID file + live process without mutating anything.
 pub fn status() -> DaemonStatus {
     let Ok(path) = pid_path() else {
         return DaemonStatus::NotRunning;
@@ -87,9 +81,8 @@ fn remove_pid_file(path: &std::path::Path) {
 }
 
 #[cfg(unix)]
-/// Signal 0 delivers nothing but still validates the target exists and
-/// we have permission to signal it. Covers SIGTERM check without
-/// actually killing anything. Safe on macOS and Linux.
+/// Signal 0 delivers nothing but still validates the target exists and we
+/// have permission to signal it — a liveness probe that kills nothing.
 fn is_process_alive(pid: i32) -> bool {
     // SAFETY: libc::kill with signal 0 is a classic liveness probe —
     // returns 0 on success, -1 + errno=ESRCH if the PID is gone.
@@ -199,7 +192,6 @@ pub async fn stop(grace_secs: u64) -> Result<StopOutcome, String> {
     Ok(StopOutcome::Killed { pid })
 }
 
-/// What `stop` actually did — useful for UX messages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StopOutcome {
     NotRunning,
@@ -259,7 +251,9 @@ pub async fn run(tick_interval_secs: u64, batch_size: usize) -> Result<(), Strin
                 // retry + circuit-breaker state, so logging them here
                 // would be noisy.
                 if let Err(e) = drain_outbox(&queue, &client, batch_size).await {
-                    eprintln!("[difflore.daemon] drain error: {e}");
+                    if crate::env::debug_cloud() {
+                        eprintln!("[difflore.daemon] drain error: {e}");
+                    }
                 }
             }
         }
@@ -270,9 +264,6 @@ pub async fn run(tick_interval_secs: u64, batch_size: usize) -> Result<(), Strin
 }
 
 /// Future that resolves on the first SIGTERM or SIGINT.
-///
-/// Kept separate so `run` stays readable; also makes it testable
-/// through a feature flag if we ever need a synthetic shutdown.
 async fn shutdown_signal_future() {
     #[cfg(unix)]
     {

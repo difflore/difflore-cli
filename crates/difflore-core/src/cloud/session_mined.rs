@@ -16,116 +16,85 @@
 
 use sha2::{Digest, Sha256};
 
-/// Cap on `title` (chars, not bytes). Matches the existing
-/// `Observation::title` convention so cloud-side renderers can share
-/// truncation logic.
+/// Cap on `title`, in chars not bytes. Matches `Observation::title` so
+/// cloud-side renderers share truncation logic.
 pub const TITLE_MAX_CHARS: usize = 120;
 
-/// Cap on `body` (chars, not bytes). 2 KB is enough for a 3-5 sentence
-/// rule body with a snippet; anything longer is almost certainly the
-/// raw transcript text the gate failed to compress.
+/// Cap on `body`, in chars not bytes. 2 KB fits a 3-5 sentence body with a
+/// snippet; longer almost always means the gate failed to compress the
+/// transcript.
 pub const BODY_MAX_CHARS: usize = 2000;
 
-/// Maximum number of file glob patterns we will accept from the gate.
-/// 1-3 is the sweet spot: a single broad glob is too noisy, more than
-/// three usually means the gate failed to localise the rule.
+/// Maximum file globs accepted from the gate. More than 3 usually means
+/// the gate failed to localise the rule.
 pub const MAX_FILE_PATTERNS: usize = 3;
 
-/// Stable origin tag for the candidate-rule pipeline.
 pub const ORIGIN: &str = "session_mined";
 
-/// Wire format for one session-mined candidate. Serialised verbatim
-/// into `cloud_outbox.payload_json` under `kind =
-/// "session_mined_candidate"`.
-///
-/// Every field except `gate_verdict` carries a hard local invariant —
-/// see the `validate` method and the constructor builders below.
-/// `source_repo` is the load-bearing one: it MUST be derived from the
-/// current git remote / cwd and never empty, otherwise the candidate
-/// has no Project Scope and the cloud has no way to attribute it.
+/// Wire format for one session-mined candidate, serialised into
+/// `cloud_outbox.payload_json` under `kind = "session_mined_candidate"`.
+/// Every field except `gate_verdict` carries a local invariant enforced by
+/// `validate` and the constructor.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionMinedCandidate {
-    /// Platform session id from the hook stdin payload (Claude Code
-    /// `session_id`, Cursor session uuid, …). Empty string is *not*
-    /// accepted — cloud-side dedup keys on this.
+    /// Platform session id from the hook payload. Never empty — cloud-side
+    /// dedup keys on this.
     pub session_id: String,
-    /// Unix-ms at the moment the gate produced its verdict.
+    /// Unix-ms when the gate produced its verdict.
     pub ts_ms: i64,
-    /// `owner/repo` for the GitHub remote, or the cwd basename as a
-    /// fallback for non-GitHub repos. Never empty; rejected if the
-    /// builder can't determine a repo identity for the current
-    /// workspace.
+    /// `owner/repo`, or the cwd basename for non-GitHub repos. Never empty,
+    /// otherwise the candidate has no Project Scope and the cloud cannot
+    /// attribute it.
     pub source_repo: String,
-    /// Single-line title, ≤ [`TITLE_MAX_CHARS`] chars. The gate is
-    /// instructed to write this as a behavioural rule (imperative or
-    /// declarative); rendering on the cloud side adds prefixes like
-    /// "Remember:" so we don't double them.
+    /// Single-line title, ≤ [`TITLE_MAX_CHARS`] chars. Written as a bare
+    /// behavioural rule; the cloud adds prefixes like "Remember:".
     pub title: String,
-    /// Multi-sentence rule body, ≤ [`BODY_MAX_CHARS`] chars. Usually
-    /// 2-5 sentences plus an optional code snippet.
+    /// Rule body, ≤ [`BODY_MAX_CHARS`] chars.
     pub body: String,
-    /// 1-3 file globs, never empty. Cloud-side cascade ordering keys
-    /// on these (rules whose patterns match the target file surface
-    /// first), so a candidate with zero patterns can never be served.
+    /// 1-3 file globs, never empty. Cloud cascade ordering keys on these,
+    /// so a patternless candidate can never be served.
     pub file_patterns: Vec<String>,
-    /// Provider:model identifier for the gate call, e.g.
-    /// `"claude:haiku"`. Used for audits + future per-model recall.
+    /// Provider:model for the gate call, e.g. `"claude:haiku"`.
     pub gate_model: String,
-    /// `"KEEP"` for a brand-new rule, or `"MERGE:<id>"` where `<id>` is
-    /// the cloud rule id the gate decided to extend. Cloud applies
-    /// the MERGE shape against the named rule's body; KEEP becomes a
-    /// fresh `candidate_rules` row.
+    /// `"KEEP"` for a new rule, or `"MERGE:<id>"` to extend the named cloud
+    /// rule's body.
     pub gate_verdict: String,
     /// 16-char hex sha256 of `source_repo|title|body`. Stable across
-    /// retries so the cloud can dedup duplicate outbox uploads of the
-    /// same candidate.
+    /// retries so the cloud can dedup duplicate uploads.
     pub content_hash: String,
-    /// Origin discriminator on the wire, always [`ORIGIN`].
+    /// Wire discriminator, always [`ORIGIN`].
     pub origin: String,
-    /// Draft gate; session-mined candidates require human approval.
     pub requires_human_approval: bool,
 }
 
-/// Errors a [`SessionMinedCandidate`] can fail validation with.
-/// Returned by the constructor / `validate` so the worker can swallow
-/// invalid candidates without retrying through the outbox.
+/// Validation failures for a [`SessionMinedCandidate`]. Returned by the
+/// constructor and `validate` so the worker can drop invalid candidates
+/// without retrying through the outbox.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CandidateError {
-    /// `source_repo` is empty or whitespace-only. The Project Scope
-    /// Invariant says: drop the candidate, don't enqueue a scopeless row.
     #[error("session-mined candidate is missing source_repo — drop")]
     MissingSourceRepo,
-    /// `session_id` is empty. Without a session id the cloud cannot
-    /// dedup or attribute the candidate.
     #[error("session-mined candidate is missing session_id — drop")]
     MissingSessionId,
-    /// `title` empty or longer than [`TITLE_MAX_CHARS`].
     #[error("session-mined candidate title invalid (empty or > {TITLE_MAX_CHARS} chars)")]
     InvalidTitle,
-    /// `body` empty or longer than [`BODY_MAX_CHARS`].
     #[error("session-mined candidate body invalid (empty or > {BODY_MAX_CHARS} chars)")]
     InvalidBody,
-    /// `file_patterns` empty or > [`MAX_FILE_PATTERNS`].
     #[error("session-mined candidate must carry 1-{MAX_FILE_PATTERNS} file patterns")]
     InvalidFilePatterns,
-    /// `gate_model` empty.
     #[error("session-mined candidate is missing gate_model")]
     MissingGateModel,
-    /// `gate_verdict` empty / not `"KEEP"` / not `"MERGE:<id>"`.
     #[error("session-mined candidate gate_verdict must be 'KEEP' or 'MERGE:<id>'")]
     InvalidGateVerdict,
-    /// `requires_human_approval` was set to `false`.
     #[error("session-mined candidates must keep requires_human_approval = true")]
     NotDraft,
-    /// `origin` is anything other than [`ORIGIN`].
     #[error("session-mined candidate has wrong origin (expected {ORIGIN})")]
     WrongOrigin,
 }
 
 impl SessionMinedCandidate {
-    /// Build a new candidate from gate output. Truncates title/body to
-    /// the documented caps, derives the content hash, and pins the
-    /// origin and draft flag. Callers must drop invalid candidates.
+    /// Build a candidate from gate output: truncates title/body to the
+    /// caps, derives the content hash, and pins origin + draft flag.
     pub fn try_new(args: SessionMinedCandidateArgs) -> Result<Self, CandidateError> {
         let SessionMinedCandidateArgs {
             session_id,
@@ -189,10 +158,8 @@ impl SessionMinedCandidate {
         })
     }
 
-    /// Re-validate an existing candidate. Used by the outbox
-    /// dispatcher before posting so a corrupted row (e.g. tampered
-    /// payload, wrong-origin row migrated in) never reaches the
-    /// cloud endpoint.
+    /// Re-validate before posting so a corrupted or wrong-origin row never
+    /// reaches the cloud endpoint.
     pub fn validate(&self) -> Result<(), CandidateError> {
         if self.session_id.trim().is_empty() {
             return Err(CandidateError::MissingSessionId);
@@ -225,9 +192,7 @@ impl SessionMinedCandidate {
     }
 }
 
-/// Builder bundle accepted by [`SessionMinedCandidate::try_new`]. Kept
-/// as a struct (rather than a long argument list) so future fields
-/// can be added without breaking call sites.
+/// Builder bundle accepted by [`SessionMinedCandidate::try_new`].
 #[derive(Debug, Clone)]
 pub struct SessionMinedCandidateArgs {
     pub session_id: String,
@@ -250,10 +215,9 @@ fn is_valid_verdict(verdict: &str) -> bool {
     false
 }
 
-/// `sha256(source_repo|title|body)[:16]` as lowercase hex. Mirrors
-/// the 16-char convention used by `Observation::content_hash` and
-/// `remember_rule` so cloud-side dedup logic doesn't need a separate
-/// hash family.
+/// `sha256(source_repo|title|body)[:16]` as lowercase hex. Mirrors the
+/// 16-char convention of `Observation::content_hash` and `remember_rule`
+/// so cloud-side dedup shares one hash family.
 pub fn compute_content_hash(source_repo: &str, title: &str, body: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(source_repo.as_bytes());
@@ -309,7 +273,6 @@ mod tests {
 
     #[test]
     fn try_new_rejects_missing_source_repo() {
-        // Scopeless candidates are dropped, never enqueued.
         let mut a = args();
         a.source_repo = String::new();
         let err = SessionMinedCandidate::try_new(a).unwrap_err();
@@ -409,7 +372,6 @@ mod tests {
 
     #[test]
     fn wire_shape_serializes_with_snake_case_keys() {
-        // Lock the snake_case wire contract used by the cloud endpoint.
         let cand = SessionMinedCandidate::try_new(args()).unwrap();
         let value = serde_json::to_value(&cand).expect("serialize");
         for required in [

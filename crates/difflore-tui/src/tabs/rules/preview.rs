@@ -28,8 +28,8 @@ pub(super) fn draw_origin_summary(
 
     let total = rules.len();
 
-    // Scope line keeps the user oriented when the same TUI is launched from
-    // different repos and surfaces the `r` shortcut without a help screen.
+    // Scope line keeps the user oriented across repos and surfaces the `r`
+    // shortcut without a help screen.
     let scope_target = match scope.filter {
         RulesRepoFilter::ThisRepo => scope
             .current_repo
@@ -207,7 +207,6 @@ pub(super) fn draw_detail(
 }
 
 pub(super) fn render_empty(frame: &mut ratatui::Frame<'_>, area: Rect) {
-    // Empty-state copy aligned with launch brief: "No Memory".
     let body = Paragraph::new(vec![
         Line::from(""),
         Line::from(vec![
@@ -293,13 +292,9 @@ pub(super) fn render_error(frame: &mut ratatui::Frame<'_>, area: Rect, err: &str
     frame.render_widget(body, area);
 }
 
-// ── Embedder mode bar ────────────────────────────────────────────────────
-
 /// Single muted line pinned to the bottom of the Memory tab. Surfaces the
-/// active embedding mode + quota so the user can always see whether they're
-/// on Cloud-managed Free (capped), Cloud-managed Team (unlimited), BYOK,
-/// or the SHA1 fallback.
-///
+/// active embedding mode + quota: Cloud-managed Free (capped), Cloud-managed
+/// Team (unlimited), BYOK, or the SHA1 fallback.
 pub(super) fn draw_embedder_status_bar(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
@@ -308,11 +303,9 @@ pub(super) fn draw_embedder_status_bar(
     let theme = crate::theme::Theme::current();
     let mut snapshot = read_embedder_mode_snapshot();
     apply_plan_to_embedder_snapshot(&mut snapshot, plan);
-    // Budget is `area.width - 1` because the line is rendered with a
-    // single leading space below. `truncate` keeps the result within
-    // that budget *including* the ellipsis (the old `truncate_display`
-    // appended `…` past the budget, so a truncated bar + the leading
-    // space overran the line by one column).
+    // Budget is `area.width - 1` to account for the single leading space
+    // rendered below; `truncate` keeps the result (including the ellipsis)
+    // within that budget.
     let text = truncate(
         &format_embedder_status_bar(&snapshot),
         usize::from(area.width.saturating_sub(1)),
@@ -447,8 +440,8 @@ pub(super) fn format_embedder_status_bar(snap: &EmbedderModeSnapshot) -> String 
     match snap.mode {
         EmbedderMode::CloudManaged => {
             let plan = snap.plan.as_deref().unwrap_or("free");
-            // Free tier mentions cap + both upgrade exits. Paid tiers
-            // collapse to the unlimited line — never nag a paying user.
+            // Free tier shows the cap + upgrade exits; paid tiers collapse to
+            // the unlimited line so we never nag a paying user.
             if plan.eq_ignore_ascii_case("free") {
                 let (used, cap) = snap.cloud_cap.unwrap_or((0, DEFAULT_FREE_EMBED_CAP));
                 format!("Cloud embeddings · Free · {used}/{cap} embedded · Team/BYOK for unlimited")
@@ -461,9 +454,9 @@ pub(super) fn format_embedder_status_bar(snap: &EmbedderModeSnapshot) -> String 
             format!("BYOK embeddings · {host} · unlimited")
         }
         EmbedderMode::Sha1 => {
-            // Renamed from "SHA1 fallback" — the hash is used inside a
-            // local-lexical hybrid (hash + FTS5), not as a pretend-semantic
-            // embedder. Honest framing keeps the upgrade path visible.
+            // "Local lexical", not "SHA1": the hash feeds a hash + FTS5 hybrid,
+            // not a pretend-semantic embedder, and the copy keeps the upgrade
+            // path visible.
             "Local lexical · cloud login or BYOK for semantic recall".to_owned()
         }
     }

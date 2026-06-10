@@ -1,11 +1,11 @@
-//! MCP uninstaller: the inverse of `install_all`. Removes the `difflore`
-//! entry (and DiffLore hook groups) from every surface DiffLore wired, using
-//! the canonical record at `~/.difflore/mcp.json` to know what was installed,
-//! then deletes that record. Mirrors `install.rs` in structure and style.
+//! MCP uninstaller: the inverse of `install_all`. Removes the `difflore` entry
+//! (and DiffLore hook groups) from every wired surface, using the canonical
+//! record at `~/.difflore/mcp.json` to know what was installed, then deletes
+//! that record.
 //!
-//! Every per-surface remover is a safe no-op when no DiffLore entry exists,
-//! so a missing/corrupt canonical record degrades gracefully to "attempt
-//! every surface" rather than stranding a half-installed machine.
+//! Every per-surface remover is a safe no-op when no DiffLore entry exists, so a
+//! missing/corrupt canonical record degrades gracefully to "attempt every
+//! surface" rather than stranding a half-installed machine.
 
 use std::collections::BTreeSet;
 
@@ -25,18 +25,15 @@ fn record_selects_claude(recorded_keys: &BTreeSet<String>) -> bool {
     recorded_keys.contains("claude") || recorded_keys.contains("claude hooks")
 }
 
-/// Pure selection step: pick the `AGENTS` rows to uninstall for
-/// `recorded_keys`. An empty set means "no usable record" and selects every
-/// surface so a missing or corrupt record still fully cleans up. Claude Code
-/// hooks have no standalone remover (the Claude Code MCP row covers them), so
-/// that row is dropped here — keeping the exact shape of the legacy list while
-/// reading from the single registry table. Split out so the dispatch policy can
-/// be unit-tested without touching the filesystem or PATH.
+/// Pick the `AGENTS` rows to uninstall for `recorded_keys`. An empty set means
+/// "no usable record" and selects every surface so a missing or corrupt record
+/// still fully cleans up. Claude Code hooks have no standalone remover (the
+/// Claude Code MCP row covers them), so that row is dropped here. Pure, so the
+/// dispatch policy can be unit-tested without touching the filesystem or PATH.
 fn selected_specs(recorded_keys: &BTreeSet<String>) -> Vec<&'static AgentSpec> {
     let attempt_all = recorded_keys.is_empty();
     AGENTS
         .iter()
-        // Claude Code hooks ride inside the Claude Code MCP remover.
         .filter(|spec| spec.name != "Claude Code hooks")
         .filter(|spec| {
             if attempt_all {
@@ -78,7 +75,7 @@ fn print_uninstall_outcomes(outcomes: &[TargetOutcome], dry_run: bool) {
         let plain_verb = uninstall_outcome_verb(&o.status, dry_run);
         let (mark, verb) = match &o.status {
             Status::Error(_) => (style::err(sym::ERR), style::danger(plain_verb)),
-            _ if dry_run => (style::amber("·"), style::amber(plain_verb)),
+            _ if dry_run => (style::amber("-"), style::amber(plain_verb)),
             _ => (style::ok(sym::OK), style::emerald(plain_verb)),
         };
         println!("  {mark} {:<14} {verb}", o.name.bold());
@@ -93,7 +90,7 @@ fn print_uninstall_outcomes(outcomes: &[TargetOutcome], dry_run: bool) {
     if !nothing_to_remove.is_empty() {
         println!(
             "  {} {}",
-            style::pewter("·"),
+            style::pewter("-"),
             style::pewter(&format!(
                 "no DiffLore entry found (already clean): {}",
                 nothing_to_remove.join(", ")
@@ -143,9 +140,9 @@ pub fn uninstall_all(dry_run: bool) {
     if recorded_keys.is_empty() {
         println!(
             "  {} {}",
-            style::pewter("·"),
+            style::pewter("-"),
             style::pewter(
-                "no canonical record (~/.difflore/mcp.json) — scanning every supported surface"
+                "no canonical record (~/.difflore/mcp.json); scanning every supported surface"
             ),
         );
     } else {
@@ -206,7 +203,7 @@ pub fn uninstall_all(dry_run: bool) {
     println!();
     if removed.is_empty() && errored.is_empty() {
         println!(
-            "{} nothing to remove — DiffLore was not wired into any detected agent.",
+            "{} nothing to remove; DiffLore was not wired into any detected agent.",
             style::emerald(sym::TIP)
         );
     } else {

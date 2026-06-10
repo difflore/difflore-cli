@@ -1,27 +1,21 @@
 //! Locate the binary on disk for each supported agent CLI.
 //!
-//! Strategy is the same one hivemind's `gate-runner.ts` uses:
+//!   1. Check a hand-curated list of well-known install paths for the agent on
+//!      this OS. Catches official-installer locations outside `PATH` (e.g.
+//!      `~/.claude/local/claude.exe`).
+//!   2. Fall back to `which::which(<command>)` for brew / apt / manual-PATH /
+//!      npm-global installs.
 //!
-//!   1. Check a small, hand-curated list of well-known install paths
-//!      for the agent on the current OS. Catches the case where the
-//!      user installed via the official installer (which writes outside
-//!      anything `PATH` covers — e.g. `~/.claude/local/claude.exe` on
-//!      Windows) but their shell `PATH` doesn't include that dir.
-//!   2. Fall back to `which::which(<command>)` — picks up anything the
-//!      user installed via brew / apt / a manual `PATH` edit / npm-global.
-//!
-//! Returning the absolute path (rather than the bare command name) lets
-//! `tokio::process::Command::new` skip its own `PATH` walk and gets us
-//! deterministic behaviour when multiple installs exist.
+//! Returning the absolute path lets `tokio::process::Command::new` skip its own
+//! `PATH` walk and stay deterministic when multiple installs exist.
 
 use std::path::PathBuf;
 
 use super::types::AgentKind;
 
-/// Resolve the binary for `agent` on this host, or `None` if it can't
-/// be located. `None` is the signal `dispatch_gate` uses to short-
-/// circuit with an errored `GateResult` — callers never see the
-/// `which::Error` directly.
+/// Resolve the binary for `agent` on this host, or `None` if it can't be
+/// located. `dispatch_gate` treats `None` as the signal to short-circuit with
+/// an errored `GateResult`.
 #[must_use]
 pub(super) fn find_binary(agent: AgentKind) -> Option<PathBuf> {
     let command = command_name(agent)?;
@@ -35,9 +29,8 @@ pub(super) fn find_binary(agent: AgentKind) -> Option<PathBuf> {
     which::which(command).ok()
 }
 
-/// Bare command name expected on `PATH`. `None` for agents with no
-/// headless CLI today (`Windsurf`) so callers can short-circuit before
-/// touching the filesystem.
+/// Bare command name expected on `PATH`. `None` for agents with no headless CLI
+/// (`Windsurf`) so callers can short-circuit before touching the filesystem.
 #[must_use]
 pub(super) const fn command_name(agent: AgentKind) -> Option<&'static str> {
     Some(match agent {
@@ -49,10 +42,9 @@ pub(super) const fn command_name(agent: AgentKind) -> Option<&'static str> {
     })
 }
 
-/// Build the OS-specific list of well-known install paths to probe
-/// before falling back to `which`. Order matters: official installers
-/// first (these are the most surprising-but-common install locations),
-/// then package-manager defaults.
+/// OS-specific well-known install paths to probe before falling back to
+/// `which`. Order matters: official installers first, then package-manager
+/// defaults.
 fn candidate_paths(agent: AgentKind) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
@@ -68,8 +60,7 @@ fn candidate_paths(agent: AgentKind) -> Vec<PathBuf> {
             AgentKind::Windsurf => None,
         };
         if let Some(exe) = exe {
-            // Official-installer-style: `%USERPROFILE%\.claude\local\claude.exe`,
-            // `%USERPROFILE%\.codex\bin\codex.exe`, etc.
+            // Official-installer paths, e.g. `%USERPROFILE%\.claude\local\claude.exe`.
             if let Some(home) = home.as_ref() {
                 if let Some(home_dir) = home_subdir_for(agent) {
                     paths.push(home.join(home_dir).join("local").join(exe));
@@ -83,10 +74,8 @@ fn candidate_paths(agent: AgentKind) -> Vec<PathBuf> {
                         .join(exe),
                 );
             }
-            // Env-var-driven `%LOCALAPPDATA%` / `%PROGRAMFILES%` — these
-            // are usually under `%USERPROFILE%\AppData\Local` already
-            // (covered above) but a tweaked `LOCALAPPDATA` deserves a
-            // direct probe.
+            // A tweaked `%LOCALAPPDATA%` / `%PROGRAMFILES%` may point outside the
+            // `%USERPROFILE%\AppData\Local` paths covered above, so probe directly.
             if let Some(local) = std::env::var_os("LOCALAPPDATA") {
                 let local = PathBuf::from(local);
                 paths.push(local.join(exe));
@@ -125,9 +114,8 @@ fn candidate_paths(agent: AgentKind) -> Vec<PathBuf> {
     paths
 }
 
-/// The `~/.X/` home subdir that holds the official-installer output
-/// for each agent. Returning `None` means "no known per-user install
-/// location" — fall back to PATH / `which`.
+/// The `~/.X/` home subdir holding each agent's official-installer output.
+/// `None` means no known per-user install location (fall back to PATH).
 #[must_use]
 const fn home_subdir_for(agent: AgentKind) -> Option<&'static str> {
     Some(match agent {
@@ -145,19 +133,15 @@ mod tests {
 
     #[test]
     fn windsurf_has_no_command_name() {
-        // Windsurf is wired into the enum for symmetry with the hook
-        // adapters but has no headless CLI. The runner relies on this
-        // returning `None` to short-circuit with a meaningful error
-        // before touching the filesystem.
+        // Windsurf has no headless CLI; the runner relies on `None` to
+        // short-circuit with a meaningful error before touching the filesystem.
         assert_eq!(command_name(AgentKind::Windsurf), None);
     }
 
     #[test]
     fn supported_agents_have_unique_command_names() {
-        // Sanity: two agents mapping to the same binary name would be
-        // a copy-paste bug — every candidate path for the wrong agent
-        // would still resolve, and dispatch_gate would call the wrong
-        // CLI.
+        // Two agents sharing a binary name would be a copy-paste bug:
+        // dispatch_gate would resolve and call the wrong CLI.
         let mut seen = std::collections::HashSet::new();
         for agent in [
             AgentKind::ClaudeCode,
@@ -197,8 +181,8 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_candidate_paths_use_exe_suffix() {
-        // Spot-check: every Windows candidate path must end in `.exe`,
-        // otherwise the official-installer path won't match.
+        // Every Windows candidate path must end in `.exe`, or the
+        // official-installer path won't match.
         let paths = candidate_paths(AgentKind::ClaudeCode);
         assert!(!paths.is_empty());
         for path in &paths {
@@ -213,7 +197,7 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn unix_candidate_paths_have_no_extension() {
-        // Spot-check the reverse: Unix paths should not carry `.exe`.
+        // Unix paths should not carry `.exe`.
         let paths = candidate_paths(AgentKind::ClaudeCode);
         assert!(!paths.is_empty());
         for path in &paths {

@@ -1,8 +1,8 @@
 //! Durable flywheel observations for rule recall and edit outcomes.
 //!
-//! This is separate from the older PostToolUse observation classifier:
-//! classifier observations describe "what changed"; these events describe
-//! "which rule was shown, appeared to guide an edit, and was kept/reverted".
+//! Separate from the PostToolUse observation classifier: classifier
+//! observations describe "what changed"; these describe which rule was shown,
+//! appeared to guide an edit, and was kept or reverted.
 
 mod dedup;
 mod events;

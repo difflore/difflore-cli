@@ -18,18 +18,12 @@ const OUTBOX_DB_NAME: &str = "observations_outbox.db";
 const MAX_QUEUE_ROWS: i64 = 10_000;
 pub(super) const MAX_FLUSH_BATCH: i64 = 64;
 
-// Outbox primitives shared with `cloud::outbox` live in
-// `crate::cloud::outbox_core`. Re-exported here under the same
-// `pub(super)` names so `sync.rs` and this module's tests keep
-// importing them via `super::storage::{...}` unchanged. The shared
-// retry/abandon bound (`MAX_RETRY_COUNT`) is consumed via
-// `outbox_core::decide_retry` directly, so it is not re-exported here.
+// Re-exported under `pub(super)` so `sync.rs` and this module's tests import
+// them via `super::storage::{...}`.
 pub(super) use crate::cloud::outbox_core::{now_unix_ms, truncate};
 
 /// One decoded *accepted* `fix_outcome` row, the unit the three
-/// accepted-outcome aggregators fold over. Mirrors the
-/// `ObservationEvent::FixOutcome` fields the callers destructured
-/// inline before the shared fold was extracted.
+/// accepted-outcome aggregators fold over.
 struct AcceptedOutcome {
     rule_id: String,
     session_id: String,
@@ -38,10 +32,9 @@ struct AcceptedOutcome {
     mcp_serve_event_ids: Vec<i64>,
 }
 
-/// Per-caller error-message context for [`ObservationEmitter::
-/// fold_accepted_outcomes`]. Each aggregator emitted slightly
-/// different SQL/IO error strings; threading them through here keeps
-/// those messages byte-identical after the extraction.
+/// Per-caller SQL/IO error-message strings for
+/// [`ObservationEmitter::fold_accepted_outcomes`], so each aggregator keeps its
+/// own distinct error text.
 struct AcceptedOutcomeCtx {
     select_err: &'static str,
     read_err: &'static str,
@@ -350,9 +343,7 @@ impl ObservationEmitter {
         Ok(count > 0)
     }
 
-    /// Window start for an `N`-day accepted-outcome lookback, in unix
-    /// ms. Extracted verbatim from the three aggregators below so they
-    /// can never drift on the boundary arithmetic.
+    /// Window start for an `N`-day accepted-outcome lookback, in unix ms.
     fn accepted_outcomes_since_ms(days: i64) -> i64 {
         Utc::now()
             .checked_sub_signed(chrono::Duration::days(days.max(1)))
@@ -360,24 +351,15 @@ impl ObservationEmitter {
             .timestamp_millis()
     }
 
-    /// Load every *accepted* `fix_outcome` row whose `occurred_at_ms`
-    /// is within the last `days` days, decoded into its component
-    /// fields.
+    /// Load every *accepted* `fix_outcome` row within the last `days` days,
+    /// decoded into its component fields.
     ///
-    /// This folds the SELECT + per-row `payload_json` read + JSON
-    /// decode + `FixOutcome { accepted: true }` filter that
-    /// `accepted_fix_outcome_count`,
-    /// `accepted_recall_link_summary` and
-    /// `accepted_fix_outcome_rule_summaries` each used to open-code
-    /// identically. It deliberately does **not** apply the
-    /// `rule_id.trim()` / empty-skip or the `prior_rule_use_links`
-    /// cross-link: those differ per caller (the count path skips links
-    /// entirely; the recall summary links on the raw `rule_id`; the
-    /// rule summary trims first), so each caller keeps its own loop
-    /// over the decoded outcomes. Non-`FixOutcome` / rejected rows are
-    /// skipped exactly as before. `ctx` is woven into the two SQL/IO
-    /// error messages so they stay byte-identical to the pre-refactor
-    /// strings the callers emitted.
+    /// Does the shared SELECT + `payload_json` decode + `accepted: true`
+    /// filter, skipping non-`FixOutcome` / rejected rows. It deliberately does
+    /// NOT apply the `rule_id.trim()` / empty-skip or the `prior_rule_use_links`
+    /// cross-link — those differ per caller, so each caller loops over the
+    /// decoded outcomes itself. `ctx` supplies the per-caller SQL/IO error
+    /// strings.
     async fn fold_accepted_outcomes(
         &self,
         days: i64,
@@ -421,9 +403,8 @@ impl ObservationEmitter {
     }
 
     pub async fn accepted_fix_outcome_count(&self, days: i64) -> Result<i64, String> {
-        // The count path historically never computed prior-recall
-        // links, so folding here keeps the exact same single-SELECT
-        // query profile.
+        // The count path never computes prior-recall links, keeping a single
+        // SELECT.
         let outcomes = self
             .fold_accepted_outcomes(
                 days,
@@ -466,12 +447,10 @@ impl ObservationEmitter {
                     lookback_ms,
                 )
                 .await?;
-            // Accepted-edit hook records the MCP serve event ids inline
-            // when a recent serve in the same scope surfaced this rule.
-            // This closes the cross-link in cases where session_id and
-            // file_path heuristics miss (e.g. serve recorded from the
-            // hook with `session_id="hook"`, accepted edit recorded with
-            // the agent session id).
+            // Inline serve-event ids close the cross-link when the session_id
+            // and file_path heuristics miss (e.g. serve recorded from the hook
+            // with `session_id="hook"`, accepted edit with the agent session
+            // id).
             if !outcome.mcp_serve_event_ids.is_empty() {
                 links.mcp_rule_serve = true;
             }

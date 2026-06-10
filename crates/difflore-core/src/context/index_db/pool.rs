@@ -38,11 +38,10 @@ pub async fn rule_index_is_current(
     if embedding_profile.as_deref() != Some(state.embedding_profile.as_str()) {
         return Ok(false);
     }
-    // Repo-scope identity: when the caller filtered the corpus to a git repo
-    // scope (`scope_signature` is `Some`), the persisted signature must match
-    // exactly, otherwise a scope swap with the same count/timestamp would be
-    // treated as fresh and the wrong scope's chunks would be served. A `None`
-    // signature is scope-agnostic (whole-corpus callers) and skips this gate.
+    // When the corpus was scoped to a repo (`scope_signature` is `Some`), the
+    // persisted signature must match exactly; otherwise a scope swap with the
+    // same count/timestamp would serve the wrong scope's chunks. `None` is
+    // scope-agnostic (whole-corpus) and skips this gate.
     if let Some(expected) = state.scope_signature.as_deref() {
         let stored = read_meta(pool, "skills_scope_signature").await?;
         if stored.as_deref() != Some(expected) {
@@ -60,12 +59,10 @@ pub async fn mark_rule_index_current(
     write_meta(pool, "rule_index_version", RULE_INDEX_META_VERSION).await?;
     write_meta(pool, "skills_count", &state.rule_count.to_string()).await?;
     write_meta(pool, "embedding_profile", &state.embedding_profile).await?;
-    // Scope-agnostic callers (`scope_signature == None`) persist an empty
-    // marker rather than deleting the row. `read_meta` would map a missing row
-    // and an empty value the same way, and the freshness check only consults
-    // this key when the *incoming* state carries `Some(..)`, so an empty
-    // marker is inert. Reusing `write_meta` avoids a second compile-checked
-    // SQL string that the offline sqlx cache would have to track.
+    // Scope-agnostic callers persist an empty marker instead of deleting the
+    // row: the freshness check only consults this key when the incoming state
+    // is `Some(..)`, so an empty marker is inert. Reusing `write_meta` avoids
+    // a second SQL string for the offline sqlx cache to track.
     let scope_marker = state.scope_signature.as_deref().unwrap_or_default();
     write_meta(pool, "skills_scope_signature", scope_marker).await?;
     match &state.max_updated_at {
@@ -79,18 +76,15 @@ pub async fn mark_rule_index_current(
     Ok(())
 }
 
-/// Process-wide cache of per-project index pools. Keyed by `project_hash`
-/// (see `db::project_hash_from_root`). Lazily populated on first
-/// `get_pool_for_project` call; pools live for the lifetime of the
-/// process which matches `SQLx`'s usual pool lifetime pattern.
+/// Process-wide cache of per-project index pools, keyed by `project_hash`.
+/// Lazily populated; pools live for the process lifetime.
 fn pool_cache() -> &'static Mutex<HashMap<String, SqlitePool>> {
     static CACHE: OnceLock<Mutex<HashMap<String, SqlitePool>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Get or lazily create the `index_db` pool for a project. Pool creation is
-/// serialised on the cache mutex so two tool calls racing on the same
-/// project produce exactly one pool.
+/// Get or lazily create the `index_db` pool for a project. Creation is
+/// serialised on the cache mutex so racing callers produce exactly one pool.
 pub async fn get_pool_for_project(project_hash: &str) -> Result<SqlitePool, CoreError> {
     let mut cache = pool_cache().lock().await;
     if let Some(existing) = cache.get(project_hash) {
@@ -104,18 +98,15 @@ pub async fn get_pool_for_project(project_hash: &str) -> Result<SqlitePool, Core
 
 /// Open a standalone, fully-migrated index-DB pool at an explicit path.
 ///
-/// Unlike [`get_pool_for_project`] this is neither cached nor tied to
-/// `~/.difflore/projects/{hash}/`: the caller owns the path. Intended for an
-/// ephemeral index (e.g. a `TempDir` backing the `difflore try` demo) so the
-/// corpus leaves no trace in the user's real per-project data.
+/// Unlike [`get_pool_for_project`], this is neither cached nor tied to
+/// `~/.difflore/projects/{hash}/` — the caller owns the path. For ephemeral
+/// indexes (e.g. a `TempDir` backing `difflore try`) that must leave no trace.
 pub async fn open_index_pool_at(path: &std::path::Path) -> Result<SqlitePool, CoreError> {
     open_pool_at(path).await
 }
 
-/// Resolve the per-project pool for the current working directory. Convenience
-/// wrapper that determines the project root, hashes it, and calls
-/// `get_pool_for_project`. Callers that already hold a hash should call
-/// `get_pool_for_project` directly.
+/// Resolve the per-project pool for the current working directory. Callers
+/// that already hold a hash should call `get_pool_for_project` directly.
 pub async fn get_pool_for_cwd() -> Result<SqlitePool, CoreError> {
     let root = crate::db::current_project_root();
     let hash = crate::db::project_hash_from_root(&root);

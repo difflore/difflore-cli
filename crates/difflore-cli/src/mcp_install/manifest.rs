@@ -1,36 +1,21 @@
 //! Install manifest for the hash-tracked canonical record at
 //! `~/.difflore/mcp.json`.
 //!
-//! ## Why
+//! Per target, the manifest stores the config path, `block_kind`, the rendered
+//! block's SHA-256, and the `block_version`. This lets `update` tell an
+//! unchanged DiffLore block (safe to replace) from a hand-edited one (must not
+//! clobber), and run a targeted migration when the block shape changes.
 //!
-//! The v1 record stored *what* we installed (binary + arg + a list of
-//! display-name strings) but **not how**: no per-target config path, no record
-//! of the exact bytes we wrote, no block-shape version. That made two things
-//! impossible: (1) telling "this difflore block is unchanged since DiffLore
-//! wrote it" (safe to replace) from "the human hand-edited it" (must not
-//! clobber); and (2) running a *targeted* migration when DiffLore ships a new
-//! block shape. The v2 manifest stores, per target, the config path, the
-//! `block_kind`, the rendered block's SHA-256, and the `block_version` we
-//! stamped — every field a fact we directly observe, never a fabricated metric
-//! and never config *contents*.
+//! We hash the rendered difflore block in isolation, not the whole file (the
+//! file is co-owned). The install-time hash uses the same `Value`/string the
+//! installer writes; the update-time check re-extracts our block from disk and
+//! re-hashes it with identical canonicalisation (see the `render_*` /
+//! `extract_*` pairs in `json_config.rs`, `hooks_install.rs`, `goose_yaml.rs`).
 //!
-//! ## What we hash
-//!
-//! The *rendered difflore block in isolation*, not the whole file (the file is
-//! co-owned — the user legitimately edits other entries). The install-time hash
-//! is computed from the same `Value`/string the installer hands to `fs::write`;
-//! the update-time check re-extracts our block from disk and re-hashes it with
-//! the identical canonicalisation (see the `render_*` / `extract_*` pairs in
-//! `json_config.rs`, `hooks_install.rs`, `goose_yaml.rs`).
-//!
-//! ## Honesty / isolation guardrails
-//!
-//! The manifest lives under [`difflore_core::paths::data_home`] like every
-//! other local artifact (honours `$DIFFLORE_HOME` / the test home) and stores
-//! hashes + paths only — never config contents, never anything repo-scoped.
-//! Externally-CLI-managed targets (Claude MCP via `claude mcp add`, Codex via
-//! `codex mcp add`) are explicitly marked `managed_by: "external-cli"` with no
-//! hash and no path, since we never author those bytes.
+//! Stores hashes + paths only, never config contents. Externally-CLI-managed
+//! targets (Claude MCP via `claude mcp add`, Codex via `codex mcp add`) are
+//! marked `managed_by: "external-cli"` with no hash and no path, since we never
+//! author those bytes.
 
 use std::path::PathBuf;
 
@@ -52,9 +37,9 @@ use super::{
 /// `installed_targets`-only record (no `manifest_version`, no `targets`).
 pub(super) const MANIFEST_VERSION: u32 = 2;
 
-/// How DiffLore manages a target's bytes. Mirrors the manifest `managed_by`
-/// field. `Difflore` = we wrote the block (hashable); `ExternalCli` = the
-/// agent's own CLI owns the file (not hashable by us).
+/// How DiffLore manages a target's bytes. `Difflore` = we wrote the block
+/// (hashable); `ExternalCli` = the agent's own CLI owns the file (not hashable
+/// by us).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(super) enum ManagedBy {
@@ -63,14 +48,13 @@ pub(super) enum ManagedBy {
 }
 
 /// One per-target row in the v2 manifest. `surface_key` is the stable
-/// [`registry::canonical_target_key`] join key (matches probe/status output and
-/// uninstall planning); `block_hash` / `config_path` are `None` for externally
-/// CLI-managed targets.
+/// [`registry::canonical_target_key`] join key; `block_hash` / `config_path`
+/// are `None` for externally CLI-managed targets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct ManifestTarget {
     /// Canonical display name (== `TargetOutcome.name` == `AgentSpec.name`).
     pub name: String,
-    /// `canonical_target_key(name)` — stable lower-cased join key.
+    /// Stable lower-cased join key.
     pub surface_key: String,
     pub managed_by: ManagedBy,
     /// Absolute config path we wrote; `null` for external-cli targets.
@@ -92,9 +76,8 @@ pub(super) struct ManifestTarget {
     pub updated_at: String,
 }
 
-/// The v2 install manifest. Keeps the v1 top-level fields (`command`, `args`,
-/// `installed_targets`) so v1 readers keep working, and adds
-/// `manifest_version` + the per-target `targets` array.
+/// The v2 install manifest. Keeps the v1 top-level fields so v1 readers keep
+/// working, and adds `manifest_version` + the per-target `targets` array.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct InstallManifest {
     pub manifest_version: u32,
@@ -106,31 +89,27 @@ pub(super) struct InstallManifest {
     pub targets: Vec<ManifestTarget>,
 }
 
-// ── Hashing ────────────────────────────────────────────────────────────────
+// Hashing
 
-/// Hash a rendered block's bytes into `"sha256:<hex>"`. Delegates to
-/// [`difflore_core::crypto::sha256_block_hex`] so the algorithm choice + the
-/// `sha2` dep live in one crate.
+/// Hash a rendered block's bytes into `"sha256:<hex>"`.
 pub(super) fn hash_block(bytes: &[u8]) -> String {
     difflore_core::crypto::sha256_block_hex(bytes)
 }
 
-/// Canonical bytes for a single `Value` block (mcp_json). Built with the same
-/// `serde_json::to_string` the installers write through, so the hash matches our
-/// render. A serialization failure (never expected for the simple objects we
-/// build) degrades to an empty hash input rather than panicking.
+/// Canonical bytes for a single `Value` block (mcp_json), built with the same
+/// `serde_json::to_string` the installers write through so the hash matches our
+/// render. A serialization failure degrades to an empty hash input rather than
+/// panicking.
 fn value_bytes(value: &Value) -> Vec<u8> {
     serde_json::to_string(value)
         .unwrap_or_default()
         .into_bytes()
 }
 
-/// Canonical bytes for a *set* of hook group `Value`s. The render walks events
-/// in event-list order while the extract walks the on-disk hooks object in
-/// (BTreeMap-sorted) key order, so to make the install-time and update-time
-/// hashes agree we sort the per-group serializations before joining. The hash
-/// is therefore over the *content* of our contributed groups, independent of
-/// the file's event-iteration order.
+/// Canonical bytes for a set of hook group `Value`s. Render and extract walk
+/// events in different orders, so we sort the per-group serializations before
+/// joining; the hash is over the content of our contributed groups,
+/// independent of the file's event-iteration order.
 fn hook_groups_bytes(groups: &[Value]) -> Vec<u8> {
     let mut serialized: Vec<String> = groups
         .iter()
@@ -140,10 +119,9 @@ fn hook_groups_bytes(groups: &[Value]) -> Vec<u8> {
     serialized.join("\n").into_bytes()
 }
 
-/// The hashable bytes DiffLore *would render* for `spec` with binaries
+/// Install-time hash: the bytes DiffLore would render for `spec` with binaries
 /// `mcp_bin` (JSON/YAML config) / `cli_bin` (hook shim path). `None` for
-/// external-cli surfaces (no authored bytes). This is the install-time hash
-/// input.
+/// external-cli surfaces.
 pub(super) fn render_block_hash(spec: &AgentSpec, mcp_bin: &str, cli_bin: &str) -> Option<String> {
     match registry::block_kind_of(spec) {
         BlockKind::McpJson => Some(hash_block(&value_bytes(&render_mcp_json_block(mcp_bin)))),
@@ -157,10 +135,9 @@ pub(super) fn render_block_hash(spec: &AgentSpec, mcp_bin: &str, cli_bin: &str) 
     }
 }
 
-/// The hashable bytes of the difflore block *currently on disk* for `spec`,
-/// canonicalised identically to [`render_block_hash`]. `None` when the file is
-/// missing or has no difflore block (the "gone" case in `update`), or for
-/// external-cli surfaces. This is the update-time check input.
+/// Update-time check: the bytes of the difflore block currently on disk for
+/// `spec`, canonicalised identically to [`render_block_hash`]. `None` when the
+/// file is missing or has no difflore block, or for external-cli surfaces.
 pub(super) fn on_disk_block_hash(spec: &AgentSpec, _cli_bin: &str) -> Option<String> {
     let path = registry::resolve_path(spec).ok()?;
     match registry::block_kind_of(spec) {
@@ -185,8 +162,8 @@ pub(super) fn on_disk_block_hash(spec: &AgentSpec, _cli_bin: &str) -> Option<Str
     }
 }
 
-/// The render fn for each hook surface (kept here so the manifest, not the
-/// registry driver, owns the render↔extract pairing).
+/// The render fn for each hook surface. Kept here so the manifest, not the
+/// registry driver, owns the render↔extract pairing.
 fn render_hook_groups(surface: HookSurface, cli_bin: &str) -> Vec<Value> {
     match surface {
         HookSurface::Claude => render_claude_code_hook_block(cli_bin),
@@ -207,17 +184,16 @@ const fn hook_client(surface: HookSurface) -> &'static str {
     }
 }
 
-// ── Building manifest targets after a successful install ────────────────────
+// Building manifest targets after a successful install
 
-/// Build the v2 `targets` array from the set of installed surface names plus
-/// the current binaries. `installed_names` is the canonical-display-name list
-/// of every `difflore`/external-cli surface we just wired (derived from the
-/// install outcomes + current probe snapshot, exactly like the v1 record).
+/// Build the v2 `targets` array from the installed surface names plus the
+/// current binaries. `installed_names` is the canonical-display-name list of
+/// every surface we just wired.
 ///
-/// `prior` is the previously-loaded manifest (if any), used to preserve each
-/// target's original `installed_at` so a re-install/upgrade only bumps
-/// `updated_at`. The Claude Code MCP row carries its lifecycle hooks, so a
-/// "Claude Code" install also emits a "Claude Code hooks" manifest target.
+/// `prior` is the previously-loaded manifest, used to preserve each target's
+/// original `installed_at` so a re-install only bumps `updated_at`. A "Claude
+/// Code" install also emits a "Claude Code hooks" target since the MCP row
+/// carries its lifecycle hooks.
 pub(super) fn build_targets(
     installed_names: &[&str],
     mcp_bin: &str,
@@ -226,9 +202,9 @@ pub(super) fn build_targets(
 ) -> Vec<ManifestTarget> {
     let now = now_rfc3339();
     let mut targets: Vec<ManifestTarget> = Vec::new();
-    // Dedup by surface_key: `installed_names` (probe-derived) can already list
-    // "Claude Code hooks" *and* "Claude Code", and the latter also rides-along a
-    // hooks target — without this guard we'd emit the hooks row twice.
+    // Dedup by surface_key: `installed_names` can list both "Claude Code hooks"
+    // and "Claude Code", and the latter rides along a hooks target — without
+    // this guard we'd emit the hooks row twice.
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut push_unique = |targets: &mut Vec<ManifestTarget>, spec: &'static AgentSpec| {
         let target = target_for_spec(spec, mcp_bin, cli_bin, &now, prior);
@@ -241,8 +217,7 @@ pub(super) fn build_targets(
             continue;
         };
         push_unique(&mut targets, spec);
-        // The Claude Code MCP install also merges the lifecycle hooks; record
-        // that hooks surface too so `update` tracks the hook block version.
+        // Record the hooks surface too so `update` tracks the hook block version.
         if spec.name == "Claude Code"
             && let Some(hook_spec) = registry::find_spec("Claude Code hooks")
         {
@@ -252,12 +227,11 @@ pub(super) fn build_targets(
     targets
 }
 
-/// Build *provisional* manifest targets for a v1 record (no `targets` array):
+/// Build provisional manifest targets for a v1 record (no `targets` array):
 /// one row per `installed_targets` display name, with `block_hash: None` and
 /// `block_version: 0` so `update` re-renders the current block and adopts it
-/// only when the on-disk block still matches. Path / `block_kind` /
-/// `servers_key` are derived from the registry.
-/// External-CLI targets get version 0 too so a `ReissueCli` re-stamps them.
+/// only when the on-disk block still matches. External-CLI targets get version
+/// 0 too so a `ReissueCli` re-stamps them.
 pub(super) fn v1_provisional_targets(installed_targets: &[String]) -> Vec<ManifestTarget> {
     let now = now_rfc3339();
     let mut targets: Vec<ManifestTarget> = Vec::new();
@@ -340,11 +314,10 @@ fn target_for_spec(
     }
 }
 
-// ── Load / save (with v1→v2 read shim) ──────────────────────────────────────
+// Load / save (with v1→v2 read shim)
 
 /// Load the manifest at `~/.difflore/mcp.json`, upgrading a v1 record in memory
-/// to a v2 shape with an empty `targets` array (every target then has an
-/// unknown hash that the update path may adopt). Returns `None` when the record
+/// to a v2 shape with an empty `targets` array. Returns `None` when the record
 /// is missing or unparseable (callers treat that as "nothing installed").
 pub(super) fn load() -> Option<InstallManifest> {
     let path = difflore_mcp_record_path().ok()?;
@@ -374,8 +347,8 @@ pub(super) fn load() -> Option<InstallManifest> {
         })
         .unwrap_or_default();
 
-    // v2 manifest: parse the `targets` array. v1 record: no `manifest_version`
-    // / `targets`, so we get an empty vec — every target's hash is "unknown".
+    // v1 records lack `manifest_version` / `targets`, so we get an empty vec —
+    // every target's hash is then "unknown".
     let manifest_version = obj
         .get("manifest_version")
         .and_then(Value::as_u64)
@@ -400,8 +373,7 @@ pub(super) fn load() -> Option<InstallManifest> {
 }
 
 /// Serialize + write the v2 manifest to `~/.difflore/mcp.json` (pretty, the
-/// same shape `write_install_manifest` emits). Used by `update` after an
-/// in-place upgrade re-stamps a target.
+/// same shape `write_install_manifest` emits).
 pub(super) fn save(manifest: &InstallManifest) -> Result<PathBuf, String> {
     let path = difflore_mcp_record_path()?;
     let pretty = serde_json::to_string_pretty(manifest)
@@ -412,7 +384,7 @@ pub(super) fn save(manifest: &InstallManifest) -> Result<PathBuf, String> {
 }
 
 /// RFC-3339 UTC timestamp (`2026-06-02T12:00:00Z`) for `installed_at` /
-/// `updated_at`. Uses the workspace `chrono` dep already pulled by difflore-cli.
+/// `updated_at`.
 pub(super) fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
@@ -433,13 +405,10 @@ mod tests {
 
     const MCP_BIN: &str = "/tmp/fake/difflore";
 
-    // ── Render ↔ extract round-trips ───────────────────────────────────────
-    //
-    // Install a block to a temp file, then re-extract + re-hash from disk and
-    // assert it matches the install-time render hash (so `update` sees
-    // "unchanged"). Then mutate the file and assert the hash changes (so an edit
-    // is *never* silently clobbered). These exercise the explicit-path
-    // merge/extract fns directly, independent of home-path resolution.
+    // Render ↔ extract round-trips: install a block to a temp file, then
+    // re-extract + re-hash from disk and assert it matches the install-time
+    // render hash. Then mutate the file and assert the hash changes, so an edit
+    // is never silently clobbered.
 
     #[test]
     fn mcp_json_block_round_trips_then_diverges_on_edit() {

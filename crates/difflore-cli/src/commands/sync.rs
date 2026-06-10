@@ -21,8 +21,8 @@ const VALUE_OUTBOX_SYNC_PRIORITY_KINDS: &[(&str, Option<usize>)] = &[
 
 type AcceptedEditAttributionSummary = difflore_core::cloud::outbox::AcceptedEditAttributionSummary;
 
-/// CLI-side args bundle for `difflore cloud sync`. Mirrors the redesign brief
-/// flags (`--pull`, `--push`, `--dry-run`, `--json`).
+/// CLI-side args bundle for `difflore cloud sync` (`--pull`, `--push`,
+/// `--dry-run`, `--json`).
 pub(crate) struct SyncArgs {
     pub pull: bool,
     pub push: bool,
@@ -102,12 +102,12 @@ pub(crate) async fn handle_sync(ctx: &CommandContext, args: SyncArgs) {
     }
 
     let db = &ctx.db;
-    let mut spinner = sync_spinner(json, "Uploading local evidence events");
+    let mut spinner = sync_spinner(json, "Uploading local memory activity");
     let (observations_attempted, observations_uploaded, observations_queued) =
         run_observations_phase(client).await;
     sync_spinner_tick(spinner.as_ref());
 
-    sync_spinner_set_message(&mut spinner, "Uploading telemetry outbox");
+    sync_spinner_set_message(&mut spinner, "Uploading local activity");
     let (telemetry_attempted, telemetry_uploaded, accepted_edit_attribution) =
         run_cloud_outbox_phase(db, client).await;
     sync_spinner_tick(spinner.as_ref());
@@ -263,7 +263,7 @@ fn emit_not_logged_in(json: bool) -> ! {
         exit_code(1);
     }
     exit_err(
-        "not logged in.\n\n  → run `difflore cloud login` to sync team review memory into local agents",
+        "not logged in.\n\n  > run `difflore cloud login` to sync team review memory into local agents",
     );
 }
 
@@ -469,7 +469,7 @@ async fn run_observations_phase(
             }
             Err(e) => {
                 eprintln!(
-                    "{} Local evidence upload skipped: {e}",
+                    "{} Local memory activity upload skipped: {e}",
                     style::amber(style::sym::WARN),
                 );
                 break;
@@ -514,7 +514,7 @@ async fn run_cloud_outbox_phase(
             }
             Err(e) => {
                 eprintln!(
-                    "{} Local telemetry upload skipped: {e}",
+                    "{} Local activity upload skipped: {e}",
                     style::amber(style::sym::WARN),
                 );
                 return (attempted, uploaded, accepted_edit_attribution);
@@ -656,12 +656,12 @@ fn proof_summary_line(
 ) -> String {
     if observations_attempted > 0 || observations_queued > 0 {
         format!(
-            "  evidence   {observations_uploaded} local event{} uploaded · {} queued",
+            "  activity   {observations_uploaded} local event{} uploaded | {} pending",
             if observations_uploaded == 1 { "" } else { "s" },
             observations_queued,
         )
     } else {
-        "  evidence   current".to_owned()
+        "  activity   current".to_owned()
     }
 }
 
@@ -670,7 +670,7 @@ fn accepted_edit_proof_summary_line(summary: AcceptedEditAttributionSummary) -> 
         return None;
     }
     Some(format!(
-        "  fix-evidence  {} cloud-linked · {} raw-only",
+        "  accepted edits  {} uploaded | {} pending",
         summary.launch_grade,
         summary.uploaded.saturating_sub(summary.launch_grade),
     ))
@@ -693,12 +693,11 @@ async fn emit_summary_human(outcome: &SyncOutcome, db: &difflore_core::SqlitePoo
         accepted_edit_attribution,
     } = *outcome;
 
-    // Per the redesign brief output contract: lead with a single ✓
-    // headline, follow with one row per category in fixed order
-    // (memory / settings / providers / team), end with the
-    // `next: difflore recall --diff` bridge.
+    // Output contract: lead with a single status headline, then one row per
+    // category in fixed order (memory / settings / providers / team), ending
+    // with the `next: difflore recall --diff` bridge.
     println!("{} Sync complete", style::ok(style::sym::OK));
-    println!("  memory     {created} created · {updated} updated · {deleted} deleted");
+    println!("  memory     {created} created | {updated} updated | {deleted} deleted");
     if settings_pull_applied > 0 {
         println!("  settings   {settings_pull_applied} fields merged");
     } else {
@@ -713,7 +712,7 @@ async fn emit_summary_human(outcome: &SyncOutcome, db: &difflore_core::SqlitePoo
     }
     if team_count > 0 {
         println!(
-            "  team       {team_count} published memories visible · {team_synced} synced locally"
+            "  team       {team_count} published memories visible | {team_synced} synced locally"
         );
     } else {
         println!("  team       0 published memories visible");
@@ -728,7 +727,7 @@ async fn emit_summary_human(outcome: &SyncOutcome, db: &difflore_core::SqlitePoo
     );
     if telemetry_attempted > 0 {
         println!(
-            "  telemetry  {telemetry_uploaded} local event{} uploaded · {} queued",
+            "  activity   {telemetry_uploaded} local event{} uploaded | {} pending",
             if telemetry_uploaded == 1 { "" } else { "s" },
             telemetry_attempted.saturating_sub(telemetry_uploaded),
         );
@@ -738,7 +737,7 @@ async fn emit_summary_human(outcome: &SyncOutcome, db: &difflore_core::SqlitePoo
     }
     if accepted_edit_attribution.warning_count() > 0 {
         println!(
-            "  {} {} accepted edit upload{} need evidence attribution review: {} missing team workspace · {} missing recalled rule ids · {} missing linked rule observations",
+            "  {} {} accepted edit upload{} need review: {} missing team workspace | {} missing recalled memory ids | {} missing linked memory activity",
             style::amber(style::sym::WARN),
             accepted_edit_attribution.warning_count(),
             if accepted_edit_attribution.warning_count() == 1 {
@@ -831,25 +830,21 @@ async fn emit_cold_start_hint(db: &difflore_core::SqlitePool) {
     }
 }
 
-/// Frame the cold-start extracting hint so the count is unambiguously
-/// global. `imported_review_count` is the local DB total across every
-/// repo the user has run `import-reviews` against — the older
-/// "N reviews uploaded" copy read as if N came from the current repo,
-/// causing confusion when the same number printed verbatim in per-repo loops.
+/// Frame the cold-start extracting hint so the count reads as global.
+/// `imported_review_count` is the local DB total across every repo the user
+/// has run `import-reviews` against, not just the current repo.
 pub(crate) fn cold_start_extracting_line(imported_review_count: usize) -> String {
     let plural = if imported_review_count == 1 { "" } else { "s" };
     format!("{imported_review_count} review{plural} imported across all your repos")
 }
 
-/// Map raw cloud-API error strings into user-actionable hints. The
-/// raw error stays at the end so debug info isn't lost — the prefix is
-/// the helpful framing. Detection is substring-based on purpose: the
-/// underlying error format crosses serde / reqwest / orpc layers and
-/// stable parsing isn't worth the engineering. New patterns get added
-/// here as we learn which bounces happen.
+/// Map raw cloud-API error strings into user-actionable hints, keeping the
+/// raw error at the end so debug info isn't lost. Detection is substring-based
+/// on purpose: the underlying error format crosses serde / reqwest / orpc
+/// layers and stable parsing isn't worth the effort.
 pub(crate) fn format_cloud_err(label: &str, e: &str) -> String {
-    // Cloud-defined error codes (LLM gate, auth) come from the orpc
-    // contract — match those first since they're the most specific.
+    // Cloud-defined error codes (LLM gate, auth) are the most specific, so
+    // match them first.
     if e.contains("LlmNotConfigured") || e.contains("llmNotConfigured") {
         return format!(
             "{label}: no LLM API key configured on the cloud side.\n  Set one at cloud `/settings` (BYOK) before querying corpora."
@@ -858,16 +853,12 @@ pub(crate) fn format_cloud_err(label: &str, e: &str) -> String {
     if e.contains("not_logged_in") {
         return format!("{label}: not logged in to cloud.\n  Run `difflore cloud login` first.");
     }
-    // Zod schema rejection on a UUID input. Most common cause is a
-    // user passing a short prefix like `0e025dc9` after copying a
-    // shortened cloud id. Cloud
-    // requires the full UUID; the raw 400 dumps a regex pattern that
-    // isn't actionable for users. Translate to a clear next-step
-    // before falling through to the generic "Input validation failed"
-    // case below.
+    // Zod UUID rejection, usually a user passing a short id prefix. The raw
+    // 400 dumps a regex pattern that isn't actionable, so translate to a clear
+    // next-step before the generic "Input validation failed" case below.
     if e.contains("Input validation failed") && e.contains("\"format\":\"uuid\"") {
         return format!(
-            "{label}: cloud rejected the id — short prefixes aren't supported here.\n  Pass the full UUID from DiffLore Cloud, then retry."
+            "{label}: cloud rejected the id - short prefixes aren't supported here.\n  Pass the full UUID from DiffLore Cloud, then retry."
         );
     }
     // Generic HTTP / network / timeout / fallback all share shape with
@@ -934,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn accepted_edit_proof_summary_line_distinguishes_raw_only_uploads() {
+    fn accepted_edit_summary_line_distinguishes_uploaded_and_pending() {
         let line = accepted_edit_proof_summary_line(AcceptedEditAttributionSummary {
             uploaded: 4,
             launch_grade: 1,
@@ -944,8 +935,8 @@ mod tests {
         })
         .expect("uploaded accepted edits render a summary");
 
-        assert!(line.contains("1 cloud-linked"), "{line}");
-        assert!(line.contains("3 raw-only"), "{line}");
+        assert!(line.contains("1 uploaded"), "{line}");
+        assert!(line.contains("3 pending"), "{line}");
 
         assert!(
             accepted_edit_proof_summary_line(AcceptedEditAttributionSummary::default()).is_none()
@@ -953,10 +944,10 @@ mod tests {
     }
 
     #[test]
-    fn proof_summary_line_explains_uploaded_and_queued_events() {
+    fn proof_summary_line_explains_uploaded_and_pending_events() {
         let uploaded = proof_summary_line(5, 3, 2);
         assert!(uploaded.contains("3 local events uploaded"), "{uploaded}");
-        assert!(uploaded.contains("2 queued"), "{uploaded}");
+        assert!(uploaded.contains("2 pending"), "{uploaded}");
 
         let singular = proof_summary_line(1, 1, 0);
         assert!(singular.contains("1 local event uploaded"), "{singular}");
@@ -967,9 +958,9 @@ mod tests {
             queued_only.contains("0 local events uploaded"),
             "{queued_only}"
         );
-        assert!(queued_only.contains("7 queued"), "{queued_only}");
+        assert!(queued_only.contains("7 pending"), "{queued_only}");
 
-        assert_eq!(proof_summary_line(0, 0, 0), "  evidence   current");
+        assert_eq!(proof_summary_line(0, 0, 0), "  activity   current");
     }
 
     #[test]
@@ -1028,10 +1019,8 @@ mod tests {
 
     #[test]
     fn parse_provider_model_mapping_errors_on_wrong_shape() {
-        // Previously this hit `unwrap_or_default()` which silently
-        // imported a provider with zero aliases — `fix` would then
-        // dispatch unmapped model names. Now we surface the shape
-        // mismatch so the caller can skip the row instead.
+        // A malformed mapping must error (not silently import zero aliases),
+        // so the caller can skip the row rather than dispatch unmapped models.
         let item = serde_json::json!({"modelMapping": ["not", "an", "object"]});
         let err = parse_provider_model_mapping(&item).expect_err("wrong shape must error");
         assert!(!err.is_empty(), "error must carry context");
@@ -1046,7 +1035,7 @@ mod tests {
     #[test]
     fn format_cloud_err_classifies_known_errors_and_falls_through_unknown() {
         let cases: &[(&str, &str)] = &[
-            ("LlmNotConfigured: …", "BYOK"),
+            ("LlmNotConfigured: ...", "BYOK"),
             ("received not_logged_in from cloud", "difflore cloud login"),
             ("API error 401: token revoked", "session expired"),
             ("API error 403: plan_required", "rejected"),

@@ -1,11 +1,11 @@
-//! `difflore packs ...` — the shareable starter rule-pack marketplace surface
-//! over `difflore_core::packs`: fetch the registry catalog / a pack manifest,
+//! `difflore packs ...` — starter rule-pack marketplace over
+//! `difflore_core::packs`: fetch the registry catalog / a pack manifest,
 //! verify its `sha256`, and install suggestion-only starter rules.
 //!
-//! All commands honor `--json` (house convention) and a `--registry <URL>`
-//! override (default: `difflore_core::packs::DEFAULT_PACK_REGISTRY`; supports a
-//! `file://` path for tests / air-gapped install). Network is required only for
-//! `list` / `show` / `install` / `publish`; `installed` / `uninstall` are local.
+//! All commands honor `--json` and a `--registry <URL>` override (default
+//! `DEFAULT_PACK_REGISTRY`; `file://` paths work for tests / air-gapped
+//! install). Network is needed only for `list` / `show` / `install` /
+//! `publish`; `installed` / `uninstall` are local.
 
 use colored::Colorize;
 use serde_json::json;
@@ -19,8 +19,7 @@ use crate::commands::util::{exit_code, exit_err, json_compact_or};
 use crate::runtime::{CommandContext, OutputMode};
 use crate::style;
 
-/// Resolve the effective registry base: the `--registry` override or the
-/// first-party default.
+/// The `--registry` override, or the first-party default.
 fn registry_base(registry: Option<String>) -> String {
     registry
         .map(|r| r.trim().to_owned())
@@ -29,14 +28,13 @@ fn registry_base(registry: Option<String>) -> String {
 }
 
 /// Whether a custom (non-default) registry is in use. When so, a
-/// `maintainer.verified` badge is rendered as `verified (custom registry)` so
-/// the trust signal is never misleading. Delegates to the core's canonical
-/// `is_default_registry` so the default-detection rule lives in one place.
+/// `maintainer.verified` badge renders as `verified (custom registry)` so
+/// the trust signal isn't misleading.
 fn is_custom_registry(base: &str) -> bool {
     !packs::is_default_registry(base)
 }
 
-/// Split `<packId>[@<version>]` into its id and optional version.
+/// Split `<packId>[@<version>]` into id and optional version.
 fn split_pack_ref(pack_ref: &str) -> (String, Option<String>) {
     match pack_ref.rsplit_once('@') {
         Some((id, version)) if !id.is_empty() && !version.is_empty() => {
@@ -405,8 +403,6 @@ pub(crate) async fn handle_publish(path: String, _registry: Option<String>, json
         }
     };
 
-    // Validate isolation: published packs must not carry private `owner/repo`
-    // provenance. Local installs re-namespace `source_repo` to `pack:<id>`.
     let sha = packs::manifest_sha256(&bytes);
 
     if json {
@@ -488,7 +484,7 @@ async fn resolve_manifest(
     }
 }
 
-// ── Local store queries (runtime-checked, no offline sqlx cache needed) ──
+// Local store queries (runtime-checked, no offline sqlx cache needed)
 
 struct InstalledGroup {
     version_tag: String,

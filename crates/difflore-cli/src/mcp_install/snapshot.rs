@@ -70,10 +70,10 @@ fn client_status(name: &'static str, surfaces: Vec<TargetStatus>) -> McpClientSt
 }
 
 /// Roll the per-surface `agents` up into one [`McpClientStatus`] per display
-/// client. Both the client list and the surface→client mapping are derived
-/// from the `AGENTS` table (`spec.client`), so adding an agent row also adds it
-/// here automatically. Clients are emitted in first-seen `AGENTS` order, and
-/// each client's surfaces are gathered in row order.
+/// client. The client list and surface→client mapping derive from the `AGENTS`
+/// table (`spec.client`), so a new agent row appears here automatically.
+/// Clients are emitted in first-seen `AGENTS` order, each client's surfaces in
+/// row order.
 pub(super) fn collect_client_statuses_from_agents(agents: &[TargetStatus]) -> Vec<McpClientStatus> {
     let mut clients: Vec<&'static str> = Vec::new();
     let mut seen: BTreeSet<&'static str> = BTreeSet::new();
@@ -95,9 +95,9 @@ pub(super) fn collect_client_statuses_from_agents(agents: &[TargetStatus]) -> Ve
         .collect()
 }
 
-/// Probe every surface in the `AGENTS` table. Row order is load-bearing —
-/// Claude Code → Claude Code hooks → Codex come first — and is encoded directly
-/// in the table, so the manual reshuffle that used to live here is gone.
+/// Probe every surface in the `AGENTS` table. Row order is load-bearing
+/// (Claude Code → Claude Code hooks → Codex come first) and is encoded in the
+/// table itself.
 pub(super) fn collect_agent_statuses(bin: &str) -> Vec<TargetStatus> {
     AGENTS
         .iter()
