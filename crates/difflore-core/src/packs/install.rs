@@ -336,7 +336,7 @@ pub async fn install_pack(
     }
 
     // Resolve and confine the on-disk pack root once.
-    let base_dir = crate::skill_fs::skills_base_dir()
+    let base_dir = crate::skills::fs::skills_base_dir()
         .map_err(CoreError::Internal)?
         .join(PACK_SKILL_SOURCE);
     std::fs::create_dir_all(&base_dir)
@@ -484,7 +484,7 @@ pub async fn install_pack(
     // otherwise-committed install.
     for p in &prepared {
         if let Err(e) =
-            crate::skill_fs::sync_engine_link(PACK_SKILL_SOURCE, &p.skill_id, "claude", true)
+            crate::skills::fs::sync_engine_link(PACK_SKILL_SOURCE, &p.skill_id, "claude", true)
         {
             eprintln!(
                 "warning: sync_engine_link failed for pack rule {}: {e}",

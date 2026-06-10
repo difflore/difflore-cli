@@ -784,9 +784,9 @@ async fn emit_cold_start_hint(db: &difflore_core::SqlitePool) {
     //   (b) imported reviews exist — extraction is mid-flight on the
     //       cloud, so telling the user to "import PR reviews again"
     //       loops them. Tell them to wait + retry instead.
-    let imported_review_count = difflore_core::reviews::list_by_source(
+    let imported_review_count = difflore_core::review_store::list_by_source(
         db,
-        difflore_core::reviews::ReviewSourceInput {
+        difflore_core::review_store::ReviewSourceInput {
             source: "github".into(),
         },
     )

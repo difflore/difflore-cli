@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use difflore_core::models::DiffContentRecord;
-use difflore_core::review::ReviewIssueRecord;
+use difflore_core::review_engine::ReviewIssueRecord;
 
 use crate::commands::util::exit_err;
 use crate::style::{self, sym};

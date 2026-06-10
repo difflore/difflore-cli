@@ -1,4 +1,4 @@
-use difflore_core::github_import::{ImportOptions, ImportProgress};
+use difflore_core::ingest::github::{ImportOptions, ImportProgress};
 use sqlx::SqlitePool;
 
 use crate::commands::util::{ensure_project, exit_err, project_path, validate_owner_repo};
@@ -146,7 +146,7 @@ fn resolve_local_repo(
     from_upstream: Option<&str>,
     pp: &str,
 ) -> Result<String, String> {
-    repo.or_else(|| difflore_core::github_import::detect_repo_from_remote(pp).ok())
+    repo.or_else(|| difflore_core::ingest::github::detect_repo_from_remote(pp).ok())
         .ok_or_else(|| {
             let from_upstream_hint = if from_upstream.is_some() {
                 "\n  · `--from-upstream` is set, but --repo is still required to declare the local target. \
@@ -300,7 +300,7 @@ async fn run_import(
     json: bool,
 ) -> Result<ImportProgress, String> {
     if json {
-        let result = match difflore_core::github_import::import_pr_reviews(db, opts, None).await {
+        let result = match difflore_core::ingest::github::import_pr_reviews(db, opts, None).await {
             Ok(r) => r,
             Err(e) => return Err(format_github_import_err("Import failed", &e.to_string())),
         };
@@ -344,7 +344,7 @@ async fn run_import(
     });
 
     let result =
-        match difflore_core::github_import::import_pr_reviews(db, opts, Some(progress_cb)).await {
+        match difflore_core::ingest::github::import_pr_reviews(db, opts, Some(progress_cb)).await {
             Ok(r) => r,
             Err(e) => {
                 spinner.finish_err("Import failed");
@@ -537,7 +537,7 @@ mod tests {
     use std::collections::HashSet;
 
     use crate::commands::review_text::strip_review_markdown_noise;
-    use difflore_core::github_import::ImportProgress;
+    use difflore_core::ingest::github::ImportProgress;
 
     use super::fixtures::{
         fresh_import_pool, imported_item, review, seed_imported_review_comments,

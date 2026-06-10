@@ -111,7 +111,7 @@ pub(crate) fn categorise_path(path: &str) -> String {
 }
 
 /// Pull historical PRs out of local `SQLite`. Each row in `review_items`
-/// represents one PR's representative file (see `github_import.rs`).
+/// represents one PR's representative file (see `ingest/github`).
 /// We GROUP BY (`repo_full_name`, `pr_number`) so future schemas with
 /// many rows per PR still aggregate correctly.
 pub(crate) async fn load_pr_corpus(db: &SqlitePool) -> Vec<HistoricalPr> {

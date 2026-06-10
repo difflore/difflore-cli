@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use difflore_core::models::DiffContentRecord;
-use difflore_core::review::{
+use difflore_core::review_engine::{
     DiffContextFile, DiffContextMode, DiffContextOptions, PackedDiffContext, ReviewCheckResult,
     ReviewIssueRecord, pack_diff_context,
 };
@@ -258,7 +258,7 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
         return;
     }
 
-    let review_input = difflore_core::review::ReviewCheckInput {
+    let review_input = difflore_core::review_engine::ReviewCheckInput {
         project_id: ctx.project_id.clone(),
         diff_content: diff_text.clone(),
         file_path: primary_file.clone(),
@@ -273,7 +273,7 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
     let review_started = Instant::now();
     let mut result = match tokio::time::timeout(
         review_timeout,
-        difflore_core::review::run_review_smart(&ctx.db, review_input),
+        difflore_core::review_engine::run_review_smart(&ctx.db, review_input),
     )
     .await
     {

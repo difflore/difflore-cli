@@ -537,7 +537,7 @@ pub mod kind {
     pub const MCP_QUERY: &str = "mcp_query";
     pub const IMPORTED_REVIEWS: &str = "imported_reviews";
     /// `PostToolUse` observation; see `cloud::api_types::Observation`
-    /// and `crate::observation` for the payload shape.
+    /// and `crate::observability::classifier` for the payload shape.
     pub const OBSERVATION: &str = "observation";
     /// Session-mined candidate rule (see
     /// [`crate::cloud::session_mined::SessionMinedCandidate`]); destination is

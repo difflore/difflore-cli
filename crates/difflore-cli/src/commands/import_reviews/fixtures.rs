@@ -2,7 +2,7 @@
 #![allow(unsafe_code)]
 
 use difflore_core::cloud::api_types::{ImportedCommentUpload, ImportedReviewUpload};
-use difflore_core::reviews::{
+use difflore_core::review_store::{
     AddCommentInput, EnsureItemInput, ReviewCommentRecord, ReviewItemRecord, ReviewItemWithComments,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -68,7 +68,7 @@ pub(super) async fn seed_imported_review_comments_with_resolution(
     )
     .await
     .expect("insert project");
-    difflore_core::reviews::ensure_item(
+    difflore_core::review_store::ensure_item(
         db,
         EnsureItemInput {
             id: Some(item_id.to_owned()),
@@ -92,7 +92,7 @@ pub(super) async fn seed_imported_review_comments_with_resolution(
     .expect("insert imported review item");
 
     for (idx, (content, path)) in comments.iter().enumerate() {
-        let comment = difflore_core::reviews::add_comment(
+        let comment = difflore_core::review_store::add_comment(
             db,
             AddCommentInput {
                 review_item_id: item_id.to_owned(),
@@ -152,7 +152,7 @@ pub(super) async fn seed_pr_with_directive(
     )
     .await
     .expect("insert project");
-    difflore_core::reviews::ensure_item(
+    difflore_core::review_store::ensure_item(
         db,
         EnsureItemInput {
             id: Some(item_id.clone()),
@@ -174,7 +174,7 @@ pub(super) async fn seed_pr_with_directive(
     )
     .await
     .expect("insert imported review item");
-    difflore_core::reviews::add_comment(
+    difflore_core::review_store::add_comment(
         db,
         AddCommentInput {
             review_item_id: item_id.clone(),

@@ -2,7 +2,7 @@ use sqlx::SqlitePool;
 use std::time::Duration;
 
 use crate::errors::CoreError;
-use crate::reviews::{AddCommentInput, EnsureItemInput};
+use crate::review_store::{AddCommentInput, EnsureItemInput};
 
 mod parse;
 mod schema;
@@ -557,7 +557,7 @@ pub async fn import_pr_reviews(
             })
             .unwrap_or_else(|| pr.title.clone());
 
-        crate::reviews::ensure_item(
+        crate::review_store::ensure_item(
             db,
             EnsureItemInput {
                 id: Some(item_id.clone()),
@@ -617,7 +617,7 @@ pub async fn import_pr_reviews(
                     .filter(|body| !body.trim().is_empty())
                     .collect();
 
-                crate::reviews::add_comment(
+                crate::review_store::add_comment(
                     db,
                     AddCommentInput {
                         review_item_id: item_id.clone(),
@@ -666,7 +666,7 @@ pub async fn import_pr_reviews(
             // durability signal; everything else stays neutral.
             let signal = CommentDurabilitySignal::from_reaction_groups(&review.reaction_groups);
             let metadata = signal.to_metadata_value().map(|v| v.to_string());
-            crate::reviews::add_comment(
+            crate::review_store::add_comment(
                 db,
                 AddCommentInput {
                     review_item_id: item_id.clone(),
@@ -705,7 +705,7 @@ pub async fn import_pr_reviews(
             // PR discussion comments aren't in a resolvable review thread, so
             // only their reactions contribute a durability signal.
             let signal = CommentDurabilitySignal::from_reaction_groups(&comment.reaction_groups);
-            crate::reviews::add_comment(
+            crate::review_store::add_comment(
                 db,
                 AddCommentInput {
                     review_item_id: item_id.clone(),

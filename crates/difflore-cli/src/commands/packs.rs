@@ -550,7 +550,7 @@ async fn uninstall_pack_rows(
         return Ok(to_remove);
     }
 
-    let base_dir = difflore_core::skill_fs::skills_base_dir()
+    let base_dir = difflore_core::skills::fs::skills_base_dir()
         .map(|p| p.join("pack"))
         .ok();
 
@@ -570,7 +570,7 @@ async fn uninstall_pack_rows(
     if let Some(base) = base_dir {
         for id in &to_remove {
             let _ = std::fs::remove_dir_all(base.join(id));
-            let _ = difflore_core::skill_fs::sync_engine_link("pack", id, "claude", false);
+            let _ = difflore_core::skills::fs::sync_engine_link("pack", id, "claude", false);
         }
     }
 

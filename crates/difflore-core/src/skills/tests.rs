@@ -1083,7 +1083,7 @@ body text";
     #[tokio::test]
     async fn create_local_audits_engine_link_failure() {
         let db = DedupTestEnv::db().await;
-        let engine_dir = crate::skill_fs::get_engine_skills_dir("codex")
+        let engine_dir = fs::get_engine_skills_dir("codex")
             .expect("codex skill dir should resolve under shared test home");
         std::fs::create_dir_all(&engine_dir).unwrap();
         let blocking_entry = engine_dir.join("engine-link-audit-rule");
@@ -1139,7 +1139,7 @@ body text";
         .await
         .unwrap();
 
-        let skill_dir = crate::skill_fs::skills_base_dir()
+        let skill_dir = fs::skills_base_dir()
             .unwrap()
             .join("local")
             .join(&slug);

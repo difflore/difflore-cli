@@ -60,7 +60,7 @@ struct ReviewCommentMetadataRef<'a> {
     suggestion: Option<&'a str>,
 }
 
-pub fn build_explainability_metadata(result: &crate::review::ReviewCheckResult) -> Option<String> {
+pub fn build_explainability_metadata(result: &crate::review_engine::ReviewCheckResult) -> Option<String> {
     let top_issues = result
         .issues
         .iter()
@@ -90,7 +90,7 @@ pub fn build_explainability_metadata(result: &crate::review::ReviewCheckResult) 
     .ok()
 }
 
-pub fn build_review_comment_metadata(issue: &crate::review::ReviewIssueRecord) -> Option<String> {
+pub fn build_review_comment_metadata(issue: &crate::review_engine::ReviewIssueRecord) -> Option<String> {
     serde_json::to_string(&ReviewCommentMetadataRef {
         severity: &issue.severity,
         rule: &issue.rule,
@@ -101,7 +101,7 @@ pub fn build_review_comment_metadata(issue: &crate::review::ReviewIssueRecord) -
     .ok()
 }
 
-pub fn format_review_issue_comment(issue: &crate::review::ReviewIssueRecord) -> String {
+pub fn format_review_issue_comment(issue: &crate::review_engine::ReviewIssueRecord) -> String {
     let mut content = issue.message.clone();
     if let Some(suggestion) = issue.suggestion.as_deref()
         && !suggestion.trim().is_empty()
@@ -247,8 +247,8 @@ mod tests {
 
     #[test]
     fn explainability_metadata_round_trips() {
-        let result = crate::review::ReviewCheckResult {
-            issues: vec![crate::review::ReviewIssueRecord {
+        let result = crate::review_engine::ReviewCheckResult {
+            issues: vec![crate::review_engine::ReviewIssueRecord {
                 severity: "warning".into(),
                 rule: "avoid-foo".into(),
                 rule_id: Some("rule-1".into()),
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn format_review_issue_comment_appends_suggestion() {
-        let issue = crate::review::ReviewIssueRecord {
+        let issue = crate::review_engine::ReviewIssueRecord {
             severity: "warning".into(),
             rule: "rule".into(),
             rule_id: None,

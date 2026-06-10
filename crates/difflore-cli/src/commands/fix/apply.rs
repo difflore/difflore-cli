@@ -5,7 +5,7 @@ use std::process::Command;
 use difflore_core::cloud::api_types::{RecordAcceptedEditRequest, RecordAcceptedEditResponse};
 use difflore_core::context::retrieval::detect_language_from_path;
 use difflore_core::observability::fix_outcomes::FixOutcomeInput;
-use difflore_core::review::ReviewIssueRecord;
+use difflore_core::review_engine::ReviewIssueRecord;
 
 use crate::style::{self, sym};
 
@@ -637,7 +637,7 @@ pub(super) async fn apply_accepted_patches(
             .ok();
         }
 
-        let raw = match difflore_core::review::complete_with_active_provider(
+        let raw = match difflore_core::review_engine::complete_with_active_provider(
             db,
             patch_system_prompt(),
             &prompt,

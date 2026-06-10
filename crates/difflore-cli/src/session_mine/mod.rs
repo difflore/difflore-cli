@@ -1,6 +1,6 @@
 //! Session-mining candidate-rule supply pipeline.
 //!
-//! Unlike [`difflore_core::observation`], which classifies a single edit
+//! Unlike [`difflore_core::observability::classifier`], which classifies a single edit
 //! deterministically, this module observes a *session* (the conversation's
 //! prompts + assistant replies) and runs a small LLM gate to decide whether
 //! the activity contains a reusable rule.

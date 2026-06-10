@@ -1,4 +1,4 @@
-use difflore_core::reviews::{ReviewCommentRecord, ReviewItemWithComments};
+use difflore_core::review_store::{ReviewCommentRecord, ReviewItemWithComments};
 
 pub(super) fn is_import_review_noise_line(line: &str) -> bool {
     let trimmed = line

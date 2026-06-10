@@ -527,7 +527,7 @@ pub(super) async fn sync_timestamps_section(
             sw!(s, "- ✗ rule sync timestamp unavailable: {e}");
         }
     }
-    match difflore_core::reviews::list_recent(pool, 500).await {
+    match difflore_core::review_store::list_recent(pool, 500).await {
         Ok(items) => {
             let last_review_sync = items
                 .iter()

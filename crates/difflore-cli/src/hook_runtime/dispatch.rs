@@ -153,7 +153,7 @@ async fn dispatch_hook_event_with_state(
             // Classify this edit into a structured observation and enqueue via
             // the outbox. Failures are swallowed: observation capture must never
             // affect the rule-injection hook output.
-            let obs_input = difflore_core::observation::ClassifyInput {
+            let obs_input = difflore_core::observability::classifier::ClassifyInput {
                 tool: &tool_name,
                 file_path: Some(&file),
                 diff: diff.as_deref(),
@@ -162,7 +162,7 @@ async fn dispatch_hook_event_with_state(
                 session_id: session_id.as_deref(),
                 ts_ms: None,
             };
-            if let Some(obs) = difflore_core::observation::classify(&obs_input) {
+            if let Some(obs) = difflore_core::observability::classifier::classify(&obs_input) {
                 let queue = difflore_core::cloud::outbox::OutboxQueue::new(db.clone());
                 match serde_json::to_string(&obs) {
                     Ok(payload) => {

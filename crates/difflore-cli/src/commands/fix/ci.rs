@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use difflore_core::review::ReviewIssueRecord;
+use difflore_core::review_engine::ReviewIssueRecord;
 
 use crate::commands::util::exit_code;
 use crate::style::{self, sym};

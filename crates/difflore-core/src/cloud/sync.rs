@@ -7,7 +7,7 @@ use super::api_types::{
 };
 use super::client::CloudClient;
 use crate::models::SkillRecord;
-use crate::skill_fs::skills_base_dir;
+use crate::skills::fs::skills_base_dir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncResult {

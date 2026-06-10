@@ -68,7 +68,7 @@ pub async fn create_local(
     let skill_type = input.r#type.unwrap_or_else(|| "skill".into());
     let description = input.description.unwrap_or_default();
 
-    let base_dir = crate::skill_fs::skills_base_dir()
+    let base_dir = crate::skills::fs::skills_base_dir()
         .map_err(CoreError::Internal)?
         .join("local");
     let skill_dir = base_dir.join(&slug);
@@ -161,7 +161,7 @@ pub async fn create_local(
     }
 
     for engine_name in &engines {
-        if let Err(e) = crate::skill_fs::sync_engine_link("local", &slug, engine_name, true) {
+        if let Err(e) = crate::skills::fs::sync_engine_link("local", &slug, engine_name, true) {
             eprintln!("warning: sync_engine_link failed for engine {engine_name}: {e}");
             record_engine_link_failure(db, &id, engine_name, &e).await;
         }

@@ -1,5 +1,5 @@
 use difflore_core::models::RememberRuleInput;
-use difflore_core::reviews::{ReviewCommentRecord, ReviewItemWithComments};
+use difflore_core::review_store::{ReviewCommentRecord, ReviewItemWithComments};
 use sqlx::SqlitePool;
 
 use crate::commands::review_text::strip_review_markdown_noise;
@@ -964,7 +964,7 @@ fn is_bot_author(author: Option<&str>) -> bool {
 }
 
 /// Correctness/durability signal recovered from a comment's metadata JSON
-/// (written by `github_import`). Every field degrades to neutral when the
+/// (written by `ingest::github`). Every field degrades to neutral when the
 /// key is absent so pre-signal imports (and older API shapes) score the
 /// same as a comment that genuinely had no signal.
 #[derive(Debug, Default)]
@@ -1257,12 +1257,12 @@ pub(super) async fn run_local_candidates(
     pr_numbers: &[i32],
     exclude_prs: &std::collections::HashSet<i32>,
 ) -> LocalCandidateProgress {
-    use difflore_core::reviews;
+    use difflore_core::review_store;
     use std::collections::HashSet;
 
-    let items = match reviews::list_by_source_with_comments(
+    let items = match review_store::list_by_source_with_comments(
         db,
-        reviews::ReviewSourceInput {
+        review_store::ReviewSourceInput {
             source: "github".into(),
         },
     )

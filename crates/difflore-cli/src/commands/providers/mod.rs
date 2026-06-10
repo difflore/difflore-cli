@@ -161,7 +161,7 @@ pub(crate) async fn handle_providers_add(
 
     let input = ProviderAddInput {
         name: provider_name_for(tool).to_owned(),
-        base_url: difflore_core::review::agent_cli_sentinel(tool).to_owned(),
+        base_url: difflore_core::review_engine::agent_cli_sentinel(tool).to_owned(),
         model_mapping,
     };
 

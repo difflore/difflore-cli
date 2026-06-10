@@ -232,7 +232,7 @@ pub(super) async fn run_applicability_judge(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review::ReviewLlm;
+    use crate::review_engine::ReviewLlm;
     use std::sync::Mutex;
 
     fn rule(source_id: &str, title: &str, content: &str, score: f64) -> ContextSourceItemRecord {

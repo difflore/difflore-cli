@@ -121,7 +121,7 @@ fn is_git_repo(cwd: &Path) -> bool {
 /// delegated to core to stay in sync with `difflore import-reviews`.
 fn has_github_remote(cwd: &Path) -> bool {
     let path = cwd.to_string_lossy().into_owned();
-    difflore_core::github_import::detect_repo_from_remote(&path).is_ok()
+    difflore_core::ingest::github::detect_repo_from_remote(&path).is_ok()
 }
 
 #[cfg(test)]

@@ -189,12 +189,12 @@ pub async fn remove(db: &sqlx::SqlitePool, input: RemoveSkillInput) -> crate::Re
     {
         for engine in &["codex", "claude", "gemini", "cursor"] {
             if let Err(e) =
-                crate::skill_fs::sync_engine_link(&skill.source, &skill.directory, engine, false)
+                crate::skills::fs::sync_engine_link(&skill.source, &skill.directory, engine, false)
             {
                 eprintln!("warning: sync_engine_link failed for engine {engine}: {e}");
             }
         }
-        let skill_dir = crate::skill_fs::skills_base_dir()
+        let skill_dir = crate::skills::fs::skills_base_dir()
             .map_err(CoreError::Internal)?
             .join(&skill.source)
             .join(&skill.directory);
@@ -243,7 +243,7 @@ pub async fn toggle_engine(
     .await?
     {
         let skill = SkillRecord::from(row);
-        if let Err(e) = crate::skill_fs::sync_engine_link(
+        if let Err(e) = crate::skills::fs::sync_engine_link(
             &skill.source,
             &skill.directory,
             &input.engine,
@@ -402,7 +402,7 @@ pub async fn sync_links(db: &sqlx::SqlitePool) -> crate::Result<()> {
         ];
         for (engine, enabled) in engines {
             if let Err(e) =
-                crate::skill_fs::sync_engine_link(&skill.source, &skill.directory, engine, enabled)
+                crate::skills::fs::sync_engine_link(&skill.source, &skill.directory, engine, enabled)
             {
                 eprintln!("warning: sync_engine_link failed for engine {engine}: {e}");
             }

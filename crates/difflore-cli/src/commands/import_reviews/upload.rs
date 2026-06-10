@@ -1,8 +1,8 @@
 use difflore_core::cloud::api_types::{
     ImportedCommentUpload, ImportedReviewUpload, UploadImportedReviewsRequest,
 };
-use difflore_core::github_import::ImportProgress;
-use difflore_core::reviews::{self, ReviewItemWithComments};
+use difflore_core::ingest::github::ImportProgress;
+use difflore_core::review_store::{self, ReviewItemWithComments};
 use sqlx::SqlitePool;
 
 use crate::commands::util::exit_err;
@@ -146,9 +146,9 @@ pub(super) async fn run_upload(
         );
     }
 
-    let items = match reviews::list_by_source_with_comments(
+    let items = match review_store::list_by_source_with_comments(
         db,
-        reviews::ReviewSourceInput {
+        review_store::ReviewSourceInput {
             source: "github".into(),
         },
     )

@@ -169,7 +169,7 @@ async fn setup_agent_cli(db: &difflore_core::SqlitePool, tool: CliTool) {
     save_provider(
         db,
         provider_name_for(tool),
-        difflore_core::review::agent_cli_sentinel(tool),
+        difflore_core::review_engine::agent_cli_sentinel(tool),
         mapping,
         summary,
     )

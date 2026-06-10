@@ -1,6 +1,7 @@
 mod candidates;
 mod cloud_sync;
 mod crud;
+pub mod fs;
 mod local;
 mod remember;
 mod stats;

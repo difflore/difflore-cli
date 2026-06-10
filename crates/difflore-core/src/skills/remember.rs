@@ -549,7 +549,7 @@ async fn remember_inner(
 
     // Persist to disk so hand-edits round-trip, path-confined to the
     // skills/local/ root via the same canonicalisation guard as create_local.
-    let base_dir = crate::skill_fs::skills_base_dir()
+    let base_dir = crate::skills::fs::skills_base_dir()
         .map_err(CoreError::Internal)?
         .join("local");
     std::fs::create_dir_all(&base_dir)
@@ -628,7 +628,7 @@ async fn remember_inner(
     }
 
     // Keep the claude engine link consistent with `enabled_for_claude=1`.
-    if let Err(e) = crate::skill_fs::sync_engine_link("local", &id, "claude", true) {
+    if let Err(e) = crate::skills::fs::sync_engine_link("local", &id, "claude", true) {
         eprintln!("warning: sync_engine_link failed for engine claude: {e}");
         record_engine_link_failure(db, &id, "claude", &e).await;
     }
