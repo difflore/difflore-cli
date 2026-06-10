@@ -1,15 +1,15 @@
-use crate::{hook_cache, hook_forward, hooks};
+use crate::hook::{adapters, banner, cache, forward};
 
 use super::fire_log::remember_hook_fire_maybe_deferred;
-use super::stated_vs_actual::read_last_assistant_text;
+use super::drift_report::read_last_assistant_text;
 
 pub(crate) async fn hook_output_for_raw(
     client_name: &str,
-    adapter: &dyn hooks::PlatformAdapter,
+    adapter: &dyn adapters::PlatformAdapter,
     raw: &str,
     debug: bool,
     defer_log: bool,
-    hot_state: Option<&hook_forward::State>,
+    hot_state: Option<&forward::State>,
 ) -> anyhow::Result<String> {
     let event = match adapter.parse_stdin(raw) {
         Ok(ev) => ev,
@@ -17,7 +17,7 @@ pub(crate) async fn hook_output_for_raw(
             if debug {
                 eprintln!("[difflore.hook] parse error: {e}");
             }
-            return Ok(adapter.format_output(hooks::types::HookResult::noop()));
+            return Ok(adapter.format_output(adapters::types::HookResult::noop()));
         }
     };
     let event_label = hook_event_label(&event).to_owned();
@@ -91,10 +91,10 @@ pub(crate) async fn hook_output_for_raw(
 /// session banner use it for transcript-format dispatch and debug trails.
 async fn dispatch_hook_event_with_state(
     client_name: &str,
-    event: hooks::types::HookEvent,
-    hot_state: Option<&hook_forward::State>,
-) -> anyhow::Result<hooks::types::HookResult> {
-    use hooks::types::{HookEvent, HookResult};
+    event: adapters::types::HookEvent,
+    hot_state: Option<&forward::State>,
+) -> anyhow::Result<adapters::types::HookResult> {
+    use adapters::types::{HookEvent, HookResult};
 
     match event {
         HookEvent::PreToolUseRead { .. } => {
@@ -124,7 +124,7 @@ async fn dispatch_hook_event_with_state(
 
             // Check the skip cache before DB init or outbox enqueue; repeated
             // PostToolUse events should stay off the hot path.
-            if hook_cache::should_skip_recent(&file, "post-edit") {
+            if cache::should_skip_recent(&file, "post-edit") {
                 return Ok(HookResult::noop());
             }
 
@@ -197,7 +197,7 @@ async fn dispatch_hook_event_with_state(
             .await
             {
                 Ok(ctx) if ctx.rules_injected > 0 => {
-                    hook_cache::remember_injection(&file, "post-edit", ctx.rules_injected);
+                    cache::remember_injection(&file, "post-edit", ctx.rules_injected);
                     // No unconditional system_message: the assistant's citation
                     // of "Rule N" in its reply is the visible signal. Surfacing
                     // "injected N rules" on every Edit pollutes the user's view
@@ -264,12 +264,12 @@ async fn dispatch_hook_event_with_state(
             // Since-last-session recap: if this repo gained rules since the last
             // SessionStart, surface a short note via `additional_context`. The
             // helper is self-budgeted and returns `None` on quiet sessions.
-            let banner_ctx = hooks::session_banner::BannerContext {
+            let banner_ctx = banner::BannerContext {
                 cwd,
                 client_name: client_name.to_owned(),
             };
             if let Some(banner) =
-                hooks::session_banner::render_since_last_session_banner(&banner_ctx).await
+                banner::render_since_last_session_banner(&banner_ctx).await
             {
                 return Ok(HookResult::with_context(banner));
             }
@@ -609,14 +609,14 @@ fn post_edit_retrieval_intent(diff: Option<&str>, new_text: Option<&str>) -> Str
     }
 }
 
-const fn hook_event_label(event: &hooks::types::HookEvent) -> &'static str {
+const fn hook_event_label(event: &adapters::types::HookEvent) -> &'static str {
     match event {
-        hooks::types::HookEvent::PostToolUse { .. } => "post_tool_use",
-        hooks::types::HookEvent::PreToolUseRead { .. } => "pre_tool_use_read",
-        hooks::types::HookEvent::SessionStart { .. } => "session_start",
-        hooks::types::HookEvent::UserPromptSubmit { .. } => "user_prompt_submit",
-        hooks::types::HookEvent::Stop { .. } => "stop",
-        hooks::types::HookEvent::SessionEnd { .. } => "session_end",
+        adapters::types::HookEvent::PostToolUse { .. } => "post_tool_use",
+        adapters::types::HookEvent::PreToolUseRead { .. } => "pre_tool_use_read",
+        adapters::types::HookEvent::SessionStart { .. } => "session_start",
+        adapters::types::HookEvent::UserPromptSubmit { .. } => "user_prompt_submit",
+        adapters::types::HookEvent::Stop { .. } => "stop",
+        adapters::types::HookEvent::SessionEnd { .. } => "session_end",
     }
 }
 

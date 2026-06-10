@@ -1,43 +1,23 @@
+//! Hook forwarder: a warm in-process server that handles hook events for the
+//! `difflore-hook` shim so the hot path skips process startup, plus the async
+//! client used when this process is on the shim side itself.
+//!
+//! Wire shapes, endpoint, and the shim's blocking transport live in
+//! [`protocol`] — the single protocol definition both binaries compile
+//! against.
+
+pub mod protocol;
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::{GenericFilePath, ListenerOptions, ToFsName};
-use serde::{Deserialize, Serialize};
 use tokio::time::timeout;
 
-pub const ENV: &str = difflore_core::infra::env::DIFFLORE_HOOK_FORWARD;
+pub use protocol::{ENV, Mode};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    Auto,
-    Always,
-    Never,
-}
-
-impl Mode {
-    fn from_env() -> Self {
-        match difflore_core::infra::env::var(ENV)
-            .unwrap_or_else(|| "auto".to_owned())
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "always" => Self::Always,
-            "never" | "off" | "0" | "false" => Self::Never,
-            _ => Self::Auto,
-        }
-    }
-}
-
-impl std::fmt::Display for Mode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Auto => write!(f, "auto"),
-            Self::Always => write!(f, "always"),
-            Self::Never => write!(f, "never"),
-        }
-    }
-}
+use protocol::{Request, Response};
 
 pub enum Attempt {
     Used(String),
@@ -51,31 +31,12 @@ pub struct State {
     pub index_pool: difflore_core::SqlitePool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Request {
-    client: String,
-    raw: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Response {
-    ok: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    output: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
 pub async fn try_forward(client: &str, raw: &str) -> Attempt {
     let mode = Mode::from_env();
     if mode == Mode::Never {
         return Attempt::Disabled;
     }
-    let req = Request {
-        client: client.to_owned(),
-        raw: raw.to_owned(),
-    };
-    let fut = roundtrip(&req);
+    let fut = roundtrip(client, raw);
     match timeout(Duration::from_secs(5), fut).await {
         Ok(Ok(output)) => Attempt::Used(output),
         Ok(Err(error)) => Attempt::Unavailable {
@@ -89,22 +50,10 @@ pub async fn try_forward(client: &str, raw: &str) -> Attempt {
     }
 }
 
-async fn roundtrip(req: &Request) -> anyhow::Result<String> {
-    let line = serde_json::to_string(req)?;
-    let response_line = ipc_roundtrip(&(line + "\n")).await?;
-    let response: Response = serde_json::from_str(response_line.trim())?;
-    if response.ok {
-        Ok(response
-            .output
-            .unwrap_or_else(|| "{\"continue\":true}".to_owned()))
-    } else {
-        Err(anyhow::anyhow!(
-            "{}",
-            response
-                .error
-                .unwrap_or_else(|| "hook forwarder returned an unknown error".to_owned())
-        ))
-    }
+async fn roundtrip(client: &str, raw: &str) -> anyhow::Result<String> {
+    let line = protocol::encode_request_line(client, raw).map_err(anyhow::Error::msg)?;
+    let response_line = ipc_roundtrip(&line).await?;
+    protocol::decode_response_line(&response_line).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 pub async fn run_server() -> anyhow::Result<()> {
@@ -129,8 +78,8 @@ async fn handle_request(state: &State, line: &str) -> Response {
             };
         }
     };
-    let adapter = crate::hooks::get_platform_adapter(&req.client);
-    let response = match crate::hook_runtime::hook_output_for_raw(
+    let adapter = crate::hook::adapters::get_platform_adapter(&req.client);
+    let response = match crate::hook::runtime::hook_output_for_raw(
         &req.client,
         &*adapter,
         &req.raw,
@@ -176,18 +125,10 @@ async fn handle_request(state: &State, line: &str) -> Response {
     response
 }
 
-/// Cross-platform local-socket endpoint: `interprocess` treats the same path as
-/// a Unix-domain socket on Unix and a named-pipe-equivalent on Windows.
-fn endpoint() -> anyhow::Result<std::path::PathBuf> {
-    Ok(difflore_core::infra::paths::data_home()
-        .map_err(anyhow::Error::msg)?
-        .join("hook-forward.sock"))
-}
-
 async fn ipc_roundtrip(request_line: &str) -> anyhow::Result<String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-    let path = endpoint()?;
+    let path = protocol::endpoint().map_err(anyhow::Error::msg)?;
     let name = path.to_fs_name::<GenericFilePath>()?;
     let stream = LocalSocketStream::connect(name).await?;
     let (reader, mut writer) = stream.split();
@@ -205,7 +146,7 @@ async fn ipc_roundtrip(request_line: &str) -> anyhow::Result<String> {
 async fn run_ipc_server(state: Arc<State>) -> anyhow::Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-    let socket = endpoint()?;
+    let socket = protocol::endpoint().map_err(anyhow::Error::msg)?;
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent)?;
     }

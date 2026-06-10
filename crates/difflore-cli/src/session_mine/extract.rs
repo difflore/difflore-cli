@@ -96,7 +96,7 @@ fn read_transcript_tail_capped(path: &str) -> std::io::Result<String> {
 }
 
 /// Claude Code: JSONL transcript, one event per line (same shape as
-/// `hook_runtime::stated_vs_actual` consumes). Re-implements the walk rather
+/// `hook::runtime::drift_report` consumes). Re-implements the walk rather
 /// than reusing that helper because we need ordered user+assistant pairs, not
 /// just the last assistant blob.
 fn extract_from_claude_code(args: &ExtractArgs<'_>) -> std::io::Result<Vec<Pair>> {
@@ -171,7 +171,7 @@ enum Role {
 fn row_role(value: &serde_json::Value) -> Option<Role> {
     // Claude Code marks the row type two ways depending on version: top-level
     // `"type"` and/or nested `"message":{"role":...}`. Mirrors
-    // `stated_vs_actual::read_last_assistant_text` so the readers don't diverge.
+    // `drift_report::read_last_assistant_text` so the readers don't diverge.
     let top = value.get("type").and_then(serde_json::Value::as_str);
     let nested = value
         .get("message")

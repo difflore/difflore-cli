@@ -10,7 +10,7 @@
 //! cannot leak into sibling test binaries.
 //!
 //! Invariant guarded: `PostToolUse:Edit` must consult
-//! `hook_cache::should_skip_recent` BEFORE opening the SQLite pool
+//! `hook::cache::should_skip_recent` BEFORE opening the SQLite pool
 //! or running `observation::classify` + outbox `enqueue`. A duplicate
 //! edit must short-circuit to a noop, writing no observation row and
 //! no `cloud_outbox` row.
@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use difflore_cli::hook_runtime;
+use difflore_cli::hook::runtime as hook_runtime;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
@@ -43,7 +43,7 @@ struct CacheEntry {
 
 /// Seed `hook-cache.json` so `should_skip_recent` returns true for
 /// the given file path. Mirrors the on-disk layout
-/// `hook_cache::remember_injection` would have produced; we write
+/// `hook::cache::remember_injection` would have produced; we write
 /// it by hand to avoid having to actually run a successful
 /// injection just to set up the test.
 fn seed_skip_cache(home: &Path, file_path: &str) {

@@ -13,7 +13,6 @@
 pub mod claude_code;
 pub mod cursor;
 pub mod gemini_cli;
-pub mod session_banner;
 pub(crate) mod synth;
 pub mod types;
 pub mod windsurf;

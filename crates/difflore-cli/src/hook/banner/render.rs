@@ -97,7 +97,7 @@ fn provenance_phrase(origin: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::session_banner::query::NewRule;
+    use crate::hook::banner::query::NewRule;
 
     fn rule(title: &str, origin: &str) -> NewRule {
         NewRule {
