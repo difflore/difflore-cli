@@ -1936,8 +1936,8 @@ mod git_remote_tests {
     fn parse_github_owner_repo_table() {
         let cases: &[(&str, Option<&str>)] = &[
             (
-                "git@github.com:hibrandonevans/router.git",
-                Some("hibrandonevans/router"),
+                "git@github.com:difflore-fixtures/router.git",
+                Some("difflore-fixtures/router"),
             ),
             (
                 "https://github.com/tanstack/router.git",

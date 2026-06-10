@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO cloud_outbox (kind, payload_json, status, retry_count, created_at) VALUES (?1, ?2, 'pending', 0, ?3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "2179612723f3db2d6bc9be50672a4c411d8a5a4d0de34cc7c34e1fb73b464939"
+}

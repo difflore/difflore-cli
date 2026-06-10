@@ -873,14 +873,14 @@ mod tests {
     #[test]
     fn repo_scopes_include_origin_and_upstream_aliases() {
         let input = review_input(
-            Some("hibrandonevans/router"),
-            vec!["hibrandonevans/router", "tanstack/router"],
+            Some("difflore-fixtures/router"),
+            vec!["difflore-fixtures/router", "tanstack/router"],
         );
 
         assert_eq!(
             repo_scopes_for_input(&input),
             vec![
-                "hibrandonevans/router".to_owned(),
+                "difflore-fixtures/router".to_owned(),
                 "tanstack/router".to_owned(),
             ],
         );
@@ -890,14 +890,14 @@ mod tests {
     fn repo_scopes_dedupe_aliases_case_insensitively() {
         let input = review_input(
             Some("TanStack/router"),
-            vec!["tanstack/router", "  ", "hibrandonevans/router"],
+            vec!["tanstack/router", "  ", "difflore-fixtures/router"],
         );
 
         assert_eq!(
             repo_scopes_for_input(&input),
             vec![
                 "TanStack/router".to_owned(),
-                "hibrandonevans/router".to_owned(),
+                "difflore-fixtures/router".to_owned(),
             ],
         );
     }

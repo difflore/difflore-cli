@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT path as \"path!: String\" FROM projects WHERE id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "path!: String",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9e1e22ae0cad2c0002bf8a0828ade6636ebb2e45bb4c697f0e0e29676f2028b9"
+}

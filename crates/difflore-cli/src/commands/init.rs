@@ -55,7 +55,7 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
     // detect_github_repo_full_names returns [fork, upstream(s)…] — same
     // alias chain `fix --preview` uses for repo-scoped recall. Using it
     // here means `init`'s memory preview will resolve to upstream
-    // (gin-gonic/gin) for a fork (hibrandonevans/gin) when the user
+    // (gin-gonic/gin) for a fork (difflore-fixtures/gin) when the user
     // hasn't yet imported reviews under their own fork name.
     let repo_aliases = difflore_core::git::detect_github_repo_full_names(&cwd.to_string_lossy());
 

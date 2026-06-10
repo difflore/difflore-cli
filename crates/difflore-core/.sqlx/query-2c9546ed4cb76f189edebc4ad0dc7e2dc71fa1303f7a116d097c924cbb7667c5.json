@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "CREATE TRIGGER IF NOT EXISTS rule_chunks_au AFTER UPDATE ON rule_chunks BEGIN\n            DELETE FROM rule_chunks_fts WHERE chunk_id = old.id;\n            INSERT INTO rule_chunks_fts(chunk_id, content) VALUES (new.id, new.content);\n        END",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "2c9546ed4cb76f189edebc4ad0dc7e2dc71fa1303f7a116d097c924cbb7667c5"
+}

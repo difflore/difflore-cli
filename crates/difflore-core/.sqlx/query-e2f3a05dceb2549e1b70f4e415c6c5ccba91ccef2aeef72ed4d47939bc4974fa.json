@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE providers SET is_active = 0",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "e2f3a05dceb2549e1b70f4e415c6c5ccba91ccef2aeef72ed4d47939bc4974fa"
+}

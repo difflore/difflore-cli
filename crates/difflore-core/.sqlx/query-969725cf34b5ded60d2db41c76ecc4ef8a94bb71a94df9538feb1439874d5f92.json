@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM auth WHERE key = 'login_nonce'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "969725cf34b5ded60d2db41c76ecc4ef8a94bb71a94df9538feb1439874d5f92"
+}

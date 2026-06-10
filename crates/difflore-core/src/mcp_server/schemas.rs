@@ -251,23 +251,33 @@ pub(super) fn resource_templates_list() -> Value {
     ])
 }
 
-// SKILL.md files are resource-mirrored from the plugin directory at
-// compile time. `include_str!` with the plugin-relative path guarantees
-// the plugin directory and the MCP resource stay in sync — a bad rename
-// of a SKILL.md in `plugin/skills/` becomes a compile error
-// here, not a runtime 404.
-pub(super) const RULE_SEARCH_SKILL_MD: &str =
-    include_str!("../../../../plugin/skills/rule-search/SKILL.md");
-pub(super) const RULE_GAP_SKILL_MD: &str =
-    include_str!("../../../../plugin/skills/rule-gap/SKILL.md");
-pub(super) const RULE_DIFF_SKILL_MD: &str =
-    include_str!("../../../../plugin/skills/rule-diff/SKILL.md");
-pub(super) const RULE_WHY_FIRED_SKILL_MD: &str =
-    include_str!("../../../../plugin/skills/rule-why-fired/SKILL.md");
-pub(super) const RULE_JOURNEY_SKILL_MD: &str =
-    include_str!("../../../../plugin/skills/rule-journey/SKILL.md");
-pub(super) const SMART_EXPLORE_SKILL_MD: &str =
-    include_str!("../../../../plugin/skills/smart-explore/SKILL.md");
+// SKILL.md files are resource-mirrored from the crate-local plugin directory
+// at compile time. Keeping them under CARGO_MANIFEST_DIR makes crates.io
+// tarball verification compile without the workspace root.
+pub(super) const RULE_SEARCH_SKILL_MD: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/plugin/skills/rule-search/SKILL.md"
+));
+pub(super) const RULE_GAP_SKILL_MD: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/plugin/skills/rule-gap/SKILL.md"
+));
+pub(super) const RULE_DIFF_SKILL_MD: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/plugin/skills/rule-diff/SKILL.md"
+));
+pub(super) const RULE_WHY_FIRED_SKILL_MD: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/plugin/skills/rule-why-fired/SKILL.md"
+));
+pub(super) const RULE_JOURNEY_SKILL_MD: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/plugin/skills/rule-journey/SKILL.md"
+));
+pub(super) const SMART_EXPLORE_SKILL_MD: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/plugin/skills/smart-explore/SKILL.md"
+));
 
 /// Full trigger guide for the `remember_rule` tool. Kept as a resource so
 /// the MCP tool description can stay terse (saves ~1.5KiB per initialize)

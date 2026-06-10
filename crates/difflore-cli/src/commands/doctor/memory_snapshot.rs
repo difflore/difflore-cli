@@ -923,7 +923,7 @@ mod tests {
 
         let snap = load_for_repo(
             &pool,
-            &["hibrandonevans/router".into(), "tanstack/router".into()],
+            &["difflore-fixtures/router".into(), "tanstack/router".into()],
         )
         .await;
 
@@ -1106,7 +1106,10 @@ mod tests {
 
         let scoped = fetch_proven(
             &pool,
-            &["hibrandonevans/gin".to_owned(), "gin-gonic/gin".to_owned()],
+            &[
+                "difflore-fixtures/gin".to_owned(),
+                "gin-gonic/gin".to_owned(),
+            ],
         )
         .await;
         assert_eq!(scoped.len(), 1);

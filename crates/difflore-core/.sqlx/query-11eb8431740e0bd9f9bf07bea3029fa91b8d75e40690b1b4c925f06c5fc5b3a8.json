@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT retry_count, status FROM cloud_outbox WHERE id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "retry_count",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "status",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "11eb8431740e0bd9f9bf07bea3029fa91b8d75e40690b1b4c925f06c5fc5b3a8"
+}

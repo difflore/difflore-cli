@@ -29,7 +29,7 @@ pub async fn list_source_repos(
 /// Expand detected git remotes with a conservative source-repo alias.
 ///
 /// A common fork setup only has `origin` configured locally, e.g.
-/// `hibrandonevans/fastapi`, while the imported review memory is scoped to
+/// `difflore-fixtures/fastapi`, while the imported review memory is scoped to
 /// the upstream repo, e.g. `fastapi/fastapi`. If the local rule store has
 /// exactly one active source repo with the same repository name, include that
 /// source repo as an additional recall scope. When there are zero or multiple

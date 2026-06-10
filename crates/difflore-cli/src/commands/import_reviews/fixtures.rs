@@ -204,7 +204,7 @@ pub(super) async fn seed_pr_with_directive(
 
 pub(super) fn review(pr: i32, comments: usize) -> ImportedReviewUpload {
     ImportedReviewUpload {
-        repo_full_name: "hibrandonevans/example".to_owned(),
+        repo_full_name: "difflore-fixtures/example".to_owned(),
         source_repo_full_name: Some("upstream/example".to_owned()),
         pr_number: pr,
         pr_title: Some(format!("PR {pr}")),

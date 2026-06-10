@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO rule_events\n         (id, skill_id, kind, source, confidence_before, confidence_after, reason, metadata)\n         VALUES (?1, ?2, ?3, 'local_feedback', ?4, ?5, NULL, ?6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "2659ea6a491b9cec09590646678350d0ff343353693bc29a455c097505f8bcba"
+}

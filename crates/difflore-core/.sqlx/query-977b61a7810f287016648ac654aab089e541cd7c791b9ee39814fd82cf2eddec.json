@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COUNT(*) AS \"n!: i64\" FROM rule_outcomes\n         WHERE kind = 'recalled' AND rule_id = ?1\n           AND datetime(created_at) >= datetime('now', ?2)",
+  "describe": {
+    "columns": [
+      {
+        "name": "n!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "977b61a7810f287016648ac654aab089e541cd7c791b9ee39814fd82cf2eddec"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO mcp_rule_serves\n         (tool, session_id, repo_full_name, file_path, query_hash, rule_ids_json,\n          rule_count, top_k, was_empty, strict_match_count, estimated_tokens)\n         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 11
+    },
+    "nullable": []
+  },
+  "hash": "887a176168f7ac81c6f1e30c38b1edb82eff30c48c7f718c6533f4fdf8f482a9"
+}

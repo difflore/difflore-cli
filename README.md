@@ -12,13 +12,25 @@ in local SQLite, and serves the relevant ones to agents through MCP, installed
 hooks, or the CLI.
 
 ```bash
-cargo install --git https://github.com/difflore/difflore-cli difflore-cli
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/difflore/difflore-cli/releases/latest/download/difflore-cli-installer.sh | sh
 ```
 
-DiffLore is not published on crates.io yet. Use the GitHub install path above
-until the `difflore-cli` crate is released.
+Windows PowerShell:
 
-Prerequisites: `cargo` with Rust 1.87+, `git`, and GitHub CLI `gh`.
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/difflore/difflore-cli/releases/latest/download/difflore-cli-installer.ps1 | iex"
+```
+
+Other install paths:
+
+```bash
+brew install difflore/tap/difflore
+cargo install difflore-cli
+cargo install --git https://github.com/difflore/difflore-cli difflore-cli # unreleased main
+```
+
+Prerequisites for importing PR reviews: `git` and GitHub CLI `gh`.
 Run `gh auth login` once before importing PR reviews.
 
 ## Quickstart
@@ -96,6 +108,11 @@ cargo fmt --all --check
 cargo check -p difflore-cli
 cargo test -p difflore-cli
 ```
+
+Merging to `main` does not publish a release. Maintainers publish by bumping
+crate versions and `CHANGELOG.md`, then pushing a `vX.Y.Z` tag. GitHub Actions
+builds the release artifacts, publishes the Homebrew formula, and publishes
+the crates to crates.io.
 
 Issues and PRs are welcome. Do not include secrets, private PR text, or
 private code in examples.

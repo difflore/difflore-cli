@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "CREATE TABLE IF NOT EXISTS rule_chunks (\n            id TEXT PRIMARY KEY,\n            skill_id TEXT NOT NULL,\n            content TEXT NOT NULL,\n            embedding BLOB,\n            file_patterns TEXT,\n            language TEXT,\n            repo_scope TEXT\n        )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "b507d8036e79f0e360173b85595e1aa2ce00a4b86d8f4c4afb93e37bfa09ebdc"
+}

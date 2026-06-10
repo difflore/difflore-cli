@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COALESCE(origin, '<unknown>') AS \"origin!: String\", COUNT(*) AS \"n!: i64\" FROM skills WHERE status = 'active' GROUP BY origin ORDER BY COUNT(*) DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "origin!: String",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "n!: i64",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "f1951fcaef5ddc53501e413bd0dac907e5d3e33775cddfef850d38bf7d1480ee"
+}

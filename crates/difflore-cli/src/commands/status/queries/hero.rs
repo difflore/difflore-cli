@@ -217,10 +217,10 @@ mod tests {
              ('repo-fix-1', 'repo-rule', 'Prefer structured API parsing', 'src/parser.rs',
               'acme/widgets', 12, 'sha256:repo', 1, 1, datetime('now')),
              ('global-fix-1', 'global-rule', 'Pin GitHub Actions refs to SHAs',
-              '.github/workflows/pr.yml', 'hibrandonevans/router', 4, 'sha256:one',
+              '.github/workflows/pr.yml', 'difflore-fixtures/router', 4, 'sha256:one',
               1, 1, datetime('now')),
              ('global-fix-2', 'global-rule', 'Pin GitHub Actions refs to SHAs',
-              '.github/workflows/release.yml', 'hibrandonevans/router', 4, 'sha256:two',
+              '.github/workflows/release.yml', 'difflore-fixtures/router', 4, 'sha256:two',
               1, 1, datetime('now'))",
         )
         .execute(&pool)

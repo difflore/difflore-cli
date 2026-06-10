@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO rule_chunks_fts(chunk_id, content) SELECT id, content FROM rule_chunks",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "fde5e3f5a2157545e5b734060e3611547749c5ce148e0813cb27a2a2cb7338fa"
+}

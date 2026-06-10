@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, tags, confidence_score FROM skills WHERE status = 'active'",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "tags",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "confidence_score",
+        "ordinal": 2,
+        "type_info": "Float"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3b532921d07a24d023ee43d3b37d77931f88a1505a40aef801ed7a9cba209bba"
+}

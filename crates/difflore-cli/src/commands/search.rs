@@ -296,12 +296,15 @@ mod tests {
     fn unique_repo_scopes_preserves_order_and_dedupes() {
         assert_eq!(
             unique_repo_scopes(&[
-                "Hibrandonevans/Vite".to_owned(),
+                "Difflore-Fixtures/Vite".to_owned(),
                 String::new(),
                 "vitejs/vite".to_owned(),
-                "hibrandonevans/vite".to_owned(),
+                "difflore-fixtures/vite".to_owned(),
             ]),
-            vec!["hibrandonevans/vite".to_owned(), "vitejs/vite".to_owned()]
+            vec![
+                "difflore-fixtures/vite".to_owned(),
+                "vitejs/vite".to_owned()
+            ]
         );
     }
 
