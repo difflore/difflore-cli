@@ -1280,9 +1280,9 @@ We should validate the header before parsing because malformed requests panic.\n
     #[test]
     fn local_candidate_uses_pr_discussion_comment_with_changed_file_scope() {
         let mut item = imported_item(
-            Some("hibrandonevans/terminal"),
+            Some("difflore-fixtures/terminal"),
             Some(
-                r#"{"sourceRepoFullName":"microsoft/terminal","attachedRepoFullName":"hibrandonevans/terminal"}"#,
+                r#"{"sourceRepoFullName":"microsoft/terminal","attachedRepoFullName":"difflore-fixtures/terminal"}"#,
             ),
         );
         item.item.file_path = "tools/ReleaseEngineering/Draft-TerminalReleases.ps1".to_owned();

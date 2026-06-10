@@ -922,7 +922,7 @@ Please inspect `binding/binding_test.go` and ignore `Context.PDF` plus `maps.Cop
     #[test]
     fn prediction_uses_expanded_review_paths_for_file_count() {
         let mut pr = HistoricalPr {
-            repo: "hibrandonevans/gin".to_owned(),
+            repo: "difflore-fixtures/gin".to_owned(),
             pr_number: 4542,
             text: "http.StatusContinue magic number bodyAllowedForStatus".to_owned(),
             files: vec!["context.go".to_owned()],
@@ -1007,7 +1007,7 @@ Please inspect `binding/binding_test.go` and ignore `Context.PDF` plus `maps.Cop
             indexed_text.push_str(file);
         }
         HistoricalPr {
-            repo: "hibrandonevans/gin".to_owned(),
+            repo: "difflore-fixtures/gin".to_owned(),
             pr_number,
             text: indexed_text.clone(),
             files: files.iter().map(|file| (*file).to_owned()).collect(),

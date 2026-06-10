@@ -321,7 +321,10 @@ mod tests {
 
         let scoped = fetch_proven_rule_drilldown(
             &pool,
-            Some(&["hibrandonevans/gin".to_owned(), "gin-gonic/gin".to_owned()]),
+            Some(&[
+                "difflore-fixtures/gin".to_owned(),
+                "gin-gonic/gin".to_owned(),
+            ]),
             &[],
         )
         .await
@@ -355,7 +358,8 @@ mod tests {
         )
         .await;
 
-        let scoped = local_proven_rule_drilldown(&pool, &["hibrandonevans/store".to_owned()]).await;
+        let scoped =
+            local_proven_rule_drilldown(&pool, &["difflore-fixtures/store".to_owned()]).await;
         assert!(
             scoped.is_none(),
             "status must not advertise a global proven rule that current-repo recall/MCP cannot serve"

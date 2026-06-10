@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE skills SET status = 'pending' WHERE id = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "5755bcfc525eb7a9baef281981cb92fb2bbd7d94cd0226b6689200acbee6a1bb"
+}

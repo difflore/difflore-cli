@@ -1,0 +1,60 @@
+name: Release preflight
+
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+  SQLX_OFFLINE: "true"
+
+jobs:
+  checks:
+    name: Release checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux system deps
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --version 0.8.6 --no-default-features --features sqlite,rustls --locked
+
+      - name: Verify SQLx offline metadata
+        shell: bash
+        run: bash scripts/prepare-sqlx.sh --check
+
+      - name: Install dist
+        shell: bash
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh
+
+      - name: Verify tag matches CLI crate version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          cli_version="$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name == "difflore-cli") | .version')"
+          echo "Tag:          ${tag_version}"
+          echo "difflore-cli: ${cli_version}"
+          if [ "${tag_version}" != "${cli_version}" ]; then
+            echo "::error::Tag ${tag_version} does not match difflore-cli version ${cli_version}"
+            exit 1
+          fi
+
+      - name: Run release checks
+        run: |
+          cargo fmt --all -- --check
+          cargo check --workspace --all-targets
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+          cargo run -p difflore-cli -- dist verify
+          dist plan

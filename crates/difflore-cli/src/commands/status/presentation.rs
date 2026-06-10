@@ -497,7 +497,7 @@ mod tests {
             rule_id: "rule-1".to_owned(),
             title: "Pin GitHub Actions refs to SHAs".to_owned(),
             source_repo: Some("tanstack/router".to_owned()),
-            target_repo_full_name: Some("hibrandonevans/router".to_owned()),
+            target_repo_full_name: Some("difflore-fixtures/router".to_owned()),
             target_pr_number: Some(4),
             sample_file: Some(".github/workflows/pr.yml".to_owned()),
             accepted_edits: 5,
@@ -516,7 +516,7 @@ mod tests {
         let out = lines.join("\n");
         assert!(out.contains("best local proof (best on this machine)"));
         assert!(out.contains("learned from tanstack/router"));
-        assert!(out.contains("used on hibrandonevans/router#4"));
+        assert!(out.contains("used on difflore-fixtures/router#4"));
         assert!(out.contains("5 accepted edits"));
         assert!(out.contains("5 signed diffs"));
         assert!(out.contains("6 strict serves"));

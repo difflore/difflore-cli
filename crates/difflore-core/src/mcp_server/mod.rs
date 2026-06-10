@@ -10,6 +10,7 @@ mod recall_sampler;
 mod schemas;
 mod serve_render;
 mod server;
+mod skill_docs;
 mod tools;
 mod trust_proof;
 
@@ -97,12 +98,15 @@ mod repo_scope_tests {
         let corpus = vec![
             historical_pr("gin-gonic/gin", 4542),
             historical_pr("tanstack/router", 7150),
-            historical_pr("hibrandonevans/gin", 4542),
+            historical_pr("difflore-fixtures/gin", 4542),
         ];
 
         let scoped = repo_scoped_plan_corpus(
             &corpus,
-            &["hibrandonevans/gin".to_owned(), "gin-gonic/gin".to_owned()],
+            &[
+                "difflore-fixtures/gin".to_owned(),
+                "gin-gonic/gin".to_owned(),
+            ],
         );
 
         assert_eq!(scoped.len(), 2);

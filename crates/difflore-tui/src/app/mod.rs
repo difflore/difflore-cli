@@ -1090,7 +1090,7 @@ mod tests {
         let mut plan = PlanState::default();
         let status = CloudStatus {
             logged_in: true,
-            email: Some("hibrandonevans@outlook.com".to_owned()),
+            email: Some("hello@difflore.dev".to_owned()),
             plan: Some("team".to_owned()),
             team_name: Some("invite-smoke-60377e".to_owned()),
             team_id: None,

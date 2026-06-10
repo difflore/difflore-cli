@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT file_path, created_at AS \"created_at!: String\"\n         FROM fix_outcomes\n         WHERE rule_id = ?1\n           AND accepted = 1\n           AND applied_ok = 1\n           AND datetime(created_at) >= datetime('now', ?2)\n         ORDER BY datetime(created_at) DESC, id DESC\n         LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "file_path",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: String",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "1f0cdbc9947a8c58aeffab497b97850f1264fb3b377b94c4f6deebe13677bb90"
+}

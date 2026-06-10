@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, session_id, project_id, file_path, diff_content, status, source, source_kind, external_review_id, repo_full_name, pr_number, author, synced_at, metadata, created_at, reviewed_at FROM review_items ORDER BY created_at DESC LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "session_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "project_id",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_path",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "diff_content",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "status",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "source",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "source_kind",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "external_review_id",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "repo_full_name",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "pr_number",
+        "ordinal": 10,
+        "type_info": "Integer"
+      },
+      {
+        "name": "author",
+        "ordinal": 11,
+        "type_info": "Text"
+      },
+      {
+        "name": "synced_at",
+        "ordinal": 12,
+        "type_info": "Text"
+      },
+      {
+        "name": "metadata",
+        "ordinal": 13,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 14,
+        "type_info": "Text"
+      },
+      {
+        "name": "reviewed_at",
+        "ordinal": 15,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "71e03cdea8680309ef0bafc6029704e688839d9c9cc6880c2ec4096038831582"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO skill_repos (id, owner, name, branch, enabled, created_at) VALUES (?1, ?2, ?3, ?4, 1, ?5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "fd1f757baf6fa1dfd6c3b01a19f269ac936c1a0447643187c280d02da8140ebb"
+}

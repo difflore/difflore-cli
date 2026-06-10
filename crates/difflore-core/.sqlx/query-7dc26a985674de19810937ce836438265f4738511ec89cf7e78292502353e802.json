@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE skills SET enabled_for_gemini = ?1, updated_at = datetime('now') WHERE id = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "7dc26a985674de19810937ce836438265f4738511ec89cf7e78292502353e802"
+}

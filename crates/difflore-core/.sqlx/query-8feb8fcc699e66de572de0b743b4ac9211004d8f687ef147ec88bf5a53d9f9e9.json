@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE review_items SET session_id = ?, project_id = ?, file_path = ?, diff_content = ?, status = ?, source = ?, source_kind = ?, external_review_id = ?, repo_full_name = ?, pr_number = ?, author = ?, synced_at = ?, metadata = ?, reviewed_at = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 15
+    },
+    "nullable": []
+  },
+  "hash": "8feb8fcc699e66de572de0b743b4ac9211004d8f687ef147ec88bf5a53d9f9e9"
+}

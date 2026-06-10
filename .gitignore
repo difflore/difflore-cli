@@ -40,3 +40,7 @@ bacon.toml
 
 # local developer install helper
 scripts/dev-install.sh
+
+# SQLx workspace-level cache is redundant for published crates. Keep only the
+# crate-local caches under crates/*/.sqlx so crates.io tarballs compile offline.
+/.sqlx/

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT o.rule_id AS \"rule_id!: String\", COUNT(*) AS \"count!: i64\"\n         FROM rule_outcomes o\n         INNER JOIN skills s ON s.id = o.rule_id\n         WHERE o.kind = 'recalled'\n           AND datetime(o.created_at) >= datetime('now', ?1)\n         GROUP BY o.rule_id\n         ORDER BY COUNT(*) DESC, o.rule_id ASC\n         LIMIT ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "rule_id!: String",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "count!: i64",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "644d22447383f82805de5257deef01a4c0f77bfdc6c93ec6fcc2fc1f923f54c6"
+}

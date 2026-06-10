@@ -810,13 +810,16 @@ mod tests {
     fn repo_scopes_are_normalized_and_deduped_in_input_order() {
         assert_eq!(
             unique_repo_scopes(&[
-                "  HibrandOnevans/Vite  ".to_owned(),
-                "hibrandonevans/vite".to_owned(),
+                "  Difflore-Fixtures/Vite  ".to_owned(),
+                "difflore-fixtures/vite".to_owned(),
                 " ".to_owned(),
                 "ViteJS/Vite".to_owned(),
                 "vitejs/vite ".to_owned(),
             ]),
-            vec!["hibrandonevans/vite".to_owned(), "vitejs/vite".to_owned()]
+            vec![
+                "difflore-fixtures/vite".to_owned(),
+                "vitejs/vite".to_owned()
+            ]
         );
     }
 

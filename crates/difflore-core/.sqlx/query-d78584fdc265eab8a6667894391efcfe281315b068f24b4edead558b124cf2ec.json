@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT repo_full_name, pr_number as \"pr_number: i32\", file_path, id, author FROM review_items WHERE pr_number IS NOT NULL AND repo_full_name IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "repo_full_name",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "pr_number: i32",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "file_path",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "id",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "author",
+        "ordinal": 4,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "d78584fdc265eab8a6667894391efcfe281315b068f24b4edead558b124cf2ec"
+}

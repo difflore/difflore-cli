@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT f.chunk_id AS \"chunk_id!: String\", f.rank AS \"rank: f64\"\n           FROM rule_chunks_fts f\n           JOIN rule_chunks c ON c.id = f.chunk_id\n           WHERE rule_chunks_fts MATCH ?1\n           AND (?2 IS NULL OR c.language = ?2 OR c.language IS NULL)\n           AND (?3 IS NULL OR c.repo_scope = ?3)\n           ORDER BY f.rank\n           LIMIT ?4",
+  "describe": {
+    "columns": [
+      {
+        "name": "chunk_id!: String",
+        "ordinal": 0,
+        "type_info": "Null"
+      },
+      {
+        "name": "rank: f64",
+        "ordinal": 1,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "d829911533590eb66005406b84874b76a38c7a7df92a56dac6fa66b2ec6fcf3d"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM cloud_outbox WHERE id = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "a4a073cfc0dedfda6aaf1b39ebcf5db89a00edf7ad8d1946a17947a3dcbaf7d2"
+}

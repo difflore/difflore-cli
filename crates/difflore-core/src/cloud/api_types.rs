@@ -345,7 +345,7 @@ mod tests {
             before_code: "old".into(),
             after_code: "new".into(),
             file_path: Some("src/lib.rs".into()),
-            repo_full_name: Some("hibrandonevans/gin".into()),
+            repo_full_name: Some("difflore-fixtures/gin".into()),
             target_pr_number: Some(4543),
             language: Some("rust".into()),
             acceptance_source: Some("difflore_fix".into()),

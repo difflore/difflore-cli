@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, review_item_id, external_comment_id, line_number, content, author, comment_url, thread_id, metadata, created_at FROM review_comments WHERE review_item_id IN (SELECT value FROM json_each(?1)) ORDER BY created_at ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "review_item_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "external_comment_id",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "line_number",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "content",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "author",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "comment_url",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "thread_id",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "metadata",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 9,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "2d77c2eb29e8ada6ca066a6c9d712eff5bd8c5939948a9366dd112ecbd31690e"
+}
