@@ -109,10 +109,16 @@ cargo check -p difflore-cli
 cargo test -p difflore-cli
 ```
 
-Merging to `main` does not publish a release. Maintainers publish by bumping
-crate versions and `CHANGELOG.md`, then pushing a `vX.Y.Z` tag. GitHub Actions
-builds the release artifacts, publishes the Homebrew formula, and publishes
-the crates to crates.io.
+Merging to `main` does not publish a release. Maintainers publish from a
+release commit by bumping crate versions and `CHANGELOG.md`, then pushing a
+`vX.Y.Z` tag.
+
+On a release tag, GitHub Actions builds GitHub Release artifacts and publishes
+the Homebrew formula. The independent `Publish crates` workflow publishes
+crates.io packages in dependency order, or skips versions that are already
+published. For the first crates.io release, publish the crates manually once or
+temporarily add `CARGO_REGISTRY_TOKEN`; after that, use crates.io Trusted
+Publishing and remove long-lived tokens.
 
 Issues and PRs are welcome. Do not include secrets, private PR text, or
 private code in examples.
