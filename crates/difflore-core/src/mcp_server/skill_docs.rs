@@ -1,6 +1,7 @@
 // Generated from `plugin/skills/**/SKILL.md` so the published `difflore-core`
 // crate can embed MCP skill resources without keeping a second skill tree.
 // Update by regenerating from the root plugin skill files.
+#![allow(clippy::needless_raw_string_hashes)]
 
 pub(super) const RULE_SEARCH_SKILL_MD: &str = r################"---
 name: rule-search
