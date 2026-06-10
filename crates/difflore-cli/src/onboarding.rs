@@ -41,20 +41,25 @@ const MAX_IMPORT_MAX_PRS: usize = 1000;
 ///
 /// ```text
 /// Brand-new user, zero rules, no cloud login, sentinel missing
-///   -> launch interactive wizard (collapses 4-bounce onboarding)
+///   -> launch interactive wizard (collapses 4-bounce onboarding),
+///      then drop into the TUI dashboard
 /// New machine, no welcome sentinel, but not fresh
-///   -> show static welcome screen, then drop into the TUI
-/// Returning user / opted out
-///   -> stay silent and let the TUI path emit its own drift hint
+///   -> show static welcome screen, then drop into the TUI dashboard
+/// Returning user / opted out / non-TTY
+///   -> stay silent; bare `difflore` falls through to the compact
+///      status surface (no TUI)
 /// ```
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum FirstRunPath {
-    /// New machine + interactive — run the chained wizard, then TUI.
+    /// New machine + interactive — run the chained wizard, then the TUI
+    /// dashboard (`tui_entry::run_dashboard`).
     LaunchWizard,
-    /// New machine but non-interactive — print static welcome, then TUI.
+    /// New machine + interactive, but not fresh (existing rules or a cloud
+    /// login) — print the static welcome, then the TUI dashboard.
     ShowWelcome,
-    /// Either a returning user (sentinel exists) or a non-TTY context.
-    /// The TUI path handles its own drift hint; we do nothing here.
+    /// Either a returning user (sentinel exists), an opt-out, or a non-TTY
+    /// context. The caller falls through to the compact status surface;
+    /// the TUI is never launched here.
     Skip,
 }
 
@@ -250,7 +255,7 @@ pub(crate) async fn show_welcome_then_continue() -> WelcomeFlow {
     );
     println!();
     println!(
-        "  {} press {} to show local memory status ({} won't show again)",
+        "  {} press {} to open the local memory dashboard ({} won't show again)",
         style::pewter(sym::BULLET),
         style::cmd("Enter"),
         style::pewter("this message"),

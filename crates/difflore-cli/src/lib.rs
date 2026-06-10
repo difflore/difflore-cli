@@ -24,6 +24,7 @@ pub mod runtime;
 pub mod session_mine;
 pub mod style;
 mod support;
+mod tui_entry;
 
 use cli::{Cli, Commands, StatusLane};
 
@@ -56,12 +57,15 @@ pub async fn run() {
         command
     } else {
         // First-run state machine: bare `difflore` runs the wizard/welcome
-        // once, then falls through to the compact status surface.
+        // once and hands off to the TUI dashboard; returning users (and
+        // every non-TTY context) fall through to the compact status surface.
         match onboarding::first_run_path(cli.no_interactive).await {
             onboarding::FirstRunPath::LaunchWizard => {
                 if !onboarding::run_wizard().await.should_continue_tui() {
                     return;
                 }
+                tui_entry::run_dashboard().await;
+                return;
             }
             onboarding::FirstRunPath::ShowWelcome => {
                 if !onboarding::show_welcome_then_continue()
@@ -70,6 +74,8 @@ pub async fn run() {
                 {
                     return;
                 }
+                tui_entry::run_dashboard().await;
+                return;
             }
             onboarding::FirstRunPath::Skip => {}
         }

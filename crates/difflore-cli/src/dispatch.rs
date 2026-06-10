@@ -8,7 +8,7 @@
 //! | `difflore try` | `commands/try_demo.rs` | `try` is a Rust keyword |
 //! | `difflore agents …` | `src/installer/` | one engine installs MCP + hooks across every agent; not a per-command module |
 //! | `difflore mcp-server` | `difflore_core::mcp_server` | hidden stdio transport; the server lives in core |
-//! | bare `difflore` | `src/onboarding.rs` + `commands/status/` | first-run wizard, then falls through to status |
+//! | bare `difflore` | `src/onboarding.rs` + `src/tui_entry.rs` + `commands/status/` | first-run wizard, then the TUI dashboard; returning users fall through to status |
 
 use crate::cli::{
     AgentsCommands, CloudCommands, Commands, DistCommands, EmbeddingsCommands, FixCliArgs,
