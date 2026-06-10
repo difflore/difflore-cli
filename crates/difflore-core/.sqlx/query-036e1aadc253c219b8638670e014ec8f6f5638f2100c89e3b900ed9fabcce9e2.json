@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "CREATE TRIGGER IF NOT EXISTS rule_chunks_ai AFTER INSERT ON rule_chunks BEGIN\n            INSERT INTO rule_chunks_fts(chunk_id, content) VALUES (new.id, new.content);\n        END",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "036e1aadc253c219b8638670e014ec8f6f5638f2100c89e3b900ed9fabcce9e2"
+}

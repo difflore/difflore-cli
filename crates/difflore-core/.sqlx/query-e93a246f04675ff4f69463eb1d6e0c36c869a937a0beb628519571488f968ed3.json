@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT cloud_id FROM skills WHERE id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "cloud_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "e93a246f04675ff4f69463eb1d6e0c36c869a937a0beb628519571488f968ed3"
+}

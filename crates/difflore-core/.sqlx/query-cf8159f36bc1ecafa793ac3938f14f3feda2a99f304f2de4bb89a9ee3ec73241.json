@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR IGNORE INTO skills\n         (id, name, source, directory, version, description, type, engines, tags,\n          repo_owner, repo_name, repo_branch, enabled_for_claude, installed_at, updated_at)\n         VALUES (?1, ?2, 'github', ?3, '1.0.0', ?4, 'skill', ?5, ?6,\n                 ?7, ?8, ?9, 1, ?10, ?10)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "cf8159f36bc1ecafa793ac3938f14f3feda2a99f304f2de4bb89a9ee3ec73241"
+}

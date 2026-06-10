@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE providers SET name=?1, base_url=?2, api_key=?3, model_mapping=?4, updated_at=?5 WHERE id=?6",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "c08653e0e33574f20fce55a3aa0abde508929ac6c016ba4ec0485e04fdd63583"
+}

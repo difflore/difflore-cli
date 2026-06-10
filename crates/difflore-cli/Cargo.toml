@@ -18,6 +18,15 @@ license = "Apache-2.0"
 keywords = ["mcp", "ai-agent", "code-review", "claude-code", "cursor"]
 categories = ["development-tools", "command-line-utilities"]
 
+[package.metadata.wix]
+upgrade-guid = "DA86C7A3-D5A4-48E9-92F1-17CC6122AA4C"
+path-guid = "B72FEA10-74D1-48FC-9059-26EE114089D6"
+license = false
+eula = false
+
+[package.metadata.dist]
+formula = "difflore"
+
 [lib]
 name = "difflore_cli"
 path = "src/lib.rs"

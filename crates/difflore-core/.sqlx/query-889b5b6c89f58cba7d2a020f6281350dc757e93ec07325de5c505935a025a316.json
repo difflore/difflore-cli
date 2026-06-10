@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, skill_id, bad_code, good_code, description, source, created_at FROM rule_examples WHERE skill_id = ?1 ORDER BY created_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "skill_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "bad_code",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "good_code",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "description",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "source",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 6,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "889b5b6c89f58cba7d2a020f6281350dc757e93ec07325de5c505935a025a316"
+}

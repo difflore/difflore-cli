@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT content, line_number FROM review_comments WHERE review_item_id = ?1 ORDER BY line_number ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "content",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "line_number",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "3e93e80783428d5d71bd3c6f1e87bd2923cfe73f916397a3e1d41dd4e57e0ea9"
+}

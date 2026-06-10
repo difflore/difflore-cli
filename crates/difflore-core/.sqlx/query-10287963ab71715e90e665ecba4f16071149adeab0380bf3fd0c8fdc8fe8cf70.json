@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id as \"id!: String\", content as \"content!: String\",\n                  file_patterns, language, repo_scope\n           FROM rule_chunks",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: String",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "content!: String",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_patterns",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "language",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "repo_scope",
+        "ordinal": 4,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "10287963ab71715e90e665ecba4f16071149adeab0380bf3fd0c8fdc8fe8cf70"
+}

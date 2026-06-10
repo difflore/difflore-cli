@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "CREATE VIRTUAL TABLE IF NOT EXISTS rule_chunks_fts USING fts5(\n            chunk_id UNINDEXED,\n            content,\n            tokenize='porter unicode61'\n        )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "e8fae549dab4b7ed6750bdbaa8962c6c288e2d7acb61d43bb9348bb461f7802c"
+}

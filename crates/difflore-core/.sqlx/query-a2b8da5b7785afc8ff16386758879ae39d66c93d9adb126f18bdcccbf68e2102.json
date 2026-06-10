@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE rule_examples SET skill_id = ?1 WHERE skill_id = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "a2b8da5b7785afc8ff16386758879ae39d66c93d9adb126f18bdcccbf68e2102"
+}

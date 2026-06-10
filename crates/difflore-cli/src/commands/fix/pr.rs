@@ -802,7 +802,7 @@ mod tests {
             .unwrap();
         assert!(status.success());
         for (name, url) in [
-            ("origin", "https://github.com/hibrandonevans/vite.git"),
+            ("origin", "https://github.com/difflore-fixtures/vite.git"),
             ("upstream", "https://github.com/vitejs/vite.git"),
         ] {
             let status = Command::new("git")

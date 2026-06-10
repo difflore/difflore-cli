@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO review_items (id, session_id, project_id, file_path, diff_content, status, source, source_kind, external_review_id, repo_full_name, pr_number, author, synced_at, metadata, created_at, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 16
+    },
+    "nullable": []
+  },
+  "hash": "300a42294465ef25f099a5f2c4556c37166f282a3ba77b1bd91191b4a071db13"
+}

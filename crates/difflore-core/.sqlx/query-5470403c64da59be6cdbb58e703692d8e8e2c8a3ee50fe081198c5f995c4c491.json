@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, name, origin, confidence_score FROM skills WHERE origin = 'conversation' AND confidence_score > 0.6 AND status = 'active' ORDER BY confidence_score DESC, updated_at DESC LIMIT 5",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "origin",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "confidence_score",
+        "ordinal": 3,
+        "type_info": "Float"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5470403c64da59be6cdbb58e703692d8e8e2c8a3ee50fe081198c5f995c4c491"
+}

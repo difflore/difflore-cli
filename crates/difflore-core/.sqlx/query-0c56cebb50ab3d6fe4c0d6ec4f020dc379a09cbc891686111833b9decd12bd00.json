@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n             COUNT(*) AS \"recall_events!: i64\",\n             COUNT(DISTINCT rule_id) AS \"recalled_rules!: i64\"\n         FROM rule_outcomes\n         WHERE kind = 'recalled'\n           AND datetime(created_at) >= datetime('now', ?1)",
+  "describe": {
+    "columns": [
+      {
+        "name": "recall_events!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "recalled_rules!: i64",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "0c56cebb50ab3d6fe4c0d6ec4f020dc379a09cbc891686111833b9decd12bd00"
+}

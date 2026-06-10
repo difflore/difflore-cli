@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO skills\n         (id, name, source, directory, version, description, type, engines, tags,\n          trigger, check_prompt, enabled_for_claude, installed_at, updated_at)\n         VALUES (?1, ?2, 'local', ?3, '1.0.0', ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?10)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "4bc7772bed772f1159cd4c32cc4e1a51b7a983cb4c6807a44ef691340bf6f12f"
+}

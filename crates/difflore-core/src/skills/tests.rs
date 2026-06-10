@@ -246,7 +246,7 @@ body text";
         for (id, repo) in [
             ("fastapi-rule", "fastapi/fastapi"),
             ("router-upstream", "tanstack/router"),
-            ("router-direct", "hibrandonevans/router"),
+            ("router-direct", "difflore-fixtures/router"),
             ("ambiguous-one", "one/widgets"),
             ("ambiguous-two", "two/widgets"),
         ] {
@@ -263,25 +263,25 @@ body text";
         }
 
         let fastapi =
-            expand_repo_scopes_with_source_aliases(&db, &["hibrandonevans/fastapi".to_owned()])
+            expand_repo_scopes_with_source_aliases(&db, &["difflore-fixtures/fastapi".to_owned()])
                 .await
                 .unwrap();
         assert_eq!(
             fastapi,
             vec![
-                "hibrandonevans/fastapi".to_owned(),
+                "difflore-fixtures/fastapi".to_owned(),
                 "fastapi/fastapi".to_owned()
             ]
         );
 
         let router =
-            expand_repo_scopes_with_source_aliases(&db, &["hibrandonevans/router".to_owned()])
+            expand_repo_scopes_with_source_aliases(&db, &["difflore-fixtures/router".to_owned()])
                 .await
                 .unwrap();
         assert_eq!(
             router,
             vec![
-                "hibrandonevans/router".to_owned(),
+                "difflore-fixtures/router".to_owned(),
                 "tanstack/router".to_owned()
             ]
         );

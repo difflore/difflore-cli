@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT origin, COUNT(*) AS c FROM skills WHERE status = 'active' GROUP BY origin ORDER BY c DESC, origin ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "origin",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "c",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "c2c61b530a982bba5836e86844ac53f6bea10b064d32068d3a62647af51fbdf7"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE skills SET enabled_for_codex = 1, enabled_for_claude = 1, enabled_for_gemini = 1, enabled_for_cursor = 1, updated_at = datetime('now') WHERE source = 'cloud' AND status = 'active' AND (enabled_for_codex = 0 OR enabled_for_claude = 0 OR enabled_for_gemini = 0 OR enabled_for_cursor = 0)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "7ac527042a15162736a6d21a794136c0ac76244d51ee7820d09a64f46d91affc"
+}

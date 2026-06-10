@@ -42,6 +42,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Install sqlx-cli
+        if: runner.os == 'Linux'
+        run: cargo install sqlx-cli --version 0.8.6 --no-default-features --features sqlite,rustls --locked
+
+      - name: Verify SQLx offline metadata
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash scripts/prepare-sqlx.sh --check
+
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 

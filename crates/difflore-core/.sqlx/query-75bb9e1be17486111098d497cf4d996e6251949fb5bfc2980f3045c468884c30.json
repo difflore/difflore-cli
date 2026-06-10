@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM rule_index_meta WHERE key = 'skills_max_updated_at'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "75bb9e1be17486111098d497cf4d996e6251949fb5bfc2980f3045c468884c30"
+}

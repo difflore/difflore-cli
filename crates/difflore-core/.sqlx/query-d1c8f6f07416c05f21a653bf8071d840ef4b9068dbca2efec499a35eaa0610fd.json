@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT rule_id AS \"rule_id!: String\",\n                repo_full_name,\n                file_path,\n                COALESCE(rank, 999) AS \"rank!: i64\",\n                COALESCE(top_k, 0) AS \"top_k!: i64\",\n                strict_file_match != 0 AS \"strict_file_match!: bool\",\n                created_at AS \"recalled_at!: String\"\n         FROM rule_outcomes\n         WHERE kind = 'recalled'\n           AND rule_id = ?1\n           AND rank BETWEEN 1 AND 3\n           AND datetime(created_at) >= datetime('now', ?2)\n         ORDER BY datetime(created_at) DESC, id DESC\n         LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "rule_id!: String",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "repo_full_name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "file_path",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "rank!: i64",
+        "ordinal": 3,
+        "type_info": "Null"
+      },
+      {
+        "name": "top_k!: i64",
+        "ordinal": 4,
+        "type_info": "Null"
+      },
+      {
+        "name": "strict_file_match!: bool",
+        "ordinal": 5,
+        "type_info": "Null"
+      },
+      {
+        "name": "recalled_at!: String",
+        "ordinal": 6,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      null,
+      null,
+      null,
+      false
+    ]
+  },
+  "hash": "d1c8f6f07416c05f21a653bf8071d840ef4b9068dbca2efec499a35eaa0610fd"
+}

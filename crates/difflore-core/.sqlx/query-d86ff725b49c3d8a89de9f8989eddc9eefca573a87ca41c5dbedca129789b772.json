@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE skills SET enabled_for_claude = ?1, updated_at = datetime('now') WHERE id = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "d86ff725b49c3d8a89de9f8989eddc9eefca573a87ca41c5dbedca129789b772"
+}

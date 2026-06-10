@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT confidence_score FROM skills WHERE id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "confidence_score",
+        "ordinal": 0,
+        "type_info": "Float"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5769bec0197c75165c33896a9a158418903b1bfabfd1a5399f1b575e9535336a"
+}

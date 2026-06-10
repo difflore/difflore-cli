@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COUNT(*) AS \"n!: i64\" FROM fix_outcomes\n         WHERE rule_id = ?1 AND accepted = 1 AND applied_ok = 1\n           AND datetime(created_at) >= datetime('now', ?2)",
+  "describe": {
+    "columns": [
+      {
+        "name": "n!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f471f94fec3b34f1310c224bb0b06182d5ef04504fe3a7c31b610cb92538ffaf"
+}
