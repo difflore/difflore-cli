@@ -10,7 +10,7 @@ use crate::style::{self, sym};
 
 use super::{
     CloudRecallResult, DiagnosticStep, LocalRecallResult, LocalRuleHit, RecallDiagnostics,
-    recall_subject, source_label, strict_file_pattern_match, truncate_one_line,
+    recall_subject, source_label, strict_pattern_match_any_file, truncate_one_line,
 };
 
 pub(super) fn render_cross_repo_starter_human(hits: &[LocalRuleHit], file: &str) {
@@ -69,13 +69,13 @@ pub(super) fn cross_repo_starter_json(hits: &[LocalRuleHit]) -> serde_json::Valu
 
 pub(super) fn local_rules_json(
     local: &LocalRecallResult,
-    queried_file: Option<&str>,
+    scope_files: &[String],
 ) -> serde_json::Value {
     serde_json::json!({
         "rulesIndexed": local.rules_indexed,
         "repoFullName": local.repo_full_name,
         "fileScopeFallback": local.file_scope_fallback,
-        "results": local.matches.iter().map(|hit| local_rule_hit_json(hit, queried_file)).collect::<Vec<_>>(),
+        "results": local.matches.iter().map(|hit| local_rule_hit_json(hit, scope_files)).collect::<Vec<_>>(),
     })
 }
 
@@ -85,10 +85,11 @@ pub(super) fn local_rules_json(
 /// (bad/good/description straight from `rule_examples`), and the
 /// `check`/`trigger` fields. Before this, an agent consuming recall could only
 /// see headlines with the bodies NULL; now it sees the actual team memory.
-pub(super) fn local_rule_hit_json(
-    hit: &LocalRuleHit,
-    queried_file: Option<&str>,
-) -> serde_json::Value {
+///
+/// `scope_files` is the strict-match scope (the queried file, or every
+/// changed file for `--diff`); `strictFileMatch` is true when the rule's
+/// patterns cover ANY of them — the same semantics retrieval scoped by.
+pub(super) fn local_rule_hit_json(hit: &LocalRuleHit, scope_files: &[String]) -> serde_json::Value {
     let mut value = serde_json::json!({
         "skillId": hit.id,
         "title": hit.title,
@@ -100,7 +101,7 @@ pub(super) fn local_rule_hit_json(
         "preview": hit.preview,
         "bad": hit.bad,
         "fix": hit.fix,
-        "strictFileMatch": strict_file_pattern_match(&hit.file_patterns, queried_file),
+        "strictFileMatch": strict_pattern_match_any_file(&hit.file_patterns, scope_files),
     });
     if let Some(rendered) = hit.body.as_ref()
         && let Some(object) = value.as_object_mut()
@@ -215,6 +216,7 @@ pub(super) fn render_local_recall_human(
     local: &LocalRecallResult,
     intent: &str,
     file: Option<&str>,
+    scope_files: &[String],
     verbose: bool,
 ) {
     if local.matches.is_empty() {
@@ -275,7 +277,7 @@ pub(super) fn render_local_recall_human(
             style::emerald(&format!("rank={:.2}", hit.rank_score)),
             style::pewter(&format!("raw={:.3}", hit.raw_score)),
         );
-        if strict_file_pattern_match(&hit.file_patterns, file) {
+        if strict_pattern_match_any_file(&hit.file_patterns, scope_files) {
             println!(
                 "       {} strict file match via {}",
                 style::pewter("why:"),

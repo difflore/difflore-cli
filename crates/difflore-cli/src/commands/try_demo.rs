@@ -211,7 +211,7 @@ pub async fn handle_try() {
             top_k: 3,
             confidence_map: None,
             age_days_map: None,
-            target_file: Some(SAMPLE_FILE),
+            target_scope: Some(retrieval::TargetScope::File(SAMPLE_FILE)),
             repo_scopes: &[],
             // Isolated SHA1 index has no ANN graph; linear scan over ~6 rules.
             ann_enabled: false,
@@ -408,7 +408,7 @@ mod tests {
                 top_k: 3,
                 confidence_map: None,
                 age_days_map: None,
-                target_file: Some(SAMPLE_FILE),
+                target_scope: Some(retrieval::TargetScope::File(SAMPLE_FILE)),
                 repo_scopes: &[],
                 ann_enabled: false,
                 embedding_timeout: None,

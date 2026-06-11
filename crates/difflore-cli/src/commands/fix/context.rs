@@ -139,6 +139,18 @@ pub(super) fn primary_file_for_retrieval(diff_records: &[DiffContentRecord]) -> 
         .or(first_changed)
 }
 
+/// Every changed file path in the diff, in record order (the authoritative
+/// changeset for retrieval's strict file-pattern cascade). Deduped and
+/// blank-filtered; empty when the diff carries no usable paths.
+pub(super) fn changed_files_for_retrieval(diff_records: &[DiffContentRecord]) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    diff_records
+        .iter()
+        .filter_map(non_empty_file_path)
+        .filter(|file| seen.insert(file.clone()))
+        .collect()
+}
+
 fn non_empty_file_path(record: &DiffContentRecord) -> Option<String> {
     let file = record.file_path.trim();
     if file.is_empty() {
@@ -219,5 +231,20 @@ mod tests {
             primary_file_for_retrieval(&records).as_deref(),
             Some(".changeset/whole-views-wear.md")
         );
+    }
+
+    #[test]
+    fn changed_files_keep_order_dedupe_and_skip_blanks() {
+        let records = vec![
+            diff_record("db/schema/users.sql"),
+            diff_record("  "),
+            diff_record("src/api.ts"),
+            diff_record("db/schema/users.sql"),
+        ];
+        assert_eq!(
+            changed_files_for_retrieval(&records),
+            vec!["db/schema/users.sql".to_owned(), "src/api.ts".to_owned()],
+        );
+        assert!(changed_files_for_retrieval(&[]).is_empty());
     }
 }

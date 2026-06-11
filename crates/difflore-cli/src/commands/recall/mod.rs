@@ -178,13 +178,16 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
     if json {
         // Surface the strict-file-match information that record_local_recall
         // already computes, plus a recall timestamp — buyer-grade proof
-        // pipelines need both at the top level and per-result.
+        // pipelines need both at the top level and per-result. With `--diff`
+        // the strict flags run against the whole changeset, matching the
+        // any-path scope retrieval actually used.
         let recalled_at = chrono::Utc::now().to_rfc3339();
         let queried_file = resolved_file.as_deref();
+        let scope_files = strict_scope_files(queried_file, &diff_files);
         let strict_match_count = local
             .matches
             .iter()
-            .filter(|hit| strict_file_pattern_match(&hit.file_patterns, queried_file))
+            .filter(|hit| strict_pattern_match_any_file(&hit.file_patterns, &scope_files))
             .count();
         let any_strict = strict_match_count > 0;
         let mut payload = serde_json::json!({
@@ -202,7 +205,7 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
                 "mode": semantic_state.mode,
                 "note": semantic_state.keyword_only_note(),
             },
-            "localRules": local_rules_json(&local, queried_file),
+            "localRules": local_rules_json(&local, &scope_files),
             "cloudReviewMemory": {
                 "loggedIn": cloud.logged_in,
                 "repoFullName": cloud.repo_full_name,
@@ -242,7 +245,14 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
     if let Some(diagnostics) = zero_match_diagnostics.as_ref() {
         render_zero_match_compact_human(diagnostics);
     } else {
-        render_local_recall_human(&local, &resolved_intent, resolved_file.as_deref(), verbose);
+        let scope_files = strict_scope_files(resolved_file.as_deref(), &diff_files);
+        render_local_recall_human(
+            &local,
+            &resolved_intent,
+            resolved_file.as_deref(),
+            &scope_files,
+            verbose,
+        );
         // Honest degradation note: when these matches were ranked by the local
         // keyword hash (no embedding provider configured) say so, so the user does
         // not read a lexical recall as a semantic one. Only on the with-matches
@@ -559,69 +569,17 @@ async fn recall_local_and_cloud(
     session_id: &str,
 ) -> (LocalRecallResult, CloudRecallResult) {
     let local_branch = async {
-        let mut local = recall_local_rules(ctx, intent, file, top_k).await;
-        if let Some(primary_file) = file
-            && local.rules_indexed > 0
-            && strict_match_count_for_file(&local, Some(primary_file)) == 0
-        {
-            // Drive the fallback off the real `git diff --name-only` list,
-            // since `build_review_intent_text` never emits a parseable
-            // "changes in ..." prefix.
-            for candidate_file in candidate_fallback_files(diff_files, primary_file) {
-                let mut candidate =
-                    recall_local_rules(ctx, intent, Some(candidate_file), top_k).await;
-                if strict_match_count_for_file(&candidate, Some(candidate_file)) > 0 {
-                    candidate.file_scope_fallback = true;
-                    local = candidate;
-                    break;
-                }
-            }
-        }
-        record_local_recall(ctx, &local, intent, file, top_k, session_id).await;
+        // `--diff` runs ONE changeset-scoped query over every changed file
+        // (any-path strict cascade), replacing the old primary-file query +
+        // per-file fallback re-query loop. Single-file recall is unchanged.
+        let local = recall_local_rules(ctx, intent, file, diff_files, top_k).await;
+        record_local_recall(ctx, &local, intent, file, diff_files, top_k, session_id).await;
         local
     };
+    // Cloud past-verdict recall stays single-file: its request contract takes
+    // one `target_file`, and the cloud side is out of scope here.
     let cloud_branch = recall_cloud_review_memory(ctx, intent, file, top_k);
     tokio::join!(local_branch, cloud_branch)
-}
-
-fn strict_match_count_for_file(local: &LocalRecallResult, file: Option<&str>) -> usize {
-    local
-        .matches
-        .iter()
-        .filter(|hit| strict_file_pattern_match(&hit.file_patterns, file))
-        .count()
-}
-
-/// Synthetic parser kept only as a unit-test fixture documenting the
-/// `"changes in ..."` intent shape. Production uses `git diff --name-only`
-/// via the `diff_files` argument instead.
-#[cfg(test)]
-fn synthetic_diff_files(intent: &str) -> Vec<String> {
-    let Some(rest) = intent.strip_prefix("changes in ") else {
-        return Vec::new();
-    };
-    rest.split(", ")
-        .filter_map(|part| {
-            let trimmed = part.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_owned())
-            }
-        })
-        .collect()
-}
-
-/// Pure helper: pick the candidate-file fallback list for
-/// `recall_local_and_cloud`. The primary file is filtered out so the
-/// fallback never re-queries the same scope. Order is preserved from
-/// `diff_files` (which is `git diff --name-only` order).
-fn candidate_fallback_files<'a>(diff_files: &'a [String], primary_file: &str) -> Vec<&'a str> {
-    diff_files
-        .iter()
-        .map(String::as_str)
-        .filter(|f| *f != primary_file)
-        .collect()
 }
 
 pub(super) struct LocalRuleHit {
@@ -787,6 +745,30 @@ pub(super) fn strict_file_pattern_match(patterns: &[String], file: Option<&str>)
     patterns.iter().any(|pattern| {
         Glob::new(pattern).is_ok_and(|glob| glob.compile_matcher().is_match(&normalised))
     })
+}
+
+/// Changeset-aware strict match: true when the rule's parsed `file_patterns`
+/// strictly cover ANY of `files`. Mirrors the any-path semantics of the
+/// retrieval-side `TargetScope::Changeset` cascade so the strict re-rank and
+/// the `--json` strict flags agree with what retrieval actually scoped.
+pub(super) fn strict_pattern_match_any_file(patterns: &[String], files: &[String]) -> bool {
+    files
+        .iter()
+        .any(|file| strict_file_pattern_match(patterns, Some(file)))
+}
+
+/// The paths strict file-pattern matching runs against: the full `--diff`
+/// changeset when present, else the single `--file` argument (empty when
+/// neither is given — strict matching then never fires, as before).
+pub(super) fn strict_scope_files(file: Option<&str>, diff_files: &[String]) -> Vec<String> {
+    if diff_files.is_empty() {
+        file.map(str::trim)
+            .filter(|file| !file.is_empty())
+            .map(|file| vec![file.to_owned()])
+            .unwrap_or_default()
+    } else {
+        diff_files.to_vec()
+    }
 }
 
 pub(super) fn local_rule_title(content: &str, fallback: &str) -> String {
@@ -1447,7 +1429,7 @@ mod tests {
                 body: None,
             }],
         };
-        let json = local_rules_json(&local, Some("internal/x.go"));
+        let json = local_rules_json(&local, &["internal/x.go".to_owned()]);
         assert_eq!(json["results"][0]["bad"], "io.ReadAll(r.Body)");
         assert_eq!(json["results"][0]["fix"], "http.MaxBytesReader(...)");
 
@@ -1470,7 +1452,7 @@ mod tests {
                 body: None,
             }],
         };
-        let bare_json = local_rules_json(&bare, None);
+        let bare_json = local_rules_json(&bare, &[]);
         assert!(bare_json["results"][0]["bad"].is_null());
         assert!(bare_json["results"][0]["fix"].is_null());
     }
@@ -1514,7 +1496,7 @@ mod tests {
             }],
         };
 
-        let json = local_rules_json(&local, Some("internal/server.go"));
+        let json = local_rules_json(&local, &["internal/server.go".to_owned()]);
         let result = &json["results"][0];
 
         // Headline still present.
@@ -1570,7 +1552,7 @@ mod tests {
                 body: None,
             }],
         };
-        let json = local_rules_json(&local, None);
+        let json = local_rules_json(&local, &[]);
         let result = &json["results"][0];
         assert!(result.get("body").is_none(), "no body key when unhydrated");
         assert!(result.get("examples").is_none());
@@ -1777,7 +1759,7 @@ mod tests {
             }],
         };
 
-        let json = local_rules_json(&local, Some("internal/server.go"));
+        let json = local_rules_json(&local, &["internal/server.go".to_owned()]);
 
         assert_eq!(json["rulesIndexed"], 3);
         assert_eq!(json["repoFullName"], "acme/widgets");
@@ -1786,8 +1768,15 @@ mod tests {
         assert_eq!(json["results"][0]["sourceRepo"], "acme/widgets");
         assert_eq!(json["results"][0]["strictFileMatch"], true);
 
-        let no_match = local_rules_json(&local, Some("README.md"));
+        let no_match = local_rules_json(&local, &["README.md".to_owned()]);
         assert_eq!(no_match["results"][0]["strictFileMatch"], false);
+
+        // Changeset scope (`--diff`): strict when ANY changed file matches.
+        let changeset = local_rules_json(
+            &local,
+            &["README.md".to_owned(), "internal/server.go".to_owned()],
+        );
+        assert_eq!(changeset["results"][0]["strictFileMatch"], true);
     }
 
     #[test]
@@ -1819,15 +1808,14 @@ mod tests {
             body: None,
         }];
 
-        assert!(content_only_file_scope_fallback(
-            &content_only,
-            Some("src/lib.rs")
-        ));
-        assert!(!content_only_file_scope_fallback(
-            &strict,
-            Some("src/lib.rs")
-        ));
-        assert!(!content_only_file_scope_fallback(&content_only, None));
+        let scope = vec!["src/lib.rs".to_owned()];
+        assert!(content_only_file_scope_fallback(&content_only, &scope));
+        assert!(!content_only_file_scope_fallback(&strict, &scope));
+        assert!(!content_only_file_scope_fallback(&content_only, &[]));
+        // Changeset scope: a strict match on ANY changed file means recall
+        // did not fall back to content-only matching.
+        let changeset = vec!["README.md".to_owned(), "src/lib.rs".to_owned()];
+        assert!(!content_only_file_scope_fallback(&strict, &changeset));
     }
 
     #[test]
@@ -1983,55 +1971,36 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_diff_files_extracts_ordered_files_from_diff_intent() {
-        let files = synthetic_diff_files(
-            "changes in clients/src/main/java/A.java, core/src/test/scala/B.scala",
-        );
-        assert_eq!(
-            files,
-            vec![
-                "clients/src/main/java/A.java".to_owned(),
-                "core/src/test/scala/B.scala".to_owned(),
-            ]
-        );
-        assert!(synthetic_diff_files("fix group coordinator").is_empty());
+    fn strict_pattern_match_any_file_uses_any_path_semantics() {
+        // The `--diff` strict flag mirrors the retrieval-side changeset
+        // cascade: ANY changed file matching the rule's patterns counts.
+        let patterns = vec!["src/**/*.rs".to_owned()];
+        let hit = vec!["README.md".to_owned(), "src/lib.rs".to_owned()];
+        assert!(strict_pattern_match_any_file(&patterns, &hit));
+        let miss = vec!["README.md".to_owned(), "docs/usage.md".to_owned()];
+        assert!(!strict_pattern_match_any_file(&patterns, &miss));
+        assert!(!strict_pattern_match_any_file(&patterns, &[]));
+        assert!(!strict_pattern_match_any_file(&[], &hit));
     }
 
     #[test]
-    fn candidate_fallback_files_skips_primary_and_keeps_diff_order() {
-        // Simulates the real `--diff` shape: `build_review_intent_text`
-        // emits a structured intent starting with the file path and
-        // diff hunks — NOT a `"changes in ..."` string. The fallback
-        // must drive off the actual `git diff --name-only` list, so
-        // when the primary file produced no strict matches, we still
-        // try the other changed files (here `src/bar.rs`).
+    fn strict_scope_files_prefers_changeset_over_single_file() {
+        // `--diff` (the old per-file fallback case): the WHOLE changeset is
+        // the strict scope, so a rule scoped to a non-primary changed file
+        // (here `src/bar.rs`) still strict-matches in the single query.
         let diff_files = vec!["src/foo.rs".to_owned(), "src/bar.rs".to_owned()];
-        let structured_intent = "src/foo.rs\n@@ -10,0 +10,2 @@\n+ let x = 1;\n+ let y = 2;\n";
-
-        // The retired `synthetic_diff_files` parser would have returned
-        // an empty list for the structured intent, killing the fallback.
-        assert!(
-            synthetic_diff_files(structured_intent).is_empty(),
-            "structured intent never starts with 'changes in '",
+        assert_eq!(
+            strict_scope_files(Some("src/foo.rs"), &diff_files),
+            diff_files,
         );
-
-        let candidates = candidate_fallback_files(&diff_files, "src/foo.rs");
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0], "src/bar.rs");
-
-        // Primary-only diff (one changed file) should produce no
-        // candidates — there is no other file to fall back to.
-        let only_primary = vec!["src/foo.rs".to_owned()];
-        assert!(candidate_fallback_files(&only_primary, "src/foo.rs").is_empty());
-
-        // Multi-file diff preserves `git diff --name-only` order.
-        let many = vec![
-            "src/a.rs".to_owned(),
-            "src/b.rs".to_owned(),
-            "src/c.rs".to_owned(),
-        ];
-        let kept: Vec<&str> = candidate_fallback_files(&many, "src/b.rs");
-        assert_eq!(kept, vec!["src/a.rs", "src/c.rs"]);
+        // Single-file recall: scope is exactly the queried file.
+        assert_eq!(
+            strict_scope_files(Some("src/foo.rs"), &[]),
+            vec!["src/foo.rs".to_owned()],
+        );
+        // No file at all: strict matching never fires.
+        assert!(strict_scope_files(None, &[]).is_empty());
+        assert!(strict_scope_files(Some("  "), &[]).is_empty());
     }
 
     #[test]

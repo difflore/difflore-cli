@@ -361,7 +361,7 @@ async fn retrieve_rules_for_repo_scopes(
     confidence_map: Option<&std::collections::HashMap<String, f64>>,
     eligible_skill_ids: Option<&HashSet<String>>,
     age_days_map: Option<&std::collections::HashMap<String, f32>>,
-    target_file: Option<&str>,
+    target_scope: Option<retrieval::TargetScope<'_>>,
     repo_scopes: &[String],
     top_k: usize,
 ) -> Result<Vec<retrieval::ScoredRuleChunk>, CoreError> {
@@ -376,7 +376,7 @@ async fn retrieve_rules_for_repo_scopes(
             confidence_map,
             eligible_skill_ids,
             age_days_map,
-            target_file,
+            target_scope,
             repo_scopes,
             ann_enabled: true,
             embedding_timeout: Some(ORCHESTRATOR_EMBEDDING_TIMEOUT),
@@ -452,6 +452,34 @@ pub async fn prepare_with_hint_and_repo_scopes_with_top_k(
     repo_scopes: &[String],
     top_k_override: Option<usize>,
 ) -> Result<ContextPackRecord, CoreError> {
+    prepare_with_scope_and_repo_scopes_with_top_k(
+        app_pool,
+        project_id,
+        engine,
+        query,
+        task_intent,
+        file_path_hint.map(retrieval::TargetScope::File),
+        repo_scopes,
+        top_k_override,
+    )
+    .await
+}
+
+/// Generalisation of [`prepare_with_hint_and_repo_scopes_with_top_k`] over a
+/// [`retrieval::TargetScope`]: review/fix pass the whole changeset so the
+/// strict cascade keeps rules scoped to ANY changed file, instead of
+/// collapsing a multi-file diff onto one "primary" file.
+#[allow(clippy::too_many_arguments)]
+pub async fn prepare_with_scope_and_repo_scopes_with_top_k(
+    app_pool: &SqlitePool,
+    project_id: &str,
+    engine: &str,
+    query: &str,
+    task_intent: Option<&str>,
+    target_scope: Option<retrieval::TargetScope<'_>>,
+    repo_scopes: &[String],
+    top_k_override: Option<usize>,
+) -> Result<ContextPackRecord, CoreError> {
     let top_k = top_k_override.unwrap_or(crate::context::DEFAULT_TOP_K_RULES);
     let project_hash = project_hash_for(app_pool, project_id).await;
     let index_pool = index_db::get_pool_for_project(&project_hash).await?;
@@ -475,16 +503,17 @@ pub async fn prepare_with_hint_and_repo_scopes_with_top_k(
         .collect();
     let ranking_inputs = rule_source::load_rule_ranking_inputs(app_pool).await;
 
-    // Forward the file path as the strict-cascade `target_file`: mismatched
-    // `file_patterns` are dropped before scoring, and the fan-out derives the
-    // SQL-level language filter from the same path.
+    // Forward the scope into the strict cascade: mismatched `file_patterns`
+    // are dropped before scoring (single file, or ANY path of a changeset),
+    // and the fan-out derives the SQL-level language filter from the same
+    // scope.
     let all_rule_results = retrieve_rules_for_repo_scopes(
         &index_pool,
         query,
         Some(&confidence_map),
         Some(&eligible_ids),
         ranking_inputs.age_days_map.as_ref(),
-        file_path_hint,
+        target_scope,
         repo_scopes,
         top_k,
     )

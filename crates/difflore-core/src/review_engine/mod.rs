@@ -170,6 +170,15 @@ pub struct ReviewCheckInput {
     pub project_id: String,
     pub diff_content: String,
     pub file_path: Option<String>,
+    /// Every file path touched by `diff_content`, when the caller knows the
+    /// authoritative list (e.g. `difflore fix` from its diff records). Rule
+    /// retrieval scopes the strict file-pattern cascade to this changeset
+    /// (ANY-path match) instead of collapsing onto `file_path`. When empty,
+    /// the pipeline falls back to parsing `+++` headers from `diff_content`
+    /// — important for PR diffs packed under a char budget, where parsing
+    /// the packed text would miss summarised-away files.
+    #[serde(default)]
+    pub diff_files: Vec<String>,
     pub engine: Option<String>,
     /// Cloud-side `pr_reviews` row id, when the caller already created
     /// one (e.g. the VS Code extension host after hitting the cloud

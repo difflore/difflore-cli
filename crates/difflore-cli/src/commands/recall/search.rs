@@ -209,7 +209,7 @@ pub(crate) async fn retrieve_rules_for_search(
     top_k: usize,
     confidence_map: Option<&std::collections::HashMap<String, f64>>,
     age_days_map: Option<&std::collections::HashMap<String, f32>>,
-    target_file: Option<&str>,
+    target_scope: Option<difflore_core::context::retrieval::TargetScope<'_>>,
     repo_scopes: &[String],
 ) -> Result<Vec<difflore_core::context::retrieval::ScoredRuleChunk>, difflore_core::CoreError> {
     difflore_core::context::retrieval::retrieve_rules_for_search(
@@ -220,7 +220,7 @@ pub(crate) async fn retrieve_rules_for_search(
             top_k,
             confidence_map,
             age_days_map,
-            target_file,
+            target_scope,
             repo_scopes,
             ann_enabled: true,
             embedding_timeout: Some(CLI_SEARCH_EMBEDDING_TIMEOUT),

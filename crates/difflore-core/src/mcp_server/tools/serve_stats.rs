@@ -160,6 +160,9 @@ pub(crate) async fn retrieve_rules_with_repo_scopes(
 
     let query_variants = retrieval_query_variants(query, lexical_query);
     let mut groups = Vec::with_capacity(scope_filters.len() * query_variants.len());
+    // Hook/MCP surfaces are single-file by contract; adapt the path into the
+    // generalised scope here so the latency-critical callers stay unchanged.
+    let target_scope = target_file.map(crate::context::retrieval::TargetScope::File);
     for repo_scope in &scope_filters {
         let filter = filter_from_file(target_file, repo_scope.as_deref());
         for query_variant in &query_variants {
@@ -171,7 +174,7 @@ pub(crate) async fn retrieve_rules_with_repo_scopes(
                         top_k: Some(top_k),
                         confidence_map,
                         age_days_map,
-                        target_file,
+                        target_scope,
                         filter: Some(&filter),
                         ann_enabled,
                         embedding_timeout,
@@ -265,7 +268,7 @@ pub(crate) async fn cross_repo_starter_scored(
             top_k: candidate_limit,
             confidence_map,
             age_days_map,
-            target_file: Some(target_file),
+            target_scope: Some(crate::context::retrieval::TargetScope::File(target_file)),
             // Every repo's rules are eligible; the strict file-pattern gate
             // below keeps only the transferable ones.
             repo_scopes: &[],
@@ -589,7 +592,9 @@ mod tests {
                 top_k,
                 confidence_map: Some(&confidence_map),
                 age_days_map: None,
-                target_file: Some("src/http/handler.rs"),
+                target_scope: Some(crate::context::retrieval::TargetScope::File(
+                    "src/http/handler.rs",
+                )),
                 repo_scopes: &repo_scopes,
                 ann_enabled: false,
                 embedding_timeout: Some(MCP_EMBEDDING_TIMEOUT),
@@ -607,7 +612,9 @@ mod tests {
                 top_k,
                 confidence_map: Some(&confidence_map),
                 age_days_map: Some(&age_days_map),
-                target_file: Some("src/http/handler.rs"),
+                target_scope: Some(crate::context::retrieval::TargetScope::File(
+                    "src/http/handler.rs",
+                )),
                 repo_scopes: &repo_scopes,
                 ann_enabled: false,
                 embedding_timeout: Some(MCP_EMBEDDING_TIMEOUT),

@@ -35,7 +35,9 @@ use apply::{
 };
 use attribution::fetch_rule_source_repos;
 use ci::{exit_after_output, finish_ci_mode};
-use context::{FixContext, prepare_fix_context, primary_file_for_retrieval};
+use context::{
+    FixContext, changed_files_for_retrieval, prepare_fix_context, primary_file_for_retrieval,
+};
 use errors::format_fix_err;
 use modes::FixOutputMode;
 use pr::print_pr_review_instructions;
@@ -263,6 +265,10 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
         project_id: ctx.project_id.clone(),
         diff_content: diff_text.clone(),
         file_path: primary_file.clone(),
+        // Authoritative changed-file list from the diff records (NOT parsed
+        // from `diff_text`, which may be packed under a char budget for big
+        // PRs): rule retrieval scopes its strict cascade to this changeset.
+        diff_files: changed_files_for_retrieval(&ctx.diff_records),
         engine: None,
         review_id: review_id_for_provider_run(ctx.review_id.as_deref(), args.preview),
         repo_full_name: ctx.repo_full_name.clone(),
@@ -658,6 +664,14 @@ async fn recall_rules_for_handoff(
     {
         repo_scopes.push(repo);
     }
+    // Same changeset scope the provider path uses: rules tagged for ANY
+    // changed file stay eligible, instead of collapsing onto the primary.
+    let diff_files = changed_files_for_retrieval(&ctx.diff_records);
+    let target_scope = if diff_files.is_empty() {
+        primary_file.map(retrieval::TargetScope::File)
+    } else {
+        Some(retrieval::TargetScope::Changeset(&diff_files))
+    };
     let scored = match retrieval::retrieve_rules_for_search(
         &index_pool,
         retrieval::RuleSearchRetrievalOptions {
@@ -666,7 +680,7 @@ async fn recall_rules_for_handoff(
             top_k: 5,
             confidence_map: ranking_inputs.confidence_map.as_ref(),
             age_days_map: ranking_inputs.age_days_map.as_ref(),
-            target_file: primary_file,
+            target_scope,
             repo_scopes: repo_scopes.as_slice(),
             ann_enabled: true,
             embedding_timeout: Some(FIX_RECALL_EMBEDDING_TIMEOUT),

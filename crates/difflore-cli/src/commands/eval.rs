@@ -146,7 +146,7 @@ pub(crate) async fn measure_self_recall(
                 top_k: 5,
                 confidence_map: None,
                 age_days_map: None,
-                target_file: None,
+                target_scope: None,
                 repo_scopes: &[],
                 ann_enabled: false,
                 embedding_timeout,

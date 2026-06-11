@@ -114,13 +114,34 @@ async fn prepare_review_rules(
     // Deepen the candidate pool only when the judge will filter it back down.
     let top_k_override = judge_enabled.then_some(JUDGE_CANDIDATE_POOL_TOP_K);
 
-    let pack = match crate::context::orchestrator::prepare_with_hint_and_repo_scopes_with_top_k(
+    // Scope the strict file-pattern cascade to the WHOLE changeset so rules
+    // tagged for any changed file are eligible (a multi-file diff no longer
+    // collapses onto the primary file). Callers that know the authoritative
+    // file list pass `diff_files`; otherwise derive it from the diff text.
+    // With no files at all, fall back to the single-file hint.
+    let changeset: Vec<String> = if input.diff_files.is_empty() {
+        collect_diff_files(&input.diff_content)
+    } else {
+        input.diff_files.clone()
+    };
+    let target_scope = if changeset.is_empty() {
+        input
+            .file_path
+            .as_deref()
+            .map(crate::context::retrieval::TargetScope::File)
+    } else {
+        Some(crate::context::retrieval::TargetScope::Changeset(
+            &changeset,
+        ))
+    };
+
+    let pack = match crate::context::orchestrator::prepare_with_scope_and_repo_scopes_with_top_k(
         db,
         &input.project_id,
         input.engine.as_deref().unwrap_or("claude"),
         retrieval_query,
         Some("review"),
-        input.file_path.as_deref(),
+        target_scope,
         repo_scopes,
         top_k_override,
     )
@@ -839,6 +860,7 @@ mod tests {
             project_id: "project-1".to_owned(),
             diff_content: String::new(),
             file_path: None,
+            diff_files: Vec::new(),
             engine: None,
             review_id: None,
             repo_full_name: repo.map(str::to_owned),

@@ -17,7 +17,8 @@ use super::{
     CloudRecallResult, CommandContext, DiagnosticItem, DiagnosticStep, LocalRecallResult,
     LocalRuleHit, RecallDiagnostics, candidate_pool_size, local_rule_title,
     more_specific_query_example, query_looks_broad, recall_command, recall_command_for_zero_match,
-    strict_file_pattern_match, truncate_one_line,
+    strict_file_pattern_match, strict_pattern_match_any_file, strict_scope_files,
+    truncate_one_line,
 };
 
 /// Bounded embedding budget for the interactive recall/ask index pass. Caps
@@ -29,6 +30,7 @@ pub(super) async fn recall_local_rules(
     ctx: &CommandContext,
     intent: &str,
     file: Option<&str>,
+    diff_files: &[String],
     top_k: usize,
 ) -> LocalRecallResult {
     let top_k = crate::support::util::clamp_with_warn("--top-k", top_k, 1, 50, false);
@@ -112,6 +114,18 @@ pub(super) async fn recall_local_rules(
     };
     let ranking_inputs = difflore_core::context::rule_source::load_rule_ranking_inputs(db).await;
 
+    // `--diff` scopes the strict cascade to the WHOLE changeset (a rule is in
+    // scope when any changed file matches), so one query covers what the old
+    // per-file fallback loop re-queried. Single-file recall keeps the
+    // historical scope.
+    let target_scope = if diff_files.is_empty() {
+        file.map(difflore_core::context::retrieval::TargetScope::File)
+    } else {
+        Some(difflore_core::context::retrieval::TargetScope::Changeset(
+            diff_files,
+        ))
+    };
+
     // Pull a wider candidate pool than top_k so the strict-pattern re-rank
     // below has room to surface file-pattern matches the content-only
     // retriever would drop; truncated back to top_k after the sort.
@@ -123,7 +137,7 @@ pub(super) async fn recall_local_rules(
         pool_k,
         ranking_inputs.confidence_map.as_ref(),
         ranking_inputs.age_days_map.as_ref(),
-        file,
+        target_scope,
         repo_scopes.as_slice(),
     )
     .await
@@ -159,13 +173,15 @@ pub(super) async fn recall_local_rules(
     let ids: Vec<String> = scored.iter().map(|hit| hit.skill_id.clone()).collect();
     let metas = difflore_core::skills::fetch_search_meta(db, &ids).await;
     let mut hits = build_local_hits(&scored, &metas);
-    // Stable re-rank: rules whose file_patterns strictly cover the queried file
-    // come above content-only matches, preserving relative order within each
-    // group, so file-specific evidence is highlighted first.
-    if file.is_some() {
+    // Stable re-rank: rules whose file_patterns strictly cover the queried
+    // scope (the single file, or ANY changed file for `--diff`) come above
+    // content-only matches, preserving relative order within each group, so
+    // file-specific evidence is highlighted first.
+    let scope_files = strict_scope_files(file, diff_files);
+    if !scope_files.is_empty() {
         hits.sort_by(|a, b| {
-            let a_strict = strict_file_pattern_match(&a.file_patterns, file);
-            let b_strict = strict_file_pattern_match(&b.file_patterns, file);
+            let a_strict = strict_pattern_match_any_file(&a.file_patterns, &scope_files);
+            let b_strict = strict_pattern_match_any_file(&b.file_patterns, &scope_files);
             b_strict.cmp(&a_strict)
         });
     }
@@ -175,7 +191,7 @@ pub(super) async fn recall_local_rules(
     // example section is often absent). Done once on the truncated set so we pay
     // one batched query for the rules we actually return.
     hydrate_full_rule_bodies(db, &mut hits).await;
-    let file_scope_fallback = content_only_file_scope_fallback(&hits, file);
+    let file_scope_fallback = content_only_file_scope_fallback(&hits, &scope_files);
     LocalRecallResult {
         rules_indexed,
         repo_full_name,
@@ -184,12 +200,15 @@ pub(super) async fn recall_local_rules(
     }
 }
 
-pub(super) fn content_only_file_scope_fallback(hits: &[LocalRuleHit], file: Option<&str>) -> bool {
-    file.is_some()
+pub(super) fn content_only_file_scope_fallback(
+    hits: &[LocalRuleHit],
+    scope_files: &[String],
+) -> bool {
+    !scope_files.is_empty()
         && !hits.is_empty()
         && !hits
             .iter()
-            .any(|hit| strict_file_pattern_match(&hit.file_patterns, file))
+            .any(|hit| strict_pattern_match_any_file(&hit.file_patterns, scope_files))
 }
 
 pub(super) fn build_local_hits(
@@ -566,7 +585,7 @@ pub(super) async fn cross_repo_starter_hits(
         pool_k,
         ranking_inputs.confidence_map.as_ref(),
         ranking_inputs.age_days_map.as_ref(),
-        Some(file),
+        Some(difflore_core::context::retrieval::TargetScope::File(file)),
         // No repo scope: every repo's rules are eligible in the starter index;
         // the strict file-pattern filter below enforces transferability.
         &[],
@@ -591,6 +610,7 @@ pub(super) async fn record_local_recall(
     local: &LocalRecallResult,
     intent: &str,
     file: Option<&str>,
+    diff_files: &[String],
     top_k: usize,
     session_id: &str,
 ) {
@@ -602,6 +622,9 @@ pub(super) async fn record_local_recall(
         Some(file) => format!("{file} {intent}"),
         None => intent.to_owned(),
     };
+    // The recorded strict flag must agree with the scope retrieval ran
+    // against: any changed file for `--diff`, the single file otherwise.
+    let scope_files = strict_scope_files(file, diff_files);
     let recalls: Vec<_> = local
         .matches
         .iter()
@@ -615,7 +638,7 @@ pub(super) async fn record_local_recall(
                 query_text: query.as_str(),
                 rank: index as i64 + 1,
                 top_k: top_k as i64,
-                strict_file_match: strict_file_pattern_match(&hit.file_patterns, file),
+                strict_file_match: strict_pattern_match_any_file(&hit.file_patterns, &scope_files),
             },
         )
         .collect();

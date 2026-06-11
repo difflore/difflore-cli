@@ -127,7 +127,7 @@ pub(crate) async fn self_recall_section(pool: &difflore_core::SqlitePool, s: &mu
                 top_k: 5,
                 confidence_map: None,
                 age_days_map: None,
-                target_file: None,
+                target_scope: None,
                 repo_scopes: &[],
                 ann_enabled: false,
                 embedding_timeout: Some(SELF_RECALL_EMBEDDING_TIMEOUT),

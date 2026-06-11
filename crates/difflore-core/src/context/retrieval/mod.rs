@@ -11,8 +11,8 @@ pub use past_verdicts::{
 };
 pub use rule_bodies::{RenderedRuleBody, RenderedRuleExample, render_full_rule_bodies};
 pub use rules::{
-    RetrievalOptions, apply_explicit_recall_threshold, apply_intent_alignment_gate, retrieve_rules,
-    retrieve_rules_with_confidence,
+    RetrievalOptions, TargetScope, apply_explicit_recall_threshold, apply_intent_alignment_gate,
+    retrieve_rules, retrieve_rules_with_confidence,
 };
 pub use scoring::{RuleKind, effective_confidence, infer_rule_kind};
 
@@ -73,11 +73,11 @@ fn unique_repo_scopes(repo_scopes: &[String]) -> Vec<String> {
 }
 
 fn search_filter(
-    target_file: Option<&str>,
+    target_scope: Option<TargetScope<'_>>,
     repo_scope: Option<&str>,
 ) -> crate::context::index_db::QueryFilter {
     crate::context::index_db::QueryFilter {
-        language: target_file.and_then(detect_language_from_path),
+        language: target_scope.and_then(|scope| scope.language_hint()),
         repo_scope: repo_scope.map(String::from),
     }
 }
@@ -197,7 +197,9 @@ pub struct RuleSearchRetrievalOptions<'a> {
     pub top_k: usize,
     pub confidence_map: Option<&'a std::collections::HashMap<String, f64>>,
     pub age_days_map: Option<&'a std::collections::HashMap<String, f32>>,
-    pub target_file: Option<&'a str>,
+    /// Strict-cascade scope: one file, or the whole changeset for diff-shaped
+    /// callers (`recall --diff` / `fix`). Also drives the SQL language filter.
+    pub target_scope: Option<TargetScope<'a>>,
     pub repo_scopes: &'a [String],
     pub ann_enabled: bool,
     pub embedding_timeout: Option<std::time::Duration>,
@@ -227,7 +229,7 @@ pub(crate) struct RuleFanoutQuery<'a> {
     pub confidence_map: Option<&'a std::collections::HashMap<String, f64>>,
     pub eligible_skill_ids: Option<&'a std::collections::HashSet<String>>,
     pub age_days_map: Option<&'a std::collections::HashMap<String, f32>>,
-    pub target_file: Option<&'a str>,
+    pub target_scope: Option<TargetScope<'a>>,
     pub repo_scopes: &'a [String],
     pub ann_enabled: bool,
     pub embedding_timeout: Option<std::time::Duration>,
@@ -249,7 +251,7 @@ pub(crate) async fn retrieve_rules_fanout(
         confidence_map,
         eligible_skill_ids,
         age_days_map,
-        target_file,
+        target_scope,
         repo_scopes,
         ann_enabled,
         embedding_timeout,
@@ -281,7 +283,7 @@ pub(crate) async fn retrieve_rules_fanout(
     let mut retrievals = Vec::with_capacity(scope_filters.len() * query_variants.len());
     for repo_scope in &scope_filters {
         for query_variant in &query_variants {
-            let filter = search_filter(target_file, repo_scope.as_deref());
+            let filter = search_filter(target_scope, repo_scope.as_deref());
             retrievals.push(async move {
                 retrieve_rules_with_confidence(
                     index_pool,
@@ -291,7 +293,7 @@ pub(crate) async fn retrieve_rules_fanout(
                         confidence_map,
                         eligible_skill_ids,
                         age_days_map,
-                        target_file,
+                        target_scope,
                         filter: Some(&filter),
                         ann_enabled,
                         embedding_timeout,
@@ -327,7 +329,7 @@ pub async fn retrieve_rules_for_search(
         top_k,
         confidence_map,
         age_days_map,
-        target_file,
+        target_scope,
         repo_scopes,
         ann_enabled,
         embedding_timeout,
@@ -346,7 +348,7 @@ pub async fn retrieve_rules_for_search(
             // allow-list; callers filter afterwards.
             eligible_skill_ids: None,
             age_days_map,
-            target_file,
+            target_scope,
             repo_scopes,
             ann_enabled,
             embedding_timeout,
@@ -776,7 +778,7 @@ mod tests {
                 top_k: 1,
                 confidence_map: None,
                 age_days_map: None,
-                target_file: Some("src/context.go"),
+                target_scope: Some(TargetScope::File("src/context.go")),
                 repo_scopes: &[repo.to_owned()],
                 ann_enabled: false,
                 embedding_timeout: Some(std::time::Duration::from_millis(2500)),
@@ -814,7 +816,7 @@ mod tests {
                 top_k: 1,
                 confidence_map: None,
                 age_days_map: None,
-                target_file: Some("src/http/handler.rs"),
+                target_scope: Some(TargetScope::File("src/http/handler.rs")),
                 repo_scopes: &[],
                 ann_enabled: false,
                 embedding_timeout: Some(std::time::Duration::from_millis(2500)),
@@ -1114,7 +1116,7 @@ mod tests {
             "request handlers database",
             RetrievalOptions {
                 top_k: Some(5),
-                target_file: Some("src/server.rs"),
+                target_scope: Some(TargetScope::File("src/server.rs")),
                 filter: Some(&filter),
                 ann_enabled: false,
                 ..Default::default()
@@ -1155,7 +1157,7 @@ mod tests {
             "request handlers structured errors",
             RetrievalOptions {
                 top_k: Some(5),
-                target_file: Some("src/server.rs"),
+                target_scope: Some(TargetScope::File("src/server.rs")),
                 filter: Some(&filter),
                 ann_enabled: false,
                 ..Default::default()
@@ -1167,6 +1169,110 @@ mod tests {
         assert_eq!(
             hits.first().map(|hit| hit.skill_id.as_str()),
             Some("universal")
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_cascade_changeset_recalls_rule_scoped_to_secondary_diff_file() {
+        // The fallback-loop replacement regression: a cross-cutting rule whose
+        // `file_patterns` carry both sides of a coupled change (schema globs +
+        // migrations dir) must be recalled in ONE changeset query even when
+        // the diff's primary file (src/api.ts) doesn't match — previously the
+        // single-file cascade on the primary file dropped it and a per-file
+        // fallback loop had to re-query.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("idx.db");
+        let pool = open_pool_at(&path).await.unwrap();
+        let mut coupled = rule_doc(
+            "schema-needs-migration",
+            "schema changes must ship a paired migration in the migrations directory",
+            None,
+            Some("acme/widgets"),
+        );
+        coupled.file_patterns = Some(r#"["db/schema/**", "migrations/**/*.sql"]"#.to_owned());
+        upsert_rule_chunks(&pool, &[coupled]).await.unwrap();
+
+        let filter = QueryFilter {
+            language: None,
+            repo_scope: Some("acme/widgets".to_owned()),
+        };
+        let diff_files = vec!["src/api.ts".to_owned(), "db/schema/users.sql".to_owned()];
+        let hits = retrieve_rules_with_confidence(
+            &pool,
+            "schema changes migration",
+            RetrievalOptions {
+                top_k: Some(5),
+                target_scope: Some(TargetScope::Changeset(&diff_files)),
+                filter: Some(&filter),
+                ann_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            hits.first().map(|hit| hit.skill_id.as_str()),
+            Some("schema-needs-migration"),
+            "changeset scope must recall a rule matched by a non-primary diff file"
+        );
+
+        // Same query scoped to ONLY the primary file must still drop it —
+        // the changeset variant widens scope, the single-file cascade stays
+        // strict (the hook hot path's misapply control).
+        let single_file_hits = retrieve_rules_with_confidence(
+            &pool,
+            "schema changes migration",
+            RetrievalOptions {
+                top_k: Some(5),
+                target_scope: Some(TargetScope::File("src/api.ts")),
+                filter: Some(&filter),
+                ann_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            single_file_hits.is_empty(),
+            "single-file cascade must not widen to other files' patterns"
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_cascade_changeset_drops_rule_when_no_diff_file_matches() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("idx.db");
+        let pool = open_pool_at(&path).await.unwrap();
+        let mut scoped = rule_doc(
+            "schema-needs-migration",
+            "schema changes must ship a paired migration in the migrations directory",
+            None,
+            Some("acme/widgets"),
+        );
+        scoped.file_patterns = Some(r#"["db/schema/**", "migrations/**/*.sql"]"#.to_owned());
+        upsert_rule_chunks(&pool, &[scoped]).await.unwrap();
+
+        let filter = QueryFilter {
+            language: None,
+            repo_scope: Some("acme/widgets".to_owned()),
+        };
+        let diff_files = vec!["src/api.ts".to_owned(), "docs/usage.md".to_owned()];
+        let hits = retrieve_rules_with_confidence(
+            &pool,
+            "schema changes migration",
+            RetrievalOptions {
+                top_k: Some(5),
+                target_scope: Some(TargetScope::Changeset(&diff_files)),
+                filter: Some(&filter),
+                ann_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            hits.is_empty(),
+            "a changeset touching none of the rule's globs must not recall it"
         );
     }
 

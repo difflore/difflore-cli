@@ -2,7 +2,7 @@ use crate::context::DEFAULT_TOP_K_RULES;
 use crate::context::ann;
 use crate::context::embedding::cosine_similarity;
 use crate::context::index_db::{self, IndexedRuleChunk, QueryFilter};
-use crate::domain::glob_match::{GlobErrorPolicy, glob_match};
+use crate::domain::glob_match::{GlobErrorPolicy, glob_match, glob_match_changeset};
 use crate::error::CoreError;
 use crate::observability::trajectory::{TrajectoryBuilder, TrajectoryStep};
 use sqlx::SqlitePool;
@@ -48,9 +48,64 @@ pub(super) fn pattern_allows(file_patterns_json: Option<&str>, target_file: &str
     glob_match(file_patterns_json, target_file, GlobErrorPolicy::OverRecall)
 }
 
+/// What the strict file-pattern cascade scopes retrieval to: a single file
+/// (the hook / MCP per-file paths — semantics identical to the historical
+/// `target_file` option) or a whole changeset (`recall --diff` / `fix`),
+/// where a rule is in scope when ANY changed path matches its patterns.
+///
+/// The single-file hot path (`PostToolUse` hook) keeps using `File`; the
+/// changeset variant exists so diff-shaped callers stop collapsing a
+/// multi-file diff onto one "primary" file and missing rules scoped to the
+/// other changed files.
+#[derive(Debug, Clone, Copy)]
+pub enum TargetScope<'a> {
+    /// One file path, matched exactly like the historical `target_file`.
+    File(&'a str),
+    /// Every changed path in a diff; ANY-path match brings a rule in scope.
+    Changeset(&'a [String]),
+}
+
+impl TargetScope<'_> {
+    /// Decide whether a chunk's `file_patterns` blob is in scope, with the
+    /// retrieval-side over-recall error policy on both variants.
+    pub(crate) fn pattern_allows(&self, file_patterns_json: Option<&str>) -> bool {
+        match self {
+            Self::File(file) => pattern_allows(file_patterns_json, file),
+            Self::Changeset(paths) => {
+                glob_match_changeset(file_patterns_json, paths, GlobErrorPolicy::OverRecall)
+            }
+        }
+    }
+
+    /// Language hint for the SQL-side pre-filter. A single file uses its
+    /// extension (unchanged behaviour); a changeset only yields a language
+    /// when every recognised path agrees — a mixed-language diff must not
+    /// pre-drop rules tagged for the other language. Unrecognised
+    /// extensions are ignored (those rules carry NULL language anyway).
+    pub(crate) fn language_hint(&self) -> Option<String> {
+        match self {
+            Self::File(file) => super::detect_language_from_path(file),
+            Self::Changeset(paths) => {
+                let mut hint: Option<String> = None;
+                for language in paths
+                    .iter()
+                    .filter_map(|path| super::detect_language_from_path(path))
+                {
+                    match &hint {
+                        None => hint = Some(language),
+                        Some(existing) if *existing == language => {}
+                        Some(_) => return None,
+                    }
+                }
+                hint
+            }
+        }
+    }
+}
+
 /// Retrieval options for confidence weighting, scoping, ANN usage, and
 /// trajectory telemetry. The default matches plain retrieval: default top-k,
-/// no confidence map, no target-file cascade, no SQL metadata filter, ANN
+/// no confidence map, no target-scope cascade, no SQL metadata filter, ANN
 /// enabled, no trajectory capture.
 pub struct RetrievalOptions<'a> {
     pub top_k: Option<usize>,
@@ -63,7 +118,9 @@ pub struct RetrievalOptions<'a> {
     /// `effective_confidence`. When `None` (or a chunk's `skill_id` is absent
     /// from the map) the scoring site uses `age_days = 0.0` — no decay.
     pub age_days_map: Option<&'a HashMap<String, f32>>,
-    pub target_file: Option<&'a str>,
+    /// Strict file-pattern cascade scope: a single target file or a whole
+    /// changeset. `None` disables the cascade (every chunk is eligible).
+    pub target_scope: Option<TargetScope<'a>>,
     pub filter: Option<&'a QueryFilter>,
     pub ann_enabled: bool,
     /// Optional provider-call budget for embedding the query. Latency-
@@ -92,7 +149,7 @@ impl Default for RetrievalOptions<'_> {
             confidence_map: None,
             eligible_skill_ids: None,
             age_days_map: None,
-            target_file: None,
+            target_scope: None,
             filter: None,
             ann_enabled: true,
             embedding_timeout: None,
@@ -108,10 +165,11 @@ impl Default for RetrievalOptions<'_> {
 /// `confidence_map` maps `skill_id` -> `confidence_score`. If None, all rules
 /// get default confidence 0.7.
 ///
-/// `target_file`: when present, applies **strict cascade** — chunks whose
-/// `file_patterns` don't match the target file are dropped before scoring.
-/// When the matched bucket is empty, returns no pattern-scoped rules rather
-/// than widening into rules explicitly tagged for other files.
+/// `target_scope`: when present, applies **strict cascade** — chunks whose
+/// `file_patterns` don't match the scope (a single file, or ANY path of a
+/// changeset) are dropped before scoring. When the matched bucket is empty,
+/// returns no pattern-scoped rules rather than widening into rules
+/// explicitly tagged for other files.
 ///
 /// `filter`: metadata pre-filter applied at SQL time (C2). Empty filter
 /// means "no scoping" — retrieval sees every chunk.
@@ -128,7 +186,7 @@ pub async fn retrieve_rules_with_confidence(
         confidence_map,
         eligible_skill_ids,
         age_days_map,
-        target_file,
+        target_scope,
         filter,
         ann_enabled,
         embedding_timeout,
@@ -180,17 +238,18 @@ pub async fn retrieve_rules_with_confidence(
     let default_confidence = 0.7;
     let min_confidence = 0.2;
 
-    // Pre-partition by file-pattern match if target_file is set. This is the
-    // strict cascade: when ANY chunk matches the target, drop the rest.
-    let matched: Vec<&IndexedRuleChunk> = if let Some(tf) = target_file {
+    // Pre-partition by file-pattern match if a target scope is set. This is
+    // the strict cascade: when ANY chunk matches the scope (single file, or
+    // any path of a changeset), drop the rest.
+    let matched: Vec<&IndexedRuleChunk> = if let Some(scope) = target_scope {
         chunks
             .iter()
-            .filter(|c| pattern_allows(c.file_patterns.as_deref(), tf))
+            .filter(|c| scope.pattern_allows(c.file_patterns.as_deref()))
             .collect()
     } else {
         chunks.iter().collect()
     };
-    let active: &[&IndexedRuleChunk] = if target_file.is_some() && matched.is_empty() {
+    let active: &[&IndexedRuleChunk] = if target_scope.is_some() && matched.is_empty() {
         &[]
     } else {
         &matched
@@ -972,6 +1031,51 @@ mod tests {
             min_overlap >= 2,
             "a lone topical-anchor overlap must be insufficient"
         );
+    }
+
+    // -- TargetScope (single file vs changeset) --
+
+    #[test]
+    fn target_scope_changeset_matches_when_any_path_in_scope() {
+        let patterns = Some(r#"["db/schema/**", "migrations/**/*.sql"]"#);
+        let hit = vec!["src/api.ts".to_owned(), "db/schema/users.sql".to_owned()];
+        assert!(TargetScope::Changeset(&hit).pattern_allows(patterns));
+        let miss = vec!["src/api.ts".to_owned(), "README.md".to_owned()];
+        assert!(!TargetScope::Changeset(&miss).pattern_allows(patterns));
+        // File variant keeps the historical single-path behaviour.
+        assert!(TargetScope::File("db/schema/users.sql").pattern_allows(patterns));
+        assert!(!TargetScope::File("src/api.ts").pattern_allows(patterns));
+        // Universal rules match either scope.
+        assert!(TargetScope::Changeset(&miss).pattern_allows(None));
+        assert!(TargetScope::File("anything.txt").pattern_allows(None));
+    }
+
+    #[test]
+    fn target_scope_language_hint_requires_unanimous_changeset() {
+        // Single file: extension-derived, as before.
+        assert_eq!(
+            TargetScope::File("src/main.rs").language_hint().as_deref(),
+            Some("rust")
+        );
+        // Unanimous changeset (unrecognised extensions ignored).
+        let rust_only = vec![
+            "src/main.rs".to_owned(),
+            "src/lib.rs".to_owned(),
+            "README.md".to_owned(),
+        ];
+        assert_eq!(
+            TargetScope::Changeset(&rust_only)
+                .language_hint()
+                .as_deref(),
+            Some("rust")
+        );
+        // Mixed-language diff: no filter, so neither language's rules are
+        // pre-dropped at SQL time.
+        let mixed = vec!["src/main.rs".to_owned(), "web/app.ts".to_owned()];
+        assert_eq!(TargetScope::Changeset(&mixed).language_hint(), None);
+        // No recognised extension at all: no filter.
+        let none = vec!["README.md".to_owned()];
+        assert_eq!(TargetScope::Changeset(&none).language_hint(), None);
     }
 
     #[test]

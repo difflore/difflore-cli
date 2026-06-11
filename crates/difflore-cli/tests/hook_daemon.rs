@@ -195,7 +195,9 @@ async fn index_pools_are_isolated_per_project_hash() {
 /// keeps repo A's library out of repo B's edits.
 async fn cross_library_retrieval_is_isolated_per_hash() {
     use difflore_core::context::index_db::{get_pool_for_project, upsert_rule_chunks};
-    use difflore_core::context::retrieval::{RetrievalOptions, retrieve_rules_with_confidence};
+    use difflore_core::context::retrieval::{
+        RetrievalOptions, TargetScope, retrieve_rules_with_confidence,
+    };
     use difflore_core::context::rule_source::RuleDocument;
 
     let hash_a = "3333eeeeffff";
@@ -261,7 +263,7 @@ async fn cross_library_retrieval_is_isolated_per_hash() {
         "post-edit zorptangle pattern in rust handler",
         RetrievalOptions {
             top_k: Some(5),
-            target_file: Some("src/main.rs"),
+            target_scope: Some(TargetScope::File("src/main.rs")),
             ..Default::default()
         },
     )
@@ -284,7 +286,7 @@ async fn cross_library_retrieval_is_isolated_per_hash() {
         "post-edit quafflenibble pattern in python handler",
         RetrievalOptions {
             top_k: Some(5),
-            target_file: Some("src/main.py"),
+            target_scope: Some(TargetScope::File("src/main.py")),
             ..Default::default()
         },
     )
@@ -308,7 +310,7 @@ async fn cross_library_retrieval_is_isolated_per_hash() {
         "post-edit zorptangle pattern in rust handler",
         RetrievalOptions {
             top_k: Some(5),
-            target_file: Some("src/main.py"),
+            target_scope: Some(TargetScope::File("src/main.py")),
             ..Default::default()
         },
     )
