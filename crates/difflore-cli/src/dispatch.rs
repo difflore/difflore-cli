@@ -86,6 +86,16 @@ pub(crate) async fn dispatch(command: Commands) {
                 eprintln!("DiffLore memory server failed: {e}");
             }
         }
+        Commands::HookDaemon { project_hash } => {
+            // The warm hook-forward daemon. Spawned detached by the
+            // `difflore-hook` shim on a cache miss; serves exactly one project
+            // (its index pool is frozen from `project_hash`, not the daemon's
+            // cwd). No CommandContext / startup gate: it must not run network
+            // probes, and it manages its own db/index lifecycle.
+            if let Err(e) = crate::hook::forward::run_server_for_hash(&project_hash).await {
+                eprintln!("DiffLore hook daemon exited: {e}");
+            }
+        }
         Commands::Skills { command } => dispatch_skills(command).await,
         Commands::Packs { command } => dispatch_packs(command).await,
         // Single-variant subcommand matched inline; no dispatch helper needed.

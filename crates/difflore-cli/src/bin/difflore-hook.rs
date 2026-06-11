@@ -40,12 +40,30 @@ async fn main() -> ExitCode {
                 eprintln!("DiffLore hook could not start its background helper: {e}");
                 return ExitCode::from(2);
             }
-            Err(_) => {}
+            Err(_) => {
+                // Auto mode, warm path missed: best-effort spawn a detached
+                // daemon so the *next* hook hits the warm path, then fall back
+                // in-process for *this* event (we never block waiting for the
+                // daemon to bind). Spawn failure is swallowed — it must never
+                // turn a working fallback into a hook error.
+                maybe_spawn_daemon();
+            }
         }
     }
 
     fallback_to_runtime(&client, &raw).await;
     ExitCode::SUCCESS
+}
+
+/// Best-effort detached daemon spawn for the current project. Only logged
+/// under `DIFFLORE_DEBUG_HOOKS`; the caller proceeds to fallback regardless.
+fn maybe_spawn_daemon() {
+    let hash = protocol::current_project_hash();
+    if let Err(e) = difflore_cli::hook::forward::spawn::spawn_daemon_detached(&hash) {
+        if difflore_core::infra::env::flag_set(difflore_core::infra::env::DIFFLORE_DEBUG_HOOKS) {
+            eprintln!("[difflore-hook] daemon spawn skipped: {e}");
+        }
+    }
 }
 
 fn parse_client_arg() -> Option<String> {

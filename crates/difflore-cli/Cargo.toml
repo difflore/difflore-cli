@@ -89,6 +89,11 @@ sha1 = "0.10"
 tempfile = "3"
 toml = "0.8"
 
+# Unix-only: `setsid(2)` in the detached hook-daemon spawn's `pre_exec` hook.
+# Already in the dependency tree transitively; declaring it here is free.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 
 [lints]

@@ -883,6 +883,7 @@ dependencies = [
  "gate4agent",
  "globset",
  "interprocess",
+ "libc",
  "rand 0.10.1",
  "reqwest",
  "serde",

@@ -178,6 +178,14 @@ Pass `--json` for the raw document."
     #[command(name = "mcp-server", hide = true)]
     McpServer,
 
+    /// Internal warm hook-forward daemon for one project (spawned by the shim).
+    #[command(name = "__hook-daemon", hide = true)]
+    HookDaemon {
+        /// Stable per-project hash selecting the index pool this daemon serves.
+        #[arg(long, value_name = "HASH")]
+        project_hash: String,
+    },
+
     /// Local skill-store maintenance utilities.
     #[command(hide = true)]
     Skills {
