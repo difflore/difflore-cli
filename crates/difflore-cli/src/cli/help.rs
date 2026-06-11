@@ -59,6 +59,7 @@ USAGE
   recall              Preview rules agents would see on this change
   fix                 Preview/apply local patches, including PR diffs
   ask                 Ask why the team usually reviews something
+  export              Write team rules into AGENTS.md / CLAUDE.md (static snapshot)
 
 {support}
   update              Refresh agent blocks and run doctor checks

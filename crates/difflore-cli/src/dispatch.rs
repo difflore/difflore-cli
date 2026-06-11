@@ -37,6 +37,11 @@ pub(crate) async fn dispatch(command: Commands) {
             let ctx = runtime::CommandContext::new(runtime::OutputMode::from_json_flag(json)).await;
             commands::ask::handle_ask(&ctx, query, file, json).await;
         }
+        Commands::Export(args) => {
+            let ctx =
+                runtime::CommandContext::new(runtime::OutputMode::from_json_flag(args.json)).await;
+            commands::export::handle_export(&ctx, args.into()).await;
+        }
         Commands::Drafts { command } => dispatch_drafts(command).await,
         Commands::Cloud { command } => Box::pin(dispatch_cloud(command)).await,
         Commands::Agents { command } => dispatch_agents(command).await,

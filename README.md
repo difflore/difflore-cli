@@ -103,10 +103,48 @@ DiffLore never commits, pushes, opens PRs, or posts GitHub comments.
 | `difflore fix --preview` | Preview rule-aware local fixes |
 | `difflore status` | Show local memory health and next steps |
 | `difflore agents install` | Wire supported local agents |
+| `difflore export` | Write team rules into `AGENTS.md` / `CLAUDE.md` (static snapshot) |
 | `difflore update` | Refresh agent blocks, hook shims, and doctor checks |
 | `difflore doctor --report` | Write a diagnostic report |
 
 Run `difflore --help` for the full command list.
+
+## How Injection Works
+
+Hook-based injection is engineered to be useful without becoming noise:
+
+- **~1,500-token hard budget.** Each hook injection is capped at roughly
+  1,500 tokens (a single oversized rule may exceed the cap rather than inject
+  nothing, hence the "~").
+- **Right moment, no spam.** Rules are injected after each edit, deduplicated
+  per file for 120 seconds, and the hook goes quiet automatically when recall
+  comes back empty.
+- **Strict per-repo isolation.** Rules are recalled only for the repo they
+  were learned from (matched against your git remotes); there is no cross-repo
+  or global fallback.
+- **Every injection is accounted for.** Each serve is logged locally with its
+  estimated token cost, and when an agent actually cites a rule that citation
+  is telemetered back — so reported value reflects real use, not volume.
+
+## Export to Static Context Files
+
+Some agents and teammates only read static context files. `difflore export`
+writes the rules agents would recall in this repo into a marker-delimited
+section of `AGENTS.md` and/or `CLAUDE.md` at the repo root:
+
+```bash
+difflore export                          # AGENTS.md + CLAUDE.md
+difflore export --format claude-md --dry-run
+difflore export --local-only             # exclude team/cloud-synced rules
+```
+
+Only the section between the `BEGIN/END DIFFLORE RULES` markers is managed;
+your content around it is never touched. Commit the exported files to share
+them, or gitignore them yourself — DiffLore never edits `.gitignore`.
+
+The export is a point-in-time snapshot: it goes stale as rules evolve and it
+cannot match rules to the file being edited. Prefer `difflore agents install`
+(MCP + hooks) for live, diff-aware injection.
 
 ## Local First
 

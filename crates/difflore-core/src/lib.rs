@@ -13,6 +13,7 @@ pub mod context;
 pub mod contract;
 pub mod domain;
 pub mod error;
+pub mod export;
 pub mod infra;
 pub mod ingest;
 pub mod mcp_server;

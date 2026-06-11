@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
 
 use super::args::{
-    FixCliArgs, ImportReviewsCliArgs, InitCliArgs, RecallCliArgs, StatusLane, SyncCliArgs,
+    ExportCliArgs, FixCliArgs, ImportReviewsCliArgs, InitCliArgs, RecallCliArgs, StatusLane,
+    SyncCliArgs,
 };
 
 #[derive(Parser)]
@@ -68,6 +69,24 @@ Start with `difflore fix --preview`; accepted changes only touch the working tre
 DiffLore never commits, pushes, opens PRs, or posts GitHub comments."
     )]
     Fix(FixCliArgs),
+
+    /// Export this repo's team rules into static agent context files (AGENTS.md / CLAUDE.md).
+    #[command(
+        next_line_help = false,
+        long_about = "Write the rules agents would recall in this repo into a marker-delimited \
+section of AGENTS.md and/or CLAUDE.md at the repo root.\n\
+\n\
+The export is a static snapshot: it goes stale as your team's rules evolve and it cannot \
+match rules to the file being edited. Prefer `difflore agents install` (MCP + hooks) for \
+live, diff-aware injection; use export for agents or teammates that only read static \
+context files.\n\
+\n\
+Side effects: writes only the listed files in the current repo's working tree, and only \
+between the BEGIN/END DIFFLORE RULES markers — content outside the markers is never \
+touched. DiffLore never commits, pushes, or edits .gitignore. Commit the exported files \
+to share them, or gitignore them yourself."
+    )]
+    Export(ExportCliArgs),
 
     /// Ask the team's source-backed rules a natural-language question.
     Ask {

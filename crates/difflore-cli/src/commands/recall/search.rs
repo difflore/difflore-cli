@@ -41,19 +41,14 @@ fn normalize_rule_title_for_match(title: &str) -> String {
         .join(" ")
 }
 
+// Shared core predicate (also used by `difflore export`) so the two
+// project-scope checks cannot drift: empty scopes match nothing, scope-less
+// rules are not wildcards, comparison is case-insensitive exact.
 fn rule_matches_repo_scope(
     rule: &difflore_core::context::rule_source::RuleDocument,
     repo_scopes: &[String],
 ) -> bool {
-    if repo_scopes.is_empty() {
-        return false;
-    }
-    let Some(scope) = rule.repo_scope.as_deref() else {
-        return false;
-    };
-    repo_scopes
-        .iter()
-        .any(|candidate| scope.eq_ignore_ascii_case(candidate))
+    difflore_core::export::repo_scope_matches(rule.repo_scope.as_deref(), repo_scopes)
 }
 
 fn exact_title_matches(

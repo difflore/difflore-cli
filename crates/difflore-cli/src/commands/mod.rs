@@ -5,6 +5,7 @@ pub(crate) mod doctor;
 pub(crate) mod drafts;
 pub(crate) mod embeddings;
 pub(crate) mod eval;
+pub(crate) mod export;
 pub(crate) mod fix;
 pub(crate) mod import_reviews;
 pub(crate) mod init;

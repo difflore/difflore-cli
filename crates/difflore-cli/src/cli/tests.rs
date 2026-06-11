@@ -1,4 +1,7 @@
-use super::{AgentsCommands, Cli, CloudCommands, Commands, DraftsCommands, StatusLane, build_cli};
+use super::{
+    AgentsCommands, Cli, CloudCommands, Commands, DraftsCommands, ExportFormatArg, StatusLane,
+    build_cli,
+};
 use clap::Parser;
 
 #[test]
@@ -27,6 +30,7 @@ fn public_help_keeps_curated_command_surface() {
         "  recall",
         "  fix",
         "  ask",
+        "  export",
         "  drafts",
         "  cloud",
         "  agents",
@@ -550,6 +554,70 @@ fn import_reviews_rejects_candidate_budget_flag() {
         Cli::try_parse_from(["difflore", "import-reviews", "--local-candidates"]).is_err(),
         "--local-candidates should not parse"
     );
+}
+
+#[test]
+fn export_parses_formats_and_safety_flags() {
+    let cli = Cli::try_parse_from([
+        "difflore",
+        "export",
+        "--format",
+        "claude-md",
+        "--format",
+        "agents-md",
+        "--dry-run",
+        "--no-examples",
+        "--local-only",
+        "--json",
+    ])
+    .expect("export should parse repeated formats and flags");
+
+    match cli.command.expect("subcommand") {
+        Commands::Export(args) => {
+            assert_eq!(
+                args.format,
+                vec![ExportFormatArg::ClaudeMd, ExportFormatArg::AgentsMd]
+            );
+            assert!(args.dry_run);
+            assert!(args.no_examples);
+            assert!(args.local_only);
+            assert!(args.json);
+        }
+        _ => panic!("expected export command"),
+    }
+}
+
+#[test]
+fn export_defaults_to_all_formats_and_writing() {
+    let cli = Cli::try_parse_from(["difflore", "export"]).expect("bare export should parse");
+    match cli.command.expect("subcommand") {
+        Commands::Export(args) => {
+            assert_eq!(args.format, vec![ExportFormatArg::All]);
+            assert!(!args.dry_run);
+            assert!(!args.no_examples);
+            assert!(!args.local_only);
+            assert!(!args.json);
+        }
+        _ => panic!("expected export command"),
+    }
+}
+
+#[test]
+fn export_help_states_static_snapshot_and_side_effects() {
+    let mut command = build_cli();
+    let export = command
+        .find_subcommand_mut("export")
+        .expect("export command should exist");
+    let help = export.render_long_help().to_string();
+
+    // The export is honest about being a stale-able snapshot and points at
+    // the live path; the side-effect contract names the marker boundary.
+    assert!(help.contains("static snapshot"));
+    assert!(help.contains("goes stale"));
+    assert!(help.contains("difflore agents install"));
+    assert!(help.contains("BEGIN/END DIFFLORE RULES"));
+    assert!(help.contains("never commits"));
+    assert!(help.contains(".gitignore"));
 }
 
 #[test]

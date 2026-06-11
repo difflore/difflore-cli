@@ -414,6 +414,67 @@ pub fn render_code_spec(input: &RuleRenderInput<'_>) -> String {
     out
 }
 
+/// Input for [`render_rule_export`]: the static-export projection of one rule.
+/// Distilled from the cloud-sync Markdown export and the MCP serve path's
+/// `render_rule_block` so all three share the "← learned from" provenance
+/// grammar — minus recall-only fields (no rank score: a static file has no
+/// query to rank against).
+pub struct RuleExportRenderInput<'a> {
+    pub name: &'a str,
+    /// Canonical lower-cased `owner/repo` the rule was learned from.
+    pub repo_scope: Option<&'a str>,
+    /// Rule body prose, emitted verbatim.
+    pub description: &'a str,
+    pub check_prompt: Option<&'a str>,
+    pub examples: Option<&'a [RuleExample]>,
+}
+
+/// Render one rule for a static export file (`AGENTS.md` / `CLAUDE.md`):
+/// title + provenance header line, body, optional check prompt, optional
+/// Bad/Good examples. Pure and DB-free.
+#[must_use]
+pub fn render_rule_export(input: &RuleExportRenderInput<'_>) -> String {
+    let learned = input
+        .repo_scope
+        .map(str::trim)
+        .filter(|scope| !scope.is_empty())
+        .map(|scope| format!(" \u{2190} learned from {scope}"))
+        .unwrap_or_default();
+    let mut out = format!("## {}{learned}\n\n", input.name);
+
+    let body = input.description.trim();
+    if body.is_empty() {
+        out.push_str("_(no rule body)_\n");
+    } else {
+        out.push_str(body);
+        out.push('\n');
+    }
+
+    if let Some(check) = input.check_prompt.map(str::trim).filter(|c| !c.is_empty()) {
+        out.push_str(&format!("\n**Check prompt:** {check}\n"));
+    }
+
+    if let Some(examples) = input.examples.filter(|e| !e.is_empty()) {
+        out.push_str("\n### Examples\n");
+        for ex in examples {
+            out.push_str(&format!(
+                "\n\u{274c} Bad:\n```\n{}\n```\n\n\u{2705} Good:\n```\n{}\n```\n",
+                ex.bad_code, ex.good_code
+            ));
+            if let Some(desc) = ex
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+            {
+                out.push_str(&format!("\n{desc}\n"));
+            }
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,5 +707,47 @@ mod tests {
         assert!(body.contains("Did you verify the signature before reading the body?"));
         assert!(!body.contains("### Trigger"));
         assert!(!body.contains("### Cases"));
+    }
+
+    #[test]
+    fn export_render_full_rule_carries_provenance_check_prompt_and_examples() {
+        let ex = [example(
+            "foo.unwrap()",
+            "foo?",
+            Some("reviewer flagged unwrap"),
+        )];
+        let body = render_rule_export(&RuleExportRenderInput {
+            name: "Return 413 for body size limit errors",
+            repo_scope: Some("acme/widgets"),
+            description: "When binding fails with MaxBytesError, return HTTP 413.",
+            check_prompt: Some("Did you map MaxBytesError to 413?"),
+            examples: Some(&ex),
+        });
+        assert!(body.starts_with(
+            "## Return 413 for body size limit errors \u{2190} learned from acme/widgets\n"
+        ));
+        assert!(body.contains("When binding fails with MaxBytesError, return HTTP 413."));
+        assert!(body.contains("**Check prompt:** Did you map MaxBytesError to 413?"));
+        assert!(body.contains("\u{274c} Bad:"));
+        assert!(body.contains("\u{2705} Good:"));
+        assert!(body.contains("reviewer flagged unwrap"));
+        // Static export drops recall-only ranking metadata.
+        assert!(!body.contains("rank score"));
+        assert!(!body.contains("raw:"));
+    }
+
+    #[test]
+    fn export_render_minimal_rule_omits_empty_sections() {
+        let body = render_rule_export(&RuleExportRenderInput {
+            name: "Keep handlers thin",
+            repo_scope: None,
+            description: "Keep request handlers thin and push logic into services.",
+            check_prompt: None,
+            examples: None,
+        });
+        assert!(body.starts_with("## Keep handlers thin\n"));
+        assert!(!body.contains("learned from"));
+        assert!(!body.contains("**Check prompt:**"));
+        assert!(!body.contains("### Examples"));
     }
 }

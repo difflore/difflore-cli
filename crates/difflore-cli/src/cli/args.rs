@@ -159,6 +159,39 @@ pub(crate) struct InitCliArgs {
     pub(crate) check: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ExportFormatArg {
+    /// `AGENTS.md` at the repo root (cross-agent convention; no engine filter).
+    AgentsMd,
+    /// `CLAUDE.md` at the repo root (only rules enabled for the claude engine).
+    ClaudeMd,
+    /// Both emitters.
+    All,
+}
+
+#[derive(Args)]
+pub(crate) struct ExportCliArgs {
+    /// Target format(s): `agents-md`, `claude-md`, or `all`. Repeatable.
+    #[arg(long, value_enum, value_name = "FORMAT", default_values_t = [ExportFormatArg::All])]
+    pub(crate) format: Vec<ExportFormatArg>,
+
+    /// Print the export plan (create/update/unchanged/skipped) without writing.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+
+    /// Output as JSON.
+    #[arg(long)]
+    pub(crate) json: bool,
+
+    /// Skip Bad/Good example blocks to keep the export small.
+    #[arg(long)]
+    pub(crate) no_examples: bool,
+
+    /// Export local rules only; exclude team/cloud-synced rules.
+    #[arg(long)]
+    pub(crate) local_only: bool,
+}
+
 #[derive(Args)]
 pub(crate) struct RecallCliArgs {
     /// Recall intent text. Optional when `--diff` is set.
