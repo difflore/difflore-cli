@@ -11,8 +11,8 @@
 //! | bare `difflore` | `src/onboarding.rs` + `src/tui_entry.rs` + `commands/status/` | first-run wizard, then the TUI dashboard; returning users fall through to status |
 
 use crate::cli::{
-    AgentsCommands, CloudCommands, Commands, DistCommands, EmbeddingsCommands, FixCliArgs,
-    ImportReviewsCliArgs, InitCliArgs, PacksCommands, ProviderCommands, RecallCliArgs,
+    AgentsCommands, CloudCommands, Commands, DistCommands, DraftsCommands, EmbeddingsCommands,
+    FixCliArgs, ImportReviewsCliArgs, InitCliArgs, PacksCommands, ProviderCommands, RecallCliArgs,
     SkillsCommands, SyncCliArgs,
 };
 use crate::commands;
@@ -37,6 +37,7 @@ pub(crate) async fn dispatch(command: Commands) {
             let ctx = runtime::CommandContext::new(runtime::OutputMode::from_json_flag(json)).await;
             commands::ask::handle_ask(&ctx, query, file, json).await;
         }
+        Commands::Drafts { command } => dispatch_drafts(command).await,
         Commands::Cloud { command } => Box::pin(dispatch_cloud(command)).await,
         Commands::Agents { command } => dispatch_agents(command).await,
         Commands::Update { dry_run, force } => {
@@ -107,6 +108,38 @@ pub(crate) async fn dispatch(command: Commands) {
         Commands::Dist {
             command: DistCommands::Verify { json },
         } => commands::dist::handle_verify(json),
+    }
+}
+
+async fn dispatch_drafts(command: DraftsCommands) {
+    match command {
+        DraftsCommands::List { repo, limit, json } => {
+            commands::drafts::handle_list(repo, limit, json).await;
+        }
+        DraftsCommands::Show { id, json } => {
+            commands::drafts::handle_show(id, json).await;
+        }
+        DraftsCommands::Review { repo, limit } => {
+            commands::drafts::handle_review(repo, limit).await;
+        }
+        DraftsCommands::Approve {
+            id,
+            all,
+            repo,
+            yes,
+            json,
+        } => {
+            commands::drafts::handle_approve(id, all, repo, yes, json).await;
+        }
+        DraftsCommands::Reject {
+            id,
+            all,
+            repo,
+            yes,
+            json,
+        } => {
+            commands::drafts::handle_reject(id, all, repo, yes, json).await;
+        }
     }
 }
 

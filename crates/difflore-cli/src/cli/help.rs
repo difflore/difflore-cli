@@ -53,6 +53,7 @@ USAGE
   providers           Choose the local AI backend for fixes
   embeddings          Optional semantic search for better recall
   import-reviews      Draft local rules from past GitHub PR reviews
+  drafts              Review and approve pending memory drafts
 
 {use_}
   recall              Preview memories agents would see on this change

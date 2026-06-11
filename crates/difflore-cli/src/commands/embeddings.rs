@@ -1,7 +1,7 @@
-//! Embedding configuration commands — `difflore embeddings status/setup/disable`.
+//! Embedding configuration commands - `difflore embeddings status/setup/disable`.
 //!
 //! * `status`  — show which embedder is active and whether semantic recall is on.
-//! * `setup`   — write BYOK (OpenAI-compatible) embedding credentials to settings.
+//! * `setup`   — write advanced BYOK (OpenAI-compatible) embedding credentials.
 //! * `disable` — revert to fast local keyword matching.
 
 use colored::Colorize;
@@ -72,7 +72,7 @@ pub(crate) async fn handle_status(json: bool) {
             println!(
                 "  {} {}",
                 style::pewter("embedder:"),
-                "cloud (DiffLore managed)".bold()
+                "cloud (DiffLore managed semantic)".bold()
             );
             println!("  {} {model}", style::pewter("model:   "));
             println!("  {} {dim}", style::pewter("dim:     "));
@@ -110,21 +110,21 @@ pub(crate) async fn handle_status(json: bool) {
             println!();
             println!(
                 "  {} {}",
-                style::pewter("semantic search:"),
-                "off | using fast keyword matching".bold()
+                style::pewter("semantic recall:"),
+                "local keyword fallback".bold()
             );
             println!();
             println!(
-                "  {} Recall still works; semantic search is optional.",
+                "  {} Recall still works, but match quality may be lower than semantic vectors.",
                 style::amber(style::sym::WARN)
             );
-            println!("    To improve match quality, choose one of:");
+            println!("    To improve match quality:");
             println!(
-                "      1. {}  (managed, no key required)",
+                "      Free semantic recall: {}  (managed, no key required)",
                 style::cmd("difflore cloud login")
             );
             println!(
-                "      2. {}  (bring your own OpenAI-compatible key)",
+                "      Advanced/BYOK:        {}  (bring your own OpenAI-compatible key)",
                 style::cmd("difflore embeddings setup")
             );
         }
@@ -313,10 +313,13 @@ pub(crate) async fn handle_disable() {
     } else {
         println!("{} Semantic search turned off", style::ok(style::sym::OK));
         println!();
-        println!("  Recall still works with fast local keyword matching.");
+        println!("  Recall still works with local keyword matching.");
         println!("  To re-enable:");
-        println!("    Managed:  {}", style::cmd("difflore cloud login"));
-        println!("    BYOK:     {}", style::cmd("difflore embeddings setup"));
+        println!("    Free managed:  {}", style::cmd("difflore cloud login"));
+        println!(
+            "    Advanced/BYOK: {}",
+            style::cmd("difflore embeddings setup")
+        );
     }
 }
 

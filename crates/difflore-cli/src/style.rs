@@ -633,7 +633,7 @@ mod tests {
     #[test]
     fn wrap_human_text_keeps_bullet_continuation_indented() {
         let wrapped = wrap_human_text_for_width(
-            "  - semantic recall: off | using keyword matching (enable with difflore embeddings setup or difflore cloud login)",
+            "  - semantic recall: local keyword fallback (free: difflore cloud login; advanced/BYOK: difflore embeddings setup)",
             56,
         );
 

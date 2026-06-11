@@ -574,8 +574,8 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
 
     if active_rules == 0 && pending_candidates_for_repo > 0 {
         return NextAction {
-            command: suggested_import_or_default(scope),
-            reason: "refresh imported review memory into active local memories".to_owned(),
+            command: draft_review_command(scope),
+            reason: "review pending drafts into active local memories".to_owned(),
         };
     }
 
@@ -602,8 +602,8 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
 
     if pending_candidates_for_repo > 0 {
         return NextAction {
-            command: suggested_import_or_default(scope),
-            reason: "refresh pending drafts into active local memory before testing recall"
+            command: draft_review_command(scope),
+            reason: "review pending drafts into active local memory before testing recall"
                 .to_owned(),
         };
     }
@@ -625,10 +625,9 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
 
     if pending_candidates > 0 && scope.repo_full_name.is_none() {
         return NextAction {
-            command: "difflore import-reviews".to_owned(),
-            reason:
-                "create active local memories; add a GitHub origin remote for repo-scoped guidance"
-                    .to_owned(),
+            command: "difflore drafts review".to_owned(),
+            reason: "review pending drafts; add a GitHub origin remote for repo-scoped guidance"
+                .to_owned(),
         };
     }
 
@@ -638,11 +637,11 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
     }
 }
 
-fn suggested_import_or_default(scope: &RepoScopeStatus) -> String {
-    scope
-        .suggested_import_command
-        .clone()
-        .unwrap_or_else(|| "difflore import-reviews".to_owned())
+fn draft_review_command(scope: &RepoScopeStatus) -> String {
+    scope.repo_full_name.as_ref().map_or_else(
+        || "difflore drafts review".to_owned(),
+        |repo| format!("difflore drafts review --repo {repo}"),
+    )
 }
 
 pub(super) fn proof_path_commands(next: &NextAction, cloud_logged_in: bool) -> Vec<String> {
@@ -684,7 +683,7 @@ pub(super) fn proof_path_commands(next: &NextAction, cloud_logged_in: bool) -> V
         return path;
     }
 
-    if command.starts_with("difflore import-reviews") {
+    if command.starts_with("difflore import-reviews") || command.starts_with("difflore drafts ") {
         path.push("difflore recall --diff".to_owned());
         path.push("difflore fix --preview".to_owned());
     }
@@ -717,8 +716,8 @@ fn candidate_preview(candidate: &difflore_core::skills::CandidateRule) -> Candid
             .as_ref()
             .and_then(|proof| proof.comment_url.clone()),
         preview: candidate_body_preview(&candidate.description),
-        accept_command: "difflore import-reviews".to_owned(),
-        explain_command: "difflore status".to_owned(),
+        accept_command: format!("difflore drafts approve {}", candidate.id),
+        explain_command: format!("difflore drafts show {}", candidate.id),
     }
 }
 
@@ -924,7 +923,7 @@ mod tests {
 
         assert_eq!(
             next_action_for_test(0, 4, 2, &scope, &proof).command,
-            "difflore import-reviews --repo acme/app"
+            "difflore drafts review --repo acme/app"
         );
     }
 
@@ -935,7 +934,7 @@ mod tests {
 
         assert_eq!(
             next_action_for_test(0, 4, 2, &scope, &proof).command,
-            "difflore import-reviews --repo acme/app"
+            "difflore drafts review --repo acme/app"
         );
     }
 
@@ -1135,6 +1134,17 @@ mod tests {
         assert_eq!(
             next_action_for_test(10, 3, 0, &scope, &proof).command,
             "difflore import-reviews --repo acme/app"
+        );
+    }
+
+    #[test]
+    fn next_action_reviews_global_drafts_without_repo_scope() {
+        let scope = scope(None, 0);
+        let proof = empty_local_proof();
+
+        assert_eq!(
+            next_action_for_test(0, 3, 0, &scope, &proof).command,
+            "difflore drafts review"
         );
     }
 
@@ -1441,6 +1451,7 @@ Prefer stable waits here instead of relying on a race with the scheduler."
                 .to_owned(),
             origin: "pr_review".to_owned(),
             installed_at: "2026-05-06 00:00:00".to_owned(),
+            source_repo: Some("tanstack/router".to_owned()),
             file_patterns: vec!["packages/router/**/*.ts".to_owned()],
             drafted_rule: Some(
                 "When touching `packages/router/**/*.ts`, prefer stable waits.".to_owned(),
@@ -1468,6 +1479,7 @@ Prefer stable waits here instead of relying on a race with the scheduler.",
             preview.preview,
             "Prefer stable waits here instead of relying on a race with the scheduler."
         );
-        assert_eq!(preview.accept_command, "difflore import-reviews");
+        assert_eq!(preview.accept_command, "difflore drafts approve cand-123");
+        assert_eq!(preview.explain_command, "difflore drafts show cand-123");
     }
 }

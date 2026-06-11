@@ -1,4 +1,4 @@
-use super::{AgentsCommands, Cli, CloudCommands, Commands, StatusLane, build_cli};
+use super::{AgentsCommands, Cli, CloudCommands, Commands, DraftsCommands, StatusLane, build_cli};
 use clap::Parser;
 
 #[test]
@@ -27,6 +27,7 @@ fn public_help_keeps_curated_command_surface() {
         "  recall",
         "  fix",
         "  ask",
+        "  drafts",
         "  cloud",
         "  agents",
         "  update",
@@ -65,6 +66,66 @@ fn public_help_keeps_curated_command_surface() {
     ] {
         assert!(!help.contains(removed), "{removed} should not be visible");
     }
+}
+
+#[test]
+fn drafts_command_parses_review_and_batch_actions() {
+    let review = Cli::try_parse_from(["difflore", "drafts", "review", "--repo", "Acme/App"])
+        .expect("drafts review should parse");
+    assert!(matches!(
+        review.command,
+        Some(Commands::Drafts {
+            command: DraftsCommands::Review {
+                repo: Some(repo),
+                limit: None,
+            }
+        }) if repo == "Acme/App"
+    ));
+
+    let list = Cli::try_parse_from(["difflore", "drafts", "list", "--limit", "5", "--json"])
+        .expect("drafts list should parse");
+    assert!(matches!(
+        list.command,
+        Some(Commands::Drafts {
+            command: DraftsCommands::List {
+                repo: None,
+                limit: Some(5),
+                json: true,
+            }
+        })
+    ));
+
+    let approve_all = Cli::try_parse_from([
+        "difflore", "drafts", "approve", "--all", "--repo", "acme/app", "--yes", "--json",
+    ])
+    .expect("drafts approve --all should parse");
+    assert!(matches!(
+        approve_all.command,
+        Some(Commands::Drafts {
+            command: DraftsCommands::Approve {
+                id: None,
+                all: true,
+                repo: Some(repo),
+                yes: true,
+                json: true,
+            }
+        }) if repo == "acme/app"
+    ));
+
+    let reject_one = Cli::try_parse_from(["difflore", "drafts", "reject", "draft-1"])
+        .expect("drafts reject should parse");
+    assert!(matches!(
+        reject_one.command,
+        Some(Commands::Drafts {
+            command: DraftsCommands::Reject {
+                id: Some(id),
+                all: false,
+                repo: None,
+                yes: false,
+                json: false,
+            }
+        }) if id == "draft-1"
+    ));
 }
 
 #[test]

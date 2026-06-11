@@ -32,6 +32,7 @@ pub struct CandidateRule {
     pub description: String,
     pub origin: String,
     pub installed_at: String,
+    pub source_repo: Option<String>,
     pub file_patterns: Vec<String>,
     pub drafted_rule: Option<String>,
     pub source_proof: Option<CandidateSourceProof>,
@@ -44,6 +45,7 @@ struct CandidateRuleRow {
     description: String,
     origin: String,
     installed_at: String,
+    source_repo: Option<String>,
     file_patterns: Option<String>,
 }
 
@@ -73,6 +75,7 @@ impl From<CandidateRuleRow> for CandidateRule {
             description: row.description,
             origin: row.origin,
             installed_at: row.installed_at,
+            source_repo: row.source_repo,
             file_patterns,
             drafted_rule,
             source_proof,
@@ -116,18 +119,17 @@ pub async fn list_candidates(
     // the conditional repo filter is branched here.
     let mut rows: Vec<CandidateRuleRow> = if let Some(r) = repo {
         sqlx::query_as(
-            "SELECT id, name, description, origin, installed_at, file_patterns FROM skills \
+            "SELECT id, name, description, origin, installed_at, source_repo, file_patterns FROM skills \
              WHERE status = 'pending' \
-             AND source_repo = ?1 \
+             AND lower(source_repo) = lower(?1) \
              ORDER BY installed_at DESC",
         )
         .bind(r)
         .fetch_all(db)
         .await?
     } else {
-        sqlx::query_as!(
-            CandidateRuleRow,
-            "SELECT id, name, description, origin, installed_at, file_patterns FROM skills \
+        sqlx::query_as(
+            "SELECT id, name, description, origin, installed_at, source_repo, file_patterns FROM skills \
              WHERE status = 'pending' ORDER BY installed_at DESC",
         )
         .fetch_all(db)
@@ -156,7 +158,7 @@ pub async fn count_pending_candidates(
         sqlx::query_scalar(
             "SELECT COUNT(*) FROM skills \
              WHERE status = 'pending' \
-             AND source_repo = ?1",
+             AND lower(source_repo) = lower(?1)",
         )
         .bind(r)
         .fetch_one(db)
@@ -389,6 +391,7 @@ mod tests {
             description: "desc".into(),
             origin: "agent-memory".into(),
             installed_at: String::new(),
+            source_repo: None,
             file_patterns: vec![],
             drafted_rule: None,
             source_proof: None,

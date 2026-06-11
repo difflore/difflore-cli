@@ -1403,7 +1403,7 @@ body text";
         .await
         .unwrap();
 
-        let candidates = list_candidates(&db, Some("acme/widgets"), None)
+        let candidates = list_candidates(&db, Some("ACME/Widgets"), None)
             .await
             .unwrap();
         let ids: std::collections::HashSet<&str> = candidates
@@ -1416,10 +1416,17 @@ body text";
             "repo_owner/repo_name must not satisfy the canonical source_repo filter"
         );
         assert_eq!(
-            count_pending_candidates(&db, Some("acme/widgets"))
+            count_pending_candidates(&db, Some("ACME/Widgets"))
                 .await
                 .unwrap(),
             1
+        );
+        assert_eq!(
+            candidates
+                .iter()
+                .find(|candidate| candidate.id == "pending-canonical-repo")
+                .and_then(|candidate| candidate.source_repo.as_deref()),
+            Some("acme/widgets")
         );
     }
 

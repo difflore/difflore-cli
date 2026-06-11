@@ -630,12 +630,12 @@ fn embedder_row_from_kind(
             severity: Severity::Optional,
             status: Status::Warn,
             label: "embedder",
-            value: "semantic search: off | using fast keyword matching".to_owned(),
+            value: "semantic recall: local keyword fallback".to_owned(),
             hints: vec![
-                "recall still works; semantic search is optional".to_owned(),
-                "difflore cloud login".to_owned(),
-                "or bring your own embedding provider".to_owned(),
-                "difflore embeddings setup".to_owned(),
+                "recall still works, but match quality may be lower than semantic vectors"
+                    .to_owned(),
+                "free semantic recall: difflore cloud login".to_owned(),
+                "advanced/BYOK: difflore embeddings setup".to_owned(),
             ],
             repair: None,
         },
@@ -1056,12 +1056,12 @@ mod tests {
         assert!(matches!(row.severity, Severity::Optional));
         assert!(matches!(row.status, Status::Warn));
         assert!(
-            row.value.contains("semantic search: off"),
+            row.value.contains("local keyword fallback"),
             "value: {}",
             row.value
         );
         assert!(
-            row.hints.iter().any(|h| h.contains("semantic search")),
+            row.hints.iter().any(|h| h.contains("match quality")),
             "hints: {:?}",
             row.hints
         );

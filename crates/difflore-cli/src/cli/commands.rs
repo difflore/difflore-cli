@@ -83,6 +83,12 @@ DiffLore never commits, pushes, opens PRs, or posts GitHub comments."
         json: bool,
     },
 
+    /// Review, approve, or reject local memory drafts.
+    Drafts {
+        #[command(subcommand)]
+        command: DraftsCommands,
+    },
+
     /// Manage cloud login, sync, and team impact.
     Cloud {
         #[command(subcommand)]
@@ -316,6 +322,89 @@ pub(crate) enum PacksCommands {
         path: String,
         #[arg(long, value_name = "URL")]
         registry: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum DraftsCommands {
+    /// List pending memory drafts.
+    List {
+        /// Filter drafts to a GitHub OWNER/REPO.
+        #[arg(long, value_name = "OWNER/REPO")]
+        repo: Option<String>,
+
+        /// Maximum drafts to show.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show one draft with full rule text and source evidence.
+    Show {
+        /// Pending draft id.
+        id: String,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Review pending drafts interactively.
+    Review {
+        /// Filter drafts to a GitHub OWNER/REPO.
+        #[arg(long, value_name = "OWNER/REPO")]
+        repo: Option<String>,
+
+        /// Maximum drafts to review.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+    },
+
+    /// Approve a draft and activate it as local memory.
+    Approve {
+        /// Pending draft id. Omit when using --all.
+        id: Option<String>,
+
+        /// Approve every matching draft.
+        #[arg(long)]
+        all: bool,
+
+        /// Filter --all to a GitHub OWNER/REPO.
+        #[arg(long, value_name = "OWNER/REPO")]
+        repo: Option<String>,
+
+        /// Skip the confirmation prompt for --all.
+        #[arg(long)]
+        yes: bool,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Reject a draft and remove it from the local queue.
+    Reject {
+        /// Pending draft id. Omit when using --all.
+        id: Option<String>,
+
+        /// Reject every matching draft.
+        #[arg(long)]
+        all: bool,
+
+        /// Filter --all to a GitHub OWNER/REPO.
+        #[arg(long, value_name = "OWNER/REPO")]
+        repo: Option<String>,
+
+        /// Skip the confirmation prompt for --all.
+        #[arg(long)]
+        yes: bool,
+
+        /// Output as JSON.
         #[arg(long)]
         json: bool,
     },

@@ -2,6 +2,7 @@ pub(crate) mod ask;
 pub(crate) mod cloud;
 pub(crate) mod dist;
 pub(crate) mod doctor;
+pub(crate) mod drafts;
 pub(crate) mod embeddings;
 pub(crate) mod eval;
 pub(crate) mod fix;

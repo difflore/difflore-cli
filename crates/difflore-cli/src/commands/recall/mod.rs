@@ -75,7 +75,7 @@ impl RecallSemanticState {
             None
         } else {
             Some(
-                "semantic matching off; these matched by keyword (enable with `difflore embeddings setup` or `difflore cloud login`)",
+                "semantic matching is using local keyword fallback; sign in for free semantic recall with `difflore cloud login` (advanced: `difflore embeddings setup`)",
             )
         }
     }
@@ -945,13 +945,13 @@ mod tests {
         assert_eq!(state.mode, "keyword");
         let note = state.keyword_only_note().expect("keyword path has a note");
         assert!(
-            note.contains("semantic matching off"),
-            "note must say semantic is off: {note}"
+            note.contains("local keyword fallback"),
+            "note must name local keyword fallback: {note}"
         );
         // The note must name the enablement paths so it is actionable and reads
         // consistently with `embeddings status` / `status`.
-        assert!(note.contains("difflore embeddings setup"), "note: {note}");
         assert!(note.contains("difflore cloud login"), "note: {note}");
+        assert!(note.contains("difflore embeddings setup"), "note: {note}");
     }
 
     #[test]

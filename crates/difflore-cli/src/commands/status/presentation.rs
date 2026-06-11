@@ -162,16 +162,16 @@ fn format_embedding_status(
     // the per-repo index has been built yet.
     if diag.active_profile.starts_with("sha1:") {
         return Some(vec![
-            "semantic recall: off (keyword matching)".to_owned(),
+            "semantic recall: local keyword fallback".to_owned(),
             format!(
-                "enable semantic: {}",
-                style::cmd("difflore embeddings setup")
+                "free semantic recall: {}",
+                style::cmd("difflore cloud login")
             ),
-            format!("or log in: {}", style::cmd("difflore cloud login")),
+            format!("advanced/BYOK: {}", style::cmd("difflore embeddings setup")),
         ]);
     }
     if !diag.vector_lane_available {
-        return Some(vec!["semantic recall: off (keyword fallback)".to_owned()]);
+        return Some(vec!["semantic recall: local keyword fallback".to_owned()]);
     }
     None
 }
@@ -619,7 +619,7 @@ mod tests {
         // is "healthy" (SHA1 active matches a SHA1 corpus, so not degraded and the
         // vector lane is available), but recall is keyword-only. `status` must say
         // so — silence here is the inconsistency with `embeddings status` (which
-        // reports "semantic search: off") that this branch closes.
+        // reports the same local keyword fallback path) that this branch closes.
         let sha1_healthy = EmbeddingDiagnostics {
             active_profile: "sha1:local:128".to_owned(),
             index_profile: Some("sha1:local:128".to_owned()),
@@ -632,11 +632,12 @@ mod tests {
             .expect("SHA1 baseline must surface a keyword-only status line")
             .join("\n");
         assert!(
-            line.contains("semantic recall: off"),
-            "must report semantic off: {line}"
+            line.contains("semantic recall: local keyword fallback"),
+            "must report local keyword fallback: {line}"
         );
         assert!(
-            line.contains("difflore embeddings setup") && line.contains("difflore cloud login"),
+            line.contains("free semantic recall: difflore cloud login")
+                && line.contains("advanced/BYOK: difflore embeddings setup"),
             "must name the enablement paths: {line}"
         );
 
