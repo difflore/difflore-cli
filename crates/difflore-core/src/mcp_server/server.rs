@@ -8,10 +8,10 @@ use crate::observability::trajectory::TrajectoryStep;
 use crate::skills;
 
 use super::schemas::{
-    DIFFLORE_ONBOARD_SKILL_MD, KNOWLEDGE_AGENT_SKILL_MD, REMEMBER_RULE_GUIDE_MD, RULE_DIFF_SKILL_MD,
-    RULE_GAP_SKILL_MD, RULE_JOURNEY_SKILL_MD, RULE_SEARCH_SKILL_MD, RULE_WHY_FIRED_SKILL_MD,
-    SESSION_RECAP_SKILL_MD, SMART_EXPLORE_SKILL_MD, resource_templates_list, resources_list,
-    tools_list,
+    DIFFLORE_ONBOARD_SKILL_MD, KNOWLEDGE_AGENT_SKILL_MD, REMEMBER_RULE_GUIDE_MD,
+    RULE_DIFF_SKILL_MD, RULE_GAP_SKILL_MD, RULE_JOURNEY_SKILL_MD, RULE_SEARCH_SKILL_MD,
+    RULE_WHY_FIRED_SKILL_MD, SESSION_RECAP_SKILL_MD, SMART_EXPLORE_SKILL_MD,
+    resource_templates_list, resources_list, tools_list,
 };
 
 pub(super) const PROTOCOL_VERSION: &str = "2024-11-05";
