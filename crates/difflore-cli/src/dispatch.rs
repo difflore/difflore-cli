@@ -11,9 +11,9 @@
 //! | bare `difflore` | `src/onboarding.rs` + `src/tui_entry.rs` + `commands/status/` | first-run wizard, then the TUI dashboard; returning users fall through to status |
 
 use crate::cli::{
-    AgentsCommands, CloudCommands, Commands, DistCommands, DraftsCommands, EmbeddingsCommands,
-    FixCliArgs, ImportReviewsCliArgs, InitCliArgs, PacksCommands, ProviderCommands, RecallCliArgs,
-    SkillsCommands, SyncCliArgs,
+    AgentsCommands, AuthCommands, CloudCommands, Commands, DistCommands, DraftsCommands,
+    EmbeddingsCommands, FixCliArgs, ImportReviewsCliArgs, InitCliArgs, PacksCommands,
+    ProviderCommands, RecallCliArgs, SkillsCommands, SyncCliArgs,
 };
 use crate::commands;
 use crate::commands::cloud::sync::handle_sync;
@@ -44,6 +44,7 @@ pub(crate) async fn dispatch(command: Commands) {
         }
         Commands::Drafts { command } => dispatch_drafts(command).await,
         Commands::Cloud { command } => Box::pin(dispatch_cloud(command)).await,
+        Commands::Auth { command } => dispatch_auth(command).await,
         Commands::Agents { command } => dispatch_agents(command).await,
         Commands::Update { dry_run, force } => {
             let ctx = runtime::CommandContext::new(runtime::OutputMode::Text).await;
@@ -295,6 +296,18 @@ async fn dispatch_cloud(command: CloudCommands) {
             Box::pin(commands::cloud::handle_impact(&ctx, json)).await;
         }
         CloudCommands::Logout => commands::cloud::handle_logout().await,
+    }
+}
+
+async fn dispatch_auth(command: AuthCommands) {
+    match command {
+        // No CommandContext: the PAT store lives in the standalone auth db,
+        // and credential commands must not run the startup network probes.
+        AuthCommands::Gitlab {
+            host,
+            check,
+            remove,
+        } => commands::auth::gitlab::handle_gitlab(host, check, remove).await,
     }
 }
 

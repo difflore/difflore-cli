@@ -1,6 +1,6 @@
 use super::{
-    AgentsCommands, Cli, CloudCommands, Commands, DraftsCommands, ExportFormatArg, StatusLane,
-    build_cli,
+    AgentsCommands, AuthCommands, Cli, CloudCommands, Commands, DraftsCommands, ExportFormatArg,
+    StatusLane, build_cli,
 };
 use clap::Parser;
 
@@ -38,6 +38,7 @@ fn public_help_keeps_curated_command_surface() {
         "  providers",
         "  embeddings",
         "  doctor",
+        "  auth",
     ] {
         assert!(help.contains(visible), "{visible} should be visible");
     }
@@ -393,6 +394,59 @@ fn status_replaces_value_check_and_cloud_owns_sync() {
     assert!(
         Cli::try_parse_from(["difflore", "sync"]).is_err(),
         "top-level sync should not parse"
+    );
+}
+
+#[test]
+fn auth_gitlab_parses_default_host_check_and_remove_modes() {
+    let store = Cli::try_parse_from(["difflore", "auth", "gitlab"])
+        .expect("bare auth gitlab should parse (token arrives via stdin/env)");
+    assert!(matches!(
+        store.command,
+        Some(Commands::Auth {
+            command: AuthCommands::Gitlab { host, check: false, remove: false }
+        }) if host == "gitlab.com"
+    ));
+
+    let check = Cli::try_parse_from([
+        "difflore",
+        "auth",
+        "gitlab",
+        "--check",
+        "--host",
+        "gitlab.corp.example",
+    ])
+    .expect("auth gitlab --check --host should parse");
+    assert!(matches!(
+        check.command,
+        Some(Commands::Auth {
+            command: AuthCommands::Gitlab { host, check: true, remove: false }
+        }) if host == "gitlab.corp.example"
+    ));
+
+    let remove = Cli::try_parse_from(["difflore", "auth", "gitlab", "--remove"])
+        .expect("auth gitlab --remove should parse");
+    assert!(matches!(
+        remove.command,
+        Some(Commands::Auth {
+            command: AuthCommands::Gitlab {
+                check: false,
+                remove: true,
+                ..
+            }
+        })
+    ));
+
+    assert!(
+        Cli::try_parse_from(["difflore", "auth", "gitlab", "--check", "--remove"]).is_err(),
+        "--check and --remove are distinct modes and must conflict"
+    );
+
+    // No --token flag by design: tokens arrive via stdin or env so they never
+    // land in shell history.
+    assert!(
+        Cli::try_parse_from(["difflore", "auth", "gitlab", "--token", "glpat-x"]).is_err(),
+        "auth gitlab must not accept a --token flag"
     );
 }
 

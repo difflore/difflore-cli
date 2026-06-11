@@ -53,6 +53,11 @@ pub const DIFFLORE_CLOUD_TOKEN: &str = "DIFFLORE_CLOUD_TOKEN";
 /// encrypted key stored by that command, not this env var.
 pub const DIFFLORE_EMBEDDING_KEY: &str = "DIFFLORE_EMBEDDING_KEY";
 pub const DIFFLORE_TOKEN: &str = "DIFFLORE_TOKEN";
+/// GitLab PAT override for review import; takes precedence over the
+/// conventional `GITLAB_TOKEN` and over encrypted storage.
+pub const DIFFLORE_GITLAB_TOKEN: &str = "DIFFLORE_GITLAB_TOKEN";
+/// Conventional GitLab CI/tooling token env var, honored second.
+pub const GITLAB_TOKEN: &str = "GITLAB_TOKEN";
 pub const DIFFLORE_DEBUG_CLOUD: &str = "DIFFLORE_DEBUG_CLOUD";
 pub const DIFFLORE_DEBUG_TELEMETRY: &str = "DIFFLORE_DEBUG_TELEMETRY";
 pub const DIFFLORE_DEBUG_PROVIDERS: &str = "DIFFLORE_DEBUG_PROVIDERS";

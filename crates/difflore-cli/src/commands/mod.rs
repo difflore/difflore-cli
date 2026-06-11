@@ -1,4 +1,5 @@
 pub(crate) mod ask;
+pub(crate) mod auth;
 pub(crate) mod cloud;
 pub(crate) mod dist;
 pub(crate) mod doctor;

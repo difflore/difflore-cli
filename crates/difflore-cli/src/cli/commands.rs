@@ -114,6 +114,12 @@ to share them, or gitignore them yourself."
         command: CloudCommands,
     },
 
+    /// Store VCS provider credentials used for review import.
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommands,
+    },
+
     /// Browse and install shareable starter rule packs.
     Packs {
         #[command(subcommand)]
@@ -426,6 +432,39 @@ pub(crate) enum DraftsCommands {
         /// Output as JSON.
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum AuthCommands {
+    /// Store or verify a GitLab personal access token (needs `read_api` scope).
+    #[command(next_line_help = false, long_about = concat!(
+        "Store a GitLab personal access token for review import. The token is\n",
+        "encrypted at rest with the same mechanism as the cloud login token.\n",
+        "\n",
+        "Pipe the token via stdin so it never lands in shell history:\n",
+        "\n",
+        "  echo \"<TOKEN>\" | difflore auth gitlab\n",
+        "  echo \"<TOKEN>\" | difflore auth gitlab --host gitlab.corp.example\n",
+        "\n",
+        "At import time the token is resolved in this order:\n",
+        "DIFFLORE_GITLAB_TOKEN env, GITLAB_TOKEN env, then stored token.\n",
+        "\n",
+        "Use `--check` to verify the resolved token against the host's\n",
+        "/api/v4/user endpoint, and `--remove` to delete the stored token.",
+    ))]
+    Gitlab {
+        /// GitLab host (self-managed instances supported, e.g. gitlab.corp.example).
+        #[arg(long, value_name = "HOST", default_value = difflore_core::ingest::gitlab::auth::DEFAULT_GITLAB_HOST)]
+        host: String,
+
+        /// Verify the resolved token against GET https://<HOST>/api/v4/user instead of storing.
+        #[arg(long, conflicts_with = "remove")]
+        check: bool,
+
+        /// Remove the stored token for this host.
+        #[arg(long)]
+        remove: bool,
     },
 }
 
