@@ -38,3 +38,4 @@ the next public command (`difflore recall` / `ask` / `status`).
 - Don't treat `ask` as authoritative with zero citations — verify via `search_rules`.
 - Don't pass cloud tokens or secrets through the conversation.
 - Don't build a global summary when the user named a specific file/subsystem — scope first.
+- Don't call retired corpus or knowledge subcommands.

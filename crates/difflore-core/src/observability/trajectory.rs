@@ -10,7 +10,7 @@
 //! that do not need trajectory data pass `None`.
 //!
 //! The JSON shape produced by `into_json()` is byte-compatible with the
-//! TypeScript discriminated union in `difflore-cloud/src/types/trajectory.ts`.
+//! TypeScript discriminated union in `difflore-cloud/src/contracts/trajectory.ts`.
 //! When that shape changes, BOTH sides must be updated in lockstep — the
 //! `saveTrajectory` endpoint validates the payload against the matching Zod
 //! schema, so any drift fails the round-trip test.
@@ -40,7 +40,7 @@ pub struct RecalledVerdict {
 
 /// Ordered discriminated step. Serialized with `tag = "kind"` so the JSON
 /// shape matches the TS union; every new variant must add a matching
-/// zod arm in `difflore-cloud/src/types/trajectory.ts`.
+/// zod arm in `difflore-cloud/src/contracts/trajectory.ts`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TrajectoryStep {
