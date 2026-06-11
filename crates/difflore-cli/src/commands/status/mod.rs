@@ -60,7 +60,7 @@ pub(crate) struct CompactValueSummary {
 }
 
 impl CompactValueSummary {
-    fn from_parts(
+    const fn from_parts(
         accepted: &LocalAcceptedProof,
         recall: &LocalRecallProof,
         mcp_serves: &LocalMcpRuleServe,
