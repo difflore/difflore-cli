@@ -39,6 +39,19 @@ pub async fn run() {
             e.exit();
         }
     };
+
+    // The warm hook daemon (`difflore __hook-daemon --project-hash <hash>`) must
+    // not pay the startup gate: it is a detached, long-lived service spawned to
+    // *remove* per-hook latency, so running provider/cloud network probes or the
+    // legacy index migration here would only delay its readiness — exactly what
+    // the `dispatch::dispatch` HookDaemon branch warns against. It manages its
+    // own db/index lifecycle, so dispatch it straight through. The daemon command
+    // always carries an explicit subcommand, so peeking `cli.command` is safe.
+    if let Some(command @ Commands::HookDaemon { .. }) = cli.command {
+        Box::pin(dispatch::dispatch(command)).await;
+        return;
+    }
+
     // Cached startup gate: provider/cloud checks are best-effort and never
     // block command execution.
     let _ = difflore_core::infra::startup::ensure_ready(false).await;
