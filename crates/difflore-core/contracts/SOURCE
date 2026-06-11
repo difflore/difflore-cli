@@ -7,21 +7,10 @@
 
 source-repo:   difflore-cloud
 source-path:   src/contracts/openapi/api.json
-source-commit: c059bbffd7de1fdb0cdd6ee4b7f5a09bf6f818de
+source-commit: fe9d363985f973b92774d7a669b440926dfb74f4
 
 # sha256 of the vendored openapi-spec.json currently checked in here.
-spec-sha256:   4b2dfcd3790ac4cdf9dfa4cb8e0d0d6877c1779b880534ba9db1a8366a30fc22
+spec-sha256:   91eaa1b9cfef5e7512b4c9d254fe55f6a40d524d1cd4805140a1fc8407b078b0
 
-# sha256 of the divergent cloud export at source-commit (NOT vendored — see
-# DIVERGENCE below). Lets a future sync detect when cloud has moved.
-cloud-spec-sha256: 91eaa1b9cfef5e7512b4c9d254fe55f6a40d524d1cd4805140a1fc8407b078b0
-
-# DIVERGENCE: the cloud export at source-commit is structurally compatible
-# (identical top-level keys, path set, and component-schema names) but its
-# generated-type surface differs from the vendored copy by 4
-# field line(s) that exist only in the vendored spec. Adopting the cloud spec
-# directly would SHRINK the types produced by `generate_types!`, so
-# sync-contract.sh deliberately did NOT replace the vendored spec. The
-# vendored sha256 above was re-verified against this file before registering
-# the cloud commit. Convergence is tracked for the C1/C5 cloud batches
-# (export diff-empty gate) — see REORG-BLUEPRINT.md section 5.
+# Last sync adopted the cloud spec directly (structurally compatible, no
+# generated-type regression). In sync with cloud at source-commit above.

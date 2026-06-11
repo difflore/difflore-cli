@@ -15431,9 +15431,6 @@
                         }
                       ]
                     },
-                    "nextStep": {
-                      "type": "string"
-                    },
                     "steps": {
                       "type": "array",
                       "items": {
@@ -15533,7 +15530,6 @@
                     "launchProofReady",
                     "modeledReviewMinutes",
                     "closedLoopRate",
-                    "nextStep",
                     "steps"
                   ]
                 }
