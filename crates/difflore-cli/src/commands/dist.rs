@@ -299,9 +299,10 @@ fn check_hook_bundle(root: &Path, report: &mut DistCheckReport) {
             return;
         }
     };
+    // No PreToolUse: the Read pre-hook was retired to a dispatcher noop and
+    // its registration removed (it cost a hook spawn per Read for nothing).
     for needle in [
         "difflore-hook --client claude-code",
-        "PreToolUse",
         "PostToolUse",
         "SessionStart",
         "UserPromptSubmit",

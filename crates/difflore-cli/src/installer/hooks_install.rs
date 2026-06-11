@@ -90,8 +90,12 @@ pub(super) fn merge_claude_code_hooks(settings_path: &Path, bin: &str) -> anyhow
         .as_object_mut()
         .ok_or_else(|| anyhow!("{}: `hooks` is not a JSON object", settings_path.display()))?;
 
+    // NOTE: no PreToolUse(Read) registration. Pre-read injection was retired
+    // to a dispatcher noop (a Read is too weak a signal — see
+    // hook/runtime/dispatch.rs), so registering it spawned the hook binary on
+    // EVERY Read for a guaranteed empty response. The dead registration is
+    // also stripped from existing installs by the cleanup pass below.
     let event_matchers: &[(&str, Option<&str>)] = &[
-        ("PreToolUse", Some("Read")),
         ("PostToolUse", Some("Edit|MultiEdit|Write|Bash")),
         ("SessionStart", Some("startup|clear|compact")),
         ("UserPromptSubmit", None),
@@ -100,14 +104,15 @@ pub(super) fn merge_claude_code_hooks(settings_path: &Path, bin: &str) -> anyhow
     ];
 
     let mut changed = 0usize;
-    for (event, matcher) in event_matchers {
-        let groups_value = hooks_obj
-            .entry((*event).to_owned())
-            .or_insert_with(|| Value::Array(Vec::new()));
-        let groups = groups_value
-            .as_array_mut()
-            .ok_or_else(|| anyhow!("{}: hooks.{event} is not an array", settings_path.display()))?;
-
+    // Strip every existing difflore claude-code group first — including
+    // groups under events we no longer register (the retired
+    // PreToolUse(Read)), so an upgrade cleans old installs instead of
+    // leaving the dead registration to fire on every Read forever.
+    let mut emptied_events: Vec<String> = Vec::new();
+    for (event, groups_value) in hooks_obj.iter_mut() {
+        let Some(groups) = groups_value.as_array_mut() else {
+            continue;
+        };
         let before = groups.len();
         groups.retain(|g| {
             let hooks = g.get("hooks").and_then(|h| h.as_array());
@@ -123,9 +128,26 @@ pub(super) fn merge_claude_code_hooks(settings_path: &Path, bin: &str) -> anyhow
         if groups.len() != before {
             changed += 1;
         }
+        if groups.is_empty() {
+            emptied_events.push(event.clone());
+        }
+    }
+    // Drop event arrays the strip emptied so a retired event doesn't leave a
+    // dangling `"PreToolUse": []` behind; events still registered are
+    // recreated by the `entry()` below.
+    for event in emptied_events {
+        hooks_obj.remove(&event);
+    }
+
+    for (event, matcher) in event_matchers {
+        let groups_value = hooks_obj
+            .entry((*event).to_owned())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        let groups = groups_value
+            .as_array_mut()
+            .ok_or_else(|| anyhow!("{}: hooks.{event} is not an array", settings_path.display()))?;
 
         let timeout_ms = match *event {
-            "PreToolUse" => 2000,
             "PostToolUse" | "UserPromptSubmit" => 5000,
             _ => 10000,
         };
@@ -787,7 +809,6 @@ pub(super) fn probe_json_hooks_by_nested_command(
 pub(super) fn render_claude_code_hook_block(bin: &str) -> Vec<Value> {
     let command = hook_command_string(bin, "claude-code");
     let event_matchers: &[(&str, Option<&str>)] = &[
-        ("PreToolUse", Some("Read")),
         ("PostToolUse", Some("Edit|MultiEdit|Write")),
         ("SessionStart", Some("startup|clear|compact")),
         ("UserPromptSubmit", None),
@@ -798,7 +819,6 @@ pub(super) fn render_claude_code_hook_block(bin: &str) -> Vec<Value> {
         .iter()
         .map(|(event, matcher)| {
             let timeout_ms = match *event {
-                "PreToolUse" => 2000,
                 "PostToolUse" | "UserPromptSubmit" => 5000,
                 _ => 10000,
             };
@@ -988,10 +1008,9 @@ mod tests {
         let (tmp, _) = tmp_settings_path();
         let path = tmp.path().join(".claude/settings.json");
         let added = merge_claude_code_hooks(&path, BIN).expect("merge");
-        assert_eq!(added, 6, "first install must add 6 event matchers");
+        assert_eq!(added, 5, "first install must add 5 event matchers");
         let v = read_json(&path);
         for event in [
-            "PreToolUse",
             "PostToolUse",
             "SessionStart",
             "UserPromptSubmit",
@@ -1009,14 +1028,20 @@ mod tests {
             );
             assert!(cmd.contains("difflore-hook"), "hook shim missing: {cmd}");
         }
-        assert_eq!(
-            v["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], 2000,
-            "PreToolUse must use a 2s timeout for hot-path latency"
+        // PreToolUse(Read) was retired to a dispatcher noop; a fresh install
+        // must not register it (it would spawn the hook on every Read for
+        // zero value).
+        assert!(
+            v["hooks"].get("PreToolUse").is_none(),
+            "retired PreToolUse(Read) must not be registered: {v}"
         );
-        assert_eq!(v["hooks"]["PreToolUse"][0]["matcher"], "Read");
         assert_eq!(
             v["hooks"]["PostToolUse"][0]["matcher"],
             "Edit|MultiEdit|Write|Bash"
+        );
+        assert_eq!(
+            v["hooks"]["PostToolUse"][0]["hooks"][0]["timeout"], 5000,
+            "PostToolUse keeps its 5s budget"
         );
         assert!(
             v["hooks"]["UserPromptSubmit"][0].get("matcher").is_none(),
@@ -1048,8 +1073,9 @@ mod tests {
         .expect("seed");
 
         let added = merge_claude_code_hooks(&path, BIN).expect("merge");
-        assert!(added >= 6, "reinstall touches every event matcher");
+        assert!(added >= 5, "reinstall touches every event matcher");
         let v = read_json(&path);
+        // The user's own PreToolUse hook survives untouched...
         let groups = v["hooks"]["PreToolUse"].as_array().expect("groups");
         let user_kept = groups.iter().any(|g| {
             g["hooks"][0]["command"]
@@ -1057,6 +1083,9 @@ mod tests {
                 .is_some_and(|c| c.contains("user-tool"))
         });
         assert!(user_kept, "user hook must survive a difflore reinstall");
+        // ...while the stale difflore PreToolUse(Read) registration from the
+        // old install is removed for good: the dispatcher noops pre-read, so
+        // re-registering would spawn the hook on every Read for zero value.
         let difflore_groups: Vec<_> = groups
             .iter()
             .filter(|g| {
@@ -1065,19 +1094,56 @@ mod tests {
                     .is_some_and(|c| hook_command_matches_client(c, "claude-code"))
             })
             .collect();
-        assert_eq!(difflore_groups.len(), 1, "exactly one difflore PreToolUse");
-        let new_cmd = difflore_groups[0]["hooks"][0]["command"]
+        assert!(
+            difflore_groups.is_empty(),
+            "stale difflore PreToolUse(Read) must be stripped on upgrade: {difflore_groups:?}"
+        );
+        // The live events are (re)installed with the fresh binary path.
+        let post_cmd = v["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
             .as_str()
             .expect("cmd");
         assert!(
-            new_cmd.contains("difflore-hook"),
-            "hook shim was not installed: {new_cmd}"
+            post_cmd.contains("difflore-hook"),
+            "hook shim was not installed: {post_cmd}"
         );
         assert!(
-            !new_cmd.contains("/old/bin/difflore"),
-            "stale entry leaked through: {new_cmd}"
+            !post_cmd.contains("/old/bin/difflore"),
+            "stale entry leaked through: {post_cmd}"
         );
         assert_eq!(v["permissions"]["allow"][0], "Bash(**)");
+    }
+
+    #[test]
+    fn claude_hooks_upgrade_drops_emptied_retired_event_entirely() {
+        // An old install whose PreToolUse array holds ONLY the difflore
+        // group: the upgrade must remove the group AND the now-empty event
+        // key, not leave a dangling `"PreToolUse": []`.
+        let (_tmp, path) = tmp_settings_path();
+        fs::write(
+            &path,
+            r#"{
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Read",
+                            "hooks": [{"type": "command", "command": "/old/bin/difflore-hook --client claude-code"}]
+                        }
+                    ]
+                }
+            }"#,
+        )
+        .expect("seed");
+
+        merge_claude_code_hooks(&path, BIN).expect("merge");
+        let v = read_json(&path);
+        assert!(
+            v["hooks"].get("PreToolUse").is_none(),
+            "emptied retired event must be dropped: {v}"
+        );
+        assert!(
+            v["hooks"]["PostToolUse"].as_array().is_some(),
+            "live events must still be installed"
+        );
     }
 
     #[test]
@@ -1291,7 +1357,7 @@ mod tests {
         let path = tmp.path().join(".claude/settings.json");
         merge_claude_code_hooks(&path, BIN).expect("merge");
         let removed = remove_claude_code_hooks(&path, false).expect("remove");
-        assert_eq!(removed, 6, "uninstall should clear all 6 event matchers");
+        assert_eq!(removed, 5, "uninstall should clear all 5 event matchers");
         let v = read_json(&path);
         // hooks object had only difflore groups → it should be dropped entirely.
         assert!(
