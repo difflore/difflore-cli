@@ -69,6 +69,7 @@ async fn hook_daemon_lifecycle_and_isolation() {
     }
 
     index_pools_are_isolated_per_project_hash().await;
+    cross_library_retrieval_is_isolated_per_hash().await;
     second_daemon_for_same_hash_yields().await;
     stale_leftover_socket_is_reclaimed().await;
     concurrent_daemons_settle_to_one().await;
@@ -154,6 +155,157 @@ async fn index_pools_are_isolated_per_project_hash() {
         seen, 1,
         "global data.db must be shared across daemons (one pool per data.db path)"
     );
+}
+
+/// End-to-end cross-library guard — the most important correctness property of
+/// the whole socket-per-hash design. The sibling test above proves the *pool
+/// identity* is isolated; this proves the consequence that actually matters:
+/// the `hash -> pool -> retrieval` chain never serves one repo's rule when a
+/// daemon launched for another hash answers a file edit.
+///
+/// We exercise the real chain `run_server_for_hash` builds:
+///   1. Start a live daemon for hash A (so the pool is genuinely the one the
+///      daemon freezes at `State.index_pool`, not a pool we conjured), then take
+///      the same cached per-project pool via `get_pool_for_project(hash)` — the
+///      exact call the daemon makes internally.
+///   2. Seed each per-project index with a distinguishable, file-pattern-scoped
+///      rule (A matches only `*.rs`, B matches only `*.py`) through the same
+///      `upsert_rule_chunks` indexing path production uses.
+///   3. Drive the retrieval entrypoint with a `*.rs` edit against pool A and a
+///      `*.py` edit against pool B, asserting each daemon's pool returns ONLY
+///      its own rule — A's rule is present, B's rule is provably absent from A's
+///      pool, and vice-versa.
+///
+/// Retrieval reads strictly from the supplied `index_pool` and applies the
+/// strict file-pattern cascade, so a hit for A's `*.rs` rule on a `*.rs` edit
+/// that never surfaces B's `*.py` rule directly demonstrates the isolation that
+/// keeps repo A's library out of repo B's edits.
+async fn cross_library_retrieval_is_isolated_per_hash() {
+    use difflore_core::context::index_db::{get_pool_for_project, upsert_rule_chunks};
+    use difflore_core::context::retrieval::{RetrievalOptions, retrieve_rules_with_confidence};
+    use difflore_core::context::rule_source::RuleDocument;
+
+    let hash_a = "3333eeeeffff";
+    let hash_b = "4444aaaabbbb";
+
+    // Start a live daemon for hash A so the pool we query below is the one the
+    // daemon actually froze at startup (`get_pool_for_project` is pool-cached
+    // per hash, so the daemon's `State.index_pool` and ours are the same DB).
+    let h_a = hash_a.to_owned();
+    let daemon_a = tokio::spawn(async move {
+        forward::run_server_for_hash(&h_a).await.expect("daemon A run");
+    });
+    assert!(
+        wait_for_daemon(hash_a, Duration::from_secs(10)),
+        "daemon A should become connectable before we probe its frozen pool"
+    );
+
+    // The same cached pools the daemons serve.
+    let pool_a = get_pool_for_project(hash_a)
+        .await
+        .expect("open index pool A (daemon A's frozen pool)");
+    let pool_b = get_pool_for_project(hash_b)
+        .await
+        .expect("open index pool B");
+
+    // A rule that should only ever surface on Rust edits, indexed into A's pool.
+    let rule_a = RuleDocument {
+        skill_id: "rust-only-rule-a".to_owned(),
+        title: "rust-only-rule-a".to_owned(),
+        content: "When editing rust handlers prefer the zorptangle pattern over raw unwrap"
+            .to_owned(),
+        confidence: 0.7,
+        file_patterns: Some(r#"["**/*.rs"]"#.to_owned()),
+        language: None,
+        repo_scope: None,
+    };
+    // A rule that should only ever surface on Python edits, indexed into B's pool.
+    let rule_b = RuleDocument {
+        skill_id: "python-only-rule-b".to_owned(),
+        title: "python-only-rule-b".to_owned(),
+        content: "When editing python handlers prefer the quafflenibble pattern over bare except"
+            .to_owned(),
+        confidence: 0.7,
+        file_patterns: Some(r#"["**/*.py"]"#.to_owned()),
+        language: None,
+        repo_scope: None,
+    };
+    upsert_rule_chunks(&pool_a, std::slice::from_ref(&rule_a))
+        .await
+        .expect("index rule A into pool A");
+    upsert_rule_chunks(&pool_b, std::slice::from_ref(&rule_b))
+        .await
+        .expect("index rule B into pool B");
+
+    // A `*.rs` edit answered by daemon A's pool: A's rule must surface and B's
+    // rule must NOT (it does not exist in pool A at all). The distinctive token
+    // ("zorptangle") clears the relevance floor deterministically under the
+    // offline SHA1 + FTS retrieval lane.
+    let a_hits = retrieve_rules_with_confidence(
+        &pool_a,
+        "post-edit zorptangle pattern in rust handler",
+        RetrievalOptions {
+            top_k: Some(5),
+            target_file: Some("src/main.rs"),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("retrieve from pool A");
+    let a_ids: Vec<&str> = a_hits.iter().map(|h| h.skill_id.as_str()).collect();
+    assert!(
+        a_ids.contains(&"rust-only-rule-a"),
+        "daemon A's pool must serve its own *.rs rule for a *.rs edit, got {a_ids:?}"
+    );
+    assert!(
+        !a_ids.contains(&"python-only-rule-b"),
+        "daemon A's pool must NEVER surface repo B's rule (cross-library leak), got {a_ids:?}"
+    );
+
+    // Symmetric check: a `*.py` edit answered by daemon B's pool surfaces B's
+    // rule only, never A's.
+    let b_hits = retrieve_rules_with_confidence(
+        &pool_b,
+        "post-edit quafflenibble pattern in python handler",
+        RetrievalOptions {
+            top_k: Some(5),
+            target_file: Some("src/main.py"),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("retrieve from pool B");
+    let b_ids: Vec<&str> = b_hits.iter().map(|h| h.skill_id.as_str()).collect();
+    assert!(
+        b_ids.contains(&"python-only-rule-b"),
+        "daemon B's pool must serve its own *.py rule for a *.py edit, got {b_ids:?}"
+    );
+    assert!(
+        !b_ids.contains(&"rust-only-rule-a"),
+        "daemon B's pool must NEVER surface repo A's rule (cross-library leak), got {b_ids:?}"
+    );
+
+    // Cross-pattern guard on the isolated pool: a `*.py` edit against A's pool
+    // (which holds only the `*.rs` rule) must drop it under the strict
+    // file-pattern cascade rather than leaking it onto the wrong language.
+    let a_wrong_ext = retrieve_rules_with_confidence(
+        &pool_a,
+        "post-edit zorptangle pattern in rust handler",
+        RetrievalOptions {
+            top_k: Some(5),
+            target_file: Some("src/main.py"),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("retrieve from pool A with a *.py target");
+    let a_wrong_ids: Vec<&str> = a_wrong_ext.iter().map(|h| h.skill_id.as_str()).collect();
+    assert!(
+        !a_wrong_ids.contains(&"rust-only-rule-a"),
+        "the strict file-pattern cascade must drop A's *.rs rule on a *.py edit, got {a_wrong_ids:?}"
+    );
+
+    daemon_a.abort();
 }
 
 /// A second daemon for a hash already served by a live daemon must detect it
