@@ -60,7 +60,9 @@ struct ReviewCommentMetadataRef<'a> {
     suggestion: Option<&'a str>,
 }
 
-pub fn build_explainability_metadata(result: &crate::review_engine::ReviewCheckResult) -> Option<String> {
+pub fn build_explainability_metadata(
+    result: &crate::review_engine::ReviewCheckResult,
+) -> Option<String> {
     let top_issues = result
         .issues
         .iter()
@@ -90,7 +92,9 @@ pub fn build_explainability_metadata(result: &crate::review_engine::ReviewCheckR
     .ok()
 }
 
-pub fn build_review_comment_metadata(issue: &crate::review_engine::ReviewIssueRecord) -> Option<String> {
+pub fn build_review_comment_metadata(
+    issue: &crate::review_engine::ReviewIssueRecord,
+) -> Option<String> {
     serde_json::to_string(&ReviewCommentMetadataRef {
         severity: &issue.severity,
         rule: &issue.rule,

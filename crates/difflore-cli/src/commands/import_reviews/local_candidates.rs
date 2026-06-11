@@ -2,9 +2,9 @@ use difflore_core::domain::models::RememberRuleInput;
 use difflore_core::review_store::{ReviewCommentRecord, ReviewItemWithComments};
 use sqlx::SqlitePool;
 
+use crate::style;
 use crate::support::review_text::strip_review_markdown_noise;
 use crate::support::util::exit_err;
-use crate::style;
 
 use super::ValidatedArgs;
 use super::scope::{
@@ -1188,13 +1188,17 @@ pub(super) fn local_candidate_input(
     // BEFORE the candidate is written to the local SQLite skills store (and
     // lazily embedded), mirroring the cloud's pre-persist `redactSecrets`.
     let input = RememberRuleInput {
-        title: difflore_core::observability::privacy::redact_secrets(&candidate_title(&comment.content, &path)),
+        title: difflore_core::observability::privacy::redact_secrets(&candidate_title(
+            &comment.content,
+            &path,
+        )),
         body: difflore_core::observability::privacy::redact_secrets(&body),
         file_patterns,
         bad_code: None,
         good_code: None,
         severity: Some("medium".to_owned()),
         origin: Some("pr_review".to_owned()),
+        captured_by_client: Some("import-reviews".to_owned()),
     };
     Some(LocalCandidate {
         input,
@@ -1421,6 +1425,23 @@ pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress
             } else {
                 "ies"
             },
+        );
+        println!(
+            "  +{} local memory write{} ({} active, {} draft{}, {} strengthened).",
+            progress.candidates_created,
+            if progress.candidates_created == 1 {
+                ""
+            } else {
+                "s"
+            },
+            progress.candidates_activated,
+            progress.candidates_pending,
+            if progress.candidates_pending == 1 {
+                ""
+            } else {
+                "s"
+            },
+            progress.candidates_deduped,
         );
         println!(
             "  {} active: {}",

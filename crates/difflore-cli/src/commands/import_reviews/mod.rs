@@ -1,9 +1,9 @@
 use difflore_core::ingest::github::{ImportOptions, ImportProgress};
 use sqlx::SqlitePool;
 
-use crate::support::util::{ensure_project, exit_err, project_path, validate_owner_repo};
 use crate::runtime::CommandContext;
 use crate::style;
+use crate::support::util::{ensure_project, exit_err, project_path, validate_owner_repo};
 
 #[cfg(test)]
 mod fixtures;

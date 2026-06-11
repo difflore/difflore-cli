@@ -637,6 +637,7 @@ body text";
             good_code: None,
             severity: None,
             origin: None,
+            captured_by_client: None,
         }
     }
 
@@ -650,6 +651,27 @@ body text";
         assert_ne!(base, remember_content_hash("**/*.ts", "Title", "Body"));
         assert_ne!(base, remember_content_hash("**/*.rs", "Other", "Body"));
         assert_ne!(base, remember_content_hash("**/*.rs", "Title", "Other"));
+    }
+
+    #[tokio::test]
+    async fn remember_persists_capture_client() {
+        let db = DedupTestEnv::db().await;
+        let mut input = remember_input(
+            "Caller provenance rule",
+            "Remember which client captured this rule.",
+            Some(vec!["**/*.rs"]),
+        );
+        input.captured_by_client = Some(" claude-code ".to_owned());
+
+        let remembered = remember(&db, input).await.unwrap();
+        let captured: Option<String> =
+            sqlx::query_scalar("SELECT captured_by_client FROM skills WHERE id = ?1")
+                .bind(&remembered.skill.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        assert_eq!(captured.as_deref(), Some("claude-code"));
     }
 
     #[tokio::test]
@@ -1139,10 +1161,7 @@ body text";
         .await
         .unwrap();
 
-        let skill_dir = fs::skills_base_dir()
-            .unwrap()
-            .join("local")
-            .join(&slug);
+        let skill_dir = fs::skills_base_dir().unwrap().join("local").join(&slug);
         let _ = std::fs::remove_dir_all(&skill_dir);
 
         let err = create_local(

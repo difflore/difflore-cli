@@ -40,6 +40,91 @@ pub(crate) async fn handle_status(json: bool, lane: StatusLane) {
     }
 
     payload.print_text();
+    if let Some(nudge) = crate::installer::agent_update_nudge() {
+        println!();
+        println!(
+            "  {} {}",
+            crate::style::emerald(crate::style::sym::TIP),
+            crate::style::pewter(&nudge),
+        );
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompactValueSummary {
+    pub(crate) window_days: i64,
+    pub(crate) accepted_edits: i64,
+    pub(crate) saved_review_minutes: i64,
+    pub(crate) recall_events: i64,
+    pub(crate) agent_serves: i64,
+}
+
+impl CompactValueSummary {
+    fn from_parts(
+        accepted: &LocalAcceptedProof,
+        recall: &LocalRecallProof,
+        mcp_serves: &LocalMcpRuleServe,
+    ) -> Self {
+        Self {
+            window_days: accepted.window_days,
+            accepted_edits: accepted.accepted_proof_signatures + accepted.accepted_hook_outcomes,
+            saved_review_minutes: accepted.estimated_saved_review_minutes,
+            recall_events: recall.recall_events,
+            agent_serves: mcp_serves.calls.saturating_sub(mcp_serves.empty_calls),
+        }
+    }
+}
+
+pub(crate) async fn compact_value_summary_for_current_project(
+    db: &difflore_core::SqlitePool,
+) -> CompactValueSummary {
+    let project = project_path();
+    let detected_repo_remotes = difflore_core::infra::git::detect_github_repo_full_names(&project);
+    let repo_remotes =
+        difflore_core::skills::expand_repo_scopes_with_source_aliases(db, &detected_repo_remotes)
+            .await
+            .unwrap_or(detected_repo_remotes);
+
+    let local_proof = queries::local_accepted_proof(db, &repo_remotes).await;
+    let local_recall_proof = queries::local_recall_proof(db, &repo_remotes).await;
+    let local_mcp_serves = queries::local_mcp_rule_serves(db, &repo_remotes).await;
+
+    CompactValueSummary::from_parts(&local_proof, &local_recall_proof, &local_mcp_serves)
+}
+
+pub(crate) fn render_compact_value_summary(summary: &CompactValueSummary) -> String {
+    let mut parts = vec![
+        format!(
+            "~{} review-minute{} saved",
+            summary.saved_review_minutes,
+            transform::plural(summary.saved_review_minutes),
+        ),
+        format!(
+            "{} recall{}",
+            summary.recall_events,
+            transform::plural(summary.recall_events),
+        ),
+    ];
+    if summary.agent_serves > 0 {
+        parts.push(format!(
+            "{} ready for agent{}",
+            summary.agent_serves,
+            transform::plural(summary.agent_serves),
+        ));
+    }
+    if summary.accepted_edits > 0 {
+        parts.push(format!(
+            "{} accepted edit{}",
+            summary.accepted_edits,
+            transform::plural(summary.accepted_edits),
+        ));
+    }
+
+    format!(
+        "Value (last {}d): {}",
+        summary.window_days,
+        parts.join(" | ")
+    )
 }
 
 /// Bundled output of the status pipeline for both JSON and text rendering.

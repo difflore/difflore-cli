@@ -1,5 +1,5 @@
-use crate::support::util::exit_code;
 use crate::style;
+use crate::support::util::exit_code;
 
 pub(crate) mod audit_history;
 pub(crate) mod drain;

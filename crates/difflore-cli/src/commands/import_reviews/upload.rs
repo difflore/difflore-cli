@@ -5,9 +5,9 @@ use difflore_core::ingest::github::ImportProgress;
 use difflore_core::review_store::{self, ReviewItemWithComments};
 use sqlx::SqlitePool;
 
-use crate::support::util::exit_err;
 use crate::runtime::CommandContext;
 use crate::style;
+use crate::support::util::exit_err;
 
 const CLOUD_IMPORT_MAX_REVIEWS_PER_BATCH: usize = 20;
 const CLOUD_IMPORT_MAX_COMMENTS_PER_BATCH: usize = 20;

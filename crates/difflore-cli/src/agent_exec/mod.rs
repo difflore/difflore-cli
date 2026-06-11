@@ -71,12 +71,8 @@ mod tests {
     async fn dispatch_gate_for_windsurf_errors_out_quickly() {
         // Windsurf is the only agent we can exercise without a real CLI on the
         // test host; confirms the no-CLI path doesn't deadlock or panic.
-        let result = dispatch_gate(
-            AgentKind::Windsurf,
-            "anything",
-            Duration::from_millis(50),
-        )
-        .await;
+        let result =
+            dispatch_gate(AgentKind::Windsurf, "anything", Duration::from_millis(50)).await;
         assert!(result.errored);
         assert!(!result.error_message.is_empty());
     }
@@ -87,12 +83,7 @@ mod tests {
         // this so a future refactor that uses `time_budget.saturating_*`
         // and accidentally treats Duration::ZERO as "no timeout" gets
         // caught here.
-        let result = dispatch_gate(
-            AgentKind::Windsurf,
-            "anything",
-            Duration::from_secs(0),
-        )
-        .await;
+        let result = dispatch_gate(AgentKind::Windsurf, "anything", Duration::from_secs(0)).await;
         assert!(result.errored);
     }
 }

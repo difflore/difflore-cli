@@ -1,6 +1,6 @@
-use crate::support::util::{exit_code, exit_err};
 use crate::runtime::CommandContext;
 use crate::style;
+use crate::support::util::{exit_code, exit_err};
 
 const MAX_OBSERVATION_SYNC_FLUSHES: usize = 10;
 const MAX_CLOUD_OUTBOX_SYNC_ITEMS: usize = 64;
@@ -361,7 +361,9 @@ async fn run_settings_phase(
                 if let Ok(merged_input) = serde_json::from_value::<
                     difflore_core::domain::models::AppSettingsRecord,
                 >(cloud_settings.clone())
-                    && difflore_core::infra::settings::update(merged_input).await.is_ok()
+                    && difflore_core::infra::settings::update(merged_input)
+                        .await
+                        .is_ok()
                 {
                     applied = cloud_settings.as_object().map_or(0, serde_json::Map::len);
                 }
@@ -583,7 +585,10 @@ async fn apply_cloud_providers(
             base_url,
             model_mapping,
         };
-        if difflore_core::domain::providers::add(db, input).await.is_ok() {
+        if difflore_core::domain::providers::add(db, input)
+            .await
+            .is_ok()
+        {
             added += 1;
         }
     }

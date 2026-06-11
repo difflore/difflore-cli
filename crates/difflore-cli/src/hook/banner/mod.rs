@@ -136,7 +136,8 @@ fn resolve_project_root(cwd: &str) -> std::path::PathBuf {
 /// `commands::status::queries::normalized_repo_aliases` so the SQL filter joins
 /// cleanly with `source_repo` values (also lowercased on write).
 fn repo_aliases_for(project_root: &std::path::Path) -> Vec<String> {
-    let raw = difflore_core::infra::git::detect_github_repo_full_names(&project_root.to_string_lossy());
+    let raw =
+        difflore_core::infra::git::detect_github_repo_full_names(&project_root.to_string_lossy());
     raw.into_iter()
         .map(|r| r.trim().to_ascii_lowercase())
         .filter(|r| !r.is_empty())

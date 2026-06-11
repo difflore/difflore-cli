@@ -110,6 +110,7 @@ pub(crate) async fn tool_remember_rule(
         .filter(|s| !s.trim().is_empty())
         .map(String::from);
 
+    let capture_client = "mcp-server";
     let input = RememberRuleInput {
         title: title.to_owned(),
         body: body.to_owned(),
@@ -119,6 +120,7 @@ pub(crate) async fn tool_remember_rule(
         severity,
         // MCP path is always the conversation channel.
         origin: Some("conversation".to_owned()),
+        captured_by_client: Some(capture_client.to_owned()),
     };
 
     let detected_repos = crate::mcp_server::hook::detect_git_remote_owner_repos();
@@ -196,7 +198,7 @@ pub(crate) async fn tool_remember_rule(
         // bump is `MIN(1.0, current + 0.05)` — when the current value
         // is already near the cap the displayed delta is wrong.
         format!(
-            "Already had a matching rule **{}** (`{}`) - strengthened for future matches. \
+            "~ strengthened existing rule **{}** (`{}`) captured from agent chat. \
              Inspect local memory with `difflore status --json`.",
             skill.name, skill.id,
         )
@@ -207,7 +209,7 @@ pub(crate) async fn tool_remember_rule(
             " (repo-wide)"
         };
         format!(
-            "Remembered as **{}** (`{}`){}.\n\n\
+            "+1 rule captured from agent chat as **{}** (`{}`){}.\n\n\
              The rule is local on this device until your next cloud sync publishes eligible memory with the team. \
              Next time DiffLore reviews a matching file or your agent calls `search_rules` then `get_rules`, this rule will be in scope. \
              Inspect local memory with `difflore status --json`.",
@@ -268,6 +270,7 @@ pub(crate) async fn tool_remember_rule(
             "cost": build_cost_meta(confirm_tokens, None),
             "rule_id": skill.id,
             "origin": skill.origin,
+            "captured_by_client": capture_client,
             "published": false,
             "deduped": outcome.deduped,
             "dedup_window_hit": outcome.dedup_window_hit,

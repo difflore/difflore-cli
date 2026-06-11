@@ -39,6 +39,11 @@ pub(crate) async fn dispatch(command: Commands) {
         }
         Commands::Cloud { command } => Box::pin(dispatch_cloud(command)).await,
         Commands::Agents { command } => dispatch_agents(command).await,
+        Commands::Update { dry_run, force } => {
+            let ctx = runtime::CommandContext::new(runtime::OutputMode::Text).await;
+            commands::update::handle_update(&ctx, commands::update::UpdateArgs { dry_run, force })
+                .await;
+        }
         Commands::Providers { command } => dispatch_providers(command).await,
         Commands::Embeddings { command } => dispatch_embeddings(command).await,
         Commands::Eval { samples, json } => {
@@ -270,8 +275,7 @@ async fn dispatch_agents(command: AgentsCommands) {
             // non-GitHub contexts and it never errors back into the install
             // flow.
             if fresh_install {
-                let cwd = std::env::current_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let opts = crate::post_install_scan::PostInstallScanOpts::for_cwd(cwd);
                 let _outcome = crate::post_install_scan::maybe_offer_import_reviews(&opts);
             }

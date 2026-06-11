@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use difflore_core::domain::models::DiffContentRecord;
 
-use crate::support::util::{ensure_project, project_path};
 use crate::runtime::CommandContext;
+use crate::support::util::{ensure_project, project_path};
 
 use super::pr::{PreparePrOptions, PreparedPrFix, prepare_pr_fix};
 use super::scope::{DiffScope, collect_diff, parse_diff_scope};

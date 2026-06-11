@@ -29,6 +29,7 @@ fn public_help_keeps_curated_command_surface() {
         "  ask",
         "  cloud",
         "  agents",
+        "  update",
         "  providers",
         "  embeddings",
         "  doctor",
@@ -229,6 +230,16 @@ fn agents_command_parses_public_install_and_status_surface() {
                 dry_run: false,
                 force: false
             }
+        })
+    ));
+
+    let update_all = Cli::try_parse_from(["difflore", "update", "--dry-run", "--force"])
+        .expect("top-level update should parse");
+    assert!(matches!(
+        update_all.command,
+        Some(Commands::Update {
+            dry_run: true,
+            force: true
         })
     ));
 }

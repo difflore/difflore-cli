@@ -164,7 +164,10 @@ impl Embedder for CloudEmbedder {
                 )
                 .unwrap_or(u32::MAX);
                 crate::observability::activity_stream::record(
-                    crate::observability::activity_stream::ActivityPayload::EmbedCapReached { cap, used },
+                    crate::observability::activity_stream::ActivityPayload::EmbedCapReached {
+                        cap,
+                        used,
+                    },
                 );
                 return Err(CoreError::EmbedCapReached { cap, used });
             }

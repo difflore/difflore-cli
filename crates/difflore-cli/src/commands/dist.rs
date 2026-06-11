@@ -162,6 +162,8 @@ fn check_required_files(root: &Path, report: &mut DistCheckReport) {
         "plugin/skills/rule-journey/SKILL.md",
         "plugin/skills/smart-explore/SKILL.md",
         "plugin/skills/knowledge-agent/SKILL.md",
+        "plugin/skills/session-recap/SKILL.md",
+        "plugin/skills/difflore-onboard/SKILL.md",
     ] {
         if !root.join(rel).exists() {
             push(

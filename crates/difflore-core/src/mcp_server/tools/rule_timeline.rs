@@ -39,6 +39,8 @@ pub(crate) struct TimelineSkillRow {
     /// "learned from <repo>" provenance. Optional — manual / global rules have
     /// no upstream.
     source_repo: Option<String>,
+    /// Agent/client that captured the rule, when known.
+    captured_by_client: Option<String>,
 }
 
 /// Row shape for example lookup. `source` records how the example landed
@@ -91,7 +93,7 @@ pub(crate) async fn tool_rule_timeline(
     // returning a silent empty array. Runtime query avoids `.sqlx` cache
     // updates for this diagnostic surface.
     let skill: Option<TimelineSkillRow> = sqlx::query_as(
-        "SELECT id, name, description, origin, installed_at, source_repo \
+        "SELECT id, name, description, origin, installed_at, source_repo, captured_by_client \
          FROM skills WHERE id = ?1 AND status = 'active'",
     )
     .bind(&rule_id)
@@ -251,21 +253,26 @@ pub(crate) async fn tool_rule_timeline(
         .source_repo
         .clone()
         .filter(|r: &String| !r.trim().is_empty());
-    let body = match source_repo {
-        Some(repo) => json!({
-            "rule_id": skill.id,
-            "rule_name": skill.name,
-            "source_repo": repo,
-            "focal_ts": focal_ts,
-            "events": events,
-        }),
-        None => json!({
-            "rule_id": skill.id,
-            "rule_name": skill.name,
-            "focal_ts": focal_ts,
-            "events": events,
-        }),
-    };
+    let captured_by_client = skill
+        .captured_by_client
+        .clone()
+        .filter(|c: &String| !c.trim().is_empty());
+    let mut body = json!({
+        "rule_id": skill.id,
+        "rule_name": skill.name,
+        "focal_ts": focal_ts,
+        "events": events,
+    });
+    if let Some(repo) = source_repo
+        && let Some(object) = body.as_object_mut()
+    {
+        object.insert("source_repo".to_owned(), Value::String(repo));
+    }
+    if let Some(client) = captured_by_client
+        && let Some(object) = body.as_object_mut()
+    {
+        object.insert("captured_by_client".to_owned(), Value::String(client));
+    }
     let text = serde_json::to_string(&body).map_err(|e| {
         (
             -32603,

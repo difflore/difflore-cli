@@ -148,7 +148,9 @@ pub(super) fn origin_distribution(rules: &[&SkillRecord]) -> Vec<(String, usize)
     let mut counts: Vec<(String, usize)> = counts.into_iter().collect();
     counts.sort_by(|(left, _), (right, _)| {
         difflore_core::domain::origins::distribution_sort_key(left)
-            .cmp(&difflore_core::domain::origins::distribution_sort_key(right))
+            .cmp(&difflore_core::domain::origins::distribution_sort_key(
+                right,
+            ))
             .then_with(|| left.cmp(right))
     });
     counts

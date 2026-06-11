@@ -369,10 +369,7 @@ async fn serve_until_idle(
     let _ = std::fs::remove_file(socket);
 }
 
-async fn handle_connection(
-    stream: interprocess::local_socket::tokio::Stream,
-    state: Arc<State>,
-) {
+async fn handle_connection(stream: interprocess::local_socket::tokio::Stream, state: Arc<State>) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     let trace = difflore_core::infra::env::trace_hook();

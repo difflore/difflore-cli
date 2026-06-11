@@ -211,7 +211,10 @@ fn restore_terminal_best_effort() {
     let _ = execute!(stdout, LeaveAlternateScreen, Show);
 }
 
-pub(super) fn finish_run(result: crate::Result<()>, cleanup_result: io::Result<()>) -> crate::Result<()> {
+pub(super) fn finish_run(
+    result: crate::Result<()>,
+    cleanup_result: io::Result<()>,
+) -> crate::Result<()> {
     match result {
         Ok(()) => cleanup_result.map_err(crate::TuiError::from),
         Err(err) => Err(err),

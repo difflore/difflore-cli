@@ -134,11 +134,7 @@ mod tests {
             ("", None),
         ];
         for (input, want) in cases {
-            assert_eq!(
-                AgentKind::from_client_name(input),
-                *want,
-                "input {input:?}"
-            );
+            assert_eq!(AgentKind::from_client_name(input), *want, "input {input:?}");
         }
     }
 

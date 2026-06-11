@@ -37,7 +37,9 @@ fn wait_for_daemon(hash: &str, timeout: Duration) -> bool {
 fn roundtrip_to(hash: &str, raw: &str) -> Result<String, String> {
     let mut stream = protocol::connect_blocking_for_hash(hash).map_err(|e| e.to_string())?;
     let line = protocol::encode_request_line("claude-code", raw)?;
-    stream.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+    stream
+        .write_all(line.as_bytes())
+        .map_err(|e| e.to_string())?;
     stream.flush().map_err(|e| e.to_string())?;
     let mut response = String::new();
     stream
@@ -137,8 +139,12 @@ async fn index_pools_are_isolated_per_project_hash() {
 
     // The global data.db is shared: both daemons resolve init_db to the same
     // file, so a write through one is visible through the other.
-    let db1 = difflore_core::infra::db::init_db().await.expect("init db 1");
-    let db2 = difflore_core::infra::db::init_db().await.expect("init db 2");
+    let db1 = difflore_core::infra::db::init_db()
+        .await
+        .expect("init db 1");
+    let db2 = difflore_core::infra::db::init_db()
+        .await
+        .expect("init db 2");
     sqlx::query("CREATE TABLE IF NOT EXISTS _xrepo_probe (k TEXT PRIMARY KEY)")
         .execute(&db1)
         .await
@@ -193,7 +199,9 @@ async fn cross_library_retrieval_is_isolated_per_hash() {
     // per hash, so the daemon's `State.index_pool` and ours are the same DB).
     let h_a = hash_a.to_owned();
     let daemon_a = tokio::spawn(async move {
-        forward::run_server_for_hash(&h_a).await.expect("daemon A run");
+        forward::run_server_for_hash(&h_a)
+            .await
+            .expect("daemon A run");
     });
     assert!(
         wait_for_daemon(hash_a, Duration::from_secs(10)),
@@ -315,7 +323,9 @@ async fn second_daemon_for_same_hash_yields() {
 
     let h1 = hash.to_owned();
     let daemon1 = tokio::spawn(async move {
-        forward::run_server_for_hash(&h1).await.expect("daemon1 run");
+        forward::run_server_for_hash(&h1)
+            .await
+            .expect("daemon1 run");
     });
     assert!(
         wait_for_daemon(hash, Duration::from_secs(10)),
@@ -374,9 +384,9 @@ async fn concurrent_daemons_settle_to_one() {
     let mut handles = Vec::new();
     for _ in 0..5 {
         let h = hash.to_owned();
-        handles.push(tokio::spawn(
-            async move { forward::run_server_for_hash(&h).await },
-        ));
+        handles.push(tokio::spawn(async move {
+            forward::run_server_for_hash(&h).await
+        }));
     }
 
     assert!(

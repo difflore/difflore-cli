@@ -413,6 +413,11 @@ pub struct RememberRuleInput {
     /// can be exercised explicitly.
     #[serde(default)]
     pub origin: Option<String>,
+    /// Agent/client that captured the rule, when known (for example
+    /// `mcp-server`, `claude-code`, or `cursor`). Kept separate from origin so
+    /// provenance does not fragment origin-based ranking and stats.
+    #[serde(default)]
+    pub captured_by_client: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -1,5 +1,5 @@
-use crate::error::CoreError;
 use crate::domain::models::{CreateLocalSkillInput, SkillRecord};
+use crate::error::CoreError;
 use uuid::Uuid;
 
 use super::SkillRow;

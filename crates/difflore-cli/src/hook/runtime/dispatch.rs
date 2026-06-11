@@ -1,7 +1,7 @@
 use crate::hook::{adapters, banner, cache, forward};
 
-use super::fire_log::remember_hook_fire_maybe_deferred;
 use super::drift_report::read_last_assistant_text;
+use super::fire_log::remember_hook_fire_maybe_deferred;
 
 pub(crate) async fn hook_output_for_raw(
     client_name: &str,
@@ -268,9 +268,7 @@ async fn dispatch_hook_event_with_state(
                 cwd,
                 client_name: client_name.to_owned(),
             };
-            if let Some(banner) =
-                banner::render_since_last_session_banner(&banner_ctx).await
-            {
+            if let Some(banner) = banner::render_since_last_session_banner(&banner_ctx).await {
                 return Ok(HookResult::with_context(banner));
             }
             Ok(HookResult::noop())
@@ -514,7 +512,8 @@ async fn maybe_emit_fix_outcomes(session_id: Option<&str>, cwd: Option<&str>) ->
             .push(edit.file_path);
     }
 
-    let detected_repos = difflore_core::infra::git::detect_github_repo_full_names(cwd.unwrap_or("."));
+    let detected_repos =
+        difflore_core::infra::git::detect_github_repo_full_names(cwd.unwrap_or("."));
     let repo_full_name = detected_repos.first().map(String::as_str);
     // 30-minute cross-link window: the accepted edit must follow the MCP serve
     // closely enough that the agent context still plausibly included the rule.

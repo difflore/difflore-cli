@@ -33,9 +33,13 @@ pub fn pid_path() -> Result<PathBuf, String> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonStatus {
-    Running { pid: i32 },
+    Running {
+        pid: i32,
+    },
     /// PID file exists but no process by that PID responds to `kill(pid, 0)`.
-    Stale { pid: i32 },
+    Stale {
+        pid: i32,
+    },
     NotRunning,
 }
 

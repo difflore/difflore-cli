@@ -2,8 +2,8 @@ use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 use std::process::Command;
 
-use difflore_core::contract::{RecordAcceptedEditRequest, RecordAcceptedEditResponse};
 use difflore_core::context::retrieval::detect_language_from_path;
+use difflore_core::contract::{RecordAcceptedEditRequest, RecordAcceptedEditResponse};
 use difflore_core::observability::fix_outcomes::FixOutcomeInput;
 use difflore_core::review_engine::ReviewIssueRecord;
 
@@ -508,6 +508,11 @@ pub(super) fn print_apply_summary(outcome: &ApplyOutcome, skipped: u32, total: u
         }
     }
     if !outcome.applied.is_empty() {
+        println!(
+            "  +{} accepted edit{} recorded for local value tracking.",
+            outcome.applied.len(),
+            if outcome.applied.len() == 1 { "" } else { "s" },
+        );
         let mut seen = std::collections::BTreeSet::new();
         for issue in &outcome.applied {
             seen.insert(issue.rule_label());
@@ -1348,7 +1353,9 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        difflore_core::infra::db::run_migrations(&pool).await.unwrap();
+        difflore_core::infra::db::run_migrations(&pool)
+            .await
+            .unwrap();
         pool
     }
 

@@ -24,7 +24,7 @@ mod status_display;
 mod types;
 mod uninstall;
 
-pub use install::{install_all, update_all};
+pub use install::{agent_update_nudge, install_all, update_all};
 pub use snapshot::{collect_status_snapshot, collect_status_snapshot_with_runtime_probe};
 pub use status_display::{
     detect_install_drift, detect_install_repair_targets, maybe_print_mcp_hint, status,

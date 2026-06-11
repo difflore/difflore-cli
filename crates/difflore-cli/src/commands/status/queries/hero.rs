@@ -228,16 +228,18 @@ mod tests {
 
         difflore_core::observability::rule_outcomes::record_recalled_with_context(
             &pool,
-            &[difflore_core::observability::rule_outcomes::RuleRecallInput {
-                rule_id: "repo-rule",
-                session_id: Some("session-repo"),
-                repo_full_name: Some("acme/widgets"),
-                file_path: Some("src/parser.rs"),
-                query_text: "structured parser",
-                rank: 1,
-                top_k: 3,
-                strict_file_match: true,
-            }],
+            &[
+                difflore_core::observability::rule_outcomes::RuleRecallInput {
+                    rule_id: "repo-rule",
+                    session_id: Some("session-repo"),
+                    repo_full_name: Some("acme/widgets"),
+                    file_path: Some("src/parser.rs"),
+                    query_text: "structured parser",
+                    rank: 1,
+                    top_k: 3,
+                    strict_file_match: true,
+                },
+            ],
         )
         .await
         .expect("record repo recall");

@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::error::CoreError;
 use crate::domain::models::{
     DiffContentRecord, DiffHunkRecord, GitBranchRecord, GitBranchesInput, GitCheckoutPRInput,
     GitCommitInput, GitCreatePRInput, GitDiffInput, GitFileStatusRecord, GitPRResult, GitPushInput,
     GitStatusInput, GitStatusRecord,
 };
+use crate::error::CoreError;
 
 fn run_git(project_path: &str, args: &[&str]) -> crate::Result<String> {
     let output = std::process::Command::new("git")

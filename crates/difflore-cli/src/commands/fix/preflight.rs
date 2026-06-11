@@ -102,8 +102,9 @@ pub(super) fn review_timeout_for_args_with_env<'a>(
     env_var: impl Fn(&'a str) -> Option<String>,
 ) -> Duration {
     if args.preview {
-        let override_secs = env_var(difflore_core::infra::env::DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS)
-            .and_then(|value| parse_review_timeout_override(Some(&value)));
+        let override_secs =
+            env_var(difflore_core::infra::env::DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS)
+                .and_then(|value| parse_review_timeout_override(Some(&value)));
         Duration::from_secs(override_secs.unwrap_or(PREVIEW_REVIEW_TIMEOUT_SECS))
     } else {
         Duration::from_secs(REVIEW_TIMEOUT_SECS)

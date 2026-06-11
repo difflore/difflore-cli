@@ -37,9 +37,7 @@ pub(crate) const fn doctor_install_mark(
     }
 }
 
-pub(crate) const fn doctor_canonical_mark(
-    state: installer::CanonicalRecordState,
-) -> &'static str {
+pub(crate) const fn doctor_canonical_mark(state: installer::CanonicalRecordState) -> &'static str {
     match state {
         installer::CanonicalRecordState::Present => style::sym::OK,
         installer::CanonicalRecordState::Missing | installer::CanonicalRecordState::Stale => {

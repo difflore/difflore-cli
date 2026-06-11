@@ -1,8 +1,8 @@
 use crate::commands::providers::setup as providers_setup;
-use crate::support::util::{ensure_project, exit_err};
 use crate::installer;
 use crate::runtime::CommandContext;
 use crate::style::{self, sym};
+use crate::support::util::{ensure_project, exit_err};
 
 /// Options for `difflore init`.
 ///
@@ -55,7 +55,8 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
     // [fork, upstream(s)…] — the same alias chain `fix --preview` uses, so the
     // memory preview resolves to upstream for a fork the user hasn't imported
     // reviews under yet.
-    let repo_aliases = difflore_core::infra::git::detect_github_repo_full_names(&cwd.to_string_lossy());
+    let repo_aliases =
+        difflore_core::infra::git::detect_github_repo_full_names(&cwd.to_string_lossy());
 
     let db = &ctx.db;
     // Called for its side effect: registering the cwd in the projects table so
@@ -176,7 +177,9 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
         }
     );
 
-    let providers = difflore_core::domain::providers::list(db).await.unwrap_or_default();
+    let providers = difflore_core::domain::providers::list(db)
+        .await
+        .unwrap_or_default();
     let active = providers.iter().find(|p| p.is_active);
     let provider_value = match active {
         Some(p) => style::title(&format!("{} active", p.name)).to_string(),

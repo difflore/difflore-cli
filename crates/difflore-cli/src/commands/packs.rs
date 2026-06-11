@@ -15,9 +15,9 @@ use difflore_core::packs::{
     fetch_manifest, install_pack,
 };
 
-use crate::support::util::{exit_code, exit_err, json_compact_or};
 use crate::runtime::{CommandContext, OutputMode};
 use crate::style;
+use crate::support::util::{exit_code, exit_err, json_compact_or};
 
 /// The `--registry` override, or the first-party default.
 fn registry_base(registry: Option<String>) -> String {

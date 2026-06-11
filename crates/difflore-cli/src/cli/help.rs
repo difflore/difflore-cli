@@ -60,6 +60,7 @@ USAGE
   ask                 Ask why the team usually reviews something
 
 {support}
+  update              Refresh agent blocks and run doctor checks
   doctor              Diagnose readiness and blockers
 
 {more}

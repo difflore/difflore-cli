@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 
-use crate::contract::RecallPastVerdictsRequest;
 use crate::cloud::client::CloudClient;
 use crate::context::types::{PastVerdict, PastVerdictScope};
+use crate::contract::RecallPastVerdictsRequest;
 use crate::error::CoreError;
 
 /// Async seam so tests can substitute a fake cloud recall without hitting the

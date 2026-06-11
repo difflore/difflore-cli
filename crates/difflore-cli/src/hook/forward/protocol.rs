@@ -204,7 +204,10 @@ mod tests {
             error: None,
         })
         .unwrap();
-        assert_eq!(decode_response_line(&ok_line).unwrap(), "{\"context\":\"x\"}");
+        assert_eq!(
+            decode_response_line(&ok_line).unwrap(),
+            "{\"context\":\"x\"}"
+        );
 
         let err_line = serde_json::to_string(&Response {
             ok: false,

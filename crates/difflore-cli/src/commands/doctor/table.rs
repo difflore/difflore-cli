@@ -418,9 +418,7 @@ fn mcp_diagnosis_hints(
     hints
 }
 
-const fn mcp_canonical_record_state_label(
-    state: installer::CanonicalRecordState,
-) -> &'static str {
+const fn mcp_canonical_record_state_label(state: installer::CanonicalRecordState) -> &'static str {
     match state {
         installer::CanonicalRecordState::Missing => "missing",
         installer::CanonicalRecordState::Present => "present",
@@ -560,13 +558,17 @@ fn recent_embedding_degradation(
     let mut summary = RecentEmbeddingDegradation::default();
     for event in events {
         match &event.payload {
-            difflore_core::observability::activity_stream::ActivityPayload::EmbeddingFallback { reason } => {
+            difflore_core::observability::activity_stream::ActivityPayload::EmbeddingFallback {
+                reason,
+            } => {
                 summary.fallback_count += 1;
                 if summary.latest_reason.is_none() {
                     summary.latest_reason = Some(reason.clone());
                 }
             }
-            difflore_core::observability::activity_stream::ActivityPayload::EmbedCapReached { .. } => {
+            difflore_core::observability::activity_stream::ActivityPayload::EmbedCapReached {
+                ..
+            } => {
                 summary.cap_count += 1;
             }
             _ => {}
@@ -854,9 +856,9 @@ mod tests {
         Severity, Status, embedder_row_from_diagnostics, embedder_row_from_kind,
         recent_embedding_degradation,
     };
-    use difflore_core::observability::activity_stream::{ActivityEvent, ActivityPayload};
     use difflore_core::context::EmbeddingDiagnostics;
     use difflore_core::context::embedding::ActiveEmbedderKind;
+    use difflore_core::observability::activity_stream::{ActivityEvent, ActivityPayload};
 
     fn assert_ready_ok(row: &super::Row, label: &'static str) {
         assert_eq!(row.label, label);

@@ -39,9 +39,13 @@ pub fn run_worker_detached(
     // `#[tokio::main]`); outside a runtime (e.g. test harness),
     // `spawn` would panic, so fall back to a dedicated thread.
     let task = async move {
-        if let Err(e) =
-            run_worker_inner(&client_name, transcript_path.as_deref(), session_id.as_deref(), cwd.as_deref())
-                .await
+        if let Err(e) = run_worker_inner(
+            &client_name,
+            transcript_path.as_deref(),
+            session_id.as_deref(),
+            cwd.as_deref(),
+        )
+        .await
         {
             if difflore_core::infra::env::debug_telemetry() {
                 eprintln!("[difflore.session_mine] worker failed: {e}");
@@ -205,8 +209,9 @@ fn resolve_source_repo(cwd: Option<&str>) -> Option<String> {
     let path = cwd.map_or_else(current_project_root, std::path::PathBuf::from);
     let path_str = path.to_string_lossy().to_string();
 
-    if let Some(repo) =
-        difflore_core::infra::git::detect_github_repo_full_names(&path_str).into_iter().next()
+    if let Some(repo) = difflore_core::infra::git::detect_github_repo_full_names(&path_str)
+        .into_iter()
+        .next()
     {
         let trimmed = repo.trim();
         if !trimmed.is_empty() {
@@ -231,8 +236,8 @@ pub async fn enqueue_candidate(
     candidate
         .validate()
         .map_err(|e| format!("session-mine: invalid candidate: {e}"))?;
-    let payload = serde_json::to_string(candidate)
-        .map_err(|e| format!("session-mine: serialize: {e}"))?;
+    let payload =
+        serde_json::to_string(candidate).map_err(|e| format!("session-mine: serialize: {e}"))?;
     let queue = OutboxQueue::new(db.clone());
     queue
         .enqueue(outbox_kind::SESSION_MINED_CANDIDATE, &payload)
@@ -284,8 +289,7 @@ mod tests {
         let kind = outbox_kind::SESSION_MINED_CANDIDATE;
         assert_eq!(kind, "session_mined_candidate");
 
-        let decoded: SessionMinedCandidate =
-            serde_json::from_str(&payload).expect("decode");
+        let decoded: SessionMinedCandidate = serde_json::from_str(&payload).expect("decode");
         assert_eq!(decoded.source_repo, "owner/repo");
         assert!(decoded.requires_human_approval);
         assert_eq!(decoded.origin, "session_mined");
@@ -298,7 +302,10 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path();
         let repo = resolve_source_repo(Some(path.to_str().unwrap()));
-        assert!(repo.is_some(), "tempdir basename must satisfy the invariant");
+        assert!(
+            repo.is_some(),
+            "tempdir basename must satisfy the invariant"
+        );
         let repo = repo.unwrap();
         // Basenames are lowercased for stable casing across OSes.
         assert_eq!(repo, repo.to_ascii_lowercase());

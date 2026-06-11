@@ -67,7 +67,11 @@ fn remember_hook_fire_full(
     file_path: Option<String>,
     elapsed_ms: Option<i64>,
 ) {
-    difflore_core::observability::injection_log::record("hook", rules_injected.unwrap_or(0), file_path.as_deref());
+    difflore_core::observability::injection_log::record(
+        "hook",
+        rules_injected.unwrap_or(0),
+        file_path.as_deref(),
+    );
     let Some(path) = hook_fire_log_path() else {
         return;
     };

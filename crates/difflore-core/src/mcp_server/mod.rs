@@ -29,9 +29,9 @@ pub use tools::{
 // Items re-exported in this scope so submodules can `use super::*;` and
 // reach all internal helpers / types without enumerating sibling paths.
 pub(crate) use hook::detect_git_remote_owner_repos;
-pub(crate) use pr_scope::repo_scoped_plan_corpus;
 #[cfg(test)]
 pub(crate) use hook::parse_github_owner_repo;
+pub(crate) use pr_scope::repo_scoped_plan_corpus;
 pub(crate) use server::{
     AVG_FULL_RULE_TOKENS, McpState, build_cost_meta, emit_trajectory_step, estimate_tokens,
     handle_message, jsonrpc_error, rule_hits_by_origin,

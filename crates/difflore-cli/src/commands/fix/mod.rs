@@ -10,10 +10,10 @@ use difflore_core::review_engine::{
     ReviewIssueRecord, pack_diff_context,
 };
 
-use crate::support::util::{diff_records_to_string, exit_err};
 use crate::installer;
 use crate::runtime::CommandContext;
 use crate::style::{self, sym};
+use crate::support::util::{diff_records_to_string, exit_err};
 
 mod apply;
 mod attribution;
@@ -482,6 +482,9 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
                     &yes_outcome,
                 );
             }
+            if !args.json && !yes_outcome.outcome.applied.is_empty() {
+                print_compact_value_summary(&ctx.db).await;
+            }
             if !args.json
                 && let Some(pr) = ctx.pr_fix.as_ref()
             {
@@ -498,7 +501,7 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
             print_pipe_format(&suggestions);
         }
         FixOutputMode::Interactive => {
-            run_interactive(
+            let outcome = run_interactive(
                 &ctx.db,
                 &ctx.path,
                 &suggestions,
@@ -508,11 +511,24 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
                 !args.no_upload_acceptance,
             )
             .await;
+            if !outcome.applied.is_empty() {
+                print_compact_value_summary(&ctx.db).await;
+            }
             if let Some(pr) = ctx.pr_fix.as_ref() {
                 print_pr_review_instructions(pr);
             }
         }
     }
+}
+
+async fn print_compact_value_summary(db: &difflore_core::SqlitePool) {
+    let summary = crate::commands::status::compact_value_summary_for_current_project(db).await;
+    println!(
+        "{}",
+        style::pewter(&crate::commands::status::render_compact_value_summary(
+            &summary
+        )),
+    );
 }
 
 fn review_diff_context_for_fix(ctx: &FixContext) -> ReviewDiffContext {
@@ -1111,7 +1127,7 @@ async fn run_interactive(
     pr_number: Option<u64>,
     sync_staged_index: bool,
     upload_acceptance: bool,
-) {
+) -> ApplyOutcome {
     println!();
     println!(
         "{} Found {} suggestion{} in your changes.",
@@ -1209,6 +1225,7 @@ async fn run_interactive(
         u32::try_from(skipped.len()).unwrap_or(u32::MAX),
         total,
     );
+    outcome
 }
 
 struct YesModeOutcome {

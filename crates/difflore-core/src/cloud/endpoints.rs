@@ -120,8 +120,8 @@ pub fn github_release_tag_url(version: &str) -> String {
 
 use openapi_contract::api;
 
-use crate::contract::RegisterDeviceResult;
 use super::client::CloudClient;
+use crate::contract::RegisterDeviceResult;
 
 pub async fn register(
     client: &CloudClient,

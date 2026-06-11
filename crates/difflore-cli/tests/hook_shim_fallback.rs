@@ -75,7 +75,11 @@ fn auto_mode_falls_back_in_process_when_no_daemon_is_running() {
 fn never_mode_runs_in_process_without_touching_the_socket() {
     let home = tempfile::tempdir().expect("temp home");
     let (code, stdout) = run_shim("never", &session_start_payload(), home.path());
-    assert_eq!(code, Some(0), "never-mode hook must exit 0, stdout={stdout}");
+    assert_eq!(
+        code,
+        Some(0),
+        "never-mode hook must exit 0, stdout={stdout}"
+    );
     let _: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("never-mode hook must emit valid JSON");
 }

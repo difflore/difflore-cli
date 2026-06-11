@@ -1,11 +1,9 @@
 use openapi_contract::api;
 
-use crate::contract::{
-    Extraction, InviteResult, Success, Team, TeamMember, TeamRuleSummary,
-};
 use crate::cloud::client::CloudClient;
-use crate::error::CoreError;
+use crate::contract::{Extraction, InviteResult, Success, Team, TeamMember, TeamRuleSummary};
 use crate::domain::models::SkillRecord;
+use crate::error::CoreError;
 
 use super::cloud_id::{
     ensure_cloud_rule_id, resolve_cloud_rule_id_for_unpublish, resolve_existing_cloud_rule_id,
@@ -179,7 +177,9 @@ pub async fn publish_rule(input: TeamRulePublishInput) -> crate::Result<String> 
     }
 
     let (team_id, _) = resolve_team_id(&client, input.team_id).await?;
-    let pool = crate::infra::db::init_db().await.map_err(CoreError::Internal)?;
+    let pool = crate::infra::db::init_db()
+        .await
+        .map_err(CoreError::Internal)?;
 
     if let Some(s) = crate::skills::rule_status(&pool, &input.rule_id).await?
         && s == "pending"
@@ -223,7 +223,9 @@ pub async fn unpublish_rule(input: TeamRuleUnpublishInput) -> crate::Result<()> 
     }
 
     let (team_id, _) = resolve_team_id(&client, input.team_id).await?;
-    let pool = crate::infra::db::init_db().await.map_err(CoreError::Internal)?;
+    let pool = crate::infra::db::init_db()
+        .await
+        .map_err(CoreError::Internal)?;
     let cloud_rule_id = resolve_cloud_rule_id_for_unpublish(&pool, &input.rule_id).await?;
     let body = serde_json::json!({
         "ruleId": cloud_rule_id,

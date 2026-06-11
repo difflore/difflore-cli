@@ -79,7 +79,9 @@ pub(crate) fn ordered_filtered_rules<'a>(
             .and_then(|v| v.as_deref())
             .unwrap_or("");
         difflore_core::domain::origins::distribution_sort_key(&a.origin)
-            .cmp(&difflore_core::domain::origins::distribution_sort_key(&b.origin))
+            .cmp(&difflore_core::domain::origins::distribution_sort_key(
+                &b.origin,
+            ))
             .then_with(|| a_repo.cmp(b_repo))
             .then_with(|| a.name.cmp(&b.name))
     });

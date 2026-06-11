@@ -9,8 +9,8 @@
 )]
 
 pub mod cloud;
-pub mod contract;
 pub mod context;
+pub mod contract;
 pub mod domain;
 pub mod error;
 pub mod infra;

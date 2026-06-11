@@ -99,7 +99,9 @@ async fn run_full_check() -> Result<StartupStatus, CoreError> {
 
     // Migrations — re-running is a no-op when everything is already
     // applied, so the cost is a single metadata query.
-    let _pool = crate::infra::db::init_db().await.map_err(CoreError::Internal)?;
+    let _pool = crate::infra::db::init_db()
+        .await
+        .map_err(CoreError::Internal)?;
 
     // Recover any cloud-outbox rows that got stuck in 'processing' after
     // a crashed drain (e.g. SIGKILL'd hook). Anything older than 60 s is
@@ -122,7 +124,9 @@ async fn run_full_check() -> Result<StartupStatus, CoreError> {
     // provider table?" — the `list()` query walks the same rows as the
     // CLI would. Failures are recorded as `None` so the next invocation
     // retries.
-    let db = crate::infra::db::init_db().await.map_err(CoreError::Internal)?;
+    let db = crate::infra::db::init_db()
+        .await
+        .map_err(CoreError::Internal)?;
     let provider_ok_at = match crate::domain::providers::list(&db).await {
         Ok(_) => Some(now),
         Err(_) => None,

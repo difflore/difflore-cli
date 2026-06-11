@@ -122,7 +122,10 @@ mod tests {
             let shim = std::env::current_exe().expect("current_exe in test");
             assert_eq!(main.parent(), shim.parent());
             let expected = format!("difflore{}", std::env::consts::EXE_SUFFIX);
-            assert_eq!(main.file_name().and_then(|n| n.to_str()), Some(expected.as_str()));
+            assert_eq!(
+                main.file_name().and_then(|n| n.to_str()),
+                Some(expected.as_str())
+            );
         }
     }
 

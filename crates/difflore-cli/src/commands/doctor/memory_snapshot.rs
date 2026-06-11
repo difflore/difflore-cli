@@ -7,8 +7,8 @@
 //! section silently shrinks, never surfacing a render-time DB hiccup as a
 //! user-visible failure.
 
-use crate::support::util::format_recall_edit_proof_breakdown;
 use crate::style;
+use crate::support::util::format_recall_edit_proof_breakdown;
 use difflore_core::cloud::observations::ObservationUploadIssue;
 use std::collections::{BTreeMap, HashMap};
 

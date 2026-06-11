@@ -93,7 +93,9 @@ mod tests {
 
     #[test]
     fn windows_control_bytes_are_stripped_before_decision() {
-        assert!(!ask_yes_default_yes_with(Some("\u{feff}n\0\r\n".to_owned())));
+        assert!(!ask_yes_default_yes_with(Some(
+            "\u{feff}n\0\r\n".to_owned()
+        )));
         assert!(ask_yes_default_yes_with(Some("\u{feff}\0\r\n".to_owned())));
     }
 }

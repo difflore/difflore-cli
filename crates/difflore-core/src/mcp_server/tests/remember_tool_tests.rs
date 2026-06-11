@@ -38,12 +38,7 @@ async fn call_ok(state: &McpState, req: &Value) -> Value {
 }
 
 /// Run a `tools/call` and decode `result.content[0].text` as JSON.
-async fn call_tool_json(
-    state: &McpState,
-    id: i64,
-    name: &str,
-    arguments: Value,
-) -> (Value, Value) {
+async fn call_tool_json(state: &McpState, id: i64, name: &str, arguments: Value) -> (Value, Value) {
     let req = call_tool(id, name, arguments);
     let result = call_ok(state, &req).await;
     let text = result["content"][0]["text"]
@@ -180,6 +175,10 @@ async fn remember_rule_writes_then_search_and_get_rules_recalls() {
         .to_owned();
     scope_rule_to_test_repo(&state, &rule_id).await;
     assert_eq!(remember["_meta"]["origin"].as_str(), Some("conversation"));
+    assert_eq!(
+        remember["_meta"]["captured_by_client"].as_str(),
+        Some("mcp-server")
+    );
     assert_eq!(remember["_meta"]["published"].as_bool(), Some(false));
     assert_eq!(
         remember["_meta"]["deduped"].as_bool(),
@@ -298,9 +297,8 @@ async fn remember_rule_dedup_returns_strengthened_meta() {
 const TEST_REPO: &str = "acme/widgets";
 
 async fn scope_rule_to_repo(state: &McpState, rule_id: &str, repo_full_name: &str) {
-    let repo_scope =
-        crate::context::rule_source::repo_scope_from_source_repo(Some(repo_full_name))
-            .expect("test repo scope");
+    let repo_scope = crate::context::rule_source::repo_scope_from_source_repo(Some(repo_full_name))
+        .expect("test repo scope");
     sqlx::query(
         "UPDATE skills
          SET source_repo = ?1, updated_at = datetime('now')
@@ -578,9 +576,10 @@ async fn search_rules_does_not_count_universal_rule_as_strict_file_proof() {
     )
     .await;
 
-    let rule_summary = crate::observability::mcp_rule_serves::summary_for_rule(&state.db, &rule_id, 30)
-        .await
-        .expect("rule serve summary");
+    let rule_summary =
+        crate::observability::mcp_rule_serves::summary_for_rule(&state.db, &rule_id, 30)
+            .await
+            .expect("rule serve summary");
     assert_eq!(rule_summary.calls, 1);
     assert_eq!(rule_summary.strict_match_calls, 0);
     let latest = rule_summary.latest.expect("latest serve evidence");
@@ -744,9 +743,10 @@ async fn get_rules_surfaces_tokens_used_without_full_comparison() {
     assert_eq!(serve_summary.empty_calls, 0);
     assert_eq!(serve_summary.rules_served, 1);
 
-    let rule_summary = crate::observability::mcp_rule_serves::summary_for_rule(&state.db, &ids[0], 30)
-        .await
-        .expect("rule serve summary");
+    let rule_summary =
+        crate::observability::mcp_rule_serves::summary_for_rule(&state.db, &ids[0], 30)
+            .await
+            .expect("rule serve summary");
     assert_eq!(rule_summary.calls, 1);
     assert_eq!(
         rule_summary.latest.as_ref().map(|e| e.tool.as_str()),
@@ -766,8 +766,7 @@ async fn get_rules_batches_multiple_ids() {
     )
     .await;
 
-    let (body, _) =
-        call_tool_json(&state, 510, "get_rules", json!({ "ids": ids.clone() })).await;
+    let (body, _) = call_tool_json(&state, 510, "get_rules", json!({ "ids": ids.clone() })).await;
     let results = body["results"].as_array().expect("results array");
     assert_eq!(results.len(), 2, "expected 2 results in order");
     // Order must match input.
@@ -801,9 +800,10 @@ async fn get_rules_records_optional_file_scope_for_local_proof() {
     )
     .await;
 
-    let rule_summary = crate::observability::mcp_rule_serves::summary_for_rule(&state.db, &rule_id, 30)
-        .await
-        .expect("rule serve summary");
+    let rule_summary =
+        crate::observability::mcp_rule_serves::summary_for_rule(&state.db, &rule_id, 30)
+            .await
+            .expect("rule serve summary");
     assert_eq!(rule_summary.calls, 1);
     assert_eq!(rule_summary.strict_match_calls, 1);
     let latest = rule_summary.latest.expect("latest serve evidence");
@@ -837,9 +837,10 @@ async fn get_rules_does_not_count_universal_rule_as_strict_file_proof() {
     )
     .await;
 
-    let rule_summary = crate::observability::mcp_rule_serves::summary_for_rule(&state.db, &rule_id, 30)
-        .await
-        .expect("rule serve summary");
+    let rule_summary =
+        crate::observability::mcp_rule_serves::summary_for_rule(&state.db, &rule_id, 30)
+            .await
+            .expect("rule serve summary");
     assert_eq!(rule_summary.calls, 1);
     assert_eq!(rule_summary.strict_match_calls, 0);
     let latest = rule_summary.latest.expect("latest serve evidence");
@@ -875,9 +876,10 @@ async fn hook_injection_records_local_serve_proof() {
         "hook should inject the matching rule, got {:?}",
         ctx.rule_ids
     );
-    let rule_summary = crate::observability::mcp_rule_serves::summary_for_rule(&state.db, &rule_id, 30)
-        .await
-        .expect("hook serve summary");
+    let rule_summary =
+        crate::observability::mcp_rule_serves::summary_for_rule(&state.db, &rule_id, 30)
+            .await
+            .expect("hook serve summary");
     assert_eq!(rule_summary.calls, 1);
     assert_eq!(rule_summary.strict_match_calls, 1);
     let latest = rule_summary.latest.expect("latest hook serve evidence");
@@ -1304,6 +1306,35 @@ async fn rule_timeline_emits_source_repo_when_present() {
 }
 
 #[tokio::test]
+async fn rule_timeline_emits_capture_client_when_present() {
+    let state = build_state().await;
+    let remember = call_ok(
+        &state,
+        &call_tool(
+            635,
+            "remember_rule",
+            json!({ "title": "Capture-client rule", "body": "Body for capture client test." }),
+        ),
+    )
+    .await;
+    let rule_id = remember["_meta"]["rule_id"].as_str().unwrap().to_owned();
+
+    let (body, _) = call_tool_json(
+        &state,
+        636,
+        "rule_timeline",
+        json!({ "rule_id": rule_id.clone() }),
+    )
+    .await;
+    assert_eq!(
+        body["captured_by_client"].as_str(),
+        Some("mcp-server"),
+        "expected captured_by_client in body: {body}"
+    );
+    assert_eq!(body["rule_id"].as_str(), Some(rule_id.as_str()));
+}
+
+#[tokio::test]
 async fn rule_timeline_omits_source_repo_when_absent() {
     let state = build_state().await;
     let remember = call_ok(
@@ -1668,8 +1699,7 @@ async fn embedding_profile_mismatch_is_surfaced_not_silent() {
         );
 
         // A 1536d cloud-embedded corpus queried by the 128d SHA1 fallback.
-        overwrite_index_embedding_profile(index_pool, "cloud:text-embedding-3-small:1536")
-            .await;
+        overwrite_index_embedding_profile(index_pool, "cloud:text-embedding-3-small:1536").await;
 
         // Read straight off the mutated meta row with no tool call in
         // between, so nothing can self-heal the profile before we observe it.
@@ -1744,8 +1774,7 @@ async fn embedding_profile_mismatch_is_surfaced_not_silent() {
         // `indexProfile` is Option<String> → string or null; never absent.
         assert!(
             embedding.get("indexProfile").is_some()
-                && (embedding["indexProfile"].is_string()
-                    || embedding["indexProfile"].is_null()),
+                && (embedding["indexProfile"].is_string() || embedding["indexProfile"].is_null()),
             "_meta.embedding.indexProfile must be present (string|null): {embedding}"
         );
         // `degradedReason` is Option<String> → string or null; never absent.

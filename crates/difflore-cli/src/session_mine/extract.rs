@@ -142,8 +142,8 @@ fn extract_from_claude_code(args: &ExtractArgs<'_>) -> std::io::Result<Vec<Pair>
                     continue;
                 }
                 let pair = build_capped_pair(&user_prompt, &assistant_text);
-                let pair_len = pair.user_prompt.chars().count()
-                    + pair.assistant_text.chars().count();
+                let pair_len =
+                    pair.user_prompt.chars().count() + pair.assistant_text.chars().count();
                 if total_chars.saturating_add(pair_len) > TOTAL_MAX_CHARS {
                     // Stop before blowing the budget; the earlier pairs form a
                     // coherent prefix rather than a truncated tail.
@@ -302,9 +302,7 @@ mod tests {
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].assistant_text, "final answer");
         assert!(
-            !pairs[0]
-                .assistant_text
-                .contains("private chain-of-thought"),
+            !pairs[0].assistant_text.contains("private chain-of-thought"),
             "thinking blocks must never reach the gate"
         );
     }

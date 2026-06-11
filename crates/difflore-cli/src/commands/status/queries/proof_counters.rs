@@ -123,12 +123,15 @@ pub(in crate::commands::status) async fn local_accepted_proof(
     let accepted_outcomes_linked_to_prior_recall = accepted_link_summary.linked_to_prior_recall;
     // This split is whole-machine on purpose; degrade to zero if the
     // auxiliary query fails so the repo-scoped proof still renders.
-    let split = difflore_core::observability::fix_outcomes::split_summary(db, LOCAL_PROOF_WINDOW_DAYS)
-        .await
-        .unwrap_or(difflore_core::observability::fix_outcomes::FixOutcomeSplitSummary {
-            accepted_and_applied: 0,
-            accepted_but_failed: 0,
-        });
+    let split =
+        difflore_core::observability::fix_outcomes::split_summary(db, LOCAL_PROOF_WINDOW_DAYS)
+            .await
+            .unwrap_or(
+                difflore_core::observability::fix_outcomes::FixOutcomeSplitSummary {
+                    accepted_and_applied: 0,
+                    accepted_but_failed: 0,
+                },
+            );
     LocalAcceptedProof {
         window_days: LOCAL_PROOF_WINDOW_DAYS,
         recall_lookback_days: LOCAL_ACCEPTED_RECALL_LOOKBACK_DAYS,

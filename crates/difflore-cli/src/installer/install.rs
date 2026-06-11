@@ -586,6 +586,37 @@ pub fn update_all(dry_run: bool, force: bool) {
     print_update_footer(dry_run, force, any_changed, any_gone, any_skipped);
 }
 
+pub fn agent_update_nudge() -> Option<String> {
+    let mut manifest = manifest::load()?;
+    if manifest.targets.is_empty() && !manifest.installed_targets.is_empty() {
+        manifest.targets = manifest::v1_provisional_targets(&manifest.installed_targets);
+    }
+
+    let behind: Vec<String> = manifest
+        .targets
+        .iter()
+        .filter_map(|target| {
+            let spec = registry::find_spec(&target.name)?;
+            let current_version = registry::block_kind_of(spec).current_version();
+            (target.block_version < current_version).then(|| {
+                format!(
+                    "{} v{}->v{}",
+                    target.name, target.block_version, current_version
+                )
+            })
+        })
+        .collect();
+    if behind.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "agent blocks behind ({}); run `{}`",
+        behind.join(", "),
+        "difflore agents update"
+    ))
+}
+
 /// Execute (or, in `dry_run`, just report) one [`UpdateAction`] against its
 /// target, re-stamping the manifest row on a real upgrade/adopt. Returns
 /// whether the manifest was mutated (so the caller knows to persist).

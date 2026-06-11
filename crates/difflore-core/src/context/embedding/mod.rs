@@ -3,8 +3,8 @@ use sha1::{Digest, Sha1};
 use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::infra::crypto;
 use crate::error::CoreError;
+use crate::infra::crypto;
 
 mod cloud;
 mod openai;
@@ -445,9 +445,11 @@ fn warn_embedding_fallback_once(reason: &str) {
     use std::sync::Mutex;
     static SEEN: Mutex<Option<HashSet<String>>> = Mutex::new(None);
     let key = classify_reason(reason);
-    crate::observability::activity_stream::record(crate::observability::activity_stream::ActivityPayload::EmbeddingFallback {
-        reason: key.clone(),
-    });
+    crate::observability::activity_stream::record(
+        crate::observability::activity_stream::ActivityPayload::EmbeddingFallback {
+            reason: key.clone(),
+        },
+    );
     let Ok(mut guard) = SEEN.lock() else {
         return; // poisoned mutex — event already recorded; just skip the print
     };

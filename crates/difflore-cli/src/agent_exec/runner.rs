@@ -60,14 +60,10 @@ pub(super) async fn run(agent: AgentKind, prompt: &str, time_budget: Duration) -
     });
 
     let stdin_prompt = via_stdin.then_some(prompt);
-    let spawn_result = match timeout(time_budget, spawn_and_capture(command, stdin_prompt)).await
-    {
+    let spawn_result = match timeout(time_budget, spawn_and_capture(command, stdin_prompt)).await {
         Ok(Ok(output)) => output,
         Ok(Err(e)) => {
-            return GateResult::errored_with(format!(
-                "failed to spawn {}: {e}",
-                binary.display(),
-            ));
+            return GateResult::errored_with(format!("failed to spawn {}: {e}", binary.display(),));
         }
         Err(_) => {
             return GateResult::errored_with(format!(
@@ -78,8 +74,12 @@ pub(super) async fn run(agent: AgentKind, prompt: &str, time_budget: Duration) -
         }
     };
 
-    let stdout = String::from_utf8_lossy(&spawn_result.stdout).trim().to_owned();
-    let stderr = String::from_utf8_lossy(&spawn_result.stderr).trim().to_owned();
+    let stdout = String::from_utf8_lossy(&spawn_result.stdout)
+        .trim()
+        .to_owned();
+    let stderr = String::from_utf8_lossy(&spawn_result.stderr)
+        .trim()
+        .to_owned();
 
     if spawn_result.status.success() {
         return GateResult {
@@ -278,7 +278,11 @@ mod tests {
             (AgentKind::GeminiCli, "gemini-prompt"),
         ] {
             let args = args_as_strings(&build_args(agent, prompt));
-            assert_eq!(args.last().map(String::as_str), Some(prompt), "agent {agent:?}");
+            assert_eq!(
+                args.last().map(String::as_str),
+                Some(prompt),
+                "agent {agent:?}"
+            );
         }
     }
 

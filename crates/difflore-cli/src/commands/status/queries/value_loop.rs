@@ -140,9 +140,10 @@ pub(in crate::commands::status) async fn build_value_loop_evidence_for_candidate
     ) {
         return None;
     }
-    let mcp_summary = difflore_core::observability::mcp_rule_serves::summary_for_rule(db, &candidate.rule_id, 30)
-        .await
-        .ok()?;
+    let mcp_summary =
+        difflore_core::observability::mcp_rule_serves::summary_for_rule(db, &candidate.rule_id, 30)
+            .await
+            .ok()?;
     let mcp_latest = mcp_summary.latest?;
     let recall = causal_top3_recall_for(
         db,
@@ -247,8 +248,9 @@ async fn causal_top3_recall_for(
 ) -> Option<difflore_core::observability::rule_outcomes::TopRecallEvidence> {
     // Push the causal predicate into SQL so `LIMIT` cannot hide the one
     // valid pre-serve recall behind later non-causal rows.
-    let recall = sqlx::query_as::<_, difflore_core::observability::rule_outcomes::TopRecallEvidence>(
-        r"SELECT rule_id,
+    let recall =
+        sqlx::query_as::<_, difflore_core::observability::rule_outcomes::TopRecallEvidence>(
+            r"SELECT rule_id,
                   repo_full_name,
                   file_path,
                   COALESCE(rank, 999) AS rank,
@@ -263,12 +265,12 @@ async fn causal_top3_recall_for(
              AND datetime(created_at) <= datetime(?2)
            ORDER BY datetime(created_at) DESC, id DESC
            LIMIT 1",
-    )
-    .bind(rule_id)
-    .bind(served_at)
-    .fetch_optional(db)
-    .await
-    .ok()??;
+        )
+        .bind(rule_id)
+        .bind(served_at)
+        .fetch_optional(db)
+        .await
+        .ok()??;
     // Defence in depth: SQL already filters `recall <= serve`; this
     // catches any `served_at > accepted_at` data-quality drift in the
     // upstream invariant.
@@ -350,16 +352,18 @@ mod tests {
         .await;
         difflore_core::observability::rule_outcomes::record_recalled_with_context(
             &pool,
-            &[difflore_core::observability::rule_outcomes::RuleRecallInput {
-                rule_id: "rule-1",
-                session_id: Some("session-1"),
-                repo_full_name: Some("acme/widgets"),
-                file_path: Some("src/parser.rs"),
-                query_text: "src/parser.rs structured parser",
-                rank: 1,
-                top_k: 3,
-                strict_file_match: true,
-            }],
+            &[
+                difflore_core::observability::rule_outcomes::RuleRecallInput {
+                    rule_id: "rule-1",
+                    session_id: Some("session-1"),
+                    repo_full_name: Some("acme/widgets"),
+                    file_path: Some("src/parser.rs"),
+                    query_text: "src/parser.rs structured parser",
+                    rank: 1,
+                    top_k: 3,
+                    strict_file_match: true,
+                },
+            ],
         )
         .await
         .expect("record recall");
@@ -475,16 +479,18 @@ mod tests {
         .expect("insert review comment");
         difflore_core::observability::rule_outcomes::record_recalled_with_context(
             &pool,
-            &[difflore_core::observability::rule_outcomes::RuleRecallInput {
-                rule_id: "comment-rule",
-                session_id: Some("session-comment"),
-                repo_full_name: Some("acme/widgets"),
-                file_path: Some("docs/readme.md"),
-                query_text: "docs/readme.md blank lines blockquotes",
-                rank: 1,
-                top_k: 3,
-                strict_file_match: true,
-            }],
+            &[
+                difflore_core::observability::rule_outcomes::RuleRecallInput {
+                    rule_id: "comment-rule",
+                    session_id: Some("session-comment"),
+                    repo_full_name: Some("acme/widgets"),
+                    file_path: Some("docs/readme.md"),
+                    query_text: "docs/readme.md blank lines blockquotes",
+                    rank: 1,
+                    top_k: 3,
+                    strict_file_match: true,
+                },
+            ],
         )
         .await
         .expect("record recall");
@@ -559,16 +565,18 @@ mod tests {
         .await;
         difflore_core::observability::rule_outcomes::record_recalled_with_context(
             &pool,
-            &[difflore_core::observability::rule_outcomes::RuleRecallInput {
-                rule_id: "agent-rule",
-                session_id: Some("session-2"),
-                repo_full_name: Some("acme/widgets"),
-                file_path: Some("src/wait.ts"),
-                query_text: "src/wait.ts stable wait",
-                rank: 2,
-                top_k: 3,
-                strict_file_match: true,
-            }],
+            &[
+                difflore_core::observability::rule_outcomes::RuleRecallInput {
+                    rule_id: "agent-rule",
+                    session_id: Some("session-2"),
+                    repo_full_name: Some("acme/widgets"),
+                    file_path: Some("src/wait.ts"),
+                    query_text: "src/wait.ts stable wait",
+                    rank: 2,
+                    top_k: 3,
+                    strict_file_match: true,
+                },
+            ],
         )
         .await
         .expect("record recall");
@@ -643,16 +651,18 @@ mod tests {
         .await;
         difflore_core::observability::rule_outcomes::record_recalled_with_context(
             &pool,
-            &[difflore_core::observability::rule_outcomes::RuleRecallInput {
-                rule_id: "loose-rule",
-                session_id: Some("session-loose"),
-                repo_full_name: Some("acme/widgets"),
-                file_path: Some("src/other.ts"),
-                query_text: "src/other.ts loose proof",
-                rank: 1,
-                top_k: 3,
-                strict_file_match: false,
-            }],
+            &[
+                difflore_core::observability::rule_outcomes::RuleRecallInput {
+                    rule_id: "loose-rule",
+                    session_id: Some("session-loose"),
+                    repo_full_name: Some("acme/widgets"),
+                    file_path: Some("src/other.ts"),
+                    query_text: "src/other.ts loose proof",
+                    rank: 1,
+                    top_k: 3,
+                    strict_file_match: false,
+                },
+            ],
         )
         .await
         .expect("record loose recall");
@@ -727,16 +737,18 @@ mod tests {
         .await;
         difflore_core::observability::rule_outcomes::record_recalled_with_context(
             &pool,
-            &[difflore_core::observability::rule_outcomes::RuleRecallInput {
-                rule_id: "late-serve-rule",
-                session_id: Some("session-3"),
-                repo_full_name: Some("acme/widgets"),
-                file_path: Some("src/causal.ts"),
-                query_text: "src/causal.ts causal proof",
-                rank: 1,
-                top_k: 3,
-                strict_file_match: true,
-            }],
+            &[
+                difflore_core::observability::rule_outcomes::RuleRecallInput {
+                    rule_id: "late-serve-rule",
+                    session_id: Some("session-3"),
+                    repo_full_name: Some("acme/widgets"),
+                    file_path: Some("src/causal.ts"),
+                    query_text: "src/causal.ts causal proof",
+                    rank: 1,
+                    top_k: 3,
+                    strict_file_match: true,
+                },
+            ],
         )
         .await
         .expect("record recall");

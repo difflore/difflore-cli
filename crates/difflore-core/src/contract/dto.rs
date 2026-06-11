@@ -624,15 +624,13 @@ mod tests {
         for cell in &cells {
             for (token, trailer) in method_paths_with_trailer(cell) {
                 // token is e.g. "POST /reviews/{id}/metrics"; split off method.
-                let path = token
-                    .split_once(' ')
-                    .map_or(token.as_str(), |(_, p)| p);
+                let path = token.split_once(' ').map_or(token.as_str(), |(_, p)| p);
                 if path_is_in_spec(path, &spec) {
                     // Must be explicitly acknowledged. The marker may sit
                     // immediately after this token, or anywhere in the cell
                     // (covers the glob row where the marker trails the token).
-                    let marked = trailer.trim_start().starts_with("(in spec")
-                        || cell.contains("(in spec");
+                    let marked =
+                        trailer.trim_start().starts_with("(in spec") || cell.contains("(in spec");
                     if !marked {
                         unmarked_overlaps.push(token.clone());
                     }

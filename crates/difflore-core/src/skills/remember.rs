@@ -1,8 +1,8 @@
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::error::CoreError;
 use crate::domain::models::{AddExampleInput, RememberRuleInput, SkillRecord};
+use crate::error::CoreError;
 use crate::observability::privacy::{redact_secretish_tokens, strip_private_tagged_regions};
 
 use super::{SkillRow, add_example, count_captures_today};
@@ -45,6 +45,19 @@ pub const REMEMBER_FILE_PATTERN_CHAR_LIMIT: usize = 256;
 
 fn sanitize_remember_text(input: &str) -> String {
     redact_secretish_tokens(&strip_private_tagged_regions(input))
+}
+
+fn normalize_capture_client(input: Option<&str>) -> Option<String> {
+    let value = input?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let normalized: String = value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .take(64)
+        .collect();
+    (!normalized.is_empty()).then_some(normalized)
 }
 
 fn canonical_file_patterns_csv(patterns: Option<&[String]>) -> String {
@@ -362,6 +375,7 @@ async fn remember_inner(
         .origin
         .clone()
         .unwrap_or_else(|| "conversation".into());
+    let captured_by_client = normalize_capture_client(input.captured_by_client.as_deref());
 
     // Hard rate limit, conversation-channel only (the `manual` CLI path is
     // exempt — a human typing rules isn't the failure mode; a looping agent
@@ -599,27 +613,29 @@ async fn remember_inner(
     let insert_file_patterns = file_patterns_json.as_deref();
     let insert_now = now.as_str();
     let insert_origin = origin.as_str();
+    let insert_captured_by_client = captured_by_client.as_deref();
     let insert_content_hash = content_hash.as_str();
-    let insert_result = sqlx::query!(
+    let insert_result = sqlx::query(
         "INSERT INTO skills
          (id, name, source, directory, version, description, type, engines, tags,
           trigger, check_prompt, file_patterns, enabled_for_claude, confidence_score,
-          installed_at, updated_at, origin, content_hash, hash_created_at)
+          installed_at, updated_at, origin, captured_by_client, content_hash, hash_created_at)
          VALUES (?1, ?2, 'local', ?3, '1.0.0', ?4, 'review_standard', ?5, ?6,
-                 NULL, NULL, ?7, 1, ?8, ?9, ?9, ?10, ?11, ?12)",
-        insert_id,
-        title_trimmed,
-        insert_directory,
-        insert_description,
-        insert_engines,
-        insert_tags,
-        insert_file_patterns,
-        confidence,
-        insert_now,
-        insert_origin,
-        insert_content_hash,
-        now_ms
+                 NULL, NULL, ?7, 1, ?8, ?9, ?9, ?10, ?11, ?12, ?13)",
     )
+    .bind(insert_id)
+    .bind(title_trimmed)
+    .bind(insert_directory)
+    .bind(insert_description)
+    .bind(insert_engines)
+    .bind(insert_tags)
+    .bind(insert_file_patterns)
+    .bind(confidence)
+    .bind(insert_now)
+    .bind(insert_origin)
+    .bind(insert_captured_by_client)
+    .bind(insert_content_hash)
+    .bind(now_ms)
     .execute(db)
     .await;
     if let Err(e) = insert_result {

@@ -1,11 +1,11 @@
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::error::CoreError;
 use crate::domain::models::{
     AddExampleInput, ListExamplesInput, RemoveExampleInput, RuleExampleRecord, SkillRecord,
     SkillRepoAddInput, SkillRepoRecord, SkillRepoRemoveInput, UpdateConfidenceInput,
 };
+use crate::error::CoreError;
 
 use super::{SkillRepoRow, SkillRow};
 
@@ -224,7 +224,8 @@ async fn apply_cloud_source_repo(
 }
 
 async fn refresh_rule_index_after_sync(db: &sqlx::SqlitePool) {
-    let project_hash = crate::infra::db::project_hash_from_root(&crate::infra::db::current_project_root());
+    let project_hash =
+        crate::infra::db::project_hash_from_root(&crate::infra::db::current_project_root());
     let index_pool = match crate::context::index_db::get_pool_for_project(&project_hash).await {
         Ok(pool) => pool,
         Err(e) => {

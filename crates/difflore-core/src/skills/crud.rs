@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::error::CoreError;
 use crate::domain::models::{
     DiscoverSkillsInput, DiscoveredSkillRecord, InstallSkillInput, RemoveSkillInput, SkillRecord,
     ToggleSkillEngineInput,
 };
+use crate::error::CoreError;
 
 use super::{SkillRow, decode_base64_lossy, parse_skill_frontmatter};
 
@@ -401,9 +401,12 @@ pub async fn sync_links(db: &sqlx::SqlitePool) -> crate::Result<()> {
             ("cursor", skill.enabled_for_cursor),
         ];
         for (engine, enabled) in engines {
-            if let Err(e) =
-                crate::skills::fs::sync_engine_link(&skill.source, &skill.directory, engine, enabled)
-            {
+            if let Err(e) = crate::skills::fs::sync_engine_link(
+                &skill.source,
+                &skill.directory,
+                engine,
+                enabled,
+            ) {
                 eprintln!("warning: sync_engine_link failed for engine {engine}: {e}");
             }
         }

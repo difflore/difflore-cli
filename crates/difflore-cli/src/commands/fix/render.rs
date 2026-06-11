@@ -5,8 +5,8 @@ use std::path::Path;
 use difflore_core::domain::models::DiffContentRecord;
 use difflore_core::review_engine::ReviewIssueRecord;
 
-use crate::support::util::exit_err;
 use crate::style::{self, sym};
+use crate::support::util::exit_err;
 
 use super::pr::PreparedPrFix;
 use super::{CONFIDENCE_THRESHOLD, file_loc, percent, review_status_for_outcome};

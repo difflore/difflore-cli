@@ -53,9 +53,7 @@ use std::time::Duration;
 
 use super::extract::Pair;
 use crate::agent_exec::{AgentKind, GateResult, dispatch_gate};
-use difflore_core::cloud::session_mined::{
-    SessionMinedCandidate, SessionMinedCandidateArgs,
-};
+use difflore_core::cloud::session_mined::{SessionMinedCandidate, SessionMinedCandidateArgs};
 
 /// Total prompt budget. Roughly ~30 KB ≈ ~7-8 K tokens after the JSON
 /// envelope overhead, leaving headroom for the model's response. Pairs
@@ -116,7 +114,10 @@ pub enum GateVerdict {
     /// verdict so the cloud-side merge code knows which rule to
     /// extend. `updated_body` is the gate's proposed replacement
     /// body for the merged rule.
-    Merge { rule_id: String, updated_body: String },
+    Merge {
+        rule_id: String,
+        updated_body: String,
+    },
     /// Nothing reusable in the session — log + drop.
     Skip { reason: String },
 }
@@ -358,9 +359,7 @@ fn strip_markdown_fence(s: &str) -> String {
         // After the opening backticks there may be a language tag
         // (e.g. `json`). Drop everything up to and including the first
         // newline, then trim the closing fence off the end.
-        let after_lang = rest
-            .find('\n')
-            .map_or("", |idx| &rest[idx + 1..]);
+        let after_lang = rest.find('\n').map_or("", |idx| &rest[idx + 1..]);
         let stripped = after_lang
             .trim_end()
             .strip_suffix("```")
@@ -411,16 +410,12 @@ fn parsed_to_verdict(parsed: GateJson, args: &GateArgs<'_>) -> Result<GateVerdic
     let verdict_uc = parsed.verdict.to_ascii_uppercase();
     match verdict_uc.as_str() {
         "KEEP" => {
-            let title = parsed
-                .title
-                .ok_or_else(|| GateError::InvalidCandidate {
-                    reason: "KEEP verdict missing title".to_owned(),
-                })?;
-            let body = parsed
-                .body
-                .ok_or_else(|| GateError::InvalidCandidate {
-                    reason: "KEEP verdict missing body".to_owned(),
-                })?;
+            let title = parsed.title.ok_or_else(|| GateError::InvalidCandidate {
+                reason: "KEEP verdict missing title".to_owned(),
+            })?;
+            let body = parsed.body.ok_or_else(|| GateError::InvalidCandidate {
+                reason: "KEEP verdict missing body".to_owned(),
+            })?;
             if parsed.file_patterns.is_empty() {
                 return Err(GateError::InvalidCandidate {
                     reason: "KEEP verdict missing file_patterns".to_owned(),
@@ -442,22 +437,21 @@ fn parsed_to_verdict(parsed: GateJson, args: &GateArgs<'_>) -> Result<GateVerdic
             Ok(GateVerdict::Keep { candidate })
         }
         "MERGE" => {
-            let rule_id = parsed
-                .rule_id
-                .ok_or_else(|| GateError::InvalidCandidate {
-                    reason: "MERGE verdict missing rule_id".to_owned(),
-                })?;
-            let updated_body =
-                parsed.body.ok_or_else(|| GateError::InvalidCandidate {
-                    reason: "MERGE verdict missing body".to_owned(),
-                })?;
+            let rule_id = parsed.rule_id.ok_or_else(|| GateError::InvalidCandidate {
+                reason: "MERGE verdict missing rule_id".to_owned(),
+            })?;
+            let updated_body = parsed.body.ok_or_else(|| GateError::InvalidCandidate {
+                reason: "MERGE verdict missing body".to_owned(),
+            })?;
             Ok(GateVerdict::Merge {
                 rule_id,
                 updated_body,
             })
         }
         "SKIP" => Ok(GateVerdict::Skip {
-            reason: parsed.reason.unwrap_or_else(|| "no reason given".to_owned()),
+            reason: parsed
+                .reason
+                .unwrap_or_else(|| "no reason given".to_owned()),
         }),
         other => Err(GateError::ParseFailure {
             reason: format!("unknown verdict '{other}'"),
@@ -489,10 +483,7 @@ mod tests {
         }
     }
 
-    fn args<'a>(
-        pairs: &'a [Pair],
-        existing: &'a [ExistingRule],
-    ) -> GateArgs<'a> {
+    fn args<'a>(pairs: &'a [Pair], existing: &'a [ExistingRule]) -> GateArgs<'a> {
         GateArgs {
             session_id: "sess_test",
             source_repo: "owner/repo",
@@ -516,8 +507,7 @@ mod tests {
             ExistingRule {
                 rule_id: "rule-2".to_owned(),
                 title: "Hard-deny dbg!".to_owned(),
-                body_snippet: "Workspace forbids debug macros in committed code."
-                    .to_owned(),
+                body_snippet: "Workspace forbids debug macros in committed code.".to_owned(),
             },
         ];
         let pairs = vec![pair("hi", "hello")];
@@ -581,10 +571,7 @@ mod tests {
         let prompt = build_prompt(&pairs, &rules);
         // First MAX in
         assert!(prompt.contains("rule-0:"));
-        assert!(prompt.contains(&format!(
-            "rule-{}:",
-            MAX_EXISTING_RULES_IN_PROMPT - 1
-        )));
+        assert!(prompt.contains(&format!("rule-{}:", MAX_EXISTING_RULES_IN_PROMPT - 1)));
         // Beyond MAX out
         assert!(!prompt.contains(&format!("rule-{MAX_EXISTING_RULES_IN_PROMPT}:")));
     }
@@ -672,7 +659,10 @@ mod tests {
         let err = parse_gate_json(raw).unwrap_err();
         match err {
             GateError::ParseFailure { reason, .. } => {
-                assert!(reason.contains("verdict"), "diagnostic mentions verdict: {reason}");
+                assert!(
+                    reason.contains("verdict"),
+                    "diagnostic mentions verdict: {reason}"
+                );
             }
             other => panic!("expected ParseFailure, got {other:?}"),
         }
@@ -696,7 +686,9 @@ mod tests {
             verdict: "KEEP".to_owned(),
             rule_id: None,
             title: Some("Validate before enqueue".to_owned()),
-            body: Some("Session-mined candidates must validate before reaching the outbox.".to_owned()),
+            body: Some(
+                "Session-mined candidates must validate before reaching the outbox.".to_owned(),
+            ),
             file_patterns: vec!["crates/**/*.rs".to_owned()],
             reason: None,
         };

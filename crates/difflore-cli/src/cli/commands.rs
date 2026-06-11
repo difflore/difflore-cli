@@ -101,6 +101,22 @@ DiffLore never commits, pushes, opens PRs, or posts GitHub comments."
         command: AgentsCommands,
     },
 
+    /// Refresh the binary guidance, agent blocks, hook shim config, and doctor checks.
+    #[command(
+        long_about = "One update pass for DiffLore ergonomics. Prints the binary update command for \
+your install channel when it can detect one, safely re-renders unchanged agent config/hook blocks \
+with `agents update`, then runs `doctor` so stale shims and runtime drift are visible."
+    )]
+    Update {
+        /// Preview agent block changes without touching disk; skips doctor.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Overwrite agent blocks that were locally edited since DiffLore wrote them.
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Choose the local AI backend DiffLore uses for fixes.
     Providers {
         #[command(subcommand)]

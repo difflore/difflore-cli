@@ -1,10 +1,10 @@
+use crate::commands::dist;
 use crate::commands::doctor::labels::{
     doctor_canonical_mark, doctor_canonical_record_state_label, doctor_install_mark,
     doctor_install_state_label,
 };
-use crate::commands::dist;
-use crate::support::util::format_recall_edit_proof_breakdown;
 use crate::installer;
+use crate::support::util::format_recall_edit_proof_breakdown;
 
 /// Map the canonical language slug emitted by `language_from_tags` /
 /// `language_from_file_patterns` to a short display label suitable for
@@ -727,13 +727,18 @@ fn embedding_activity_summary() -> EmbeddingActivitySummary {
     let mut summary = EmbeddingActivitySummary::default();
     for event in difflore_core::observability::activity_stream::tail(200) {
         match event.payload {
-            difflore_core::observability::activity_stream::ActivityPayload::EmbeddingFallback { reason } => {
+            difflore_core::observability::activity_stream::ActivityPayload::EmbeddingFallback {
+                reason,
+            } => {
                 summary.fallback_count += 1;
                 if summary.latest_reason.is_none() {
                     summary.latest_reason = Some(reason);
                 }
             }
-            difflore_core::observability::activity_stream::ActivityPayload::EmbedCapReached { cap, used } => {
+            difflore_core::observability::activity_stream::ActivityPayload::EmbedCapReached {
+                cap,
+                used,
+            } => {
                 summary.cap_hits += 1;
                 summary.latest_cap.get_or_insert((cap, used));
             }

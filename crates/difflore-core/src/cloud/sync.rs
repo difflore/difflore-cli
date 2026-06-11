@@ -2,10 +2,10 @@ use openapi_contract::{ApiClient, Method, api};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
+use super::client::CloudClient;
 use crate::contract::{
     BillingCurrent, Success, SyncProviders, SyncSettings, Team, TeamRuleSummary, UserProfile,
 };
-use super::client::CloudClient;
 use crate::domain::models::SkillRecord;
 use crate::skills::fs::skills_base_dir;
 

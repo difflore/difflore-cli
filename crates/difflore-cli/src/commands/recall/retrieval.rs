@@ -10,8 +10,8 @@ use difflore_core::context::retrieval::ScoredRuleChunk;
 use difflore_core::context::types::{PastVerdict, PastVerdictScope};
 use difflore_core::skills::SearchSkillMeta;
 
-use crate::support::util::project_path;
 use crate::style::{self, sym};
+use crate::support::util::project_path;
 
 use super::{
     CloudRecallResult, CommandContext, DiagnosticItem, DiagnosticStep, LocalRecallResult,
@@ -619,7 +619,8 @@ pub(super) async fn record_local_recall(
             },
         )
         .collect();
-    let _ = difflore_core::observability::rule_outcomes::record_recalled_with_context(db, &recalls).await;
+    let _ = difflore_core::observability::rule_outcomes::record_recalled_with_context(db, &recalls)
+        .await;
     let ids: Vec<String> = local.matches.iter().map(|hit| hit.id.clone()).collect();
     emit_rule_fired_observation(ctx, &ids, intent, file, session_id).await;
 }

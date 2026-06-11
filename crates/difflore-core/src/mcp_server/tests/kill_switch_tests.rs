@@ -18,8 +18,7 @@ const GATE_ENV_KEYS: &[&str] = &[
 /// restore. `None` clears a var, `Some(v)` sets it; vars not listed are
 /// cleared for the duration so the harness is hermetic.
 fn with_gate_env<F: FnOnce()>(overrides: &[(&str, Option<&str>)], f: F) {
-    let mut vars: Vec<(&str, Option<&str>)> =
-        GATE_ENV_KEYS.iter().map(|k| (*k, None)).collect();
+    let mut vars: Vec<(&str, Option<&str>)> = GATE_ENV_KEYS.iter().map(|k| (*k, None)).collect();
     for (k, v) in overrides {
         if let Some(slot) = vars.iter_mut().find(|(name, _)| name == k) {
             slot.1 = *v;

@@ -113,8 +113,7 @@ fn is_git_repo(cwd: &Path) -> bool {
     else {
         return false;
     };
-    output.status.success()
-        && String::from_utf8_lossy(&output.stdout).trim() == "true"
+    output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true"
 }
 
 /// True iff the origin remote parses as a GitHub `owner/repo` slug. Parsing is
@@ -176,18 +175,12 @@ mod tests {
         // Or stdin is piped.
         let mut s = base_signals();
         s.stdin_is_tty = false;
-        assert_eq!(
-            run_guards_with(s, false),
-            Err(SkipReason::NonInteractive)
-        );
+        assert_eq!(run_guards_with(s, false), Err(SkipReason::NonInteractive));
 
         // Or stdout is piped.
         let mut s = base_signals();
         s.stdout_is_tty = false;
-        assert_eq!(
-            run_guards_with(s, false),
-            Err(SkipReason::NonInteractive)
-        );
+        assert_eq!(run_guards_with(s, false), Err(SkipReason::NonInteractive));
     }
 
     #[test]

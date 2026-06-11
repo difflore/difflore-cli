@@ -8,8 +8,8 @@ use colored::Colorize;
 use difflore_core::context::embedding::{ActiveEmbedderKind, DEFAULT_OPENAI_EMBEDDING_DIM};
 
 use crate::commands::providers::resolve_secret_input;
-use crate::support::util::exit_err;
 use crate::style;
+use crate::support::util::exit_err;
 
 const DEFAULT_PROVIDER_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_MODEL: &str = "text-embedding-3-small";
@@ -332,8 +332,9 @@ pub(crate) async fn handle_rebuild(json: bool) {
     // Detect repo scope like recall / the hook (origin + upstream, with
     // fork->source alias expansion). The per-project index is the scope
     // boundary, so an unscoped checkout has nothing to rebuild.
-    let detected =
-        difflore_core::infra::git::detect_github_repo_full_names(&crate::support::util::project_path());
+    let detected = difflore_core::infra::git::detect_github_repo_full_names(
+        &crate::support::util::project_path(),
+    );
     let repo_scopes = difflore_core::skills::expand_repo_scopes_with_source_aliases(&db, &detected)
         .await
         .unwrap_or(detected);

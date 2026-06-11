@@ -12,8 +12,8 @@ use super::super::{
     rule_hits_by_origin,
 };
 use super::evidence::{
-    build_match_evidence, fetch_skills_by_ids, has_strict_file_patterns_match,
-    parse_file_patterns, rule_preview, strict_file_match_ids_for_rules,
+    build_match_evidence, fetch_skills_by_ids, has_strict_file_patterns_match, parse_file_patterns,
+    rule_preview, strict_file_match_ids_for_rules,
 };
 use super::serve_stats::{
     MCP_EMBEDDING_TIMEOUT, build_empty_recall_retry_query, drain_mcp_query_outbox,
@@ -411,18 +411,22 @@ pub(crate) async fn tool_search_rules(
 
     // Memory-pipeline stream for the lightweight index hit.
     for e in &entries {
-        crate::observability::activity_stream::record(crate::observability::activity_stream::ActivityPayload::RuleRecalled {
-            rule_id: e.id.clone(),
-            rule_title: e.title.clone(),
-            score: e.similarity as f32,
-            took_ms: 0,
-        });
+        crate::observability::activity_stream::record(
+            crate::observability::activity_stream::ActivityPayload::RuleRecalled {
+                rule_id: e.id.clone(),
+                rule_title: e.title.clone(),
+                score: e.similarity as f32,
+                took_ms: 0,
+            },
+        );
     }
-    crate::observability::activity_stream::record(crate::observability::activity_stream::ActivityPayload::RuleInjected {
-        rule_count: u32::try_from(entries.len()).unwrap_or(u32::MAX),
-        prompt_chars: u32::try_from(text.chars().count()).unwrap_or(u32::MAX),
-        intent_summary: format!("{file} | {intent}"),
-    });
+    crate::observability::activity_stream::record(
+        crate::observability::activity_stream::ActivityPayload::RuleInjected {
+            rule_count: u32::try_from(entries.len()).unwrap_or(u32::MAX),
+            prompt_chars: u32::try_from(text.chars().count()).unwrap_or(u32::MAX),
+            intent_summary: format!("{file} | {intent}"),
+        },
+    );
     // Estimate savings against fetching each full rule body.
     let tokens_if_full = Some(AVG_FULL_RULE_TOKENS * entries.len());
 

@@ -1,5 +1,5 @@
-use crate::error::CoreError;
 use crate::domain::models::AppSettingsRecord;
+use crate::error::CoreError;
 
 pub async fn get() -> crate::Result<AppSettingsRecord> {
     let path = crate::infra::paths::data_home()

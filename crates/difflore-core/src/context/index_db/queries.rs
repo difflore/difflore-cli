@@ -233,7 +233,8 @@ pub async fn upsert_rule_chunks_with_profile_and_timeout(
     // swallowed because retrieval has a linear fallback.
     if !ann_updates.is_empty() {
         let dim = ann_updates[0].1.len();
-        let project_hash = crate::infra::db::project_hash_from_root(&crate::infra::db::current_project_root());
+        let project_hash =
+            crate::infra::db::project_hash_from_root(&crate::infra::db::current_project_root());
         match crate::context::ann::get_ann_for_project(&project_hash, dim).await {
             Ok(ann_arc) => {
                 let mut ann_guard = ann_arc.lock().await;

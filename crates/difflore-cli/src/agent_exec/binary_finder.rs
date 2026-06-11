@@ -67,12 +67,7 @@ fn candidate_paths(agent: AgentKind) -> Vec<PathBuf> {
                     paths.push(home.join(home_dir).join("bin").join(exe));
                 }
                 paths.push(home.join("AppData").join("Local").join(exe));
-                paths.push(
-                    home.join("AppData")
-                        .join("Roaming")
-                        .join("npm")
-                        .join(exe),
-                );
+                paths.push(home.join("AppData").join("Roaming").join("npm").join(exe));
             }
             // A tweaked `%LOCALAPPDATA%` / `%PROGRAMFILES%` may point outside the
             // `%USERPROFILE%\AppData\Local` paths covered above, so probe directly.

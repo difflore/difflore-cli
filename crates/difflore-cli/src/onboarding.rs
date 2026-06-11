@@ -145,7 +145,8 @@ pub(crate) async fn first_run_path(no_interactive_flag: bool) -> FirstRunPath {
     if !stdout_tty || no_interactive_flag {
         return FirstRunPath::Skip;
     }
-    let no_welcome_env = difflore_core::infra::env::flag_set(difflore_core::infra::env::DIFFLORE_NO_WELCOME);
+    let no_welcome_env =
+        difflore_core::infra::env::flag_set(difflore_core::infra::env::DIFFLORE_NO_WELCOME);
     if no_welcome_env {
         return FirstRunPath::Skip;
     }
@@ -241,6 +242,7 @@ pub(crate) async fn show_welcome_then_continue() -> WelcomeFlow {
             "create local memories from PR comments"
         },
     );
+    println!("           or tell your wired agent \"remember this\" to capture a rule locally now");
     println!(
         "        3. {}   show what your AI agents would recall on a real diff",
         style::cmd("difflore recall --diff"),
@@ -282,9 +284,11 @@ const fn static_welcome_import_command(cloud_logged_in: bool) -> &'static str {
 /// Each step is skippable (`n` bails out cleanly with a `difflore init`
 /// bridge) so a user is never trapped mid-flow.
 pub(crate) async fn run_wizard() -> WelcomeFlow {
-    let resume = difflore_core::infra::paths::data_home().ok().is_some_and(|dir| {
-        sentinel_version_current(&dir.join(RESUME_SENTINEL), RESUME_SENTINEL_VERSION)
-    });
+    let resume = difflore_core::infra::paths::data_home()
+        .ok()
+        .is_some_and(|dir| {
+            sentinel_version_current(&dir.join(RESUME_SENTINEL), RESUME_SENTINEL_VERSION)
+        });
     run_wizard_with_interrupt(resume).await
 }
 
@@ -660,6 +664,10 @@ fn step4_local_candidate_bridge(
         println!(
             "    {}",
             style::cmd(&format!("difflore import-reviews --max-prs {max_prs}")),
+        );
+        println!(
+            "  {} Or capture rules as you work: tell a wired agent \"remember this\".",
+            style::pewter(sym::BULLET),
         );
     }
     println!(

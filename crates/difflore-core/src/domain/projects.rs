@@ -1,7 +1,7 @@
 use uuid::Uuid;
 
-use crate::error::CoreError;
 use crate::domain::models::{AddProjectInput, ProjectRecord, RemoveProjectInput};
+use crate::error::CoreError;
 
 #[derive(sqlx::FromRow)]
 struct ProjectRow {

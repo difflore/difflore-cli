@@ -14,3 +14,4 @@ pub(crate) mod skills;
 pub(crate) mod status;
 pub(crate) mod trajectory;
 pub(crate) mod try_demo;
+pub(crate) mod update;

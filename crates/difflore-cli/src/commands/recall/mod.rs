@@ -19,10 +19,10 @@ use difflore_core::context::retrieval::RenderedRuleBody;
 use difflore_core::context::types::PastVerdict;
 use globset::Glob;
 
-use crate::support::util::{exit_code, project_path};
 use crate::installer;
 use crate::runtime::CommandContext;
 use crate::style::{self, sym};
+use crate::support::util::{exit_code, project_path};
 
 mod presentation;
 mod retrieval;
@@ -310,6 +310,16 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
             "next: {}  {}",
             style::cmd("difflore status"),
             style::pewter("see matched memories, agent readiness, and accepted edits"),
+        );
+    }
+    if diff {
+        let summary =
+            crate::commands::status::compact_value_summary_for_current_project(&ctx.db).await;
+        println!(
+            "      {}",
+            style::pewter(&crate::commands::status::render_compact_value_summary(
+                &summary
+            )),
         );
     }
 }

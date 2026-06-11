@@ -6,8 +6,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
-use crate::theme::origin_color;
 use super::{RulesFocus, RulesOriginFilter, RulesRepoFilter, RulesSearch};
+use crate::theme::origin_color;
 
 use crate::widgets::truncate;
 

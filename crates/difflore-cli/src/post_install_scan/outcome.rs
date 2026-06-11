@@ -39,10 +39,7 @@ pub enum PostInstallScanOutcome {
     /// Import completed (`difflore import-reviews` exited 0). The counters
     /// echo what the import printed and are advisory; the local DB is
     /// authoritative.
-    ImportedReviews {
-        pr_count: u32,
-        rule_count: u32,
-    },
+    ImportedReviews { pr_count: u32, rule_count: u32 },
 
     /// `difflore import-reviews` exited non-zero. Treated as recoverable —
     /// the user already saw the child process's stderr.

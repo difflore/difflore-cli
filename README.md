@@ -11,6 +11,29 @@ It imports review feedback your team already wrote, stores the resulting rules
 in local SQLite, and serves the relevant ones to agents through MCP, installed
 hooks, or the CLI.
 
+## Runtime ROI
+
+DiffLore reports value from the actual local loop, not a canned benchmark:
+
+| Before DiffLore | After DiffLore |
+|---|---|
+| Same review comments repeat across PRs | Repeated comments become local rules agents can recall |
+| Review memory is hidden in GitHub history | `difflore recall --diff` shows matching memories before edits land |
+| ROI requires a dashboard hunt | `difflore status`, `recall --diff`, and accepted `fix` runs show `~N review-minutes saved` and recall counts |
+
+Example runtime receipt:
+
+```text
+Value (last 30d): ~12 review-minutes saved | 8 recalls | 3 ready for agents
+```
+
+## Pick Your Path
+
+| Path | Best for | Install | Account needed | Sync |
+|---|---|---|---|---|
+| Local CLI | Individual developers proving value in one repo | one `difflore` binary + `difflore agents install` | No | Local SQLite only |
+| Team Cloud | Teams sharing review memory across people and machines | Local CLI plus `difflore cloud login` | Yes | Team rules, managed embeddings, dashboards |
+
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/difflore/difflore-cli/releases/latest/download/difflore-cli-installer.sh | sh
@@ -52,6 +75,11 @@ difflore recall --diff
 difflore agents install
 ```
 
+You can also start before importing history: once agents are wired, tell your
+agent "remember this" for a review rule you want to keep. Conversation captures
+land locally immediately; cloud sync and review import are upgrades, not a
+prerequisite.
+
 After setup, your agent can ask DiffLore for review memory before it edits a
 file. You can also preview or apply rule-aware local fixes:
 
@@ -74,6 +102,7 @@ DiffLore never commits, pushes, opens PRs, or posts GitHub comments.
 | `difflore fix --preview` | Preview rule-aware local fixes |
 | `difflore status` | Show local memory health and next steps |
 | `difflore agents install` | Wire supported local agents |
+| `difflore update` | Refresh agent blocks, hook shims, and doctor checks |
 | `difflore doctor --report` | Write a diagnostic report |
 
 Run `difflore --help` for the full command list.

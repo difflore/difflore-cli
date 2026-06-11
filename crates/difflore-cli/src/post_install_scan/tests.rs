@@ -84,10 +84,7 @@ fn guard_skip_priority_matches_blame_order() {
     s.is_git_repo = false;
     s.has_github_remote = false;
     s.gh_on_path = false;
-    assert_eq!(
-        run_guards_with(s, true),
-        Err(SkipReason::ExplicitlySkipped)
-    );
+    assert_eq!(run_guards_with(s, true), Err(SkipReason::ExplicitlySkipped));
 }
 
 #[test]

@@ -6,8 +6,8 @@
 //! workspace so accepted fixes can link to team review history. Those
 //! helpers are `pub(super)` so sibling cloud modules reuse the same state.
 
-use crate::support::util::{exit_code, exit_err};
 use crate::style;
+use crate::support::util::{exit_code, exit_err};
 
 pub(super) const TEAM_WORKSPACE_URL: &str = "https://difflore.dev/team";
 

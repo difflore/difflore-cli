@@ -1,10 +1,10 @@
 use uuid::Uuid;
 
-use crate::error::CoreError;
 use crate::domain::models::{
     ProviderAddInput, ProviderRecord, ProviderRemoveInput, ProviderSetActiveInput,
     ProviderUpdateInput,
 };
+use crate::error::CoreError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CheckAuthInput {

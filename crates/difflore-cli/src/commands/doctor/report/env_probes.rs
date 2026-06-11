@@ -1,7 +1,7 @@
 use crate::commands::doctor::audit_history::load_audit_history;
 use crate::commands::doctor::labels::doctor_probe_freshness;
-use crate::support::util::git_str;
 use crate::hook::runtime as hook_runtime;
+use crate::support::util::git_str;
 
 use super::formatters::doctor_command_version;
 use super::validators::{
@@ -467,7 +467,8 @@ pub(super) fn memory_pipeline_section(s: &mut String) {
             "  → self-host only: set `DIFFLORE_BFS_RETRIEVAL=1` on the cloud worker (experimental — expands matches via Supersedes/RelatesTo edges, capped 3 hops). Managed cloud will flip default-on once eval clears regression bar."
         );
     }
-    let rerank_env = difflore_core::infra::env::var(difflore_core::infra::env::DIFFLORE_INTENT_RERANK);
+    let rerank_env =
+        difflore_core::infra::env::var(difflore_core::infra::env::DIFFLORE_INTENT_RERANK);
     let rerank_state = match rerank_env.as_deref() {
         None => "default ON · cap=5".to_owned(),
         Some(v) if matches!(v.trim(), "0" | "false" | "" | "off") => "explicitly OFF".to_owned(),

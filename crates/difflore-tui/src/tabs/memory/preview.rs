@@ -8,9 +8,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-use crate::theme::origin_color;
 use super::{RulesFocus, RulesOriginFilter, RulesRepoFilter};
 use crate::plan::{PlanState, Tier};
+use crate::theme::origin_color;
 
 use crate::widgets::truncate;
 
@@ -426,9 +426,10 @@ fn latest_embed_cap_from_activity() -> Option<(u32, u32)> {
     difflore_core::observability::activity_stream::tail(20)
         .into_iter()
         .find_map(|event| match event.payload {
-            difflore_core::observability::activity_stream::ActivityPayload::EmbedCapReached { cap, used } => {
-                Some((used, cap))
-            }
+            difflore_core::observability::activity_stream::ActivityPayload::EmbedCapReached {
+                cap,
+                used,
+            } => Some((used, cap)),
             _ => None,
         })
 }

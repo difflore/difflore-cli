@@ -6,10 +6,12 @@ use crate::style;
 use colored::Colorize;
 use gate4agent::CliTool;
 
-use difflore_core::domain::models::{ProviderAddInput, ProviderRemoveInput, ProviderSetActiveInput};
+use difflore_core::domain::models::{
+    ProviderAddInput, ProviderRemoveInput, ProviderSetActiveInput,
+};
 
-use crate::support::util::{confirm_destructive, exit_err};
 use crate::runtime::CommandContext;
+use crate::support::util::{confirm_destructive, exit_err};
 
 /// Resolve a secret from, in order: explicit flag, env var, or piped stdin.
 /// Used by cloud login to pick up `DIFFLORE_CLOUD_TOKEN`.
@@ -246,7 +248,9 @@ pub(crate) async fn handle_providers_remove(ctx: &CommandContext, id: &str, yes:
     match difflore_core::domain::providers::remove(db, input).await {
         Ok(()) => {
             println!("{} Provider removed: {}", style::ok(style::sym::OK), id);
-            let remaining = difflore_core::domain::providers::list(db).await.unwrap_or_default();
+            let remaining = difflore_core::domain::providers::list(db)
+                .await
+                .unwrap_or_default();
             let any_active = remaining.iter().any(|p| p.is_active);
             if !any_active && !remaining.is_empty() {
                 println!();
