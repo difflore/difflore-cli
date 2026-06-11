@@ -1,30 +1,19 @@
-//! Comment parsing, durability-signal derivation, metadata serialization,
-//! and PR filtering/dedup helpers.
+//! Comment parsing, durability-signal derivation, and PR filtering/dedup
+//! helpers.
 //!
 //! Turns the raw GraphQL wire shapes in `schema.rs` into the comment metadata
 //! and candidate set the importer persists. Holds no HTTP / `gh`-CLI concerns.
+//! The provider-neutral signal/metadata shapes live in
+//! [`crate::ingest::common`]; this module only owns the GitHub-specific
+//! constructor from GraphQL reaction groups.
 
 use super::schema::{PrNode, ReactionGroupNode};
-
-/// Durability signal for a single comment, derived from the GraphQL
-/// thread/reaction shape and serialized into the comment metadata JSON so the
-/// local-candidate gate can read it back without a second GitHub round-trip.
-/// Every field is neutral-by-default so a missing GraphQL field never blocks
-/// import.
-#[derive(Debug, Default, Clone)]
-pub(super) struct CommentDurabilitySignal {
-    /// The parent review thread was resolved (adoption proxy).
-    pub(super) resolved: bool,
-    pub(super) reactions_total: i64,
-    pub(super) thumbs_up: i64,
-    pub(super) thumbs_down: i64,
-    /// Bodies of replies that came after this comment in the same thread, used
-    /// to detect a later contradiction. Empty for review bodies and standalone
-    /// issue comments.
-    pub(super) later_replies: Vec<String>,
-}
+use crate::ingest::common::CommentDurabilitySignal;
 
 impl CommentDurabilitySignal {
+    /// Derive the reaction half of the signal from GitHub's GraphQL
+    /// `reactionGroups` shape. Thread resolution and later replies are filled
+    /// in by the caller, which sees the whole thread.
     pub(super) fn from_reaction_groups(groups: &[ReactionGroupNode]) -> Self {
         let mut signal = Self::default();
         for group in groups {
@@ -38,27 +27,6 @@ impl CommentDurabilitySignal {
         }
         signal
     }
-
-    /// Serialize the non-neutral fields into the metadata object for the
-    /// confidence gate. Returns `None` for an all-neutral signal so metadata
-    /// stays byte-identical for comments with no signal.
-    pub(super) fn to_metadata_value(&self) -> Option<serde_json::Value> {
-        if !self.resolved
-            && self.reactions_total == 0
-            && self.thumbs_up == 0
-            && self.thumbs_down == 0
-            && self.later_replies.is_empty()
-        {
-            return None;
-        }
-        Some(serde_json::json!({
-            "resolved": self.resolved,
-            "reactionsTotal": self.reactions_total,
-            "thumbsUp": self.thumbs_up,
-            "thumbsDown": self.thumbs_down,
-            "laterReplies": &self.later_replies,
-        }))
-    }
 }
 
 pub(super) fn imported_external_id(repo: &str, source_repo: &str, db_id: i64) -> String {
@@ -67,44 +35,6 @@ pub(super) fn imported_external_id(repo: &str, source_repo: &str, db_id: i64) ->
     } else {
         format!("{repo}:{source_repo}:{db_id}")
     }
-}
-
-/// Build the per-comment metadata JSON string, merging the provenance keys
-/// (`filePath` / `sourceRepoFullName` / `attachedRepoFullName` / `sourceKind`)
-/// with the durability signal keys. Durability keys are added only when
-/// non-neutral, so a comment with no signal serializes to the legacy shape.
-pub(super) fn comment_metadata_json(
-    file_path: Option<&str>,
-    source_repo: &str,
-    attached_repo: &str,
-    source_kind: Option<&str>,
-    signal: &CommentDurabilitySignal,
-) -> String {
-    let mut obj = serde_json::Map::new();
-    obj.insert(
-        "filePath".to_owned(),
-        file_path.map_or(serde_json::Value::Null, |p| {
-            serde_json::Value::String(p.to_owned())
-        }),
-    );
-    obj.insert(
-        "sourceRepoFullName".to_owned(),
-        serde_json::Value::String(source_repo.to_owned()),
-    );
-    obj.insert(
-        "attachedRepoFullName".to_owned(),
-        serde_json::Value::String(attached_repo.to_owned()),
-    );
-    if let Some(kind) = source_kind {
-        obj.insert(
-            "sourceKind".to_owned(),
-            serde_json::Value::String(kind.to_owned()),
-        );
-    }
-    if let Some(serde_json::Value::Object(signal_obj)) = signal.to_metadata_value() {
-        obj.extend(signal_obj);
-    }
-    serde_json::Value::Object(obj).to_string()
 }
 
 /// Drop any fetched PR whose `number` is in `exclude_prs`, in place. Runs
@@ -145,45 +75,6 @@ mod tests {
         assert_eq!(signal.thumbs_up, 3);
         assert_eq!(signal.thumbs_down, 1);
         assert_eq!(signal.reactions_total, 6);
-    }
-
-    #[test]
-    fn neutral_signal_serializes_to_none_so_legacy_metadata_is_unchanged() {
-        let signal = CommentDurabilitySignal::default();
-        assert!(signal.to_metadata_value().is_none());
-        // The merged metadata for a no-signal comment must keep exactly the
-        // legacy provenance keys (no durability keys leak in).
-        let json = comment_metadata_json(Some("src/lib.rs"), "acme/up", "acme/fork", None, &signal);
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["filePath"], "src/lib.rs");
-        assert_eq!(value["sourceRepoFullName"], "acme/up");
-        assert!(value.get("resolved").is_none());
-        assert!(value.get("reactionsTotal").is_none());
-        assert!(value.get("laterReplies").is_none());
-    }
-
-    #[test]
-    fn resolved_thread_with_replies_round_trips_through_metadata() {
-        let signal = CommentDurabilitySignal {
-            resolved: true,
-            reactions_total: 2,
-            thumbs_up: 2,
-            thumbs_down: 0,
-            later_replies: vec!["Done, thanks!".to_owned()],
-        };
-        let json = comment_metadata_json(
-            Some("src/lib.rs"),
-            "acme/up",
-            "acme/fork",
-            Some("issue_comment"),
-            &signal,
-        );
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["resolved"], true);
-        assert_eq!(value["thumbsUp"], 2);
-        assert_eq!(value["reactionsTotal"], 2);
-        assert_eq!(value["sourceKind"], "issue_comment");
-        assert_eq!(value["laterReplies"][0], "Done, thanks!");
     }
 
     #[test]

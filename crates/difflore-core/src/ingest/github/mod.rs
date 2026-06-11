@@ -7,9 +7,8 @@ use crate::review_store::{AddCommentInput, EnsureItemInput};
 mod parse;
 mod schema;
 
-use parse::{
-    CommentDurabilitySignal, comment_metadata_json, drop_excluded_prs, imported_external_id,
-};
+use crate::ingest::common::{CommentDurabilitySignal, comment_metadata_json};
+use parse::{drop_excluded_prs, imported_external_id};
 use schema::{DirectGraphResponse, GraphResponse, PrNode};
 
 // Public types
