@@ -76,14 +76,19 @@ impl WindsurfHookPayload {
                 cwd: extract_cwd(info),
                 session_id: None,
             }),
-            "pre_user_prompt" => Ok(HookEvent::UserPromptSubmit {
-                prompt: info
-                    .and_then(|v| v.get("user_prompt"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_owned(),
-                session_id: None,
-            }),
+            "pre_user_prompt" => {
+                let cwd = extract_cwd(info);
+                Ok(HookEvent::UserPromptSubmit {
+                    prompt: info
+                        .and_then(|v| v.get("user_prompt"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                    session_id: None,
+                    transcript_path: None,
+                    cwd: (!cwd.trim().is_empty()).then_some(cwd),
+                })
+            }
             "post_write_code" => {
                 let new_text = info
                     .and_then(|v| v.get("new_code").or_else(|| v.get("content")))
@@ -248,6 +253,8 @@ mod tests {
             HookEvent::UserPromptSubmit {
                 prompt: "hi there".into(),
                 session_id: None,
+                transcript_path: None,
+                cwd: None,
             }
         );
     }

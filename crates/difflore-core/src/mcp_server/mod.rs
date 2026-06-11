@@ -17,7 +17,9 @@ mod trust_proof;
 
 #[cfg(test)]
 pub(crate) use hook::set_detected_repos_for_current_dir_for_test;
-pub use hook::{HookRuleContext, fetch_relevant_rules_for_hook, run};
+pub use hook::{
+    HookRuleContext, fetch_relevant_rules_for_bash_error, fetch_relevant_rules_for_hook, run,
+};
 pub use pr_scope::{predict_pr_scope, predict_pr_scope_for_repos};
 #[cfg(test)]
 pub(crate) use tools::{HistoricalPr, predict_scope_from_corpus};

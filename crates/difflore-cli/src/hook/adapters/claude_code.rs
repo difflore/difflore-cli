@@ -126,6 +126,8 @@ impl ClaudeHookPayload {
             "UserPromptSubmit" => Ok(HookEvent::UserPromptSubmit {
                 prompt: self.prompt.unwrap_or_default(),
                 session_id: self.session_id.clone(),
+                transcript_path: self.transcript_path.clone(),
+                cwd: self.cwd.clone(),
             }),
             "Stop" => Ok(HookEvent::Stop {
                 session_id: self.session_id.clone(),
@@ -146,8 +148,12 @@ impl ClaudeHookPayload {
 /// gives raw tool input, not a unified diff: `Edit` carries
 /// `old_string`/`new_string`; `Write` carries just `content`. Line-prefix
 /// mechanics live in `synth::diff_old_new` / `synth::diff_content`.
-fn synthesise_diff(tool_input: Option<&Value>, _tool_response: Option<&Value>) -> Option<String> {
+fn synthesise_diff(tool_input: Option<&Value>, tool_response: Option<&Value>) -> Option<String> {
     let input = tool_input?;
+    if let Some(command) = input.get("command").and_then(|v| v.as_str()) {
+        let output = shell_output_text(tool_response);
+        return synth::diff_shell(Some(command), output.as_deref());
+    }
     if let (Some(old), Some(new)) = (
         input.get("old_string").and_then(|v| v.as_str()),
         input.get("new_string").and_then(|v| v.as_str()),
@@ -156,6 +162,19 @@ fn synthesise_diff(tool_input: Option<&Value>, _tool_response: Option<&Value>) -
     }
     if let Some(content) = input.get("content").and_then(|v| v.as_str()) {
         return Some(synth::diff_content(content));
+    }
+    None
+}
+
+fn shell_output_text(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    if let Some(text) = value.as_str() {
+        return Some(text.to_owned());
+    }
+    for key in ["output", "stdout", "stderr", "content"] {
+        if let Some(text) = value.get(key).and_then(|v| v.as_str()) {
+            return Some(text.to_owned());
+        }
     }
     None
 }
@@ -261,6 +280,31 @@ mod tests {
         if let HookEvent::PostToolUse { diff, .. } = event {
             let diff = diff.expect("Write must synthesise a diff");
             assert!(diff.contains("+fn main() {}"), "got: {diff}");
+        } else {
+            panic!("expected PostToolUse");
+        }
+    }
+
+    #[test]
+    fn parse_bash_event_synthesises_shell_diff() {
+        let adapter = ClaudeCodeAdapter;
+        let raw = r#"{
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": { "command": "cargo test" },
+            "tool_response": {
+                "output": "error[E0308]: mismatched types\n  --> src/lib.rs:12:9\n"
+            }
+        }"#;
+        let event = adapter.parse_stdin(raw).expect("parse ok");
+        if let HookEvent::PostToolUse {
+            tool_name, diff, ..
+        } = event
+        {
+            assert_eq!(tool_name, "Bash");
+            let diff = diff.expect("Bash must synthesise a shell diff");
+            assert!(diff.contains("$ cargo test"), "got: {diff}");
+            assert!(diff.contains("+error[E0308]"), "got: {diff}");
         } else {
             panic!("expected PostToolUse");
         }

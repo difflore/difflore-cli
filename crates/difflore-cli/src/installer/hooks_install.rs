@@ -92,7 +92,7 @@ pub(super) fn merge_claude_code_hooks(settings_path: &Path, bin: &str) -> anyhow
 
     let event_matchers: &[(&str, Option<&str>)] = &[
         ("PreToolUse", Some("Read")),
-        ("PostToolUse", Some("Edit|MultiEdit|Write")),
+        ("PostToolUse", Some("Edit|MultiEdit|Write|Bash")),
         ("SessionStart", Some("startup|clear|compact")),
         ("UserPromptSubmit", None),
         ("Stop", None),
@@ -1016,7 +1016,7 @@ mod tests {
         assert_eq!(v["hooks"]["PreToolUse"][0]["matcher"], "Read");
         assert_eq!(
             v["hooks"]["PostToolUse"][0]["matcher"],
-            "Edit|MultiEdit|Write"
+            "Edit|MultiEdit|Write|Bash"
         );
         assert!(
             v["hooks"]["UserPromptSubmit"][0].get("matcher").is_none(),

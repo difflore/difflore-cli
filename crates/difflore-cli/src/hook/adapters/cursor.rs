@@ -112,6 +112,18 @@ impl CursorHookPayload {
                 old_text: None,
             }),
             "beforeSubmitPrompt" => {
+                let cwd = self
+                    .cwd
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        self.workspace_roots
+                            .as_ref()
+                            .and_then(|roots| roots.first())
+                            .filter(|s| !s.trim().is_empty())
+                            .cloned()
+                    });
                 let prompt = self
                     .prompt
                     .or(self.query)
@@ -121,6 +133,8 @@ impl CursorHookPayload {
                 Ok(HookEvent::UserPromptSubmit {
                     prompt,
                     session_id: None,
+                    transcript_path: None,
+                    cwd,
                 })
             }
             "stop" => Ok(HookEvent::Stop {
@@ -331,6 +345,8 @@ mod tests {
             HookEvent::UserPromptSubmit {
                 prompt: "hello".into(),
                 session_id: None,
+                transcript_path: None,
+                cwd: None,
             }
         );
     }

@@ -124,6 +124,29 @@ pub async fn fetch_relevant_rules_for_hook(
     intent: &str,
     session_id: Option<&str>,
 ) -> Result<HookRuleContext, CoreError> {
+    fetch_relevant_rules_for_hook_inner(db, index_pool, file, intent, session_id).await
+}
+
+/// Bash-error recall uses the same retrieval/ranking path as hook rule recall,
+/// but it must not inherit post-edit cache behavior or copy that talks about a
+/// "current change".
+pub async fn fetch_relevant_rules_for_bash_error(
+    db: &SqlitePool,
+    index_pool: &SqlitePool,
+    file: &str,
+    intent: &str,
+    session_id: Option<&str>,
+) -> Result<HookRuleContext, CoreError> {
+    fetch_relevant_rules_for_hook_inner(db, index_pool, file, intent, session_id).await
+}
+
+async fn fetch_relevant_rules_for_hook_inner(
+    db: &SqlitePool,
+    index_pool: &SqlitePool,
+    file: &str,
+    intent: &str,
+    session_id: Option<&str>,
+) -> Result<HookRuleContext, CoreError> {
     let trace = crate::infra::env::trace_hook();
     let started = std::time::Instant::now();
     let mut last = started;
@@ -144,7 +167,8 @@ pub async fn fetch_relevant_rules_for_hook(
     let ext_key = super::hook_short_circuit::extension_key(file);
     let short_circuit_mode = crate::infra::env::hook_short_circuit_mode();
     let short_circuit_cache = super::hook_short_circuit::global_cache();
-    let is_post_edit_path = intent != "pre-read";
+    let is_bash_error_path = intent == "bash-error" || intent.starts_with("bash-error ");
+    let is_post_edit_path = intent != "pre-read" && !is_bash_error_path;
     let short_circuit_now = is_post_edit_path
         && !ext_key.is_empty()
         && match short_circuit_mode {
@@ -267,6 +291,8 @@ pub async fn fetch_relevant_rules_for_hook(
 
     let (hook_label, hook_tool) = if intent == "pre-read" {
         ("pre-read", "hook_pre_read")
+    } else if is_bash_error_path {
+        ("bash-error", "hook_bash_error")
     } else {
         ("post-edit", "hook_post_edit")
     };
@@ -357,12 +383,17 @@ pub async fn fetch_relevant_rules_for_hook(
     }
 
     let n = injected;
+    let applies_to = if is_bash_error_path {
+        "current failure"
+    } else {
+        "current change"
+    };
     text.push_str(&format!(
         "\n> DiffLore surfaced {} team memor{} via {hook_label} hook as silent context. \
-         If a memory actually applies to the current change, cite its number AND the \
+         If a memory actually applies to the {applies_to}, cite its number AND the \
          `learned from <repo>` source if the header shows one — e.g. \"applying Memory 2: \
          Don't strip null from coalesce (learned from acme/widgets)\" — so the user sees \
-         which past team review judgment guided the change. Otherwise ignore — do not \
+         which past team review judgment guided the work. Otherwise ignore — do not \
          narrate or list memories that do not apply.",
         n,
         if n == 1 { "y" } else { "ies" },
@@ -381,7 +412,7 @@ pub async fn fetch_relevant_rules_for_hook(
 
     // Mirror the MCP path's telemetry emission for hook recalls.
     emit_trajectory_step(&TrajectoryStep::McpResponseSize {
-        tool: format!("hook_{hook_label}"),
+        tool: hook_tool.to_owned(),
         total_tokens: estimate_tokens(&text),
         rules_injected: n,
     });

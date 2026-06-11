@@ -87,13 +87,16 @@ pub enum HookEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
     },
-    /// User sent a prompt to the assistant. Currently a noop — the
-    /// dispatcher accepts and discards. Kept so adapters can parse the
-    /// platform event without erroring; reserved for future use.
+    /// User sent a prompt to the assistant. The dispatcher uses this as a
+    /// lightweight turn watermark for periodic session mining.
     UserPromptSubmit {
         prompt: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript_path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
     },
     /// Assistant finished its turn (tool loop drained, response shipped).
     Stop {

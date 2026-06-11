@@ -82,6 +82,13 @@ pub struct ExistingRule {
     /// Trimmed body so full bodies don't blow the prompt budget once the
     /// user has 50+ rules.
     pub body_snippet: String,
+    /// Stored glob scope for the existing rule. The worker reuses this
+    /// when the gate returns MERGE without fresh file evidence.
+    pub file_patterns: Vec<String>,
+    /// Stored source repo attribution for the existing rule. When present,
+    /// merge candidates inherit it so the cloud can apply the update to the
+    /// same project scope as the target rule.
+    pub source_repo: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,7 +123,9 @@ pub enum GateVerdict {
     /// body for the merged rule.
     Merge {
         rule_id: String,
+        title: Option<String>,
         updated_body: String,
+        file_patterns: Vec<String>,
     },
     /// Nothing reusable in the session — log + drop.
     Skip { reason: String },
@@ -207,6 +216,21 @@ contains a reusable, transferable rule about how to write code in this team's re
             out.push_str(rule.rule_id.trim());
             out.push_str(": ");
             out.push_str(&title);
+            if let Some(source_repo) = rule
+                .source_repo
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                out.push_str(" [source_repo: ");
+                out.push_str(source_repo);
+                out.push(']');
+            }
+            if !rule.file_patterns.is_empty() {
+                out.push_str(" [file_patterns: ");
+                out.push_str(&rule.file_patterns.join(", "));
+                out.push(']');
+            }
             if !snippet_short.is_empty() {
                 out.push_str(" — ");
                 out.push_str(&snippet_short);
@@ -445,7 +469,9 @@ fn parsed_to_verdict(parsed: GateJson, args: &GateArgs<'_>) -> Result<GateVerdic
             })?;
             Ok(GateVerdict::Merge {
                 rule_id,
+                title: parsed.title,
                 updated_body,
+                file_patterns: parsed.file_patterns,
             })
         }
         "SKIP" => Ok(GateVerdict::Skip {
@@ -503,11 +529,15 @@ mod tests {
                 rule_id: "rule-1".to_owned(),
                 title: "Prefer typed deserialization".to_owned(),
                 body_snippet: "Use serde structs instead of Value::as_str.".to_owned(),
+                file_patterns: vec!["src/**/*.rs".to_owned()],
+                source_repo: Some("owner/repo".to_owned()),
             },
             ExistingRule {
                 rule_id: "rule-2".to_owned(),
                 title: "Hard-deny dbg!".to_owned(),
                 body_snippet: "Workspace forbids debug macros in committed code.".to_owned(),
+                file_patterns: vec!["**/*.rs".to_owned()],
+                source_repo: None,
             },
         ];
         let pairs = vec![pair("hi", "hello")];
@@ -565,6 +595,8 @@ mod tests {
                 rule_id: format!("rule-{i}"),
                 title: format!("title-{i}"),
                 body_snippet: format!("snippet-{i}"),
+                file_patterns: Vec::new(),
+                source_repo: None,
             });
         }
         let pairs = vec![pair("u", "a")];
@@ -709,13 +741,13 @@ mod tests {
     }
 
     #[test]
-    fn merge_verdict_carries_rule_id_and_updated_body() {
+    fn merge_verdict_carries_rule_id_body_and_scope_evidence() {
         let parsed = GateJson {
             verdict: "MERGE".to_owned(),
             rule_id: Some("rule-42".to_owned()),
             title: Some("Extended".to_owned()),
             body: Some("Refined body".to_owned()),
-            file_patterns: vec![],
+            file_patterns: vec!["src/session.rs".to_owned()],
             reason: None,
         };
         let pairs = vec![pair("u", "a")];
@@ -725,7 +757,9 @@ mod tests {
             verdict,
             GateVerdict::Merge {
                 rule_id: "rule-42".to_owned(),
+                title: Some("Extended".to_owned()),
                 updated_body: "Refined body".to_owned(),
+                file_patterns: vec!["src/session.rs".to_owned()],
             }
         );
     }
@@ -824,6 +858,8 @@ mod tests {
             rule_id: "rule-1".to_owned(),
             title: "Prefer typed parse".to_owned(),
             body_snippet: "..".to_owned(),
+            file_patterns: vec!["**/*.rs".to_owned()],
+            source_repo: Some("owner/repo".to_owned()),
         };
         assert_eq!(r.clone(), r);
     }

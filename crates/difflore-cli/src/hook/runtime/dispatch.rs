@@ -113,7 +113,16 @@ async fn dispatch_hook_event_with_state(
             new_text,
             old_text,
         } => {
-            // Act only on file-mutating tools: acting on Read/Bash would flood
+            if tool_name == "Bash" {
+                return super::bash_error::recall_for_bash_error(
+                    hot_state,
+                    diff.as_deref(),
+                    session_id.as_deref(),
+                )
+                .await;
+            }
+
+            // Act only on file-mutating tools: acting on Read would flood
             // the agent with irrelevant rule context for zero value.
             if !matches!(tool_name.as_str(), "Edit" | "Write" | "MultiEdit") {
                 return Ok(HookResult::noop());
@@ -209,7 +218,35 @@ async fn dispatch_hook_event_with_state(
                 _ => Ok(HookResult::noop()),
             }
         }
-        HookEvent::UserPromptSubmit { .. } => Ok(HookResult::noop()),
+        HookEvent::UserPromptSubmit {
+            prompt,
+            session_id,
+            transcript_path,
+            cwd,
+        } => {
+            // Session-mine mid-session cadence: one cheap state-file bump per
+            // prompt, with the actual mining worker detached only every
+            // TURNS_PER_FIRE prompts. This keeps normal prompt handling off the
+            // DB / LLM path.
+            if let Ok(state_path) =
+                crate::session_mine::trigger::state_file_for_project(cwd.as_deref())
+                && crate::session_mine::trigger::should_trigger_after_user_prompt(
+                    &state_path,
+                    session_id.as_deref(),
+                )
+            {
+                crate::session_mine::run_worker_detached(
+                    client_name.to_owned(),
+                    transcript_path,
+                    session_id,
+                    cwd,
+                );
+            }
+            if let Some(nudge) = super::remember_nudge::nudge_for_prompt(&prompt) {
+                return Ok(nudge);
+            }
+            Ok(HookResult::noop())
+        }
         HookEvent::Stop {
             session_id,
             transcript_path,
@@ -228,7 +265,8 @@ async fn dispatch_hook_event_with_state(
             // (`force_session_end = true`) so its last few pairs get a chance
             // to mine into a candidate rule. The worker is detached and
             // best-effort — it must never delay or fail the hook output.
-            if let Ok(state_path) = crate::session_mine::trigger::state_file_for_cwd()
+            if let Ok(state_path) =
+                crate::session_mine::trigger::state_file_for_project(cwd.as_deref())
                 && crate::session_mine::trigger::should_trigger_now_with_force(&state_path, 0, true)
             {
                 crate::session_mine::run_worker_detached(

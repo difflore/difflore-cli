@@ -78,10 +78,21 @@ pub async fn sync_skills_filtered(
     exclude_ids: &[String],
 ) -> Result<Option<SyncResult>, crate::CoreError> {
     let exclude: std::collections::HashSet<&str> = exclude_ids.iter().map(String::as_str).collect();
+    let ids_for_scope: Vec<String> = skills
+        .iter()
+        .filter(|s| !exclude.contains(s.id.as_str()))
+        .map(|s| s.id.clone())
+        .collect();
+    let scope_by_id = load_sync_hash_scope(&ids_for_scope).await;
     let local_hashes: std::collections::HashMap<String, String> = skills
         .iter()
         .filter(|s| !exclude.contains(s.id.as_str()))
-        .map(|skill| (skill.id.clone(), skill_content_hash(skill)))
+        .map(|skill| {
+            (
+                skill.id.clone(),
+                skill_content_hash(skill, scope_by_id.get(&skill.id)),
+            )
+        })
         .collect();
     let payload = serde_json::json!({ "localHashes": local_hashes });
 
@@ -460,7 +471,46 @@ pub async fn fetch_cloud_status(client: &CloudClient) -> CloudStatus {
     }
 }
 
-fn skill_content_hash(skill: &SkillRecord) -> String {
+#[derive(Debug, Clone, Default)]
+struct SyncHashScope {
+    file_patterns: Vec<String>,
+    source_repo: Option<String>,
+}
+
+async fn load_sync_hash_scope(ids: &[String]) -> std::collections::HashMap<String, SyncHashScope> {
+    let mut out = std::collections::HashMap::new();
+    if ids.is_empty() {
+        return out;
+    }
+    let Ok(db) = crate::infra::db::init_db().await else {
+        return out;
+    };
+    let Ok(ids_json) = serde_json::to_string(ids) else {
+        return out;
+    };
+    let Ok(rows) = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+        "SELECT id, file_patterns, source_repo
+           FROM skills WHERE id IN (SELECT value FROM json_each(?1))",
+    )
+    .bind(ids_json)
+    .fetch_all(&db)
+    .await
+    else {
+        return out;
+    };
+    for (id, file_patterns_raw, source_repo) in rows {
+        out.insert(
+            id,
+            SyncHashScope {
+                file_patterns: parse_file_patterns_for_hash(file_patterns_raw.as_deref()),
+                source_repo,
+            },
+        );
+    }
+    out
+}
+
+fn skill_content_hash(skill: &SkillRecord, scope: Option<&SyncHashScope>) -> String {
     let skill_md_path = match skills_base_dir() {
         Ok(base) => Some(
             base.join(&skill.source)
@@ -493,7 +543,8 @@ fn skill_content_hash(skill: &SkillRecord) -> String {
         None => fallback_skill_content_for_hash(skill),
     };
 
-    let digest = sha2::Sha256::digest(content.as_bytes());
+    let payload = rule_sync_hash_payload_json(skill, scope, &content);
+    let digest = sha2::Sha256::digest(payload.as_bytes());
     use std::fmt::Write as _;
     digest
         .iter()
@@ -501,6 +552,68 @@ fn skill_content_hash(skill: &SkillRecord) -> String {
             let _ = write!(acc, "{b:02x}");
             acc
         })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuleSyncHashPayload<'a> {
+    content: &'a str,
+    file_patterns: Vec<String>,
+    source_repo: Option<String>,
+    tags: Vec<String>,
+    version: &'a str,
+}
+
+fn rule_sync_hash_payload_json(
+    skill: &SkillRecord,
+    scope: Option<&SyncHashScope>,
+    content: &str,
+) -> String {
+    let version = clean_string(Some(&skill.version)).unwrap_or_default();
+    serde_json::to_string(&RuleSyncHashPayload {
+        content,
+        file_patterns: clean_string_array(
+            scope
+                .map(|scope| scope.file_patterns.as_slice())
+                .unwrap_or_default()
+                .iter(),
+        ),
+        source_repo: clean_string(scope.and_then(|scope| scope.source_repo.as_deref())),
+        tags: clean_string_array(skill.tags.iter()),
+        version: &version,
+    })
+    .unwrap_or_else(|_| {
+        format!(
+            r#"{{"content":{},"filePatterns":[],"sourceRepo":null,"tags":[],"version":""}}"#,
+            serde_json::to_string(content).unwrap_or_else(|_| "\"\"".to_owned())
+        )
+    })
+}
+
+fn parse_file_patterns_for_hash(raw: Option<&str>) -> Vec<String> {
+    raw.and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
+        .unwrap_or_default()
+}
+
+fn clean_string(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn clean_string_array<'a>(values: impl Iterator<Item = &'a String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for value in values {
+        let Some(cleaned) = clean_string(Some(value)) else {
+            continue;
+        };
+        if out.contains(&cleaned) {
+            continue;
+        }
+        out.push(cleaned);
+    }
+    out
 }
 
 fn warn_skill_hash_fallback(message: &str) {
@@ -706,8 +819,13 @@ mod tests {
             origin: "pr_review".into(),
         };
 
+        let expected_payload = r#"{"content":"prefer check prompt for hashing","filePatterns":[],"sourceRepo":null,"tags":[],"version":"1.0.0"}"#;
+        assert_eq!(
+            rule_sync_hash_payload_json(&skill, None, "prefer check prompt for hashing"),
+            expected_payload
+        );
         let expected = {
-            let digest = sha2::Sha256::digest(b"prefer check prompt for hashing");
+            let digest = sha2::Sha256::digest(expected_payload.as_bytes());
             use std::fmt::Write as _;
             digest
                 .iter()
@@ -717,6 +835,48 @@ mod tests {
                 })
         };
 
-        assert_eq!(skill_content_hash(&skill), expected);
+        assert_eq!(skill_content_hash(&skill, None), expected);
+    }
+
+    #[test]
+    fn skill_content_hash_changes_when_scope_metadata_changes() {
+        let skill = SkillRecord {
+            id: "scoped-cloud-rule".into(),
+            name: "Scoped cloud rule".into(),
+            source: "cloud".into(),
+            directory: "missing-cloud-rule".into(),
+            version: "1.0.0".into(),
+            description: "same body".into(),
+            r#type: "review_standard".into(),
+            engines: vec![],
+            tags: vec!["origin:session_mined".into()],
+            trigger: None,
+            check_prompt: Some("same body".into()),
+            repo_owner: None,
+            repo_name: None,
+            repo_branch: None,
+            readme_url: None,
+            enabled_for_codex: true,
+            enabled_for_claude: true,
+            enabled_for_gemini: true,
+            enabled_for_cursor: true,
+            installed_at: "2026-05-11T00:00:00Z".into(),
+            updated_at: "2026-05-11T00:00:00Z".into(),
+            enforcement: None,
+            origin: "pr_review".into(),
+        };
+        let rust_scope = SyncHashScope {
+            file_patterns: vec!["src/**/*.rs".into()],
+            source_repo: Some("acme/widgets".into()),
+        };
+        let ts_scope = SyncHashScope {
+            file_patterns: vec!["packages/**/*.ts".into()],
+            source_repo: Some("acme/widgets".into()),
+        };
+
+        assert_ne!(
+            skill_content_hash(&skill, Some(&rust_scope)),
+            skill_content_hash(&skill, Some(&ts_scope))
+        );
     }
 }

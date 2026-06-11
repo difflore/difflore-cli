@@ -1,8 +1,10 @@
 use crate::hook::adapters;
 
+mod bash_error;
 mod dispatch;
 mod drift_report;
 mod fire_log;
+mod remember_nudge;
 
 pub(crate) use dispatch::hook_output_for_raw;
 pub(crate) use fire_log::{HookFireSummary, hook_fire_summary_24h};
