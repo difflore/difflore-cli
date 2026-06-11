@@ -67,6 +67,21 @@ pub(super) fn source_repo_from_metadata(
     }
 }
 
+/// Read the inline comment's file path back out of the per-comment metadata
+/// JSON (the `filePath` key written at import time). `None` for top-level
+/// review bodies and comments without a recorded path — losing it here used
+/// to null `file_path` on every uploaded comment, degrading the file-pattern
+/// quality of cloud-extracted rules.
+pub(super) fn comment_file_path_from_metadata(metadata: Option<&str>) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(metadata?).ok()?;
+    value
+        .get("filePath")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
 pub(super) fn imported_review_upload(
     item: &ReviewItemWithComments,
 ) -> Option<ImportedReviewUpload> {
@@ -75,7 +90,7 @@ pub(super) fn imported_review_upload(
         .comments
         .iter()
         .map(|c| ImportedCommentUpload {
-            file_path: None,
+            file_path: comment_file_path_from_metadata(c.metadata.as_deref()),
             line_number: c.line_number.unwrap_or(0),
             content: c.content.clone(),
             author: c.author.clone(),

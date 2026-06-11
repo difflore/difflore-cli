@@ -553,7 +553,8 @@ mod tests {
     };
     use super::scope::file_pattern_from_path;
     use super::upload::{
-        build_upload_batches, cloud_upload_next_step_commands, imported_review_upload,
+        build_upload_batches, cloud_upload_next_step_commands, comment_file_path_from_metadata,
+        imported_review_upload,
     };
     use super::{ImportArgs, dry_run_payload, import_json_payload, validate_args};
 
@@ -776,6 +777,44 @@ mod tests {
 
         assert_eq!(upload.repo_full_name, "user/fork");
         assert_eq!(upload.source_repo_full_name, None);
+    }
+
+    #[test]
+    fn import_upload_payload_preserves_inline_comment_file_path() {
+        let mut item = imported_item(Some("user/fork"), None);
+        item.comments[0].metadata = Some(
+            r#"{"filePath":"src/http/request.rs","sourceRepoFullName":"user/fork","attachedRepoFullName":"user/fork","resolved":true}"#
+                .to_owned(),
+        );
+
+        let upload = imported_review_upload(&item).expect("review with comments should upload");
+
+        assert_eq!(
+            upload.comments[0].file_path.as_deref(),
+            Some("src/http/request.rs"),
+            "the inline comment's path must flow into the cloud payload so extraction can derive file_patterns"
+        );
+    }
+
+    #[test]
+    fn import_upload_payload_leaves_file_path_none_without_a_recorded_path() {
+        // Legacy rows / top-level review bodies carry no per-comment metadata.
+        let item = imported_item(Some("user/fork"), None);
+        let upload = imported_review_upload(&item).expect("review with comments should upload");
+        assert_eq!(upload.comments[0].file_path, None);
+
+        // Explicit null, blank, and unparseable metadata all degrade to None
+        // rather than erroring or uploading an empty-string path.
+        assert_eq!(
+            comment_file_path_from_metadata(Some(r#"{"filePath":null}"#)),
+            None
+        );
+        assert_eq!(
+            comment_file_path_from_metadata(Some(r#"{"filePath":"  "}"#)),
+            None
+        );
+        assert_eq!(comment_file_path_from_metadata(Some("not json")), None);
+        assert_eq!(comment_file_path_from_metadata(None), None);
     }
 
     #[test]
