@@ -77,11 +77,38 @@ impl std::fmt::Display for Mode {
     }
 }
 
-/// Local-socket endpoint shared by server, async client, and blocking shim.
-/// Honours `DIFFLORE_HOME` (via the core data-home resolver) so tests and
-/// sandboxes redirect the socket together with the rest of the data dir.
-pub fn endpoint() -> Result<std::path::PathBuf, String> {
-    Ok(difflore_core::infra::paths::data_home()?.join("hook-forward.sock"))
+/// Conservative read timeout (ms) for the shim's blocking round-trip. A warm
+/// daemon answers in single-digit milliseconds; this only bounds the *bad*
+/// case where a daemon is alive (socket connectable) but its handler is wedged,
+/// so the shim falls back in-process instead of stalling the user's edit.
+pub const BLOCKING_READ_TIMEOUT_MS: u64 = 3_000;
+
+/// Local-socket endpoint for a specific project hash. Each repo gets its own
+/// `hook-forward-<hash>.sock` so a warm daemon only ever serves the one project
+/// whose per-project index pool it froze at launch — index pools cannot cross
+/// repos. The file lives in the data-home *root* (not under `projects/{hash}/`)
+/// to keep the Unix `sun_path` short (~104-byte limit). Honours `DIFFLORE_HOME`
+/// via the core data-home resolver so tests and sandboxes redirect the socket
+/// together with the rest of the data dir.
+pub fn endpoint_for_hash(project_hash: &str) -> Result<std::path::PathBuf, String> {
+    Ok(difflore_core::infra::paths::data_home()?.join(format!("hook-forward-{project_hash}.sock")))
+}
+
+/// Endpoint for the project containing the current working directory. Shim and
+/// server both derive the hash from the same `current_project_root` →
+/// `project_hash_from_root` pipeline, so they agree on the socket name without
+/// putting `cwd` on the wire.
+pub fn endpoint_for_current_project() -> Result<std::path::PathBuf, String> {
+    endpoint_for_hash(&current_project_hash())
+}
+
+/// Stable per-project hash for the current working directory. Same derivation
+/// the daemon receives via `--project-hash`, so the shim's connect target and
+/// the daemon's frozen index pool refer to the same project.
+#[must_use]
+pub fn current_project_hash() -> String {
+    let root = difflore_core::infra::db::current_project_root();
+    difflore_core::infra::db::project_hash_from_root(&root)
 }
 
 /// Encode a request as the one NDJSON line the server expects.
@@ -108,28 +135,59 @@ pub fn decode_response_line(line: &str) -> Result<String, String> {
     }
 }
 
-/// Synchronous socket round-trip for the shim binary: write the request line,
-/// read the (length-capped) response. Kept blocking so the shim needs no
-/// runtime when the warm path is available.
-pub fn ipc_roundtrip_blocking(request_line: &str) -> Result<String, String> {
-    let path = endpoint()?;
+/// Connect (blocking) to a daemon serving `project_hash`, returning the live
+/// stream. Errors carry the OS [`io::ErrorKind`] so the single-instance probe
+/// can distinguish "no socket file" (`NotFound`) from "file present, nobody
+/// listening" (`ConnectionRefused`) — both mean "safe to (re)bind", but the
+/// distinction is useful in traces and tests.
+pub fn connect_blocking_for_hash(project_hash: &str) -> std::io::Result<BlockingStream> {
+    let path = endpoint_for_hash(project_hash).map_err(std::io::Error::other)?;
     let name = path
         .to_fs_name::<GenericFilePath>()
-        .map_err(|e| e.to_string())?;
-    let mut stream = BlockingStream::connect(name).map_err(|e| e.to_string())?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    BlockingStream::connect(name)
+}
+
+/// Synchronous socket round-trip for the shim binary: connect to the daemon
+/// serving the current project, write the request line, read the
+/// (length-capped) response. Kept blocking so the shim needs no runtime when
+/// the warm path is available.
+///
+/// The read is bounded by [`BLOCKING_READ_TIMEOUT_MS`] via a watchdog thread:
+/// the blocking trait offers no per-fd read timeout, and a wedged daemon
+/// (connectable socket, stuck handler) must not stall the user's edit. On
+/// timeout we return `Err` so the caller falls back in-process; the orphaned
+/// reader thread is harmless since the shim process exits immediately after.
+pub fn ipc_roundtrip_blocking(request_line: &str) -> Result<String, String> {
+    let hash = current_project_hash();
+    let mut stream = connect_blocking_for_hash(&hash).map_err(|e| e.to_string())?;
     stream
         .write_all(request_line.as_bytes())
         .map_err(|e| e.to_string())?;
     stream.flush().map_err(|e| e.to_string())?;
-    let mut response = String::new();
-    stream
-        .take(MAX_IPC_BYTES)
-        .read_to_string(&mut response)
-        .map_err(|e| e.to_string())?;
-    if response.trim().is_empty() {
-        return Err("hook forwarder returned an empty response".to_owned());
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut response = String::new();
+        let result = stream
+            .take(MAX_IPC_BYTES)
+            .read_to_string(&mut response)
+            .map(|_| response)
+            .map_err(|e| e.to_string());
+        // Receiver may already be gone (timeout fired); ignore the send error.
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(std::time::Duration::from_millis(BLOCKING_READ_TIMEOUT_MS)) {
+        Ok(Ok(response)) => {
+            if response.trim().is_empty() {
+                return Err("hook forwarder returned an empty response".to_owned());
+            }
+            Ok(response)
+        }
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err("hook forwarder read timed out".to_owned()),
     }
-    Ok(response)
 }
 
 #[cfg(test)]
@@ -171,5 +229,36 @@ mod tests {
         assert_eq!(line.trim().lines().count(), 1);
         let decoded: Request = serde_json::from_str(line.trim()).unwrap();
         assert_eq!(decoded.client, "claude-code");
+    }
+
+    #[test]
+    fn endpoint_for_hash_is_per_project_under_data_home_root() {
+        // Distinct hashes must map to distinct socket files so a daemon for one
+        // repo can never bind the path another repo's shim connects to.
+        let a = endpoint_for_hash("aaaaaaaaaaaa").expect("endpoint a");
+        let b = endpoint_for_hash("bbbbbbbbbbbb").expect("endpoint b");
+        assert_ne!(a, b, "different hashes must not collide on one socket");
+
+        // The hash appears in the file name, and the socket lives directly in
+        // the data-home root (not under projects/{hash}/) to keep sun_path short.
+        let name_a = a.file_name().and_then(|n| n.to_str()).expect("file name a");
+        assert_eq!(name_a, "hook-forward-aaaaaaaaaaaa.sock");
+        let root = difflore_core::infra::paths::data_home().expect("data home");
+        assert_eq!(a.parent(), Some(root.as_path()));
+
+        // The hash is a flat hex token, so the file name carries no path
+        // separator that could escape the data-home root.
+        assert!(!name_a.contains('/'));
+        assert!(!name_a.contains('\\'));
+    }
+
+    #[test]
+    fn current_project_endpoint_matches_explicit_hash() {
+        // The shim resolves the endpoint via `current_project_hash`; the daemon
+        // is launched with that same hash on the command line. Pin that the two
+        // derivations land on the same socket so they cannot drift.
+        let derived = endpoint_for_current_project().expect("current endpoint");
+        let explicit = endpoint_for_hash(&current_project_hash()).expect("explicit endpoint");
+        assert_eq!(derived, explicit);
     }
 }
