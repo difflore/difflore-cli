@@ -10,7 +10,7 @@ pub(super) fn tools_list() -> Value {
     json!([
         {
             "name": "search_rules",
-            "description": "Compact memory search. Returns rule ids/titles/origins plus match reasons before fetching details. Memory is scoped to the current git remotes; pass `repo_full_name` (GitHub owner/repo) when auto-detection is unavailable. When team review history is available, results include citedCount and trustRate so agents can prefer rules that led to accepted edits. Use with get_rules to expand only matched rules.",
+            "description": "Compact memory search. Returns rule ids/titles/origins plus match reasons before fetching details. Memory is scoped to the current git remotes; pass `repo_full_name` (GitHub owner/repo) when auto-detection is unavailable. Results are deterministically ordered (strict file-pattern hit, then relative-score band, then source priority manual > team > pr_review > extracted > conversation) and each carries a compact `why` ranking explanation (e.g. `strict-hit; band 9/10; source manual`). When team review history is available, results include citedCount and trustRate so agents can prefer rules that led to accepted edits. Use with get_rules to expand only matched rules.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

@@ -33,6 +33,13 @@ pub(crate) struct RuleBlockArgs<'a> {
     pub example_bad_label: &'a str,
     /// e.g. `"✅ Good:"` (MCP tool) or `"- Good:"` (hook).
     pub example_good_label: &'a str,
+    /// Compact whyRanked facts (`strict-hit; band 9/10; source manual`),
+    /// rendered as a `why:` segment on the header line. `None` (e.g.
+    /// cross-repo starter rules with no arbitration metadata) renders the
+    /// pre-whyRanked header byte-identically. Costs ~5–10 estimated tokens
+    /// per rule; the hook's injection budget gate sees it because the segment
+    /// is part of the rule block text it measures.
+    pub why: Option<&'a str>,
 }
 
 /// Render one rule's product-facing block: the title-in-header attribution
@@ -48,6 +55,7 @@ pub(crate) fn render_rule_block(args: &RuleBlockArgs<'_>) -> String {
         examples,
         example_bad_label,
         example_good_label,
+        why,
     } = args;
 
     // Pull the title out of the indexed body so the header is self-describing:
@@ -71,9 +79,13 @@ pub(crate) fn render_rule_block(args: &RuleBlockArgs<'_>) -> String {
     let source_seg = source
         .map(|s| format!(" \u{2190} learned from {s}"))
         .unwrap_or_default();
+    // whyRanked: surface the arbitration facts (strict hit / score band /
+    // source priority) on the same header line the agent already reads, so
+    // citing a memory carries its ranking justification for free.
+    let why_seg = why.map(|w| format!(" | why: {w}")).unwrap_or_default();
     let mut text = format!(
-        "## Memory {}: {}{} (rank score: {:.2} | raw: {:.3})\n\n",
-        position, title, source_seg, rel, rule.score
+        "## Memory {}: {}{} (rank score: {:.2} | raw: {:.3}{})\n\n",
+        position, title, source_seg, rel, rule.score, why_seg
     );
     if let Some(proof) = trust_evidence.get(&rule.skill_id)
         && let Some(label) = format_trust_evidence(proof)
@@ -166,5 +178,69 @@ pub(crate) async fn serve_and_record(
         strict_match_count: serve.strict_match_count,
         estimated_tokens: serve.estimated_tokens,
         served_at: chrono::Utc::now(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::estimate_tokens;
+    use super::{RuleBlockArgs, render_rule_block};
+    use crate::context::retrieval::ScoredRuleChunk;
+    use crate::mcp_server::trust_proof::RuleTrustMap;
+
+    fn rule() -> ScoredRuleChunk {
+        ScoredRuleChunk {
+            skill_id: "why-budget".to_owned(),
+            content: "Rule ID: why-budget\nRule Name: Avoid unwrap in handlers\nSource: acme/widgets\n\nNever unwrap request payloads in handlers.".to_owned(),
+            score: 0.012,
+            confidence: 0.7,
+        }
+    }
+
+    fn render(why: Option<&str>) -> String {
+        let trust = RuleTrustMap::new();
+        render_rule_block(&RuleBlockArgs {
+            position: 1,
+            rel: 0.95,
+            rule: &rule(),
+            trust_evidence: &trust,
+            examples: None,
+            example_bad_label: "- Bad:",
+            example_good_label: "- Good:",
+            why,
+        })
+    }
+
+    #[test]
+    fn why_segment_lands_on_header_line_and_none_is_byte_identical() {
+        let with_why = render(Some("strict-hit; band 9/10; source manual"));
+        let header = with_why.lines().next().expect("header line");
+        assert!(
+            header.contains("| why: strict-hit; band 9/10; source manual)"),
+            "why segment must ride the header line: {header}"
+        );
+
+        let without = render(None);
+        assert!(
+            !without.contains("why:"),
+            "None must render the pre-whyRanked block byte-identically"
+        );
+    }
+
+    #[test]
+    fn why_segment_costs_about_five_to_twelve_tokens_per_rule() {
+        // Budget accounting (cli-spec ~1500 token hook budget): the why
+        // segment must stay a single-digit-ish token overhead per rule using
+        // the same chars/4 estimate the budget gate applies. The worst-case
+        // grammar ("strict-hit; band 10/10; source conversation") is the
+        // longest string the arbitration layer can emit.
+        let baseline = estimate_tokens(&render(None));
+        let with_why =
+            estimate_tokens(&render(Some("strict-hit; band 10/10; source conversation")));
+        let overhead = with_why.saturating_sub(baseline);
+        assert!(
+            (1..=13).contains(&overhead),
+            "why overhead must be ~5–12 estimated tokens, got {overhead}"
+        );
     }
 }

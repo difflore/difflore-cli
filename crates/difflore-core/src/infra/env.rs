@@ -64,6 +64,12 @@ pub const DIFFLORE_DEBUG_PROVIDERS: &str = "DIFFLORE_DEBUG_PROVIDERS";
 pub const DIFFLORE_BFS_RETRIEVAL: &str = "DIFFLORE_BFS_RETRIEVAL";
 pub const DIFFLORE_INTENT_RERANK: &str = "DIFFLORE_INTENT_RERANK";
 pub const DIFFLORE_DISABLE_RULES: &str = "DIFFLORE_DISABLE_RULES";
+/// Rollback switch for the deterministic serve-layer rule arbitration
+/// (strict-hit → 10% score band → source priority → confidence → skill_id).
+/// Truthy disables the arbitration re-sort at both serve exits (post-edit
+/// hook + `search_rules`), restoring the pre-arbitration ordering. The
+/// `why` ranking facts remain available either way.
+pub const DIFFLORE_DISABLE_SOURCE_PRIORITY: &str = "DIFFLORE_DISABLE_SOURCE_PRIORITY";
 /// Probability (0.0–0.10) that an MCP recall serve with caller-requested
 /// `top_k == 5` is transparently bumped to `top_k = 8` so we accrue data on
 /// whether rules at ranks 6–8 ever get accepted.
@@ -280,6 +286,14 @@ pub fn deep_recall_sample_rate() -> f32 {
         },
         None => DEFAULT_DEEP_RECALL_SAMPLE_RATE,
     }
+}
+
+/// Whether [`DIFFLORE_DISABLE_SOURCE_PRIORITY`] is set (truthy). Read on
+/// every call (no `OnceLock` cache) so an operator can roll the arbitration
+/// back without restarting a warm hook daemon, and so tests can flip it.
+#[must_use]
+pub fn source_priority_disabled() -> bool {
+    truthy(DIFFLORE_DISABLE_SOURCE_PRIORITY)
 }
 
 #[must_use]

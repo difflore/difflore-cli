@@ -1,9 +1,14 @@
+mod arbitration;
 mod past_verdicts;
 mod query_embed;
 mod rule_bodies;
 mod rules;
 mod scoring;
 
+pub use arbitration::{
+    ARBITRATION_BANDS, RuleRankingWhy, UNKNOWN_SOURCE_RANK, arbitrate_rule_order,
+    relative_score_band, source_rank,
+};
 pub use past_verdicts::{
     PastVerdictRecaller, merge_past_verdicts, retrieve_past_verdicts,
     retrieve_past_verdicts_by_text, retrieve_past_verdicts_by_text_with_team,

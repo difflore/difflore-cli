@@ -6,6 +6,7 @@ use std::sync::{Mutex, OnceLock};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::cloud::client::CloudClient;
+use crate::context::retrieval::RuleRankingWhy;
 use crate::context::{EmbeddingDiagnostics, gather_embedding_diagnostics_with_activity};
 use crate::error::CoreError;
 use crate::observability::trajectory::TrajectoryStep;
@@ -264,6 +265,21 @@ async fn fetch_relevant_rules_for_hook_inner(
         &strict_skill_ids,
     );
 
+    // Deterministic serve arbitration (strict hit → 10% score band → source
+    // priority → confidence → skill_id), reusing the metadata batch fetched
+    // above — zero additional queries. `DIFFLORE_DISABLE_SOURCE_PRIORITY`
+    // rolls the re-sort back; the why facts stay available either way.
+    let origin_by_skill_id: HashMap<String, String> = meta_map
+        .iter()
+        .map(|(id, row)| (id.clone(), row.origin.clone()))
+        .collect();
+    let why_map = crate::context::retrieval::arbitrate_rule_order(
+        &mut scored,
+        &strict_skill_ids,
+        &origin_by_skill_id,
+        crate::infra::env::source_priority_disabled(),
+    );
+
     // Optional cold-start fallback for repos with no scoped memory. Only
     // strict file matches from an already-built starter index are used,
     // and results remain labeled as cross-repo suggestions.
@@ -359,7 +375,10 @@ async fn fetch_relevant_rules_for_hook_inner(
             0.0
         };
         // Shared rule rendering; the hook only changes example labels
-        // and the memory number.
+        // and the memory number. The why segment (when arbitration metadata
+        // exists — cross-repo starter rules carry none) is part of the block
+        // text, so the budget gate below accounts for its ~5–10 tokens.
+        let why = why_map.get(&rule.skill_id).map(RuleRankingWhy::compact);
         let rule_text = render_rule_block(&RuleBlockArgs {
             position: injected + 1,
             rel,
@@ -368,6 +387,7 @@ async fn fetch_relevant_rules_for_hook_inner(
             examples: examples_map.get(&rule.skill_id),
             example_bad_label: "- Bad:",
             example_good_label: "- Good:",
+            why: why.as_deref(),
         });
 
         // First rule is always emitted regardless of budget — even an

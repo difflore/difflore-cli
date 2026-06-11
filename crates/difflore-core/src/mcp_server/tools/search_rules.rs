@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::context::retrieval::ScoredRuleChunk;
 use crate::context::rule_source::RuleDocument;
@@ -142,6 +142,15 @@ pub(crate) async fn tool_search_rules(
         &mut scored,
         exact_title_strict_match_chunks(&rules, intent, target_file, &repo_scopes),
     );
+    // Batch-fetch skill metadata BEFORE the strict rerank (moved up from the
+    // evidence-building site) so the post-gate arbitration below can read
+    // origin/source facts without a second query. The id set is the full
+    // candidate window, so every survivor of the rerank + gates is covered;
+    // only the late cross-repo starter set needs a supplemental fetch.
+    let candidate_ids: Vec<String> = scored.iter().map(|s| s.skill_id.clone()).collect();
+    let mut meta_map = fetch_skills_by_ids(&state.db, &candidate_ids)
+        .await
+        .map_err(|e| (-32603, format!("Failed to fetch rule metadata: {e}")))?;
     let strict_skill_ids = strict_file_match_ids_for_rules(&rules, target_file);
     scored = rerank_scored_rule_chunks_for_mcp_by_strict_file_matches(
         scored,
@@ -294,16 +303,40 @@ pub(crate) async fn tool_search_rules(
         }));
     }
 
-    // Batch-fetch skill metadata so each index entry gets title/origin/
-    // file_patterns without N+1 queries. A single SELECT IN (...) is cheaper and
-    // more reliable than parsing it back out of the generated content header.
+    // Supplement metadata for candidates the early (pre-rerank) batch fetch
+    // could not know about — only the cross-repo starter set, retrieved after
+    // the gates, can introduce new ids here.
+    let missing_meta_ids: Vec<String> = scored
+        .iter()
+        .filter(|s| !meta_map.contains_key(&s.skill_id))
+        .map(|s| s.skill_id.clone())
+        .collect();
+    if !missing_meta_ids.is_empty() {
+        let extra = fetch_skills_by_ids(&state.db, &missing_meta_ids)
+            .await
+            .map_err(|e| (-32603, format!("Failed to fetch rule metadata: {e}")))?;
+        meta_map.extend(extra);
+    }
+
+    // Deterministic serve arbitration AFTER the double gate (intent alignment
+    // + explicit recall threshold): strict hit → 10% score band → source
+    // priority → confidence → skill_id. Reuses the metadata fetched above —
+    // no additional queries. `DIFFLORE_DISABLE_SOURCE_PRIORITY` rolls the
+    // re-sort back; the why facts remain available either way.
+    let origin_by_skill_id: HashMap<String, String> = meta_map
+        .iter()
+        .map(|(id, row)| (id.clone(), row.origin.clone()))
+        .collect();
+    let why_map = crate::context::retrieval::arbitrate_rule_order(
+        &mut scored,
+        &strict_skill_ids,
+        &origin_by_skill_id,
+        crate::infra::env::source_priority_disabled(),
+    );
+
     let skill_ids: Vec<String> = scored.iter().map(|s| s.skill_id.clone()).collect();
-    let meta_map_fut = fetch_skills_by_ids(&state.db, &skill_ids);
-    let trust_evidence_fut =
-        super::super::trust_proof::fetch_cloud_top_rule_trust_evidence(&state.cloud);
-    let (meta_map_result, trust_evidence) = tokio::join!(meta_map_fut, trust_evidence_fut);
-    let meta_map =
-        meta_map_result.map_err(|e| (-32603, format!("Failed to fetch rule metadata: {e}")))?;
+    let trust_evidence =
+        super::super::trust_proof::fetch_cloud_top_rule_trust_evidence(&state.cloud).await;
 
     let mut entries: Vec<RuleMatchEvidenceRecord> = Vec::with_capacity(scored.len());
     for s in &scored {
@@ -326,6 +359,9 @@ pub(crate) async fn tool_search_rules(
             source_repo: meta.source_repo.clone().filter(|r| !r.trim().is_empty()),
             cited_count: proof.map(|p| p.cited_count),
             trust_rate: proof.and_then(|p| p.trust_rate),
+            why: why_map
+                .get(&s.skill_id)
+                .map(crate::context::retrieval::RuleRankingWhy::compact),
             evidence,
         });
     }

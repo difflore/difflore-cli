@@ -679,12 +679,18 @@ fn rule_match_record_serializes_cloud_trust_proof() {
         source_repo: Some("gin-gonic/gin".to_owned()),
         cited_count: Some(2),
         trust_rate: Some(1.0),
+        why: Some("strict-hit; band 9/10; source cloud".to_owned()),
         evidence: Vec::new(),
     };
 
     let value = serde_json::to_value(entry).expect("serializes");
     assert_eq!(value["citedCount"].as_i64(), Some(2));
     assert_eq!(value["trustRate"].as_f64(), Some(1.0));
+    assert_eq!(
+        value["why"].as_str(),
+        Some("strict-hit; band 9/10; source cloud"),
+        "whyRanked must serialize as the compact string"
+    );
 }
 
 #[test]
@@ -700,6 +706,7 @@ fn rule_match_record_omits_missing_cloud_trust_proof() {
         source_repo: None,
         cited_count: None,
         trust_rate: None,
+        why: None,
         evidence: Vec::new(),
     };
 
@@ -707,6 +714,10 @@ fn rule_match_record_omits_missing_cloud_trust_proof() {
     assert!(
         value.get("citedCount").is_none() && value.get("trustRate").is_none(),
         "proof fields should be omitted when cloud evidence is unavailable: {value}"
+    );
+    assert!(
+        value.get("why").is_none(),
+        "why must be omitted when arbitration metadata is unavailable: {value}"
     );
 }
 
@@ -886,6 +897,87 @@ async fn hook_injection_records_local_serve_proof() {
     assert_eq!(latest.tool, "hook_post_edit");
     assert_eq!(latest.file_path.as_deref(), Some("gin_test.go"));
     assert!(latest.estimated_tokens > 0);
+}
+
+#[tokio::test]
+async fn hook_injection_renders_why_segment_on_header() {
+    // whyRanked end to end on the hook path: the injected block's header
+    // carries the compact why segment (strict **/*.go hit, top survivor →
+    // band 10/10, remember_rule origin → conversation).
+    let state = build_state().await;
+    let rule_id = remember_rule_with_patterns(
+        &state,
+        "Return false rather than panic on invalid input",
+        "When binding user input fails validation, return false so callers can surface a 4xx.",
+        &["**/*.go"],
+    )
+    .await;
+    scope_rule_to_current_git_repo(&state, &rule_id).await;
+
+    let ctx = fetch_relevant_rules_for_hook(
+        &state.db,
+        state.index_pool.as_ref().expect("index pool"),
+        "binding/form.go",
+        "post-edit\nreturn false instead of panic on invalid input",
+        Some("hook-session"),
+    )
+    .await
+    .expect("hook recall");
+
+    assert!(
+        ctx.rule_ids.contains(&rule_id),
+        "hook should inject the matching rule, got {:?}",
+        ctx.rule_ids
+    );
+    assert!(
+        ctx.rendered
+            .contains("| why: strict-hit; band 10/10; source conversation"),
+        "hook header must carry the compact why segment: {}",
+        ctx.rendered.lines().next().unwrap_or_default()
+    );
+}
+
+#[tokio::test]
+async fn search_rules_results_carry_compact_why_ranking() {
+    let state = build_state().await;
+    let rule_id = remember_rule_with_patterns(
+        &state,
+        "Avoid unwrap in request handlers",
+        "Never unwrap request payloads in handlers; return structured errors instead.",
+        &["src/**/*.rs"],
+    )
+    .await;
+
+    let (body, _) = call_tool_json(
+        &state,
+        530,
+        "search_rules",
+        json!({
+            "file": "src/http/handler.rs",
+            "intent": "avoid unwrap in request handlers",
+            "repo_full_name": TEST_REPO,
+        }),
+    )
+    .await;
+
+    let results = body["results"].as_array().expect("results array");
+    let entry = results
+        .iter()
+        .find(|e| e["id"].as_str() == Some(rule_id.as_str()))
+        .unwrap_or_else(|| panic!("seeded rule must be recalled: {body}"));
+    let why = entry["why"].as_str().expect("why present on results");
+    assert!(
+        why.contains("strict-hit"),
+        "strict src/**/*.rs hit must surface in why: {why}"
+    );
+    assert!(
+        why.contains("band "),
+        "band fact must surface in why: {why}"
+    );
+    assert!(
+        why.contains("source conversation"),
+        "source priority fact must surface in why: {why}"
+    );
 }
 
 #[tokio::test]
