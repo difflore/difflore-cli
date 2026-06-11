@@ -1,3 +1,10 @@
+// The warm hook-forward daemon binds a filesystem-path local socket
+// (`interprocess` `GenericFilePath` listener), which is a Unix capability;
+// Windows named pipes live in a separate namespace and cannot bind these
+// paths. On Windows the shim falls back to the in-process hook path (covered
+// by `hook_shim_fallback.rs`), so these daemon lifecycle/isolation scenarios
+// are Unix-only by construction.
+#![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(unsafe_code)]
 //! Lifecycle + isolation tests for the warm hook-forward daemon.
