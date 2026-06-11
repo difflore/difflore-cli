@@ -1676,7 +1676,7 @@ fn print_patch_card(idx: usize, total: usize, issue: &ReviewIssueRecord) {
         style::warn(&format!("{pct}% low confidence"))
     };
 
-    println!("{}  [{idx}/{total}]  {file_loc}", style::pewter("--------"),);
+    println!("{}  [{idx}/{total}]  {file_loc}", style::pewter("--------"));
     println!(
         "       {} {}  |  {badge}",
         style::pewter("rule:"),

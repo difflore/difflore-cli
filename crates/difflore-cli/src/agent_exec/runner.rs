@@ -63,7 +63,7 @@ pub(super) async fn run(agent: AgentKind, prompt: &str, time_budget: Duration) -
     let spawn_result = match timeout(time_budget, spawn_and_capture(command, stdin_prompt)).await {
         Ok(Ok(output)) => output,
         Ok(Err(e)) => {
-            return GateResult::errored_with(format!("failed to spawn {}: {e}", binary.display(),));
+            return GateResult::errored_with(format!("failed to spawn {}: {e}", binary.display()));
         }
         Err(_) => {
             return GateResult::errored_with(format!(

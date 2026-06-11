@@ -53,7 +53,7 @@ pub fn maybe_offer_import_reviews(opts: &PostInstallScanOpts) -> PostInstallScan
     let exe = match runner::resolve_self_binary() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("{} {e}", style::warn("post-install import skipped:"),);
+            eprintln!("{} {e}", style::warn("post-install import skipped:"));
             return PostInstallScanOutcome::ImportFailed { error: e };
         }
     };
@@ -70,7 +70,7 @@ fn print_offer_header(max_prs: u32) {
         style::emerald("Want me to import the last"),
         style::emerald(&format!("{max_prs} PRs from this repo right now?")),
     );
-    println!("   {}", style::pewter("(~2 min, uses your gh CLI)"),);
+    println!("   {}", style::pewter("(~2 min, uses your gh CLI)"));
     println!();
     println!(
         "   {}",
@@ -117,7 +117,7 @@ fn print_outcome_footer(outcome: &PostInstallScanOutcome) {
         }
         PostInstallScanOutcome::ImportFailed { error } => {
             eprintln!();
-            eprintln!("{} {error}", style::warn("post-install import failed:"),);
+            eprintln!("{} {error}", style::warn("post-install import failed:"));
             eprintln!(
                 "  {} retry later with {}.",
                 style::pewter(sym::BULLET),
