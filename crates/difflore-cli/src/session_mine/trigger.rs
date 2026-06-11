@@ -73,7 +73,7 @@ pub fn should_trigger_after_user_prompt(state_path: &Path, session_id: Option<&s
     if let Some(session_id) = session_id
         && state.last_session_id != session_id
     {
-        state.last_session_id = session_id.to_owned();
+        session_id.clone_into(&mut state.last_session_id);
         state.turns_since_fire = 0;
     }
 

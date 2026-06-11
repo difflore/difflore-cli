@@ -151,17 +151,17 @@ async fn run_worker_inner(
             updated_body,
             file_patterns,
         } => {
-            let candidate = match merge_candidate_from_verdict(
-                &session_id,
+            let candidate = match merge_candidate_from_verdict(&MergeCandidateInput {
+                session_id: &session_id,
                 ts_ms,
-                &source_repo,
-                &gate_model,
-                &existing_rules,
-                &rule_id,
-                title.as_deref(),
-                &updated_body,
-                &file_patterns,
-            ) {
+                source_repo: &source_repo,
+                gate_model: &gate_model,
+                existing_rules: &existing_rules,
+                rule_id: &rule_id,
+                gate_title: title.as_deref(),
+                updated_body: &updated_body,
+                mined_file_patterns: &file_patterns,
+            }) {
                 Ok(candidate) => candidate,
                 Err(e) => {
                     if difflore_core::infra::env::debug_telemetry() {
@@ -248,39 +248,46 @@ async fn load_existing_rules(db: &sqlx::SqlitePool, source_repo: &str) -> Vec<Ex
         .collect()
 }
 
-fn merge_candidate_from_verdict(
-    session_id: &str,
+struct MergeCandidateInput<'a> {
+    session_id: &'a str,
     ts_ms: i64,
-    source_repo: &str,
-    gate_model: &str,
-    existing_rules: &[ExistingRule],
-    rule_id: &str,
-    gate_title: Option<&str>,
-    updated_body: &str,
-    mined_file_patterns: &[String],
+    source_repo: &'a str,
+    gate_model: &'a str,
+    existing_rules: &'a [ExistingRule],
+    rule_id: &'a str,
+    gate_title: Option<&'a str>,
+    updated_body: &'a str,
+    mined_file_patterns: &'a [String],
+}
+
+fn merge_candidate_from_verdict(
+    input: &MergeCandidateInput<'_>,
 ) -> Result<SessionMinedCandidate, String> {
-    let target = existing_rules.iter().find(|rule| rule.rule_id == rule_id);
+    let target = input
+        .existing_rules
+        .iter()
+        .find(|rule| rule.rule_id == input.rule_id);
     let title = target
         .and_then(|rule| non_empty_owned(&rule.title))
-        .or_else(|| gate_title.and_then(non_empty_owned))
-        .ok_or_else(|| format!("MERGE:{rule_id} missing title"))?;
+        .or_else(|| input.gate_title.and_then(non_empty_owned))
+        .ok_or_else(|| format!("MERGE:{} missing title", input.rule_id))?;
     let candidate_source_repo = target
         .and_then(|rule| rule.source_repo.as_deref())
         .and_then(non_empty_owned)
-        .unwrap_or_else(|| source_repo.to_owned());
-    let file_patterns = merge_file_patterns(mined_file_patterns, target);
+        .unwrap_or_else(|| input.source_repo.to_owned());
+    let file_patterns = merge_file_patterns(input.mined_file_patterns, target);
 
     SessionMinedCandidate::try_new(SessionMinedCandidateArgs {
-        session_id: session_id.to_owned(),
-        ts_ms,
+        session_id: input.session_id.to_owned(),
+        ts_ms: input.ts_ms,
         source_repo: candidate_source_repo,
         title,
-        body: updated_body.to_owned(),
+        body: input.updated_body.to_owned(),
         file_patterns,
-        gate_model: gate_model.to_owned(),
-        gate_verdict: format!("MERGE:{rule_id}"),
+        gate_model: input.gate_model.to_owned(),
+        gate_verdict: format!("MERGE:{}", input.rule_id),
     })
-    .map_err(|e| format!("MERGE:{rule_id} invalid candidate: {e}"))
+    .map_err(|e| format!("MERGE:{} invalid candidate: {e}", input.rule_id))
 }
 
 fn merge_file_patterns(
@@ -493,17 +500,17 @@ mod tests {
         let existing = vec![existing_rule()];
         let mined = vec!["crates/difflore-cli/src/session_mine/worker.rs".to_owned()];
 
-        let candidate = merge_candidate_from_verdict(
-            "sess_merge",
-            1_714_000_000_000,
-            "local/repo",
-            "claude-code:gate",
-            &existing,
-            "11111111-1111-4111-8111-111111111111",
-            Some("Gate title"),
-            "Merged body the cloud should apply.",
-            &mined,
-        )
+        let candidate = merge_candidate_from_verdict(&MergeCandidateInput {
+            session_id: "sess_merge",
+            ts_ms: 1_714_000_000_000,
+            source_repo: "local/repo",
+            gate_model: "claude-code:gate",
+            existing_rules: &existing,
+            rule_id: "11111111-1111-4111-8111-111111111111",
+            gate_title: Some("Gate title"),
+            updated_body: "Merged body the cloud should apply.",
+            mined_file_patterns: &mined,
+        })
         .expect("valid merge candidate");
 
         assert_eq!(
@@ -527,17 +534,17 @@ mod tests {
     fn merge_candidate_falls_back_to_target_file_patterns_when_gate_omits_scope() {
         let existing = vec![existing_rule()];
 
-        let candidate = merge_candidate_from_verdict(
-            "sess_merge",
-            1_714_000_000_000,
-            "local/repo",
-            "claude-code:gate",
-            &existing,
-            "11111111-1111-4111-8111-111111111111",
-            None,
-            "Merged body.",
-            &[],
-        )
+        let candidate = merge_candidate_from_verdict(&MergeCandidateInput {
+            session_id: "sess_merge",
+            ts_ms: 1_714_000_000_000,
+            source_repo: "local/repo",
+            gate_model: "claude-code:gate",
+            existing_rules: &existing,
+            rule_id: "11111111-1111-4111-8111-111111111111",
+            gate_title: None,
+            updated_body: "Merged body.",
+            mined_file_patterns: &[],
+        })
         .expect("target file_patterns keep merge candidate scoped");
 
         assert_eq!(
