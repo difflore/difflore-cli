@@ -174,24 +174,24 @@ pub(super) fn render_zero_match_compact_human(diagnostics: &RecallDiagnostics) {
         .iter()
         .any(|cause| cause.code == "local_corpus_empty");
     let message = if repo_scope_missing {
-        "No review memory matched because this checkout has no GitHub origin/upstream remote."
+        "No team rules matched because this checkout has no GitHub origin/upstream remote."
     } else if local_corpus_empty {
-        "No review memory matched because this repo has no local rules yet."
+        "No team rules matched because this repo has no local rules yet."
     } else {
-        "No review memory matched this query or file scope."
+        "No team rules matched this query or file scope."
     };
     println!("  {} {message}", style::danger(sym::ERR));
 
     let next = if repo_scope_missing {
         DiagnosticStep {
             command: Some("git remote -v".to_owned()),
-            message: "add or check a GitHub remote so DiffLore can scope memory to this repo"
+            message: "add or check a GitHub remote so DiffLore can scope rules to this repo"
                 .to_owned(),
         }
     } else if local_corpus_empty {
         DiagnosticStep {
             command: Some("difflore import-reviews --max-prs 50".to_owned()),
-            message: "seed local review memory from recent PR reviews".to_owned(),
+            message: "seed local team rules from recent PR reviews".to_owned(),
         }
     } else {
         diagnostics
@@ -201,7 +201,7 @@ pub(super) fn render_zero_match_compact_human(diagnostics: &RecallDiagnostics) {
             .cloned()
             .unwrap_or(DiagnosticStep {
                 command: Some("difflore status".to_owned()),
-                message: "inspect memory readiness".to_owned(),
+                message: "inspect rule readiness".to_owned(),
             })
     };
     println!(
@@ -220,7 +220,7 @@ pub(super) fn render_local_recall_human(
     if local.matches.is_empty() {
         let subject = recall_subject(intent);
         println!(
-            "  {} No local memories matched for {subject}.",
+            "  {} No local rules matched for {subject}.",
             style::danger(sym::ERR),
         );
         if let Some(file) = file {
@@ -234,7 +234,7 @@ pub(super) fn render_local_recall_human(
             // No repo scope -> empty by design, not an empty corpus. Steer to the
             // remote rather than import-reviews (which can't help without a scope).
             println!(
-                "  {} Local recall needs a GitHub remote for repo-scoped memory: {}",
+                "  {} Local recall needs a GitHub remote for repo-scoped rules: {}",
                 style::pewter(sym::TIP),
                 style::cmd("git remote -v"),
             );
@@ -259,7 +259,7 @@ pub(super) fn render_local_recall_human(
     println!(
         "{}",
         style::ok(&format!(
-            "Top {} local memories for {} | file={} repo={}",
+            "Top {} local rules for {} | file={} repo={}",
             local.matches.len(),
             recall_subject(intent),
             file.unwrap_or("(none)"),
@@ -308,7 +308,7 @@ pub(super) fn render_local_recall_human(
     println!(
         "  {}",
         style::pewter(
-            "local SQLite rules/index only; Cloud review memory is appended separately when available"
+            "local SQLite rules/index only; Cloud PR review rules are appended separately when available"
         ),
     );
 }
@@ -344,7 +344,7 @@ pub(super) fn render_cloud_recall_human(
 ) {
     if !recall.logged_in {
         println!(
-            "  {} Cloud review memory skipped: not logged in. Local recall above works offline; login only appends imported PR review memory: {}",
+            "  {} Cloud PR review rules skipped: not logged in. Local recall above works offline; login only appends imported PR review rules: {}",
             style::pewter(sym::BULLET),
             style::cmd("difflore cloud login"),
         );
@@ -352,7 +352,7 @@ pub(super) fn render_cloud_recall_human(
     }
     let Some(repo) = recall.repo_full_name.as_deref() else {
         println!(
-            "  {} Cloud review memory skipped: no GitHub repo remote detected. Local recall above is still usable.",
+            "  {} Cloud PR review rules skipped: no GitHub repo remote detected. Local recall above is still usable.",
             style::pewter(sym::BULLET),
         );
         return;
@@ -360,7 +360,7 @@ pub(super) fn render_cloud_recall_human(
     if recall.verdicts.is_empty() {
         let subject = recall_subject(intent);
         println!(
-            "  {} No cloud review memories matched for {subject}.",
+            "  {} No cloud PR review rules matched for {subject}.",
             style::danger(sym::ERR),
         );
         println!(
@@ -377,7 +377,7 @@ pub(super) fn render_cloud_recall_human(
             );
         }
         let seed_hint = if recall.scope == PastVerdictScope::Team.as_str() {
-            "Import PR reviews or sync team review memory to seed Cloud team recall"
+            "Import PR reviews or sync source-backed team rules to seed Cloud recall"
         } else {
             "Import PR reviews to seed Cloud Free personal recall"
         };

@@ -7,7 +7,7 @@ use super::args::{
 #[derive(Parser)]
 #[command(name = "difflore")]
 #[command(bin_name = "difflore")]
-#[command(about = "AI review memory for local coding agents")]
+#[command(about = "Source-backed team rules for local coding agents")]
 #[command(next_line_help = true)]
 #[command(
     long_about = "DiffLore turns your team's past PR review judgment into memory \
@@ -49,18 +49,18 @@ Nothing leaves your laptop and nothing is written to disk."
         lane: StatusLane,
     },
 
-    /// Import past GitHub PR review comments as review memory evidence.
+    /// Import past GitHub PR review comments as source-backed rule evidence.
     #[command(
         next_line_help = false,
-        long_about = "Import past GitHub PR review comments into local review memory. \
-Use `--dry-run` to preview first, then run `difflore recall --diff` to see what agents will remember."
+        long_about = "Import past GitHub PR review comments into local source-backed rules. \
+Use `--dry-run` to preview first, then run `difflore recall --diff` to see which rules agents will receive."
     )]
     ImportReviews(ImportReviewsCliArgs),
 
-    /// Preview which team memories an agent would see for an intent or current diff.
+    /// Preview which team rules an agent would see for an intent or current diff.
     Recall(RecallCliArgs),
 
-    /// Suggest local patches using remembered team review judgment.
+    /// Suggest local patches using source-backed team review judgment.
     #[command(
         next_line_help = false,
         long_about = "Suggest safe local patches for the current diff or a GitHub PR. \
@@ -69,7 +69,7 @@ DiffLore never commits, pushes, opens PRs, or posts GitHub comments."
     )]
     Fix(FixCliArgs),
 
-    /// Ask the team's review memory a natural-language question.
+    /// Ask the team's source-backed rules a natural-language question.
     Ask {
         /// The question to ask.
         query: String,
@@ -446,7 +446,7 @@ pub(crate) enum CloudCommands {
         github: bool,
     },
 
-    /// Sync governed team review memory with cloud.
+    /// Sync governed source-backed team rules with cloud.
     Sync(SyncCliArgs),
 
     /// Show the current team workspace and its readiness checks.

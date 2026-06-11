@@ -46,7 +46,7 @@ pub(crate) async fn tool_get_past_verdicts(
     let cloud = &state.cloud;
     let cloud_status = crate::cloud::sync::fetch_cloud_status(cloud).await;
     if !cloud_status.logged_in {
-        let text = "Cloud review memory skipped: not logged in. Local recall still works offline; run `difflore cloud login` to append imported PR review memory.";
+        let text = "Cloud PR review rules skipped: not logged in. Local recall still works offline; run `difflore cloud login` to append imported PR review rules.";
         let tokens_used = estimate_tokens(text);
         return Ok(json!({
             "content": [{ "type": "text", "text": text }],

@@ -344,7 +344,7 @@ fn print_post_install_help(dry_run: bool, outcomes: &[TargetOutcome]) {
         );
     }
     println!(
-        "  {} installed once; use {} later to refresh team review memory.",
+        "  {} installed once; use {} later to refresh source-backed team rules.",
         style::pewter(sym::BULLET),
         style::cmd("difflore cloud sync"),
     );
@@ -374,7 +374,7 @@ fn print_post_install_help(dry_run: bool, outcomes: &[TargetOutcome]) {
         style::ident(&restart_targets),
     );
     println!(
-        "  {} in one restarted agent, call {} to check that DiffLore can find review memory.",
+        "  {} in one restarted agent, call {} to check that DiffLore can find team rules.",
         style::pewter(sym::BULLET),
         style::cmd("search_rules"),
     );

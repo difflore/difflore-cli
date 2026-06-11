@@ -602,7 +602,7 @@ pub(super) fn build_runtime_probe_input(probe_file: Option<String>) -> String {
 
 fn runtime_probe_search_arguments(probe_file: Option<String>) -> Value {
     let mut args = json!({
-        "intent": "verify DiffLore MCP can recall review memory",
+        "intent": "verify DiffLore MCP can return team rules",
         "top_k": 1,
         "session_id": "difflore-mcp-status",
     });
@@ -610,7 +610,7 @@ fn runtime_probe_search_arguments(probe_file: Option<String>) -> Value {
     if let Some(file) = probe_file.filter(|file| !file.trim().is_empty()) {
         args["file"] = Value::String(file.clone());
         args["intent"] = Value::String(format!(
-            "verify DiffLore MCP can recall review memory for {file}"
+            "verify DiffLore MCP can return team rules for {file}"
         ));
     }
 

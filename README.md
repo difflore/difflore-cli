@@ -4,12 +4,13 @@
 [![Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-stdio-green.svg)](https://modelcontextprotocol.io)
 
-DiffLore is an open-source CLI that turns past GitHub PR review comments into
-local memory for AI coding agents.
+Your AI coding agent learned public code, not the decisions your team made in
+private PR reviews. DiffLore is an open-source CLI that turns those reviews
+into source-backed codebase rules for local AI agents.
 
 It imports review feedback your team already wrote, stores the resulting rules
-in local SQLite, and serves the relevant ones to agents through MCP, installed
-hooks, or the CLI.
+in local SQLite, and serves the relevant ones to Claude, Codex, Cursor, and
+other agents through MCP, installed hooks, or the CLI before they edit.
 
 ## Runtime ROI
 
@@ -80,8 +81,8 @@ agent "remember this" for a review rule you want to keep. Conversation captures
 land locally immediately; cloud sync and review import are upgrades, not a
 prerequisite.
 
-After setup, your agent can ask DiffLore for review memory before it edits a
-file. You can also preview or apply rule-aware local fixes:
+After setup, your agent can ask DiffLore for source-backed codebase rules
+before it edits a file. You can also preview or apply rule-aware local fixes:
 
 ```bash
 difflore fix --preview
@@ -98,7 +99,7 @@ DiffLore never commits, pushes, opens PRs, or posts GitHub comments.
 | `difflore try` | Run the zero-setup demo |
 | `difflore init` | Set up DiffLore for the current repo |
 | `difflore import-reviews` | Import GitHub PR review history |
-| `difflore recall --diff` | Preview memories for the current diff |
+| `difflore recall --diff` | Preview relevant rules for the current diff |
 | `difflore fix --preview` | Preview rule-aware local fixes |
 | `difflore status` | Show local memory health and next steps |
 | `difflore agents install` | Wire supported local agents |

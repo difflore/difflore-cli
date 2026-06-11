@@ -1,6 +1,6 @@
 ---
 name: knowledge-agent
-description: Answer broad questions from the team's DiffLore review memory — repo conventions, review history, team decisions. Use for a focused "brain" over many rules at once.
+description: Answer broad questions from the team's DiffLore codebase rules — repo decisions, review history, team rules. Use for a focused "brain" over many rules at once.
 ---
 
 # Knowledge Agent

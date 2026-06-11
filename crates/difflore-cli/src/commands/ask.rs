@@ -1,4 +1,4 @@
-//! `difflore ask` — friendly Q&A wrapper over the team's review memory.
+//! `difflore ask` — friendly Q&A wrapper over the team's source-backed rules.
 //!
 //! Today this is a delegating alias for `difflore recall`: same retrieval,
 //! conversational framing, and a footer that points users back to sync /
@@ -45,12 +45,12 @@ pub(crate) async fn handle_ask(
         let client = ctx.cloud().await;
         let (message, command) = if client.is_logged_in() {
             (
-                "For fresher answers, sync team memory first",
+                "For fresher answers, sync team rules first",
                 "difflore cloud sync",
             )
         } else {
             (
-                "For team memory, sign in to Cloud first",
+                "For team rules, sign in to Cloud first",
                 "difflore cloud login",
             )
         };

@@ -326,7 +326,7 @@ fn mcp_row(snapshot: &installer::McpStatusSnapshot) -> Row {
                 format!("0 installed · {} detected", drift.len())
             },
             hints: vec![
-                "agents can recall team memory once wired; CLI commands work either way".to_owned(),
+                "agents can request team rules once wired; CLI commands work either way".to_owned(),
                 "difflore init".to_owned(),
             ]
             .into_iter()

@@ -2,7 +2,7 @@
 //!
 //! Local rules are the product's open-source value floor: `recall` must show
 //! what the CLI can retrieve from the on-disk rule corpus even when Cloud is
-//! absent. Cloud review memory is an append-only enhancement when the user is
+//! absent. Cloud PR review rules are an append-only enhancement when the user is
 //! logged in and the current git repo can be scoped safely.
 //!
 //! This module is split by concern: data gathering (local + cloud retrieval,
@@ -459,20 +459,20 @@ async fn handle_recall_copy(
             // No repo scope -> empty by design, not an empty corpus (mirror the
             // precedence used by the styled renderer + diagnostics).
             println!(
-                "_difflore recalled 0 local memories for \"{intent}\"; this checkout has no GitHub remote, and local recall is repo-scoped (add one with `git remote -v`)._"
+                "_difflore recalled 0 local rules for \"{intent}\"; this checkout has no GitHub remote, and local recall is repo-scoped (add one with `git remote -v`)._"
             );
         } else if local.rules_indexed == 0 {
             println!(
-                "_difflore recalled 0 local memories for \"{intent}\" because this repo has no local memories yet._"
+                "_difflore recalled 0 local rules for \"{intent}\" because this repo has no local rules yet._"
             );
         } else {
-            println!("_difflore recalled 0 local memories for \"{intent}\"._");
+            println!("_difflore recalled 0 local rules for \"{intent}\"._");
         }
         if !cloud.logged_in {
-            println!("_Cloud review memory was skipped because you are not logged in._");
+            println!("_Cloud PR review rules were skipped because you are not logged in._");
         } else if cloud.repo_full_name.is_none() {
             println!(
-                "_Cloud review memory was skipped because no GitHub repo remote was detected._"
+                "_Cloud PR review rules were skipped because no GitHub repo remote was detected._"
             );
         }
         println!();
@@ -517,7 +517,7 @@ async fn handle_recall_copy(
     if !cloud.verdicts.is_empty() {
         println!();
         println!(
-            "**Cloud review memory appended ({}):**",
+            "**Cloud PR review rules appended ({}):**",
             cloud.verdicts.len(),
         );
         for verdict in &cloud.verdicts {
@@ -531,10 +531,10 @@ async fn handle_recall_copy(
         }
     } else if !cloud.logged_in {
         println!();
-        println!("_Cloud review memory skipped: not logged in._");
+        println!("_Cloud PR review rules skipped: not logged in._");
     } else if cloud.repo_full_name.is_none() {
         println!();
-        println!("_Cloud review memory skipped: no GitHub repo remote detected._");
+        println!("_Cloud PR review rules skipped: no GitHub repo remote detected._");
     }
     // Same honesty note as the styled surface: if this paste-ready block was
     // ranked by the local keyword hash, say so, so a user pasting it into an
@@ -721,7 +721,7 @@ pub(super) fn more_specific_query_example(intent: &str, file: Option<&str>) -> S
     if let Some(file) = file.and_then(file_extension_hint) {
         return format!("{file} review convention for {intent}");
     }
-    format!("{intent} around validation, error handling, or team conventions")
+    format!("{intent} around validation, error handling, or team decisions")
 }
 
 fn file_extension_hint(file: &str) -> Option<&'static str> {

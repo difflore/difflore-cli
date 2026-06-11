@@ -1468,15 +1468,15 @@ async fn print_empty_state_hint(db: &difflore_core::SqlitePool) {
     match difflore_core::skills::stats(db).await {
         Ok(stats) if stats.total == 0 => {
             println!(
-                "  {} No team review memory on this machine yet.",
+                "  {} No source-backed team rules on this machine yet.",
                 style::pewter(sym::BULLET)
             );
             println!(
-                "  > create local memories from PR history: {}",
+                "  > create local rules from PR history: {}",
                 style::cmd("difflore import-reviews --max-prs 50")
             );
             println!(
-                "  > preview recalled memory: {}",
+                "  > preview recalled rules: {}",
                 style::cmd("difflore recall --diff")
             );
             // `--upload` and `sync` both need an active session, so keep the

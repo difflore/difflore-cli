@@ -114,9 +114,9 @@ pub(super) fn draw_filter_no_results(
         && search.query().is_none_or(str::is_empty)
         && matches!(scope.filter, RulesRepoFilter::ThisRepo);
     let headline = if scoped_only {
-        "No review memory scoped to this repo."
+        "No team rules scoped to this repo."
     } else {
-        "No review memory matches the active filter."
+        "No team rules match the active filter."
     };
     let mut lines: Vec<Line<'_>> = vec![
         Line::from(""),
@@ -133,7 +133,7 @@ pub(super) fn draw_filter_no_results(
     ];
     if scoped_only {
         lines.push(Line::from(Span::styled(
-            "  Try all memory (r), run `difflore import-reviews --max-prs 50 --upload`, then `difflore cloud sync`.",
+            "  Try all rules (r), run `difflore import-reviews --max-prs 50 --upload`, then `difflore cloud sync`.",
             Style::default().fg(theme.muted),
         )));
         lines.push(Line::from(""));

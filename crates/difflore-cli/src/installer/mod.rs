@@ -418,7 +418,7 @@ mod tests {
         assert!(messages[2]["params"]["arguments"].get("file").is_none());
         assert_eq!(
             messages[2]["params"]["arguments"]["intent"],
-            "verify DiffLore MCP can recall review memory"
+            "verify DiffLore MCP can return team rules"
         );
     }
 

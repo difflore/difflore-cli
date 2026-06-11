@@ -334,9 +334,9 @@ pub(crate) async fn tool_search_rules(
         // Refine the message when cross-repo suggestions include pack rules.
         let has_pack = entries.iter().any(|e| e.origin == "pack");
         let message = if has_pack {
-            "No memory is scoped to THIS repo yet. These are starter-pack suggestions (and transferable rules from your other repos), matched to this file - treat them as suggestions, not this repo's own judgment. Run `difflore import-reviews` to capture this repo's memory."
+            "No rules are scoped to THIS repo yet. These are starter-pack suggestions (and transferable rules from your other repos), matched to this file. Treat them as suggestions, not this repo's own judgment. Run `difflore import-reviews` to capture this repo's rules."
         } else {
-            "No memory is scoped to THIS repo yet. These are transferable rules from your other repos, matched to this file - treat them as suggestions, not this repo's own judgment. Run `difflore import-reviews` to capture this repo's memory."
+            "No rules are scoped to THIS repo yet. These are transferable rules from your other repos, matched to this file. Treat them as suggestions, not this repo's own judgment. Run `difflore import-reviews` to capture this repo's rules."
         };
         json!({
             "results": entries,

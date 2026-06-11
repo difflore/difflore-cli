@@ -1394,7 +1394,7 @@ pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress
     println!();
     if progress.candidates_created == 0 && progress.candidates_deduped == 0 {
         println!(
-            "  {} No local memories created from the imported comments.",
+            "  {} No local rules created from the imported comments.",
             style::pewter(style::sym::BULLET),
         );
         style::println_wrapped(&format!(

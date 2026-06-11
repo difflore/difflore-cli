@@ -62,27 +62,27 @@ struct StepCopy {
 const STEPS: [StepCopy; 5] = [
     StepCopy {
         title: "Wire agents",
-        body: "Connect this repo so Claude, Codex, Cursor, and friends can recall team review memory before editing.",
+        body: "Connect this repo so Claude, Codex, Cursor, and friends receive source-backed rules before editing.",
         command: "difflore agents install",
     },
     StepCopy {
         title: "Pick provider",
-        body: "Choose the model used when DiffLore turns remembered review judgment into patch suggestions.",
+        body: "Choose the model used when DiffLore turns prior review decisions into patch suggestions.",
         command: "difflore providers setup",
     },
     StepCopy {
         title: "Import reviews",
-        body: "Sign in to cloud, then teach DiffLore from past PR comments so repeat review feedback becomes reusable team memory.",
+        body: "Sign in to cloud, then import past PR comments so repeated codebase decisions become reusable team rules.",
         command: "difflore cloud login && difflore import-reviews --max-prs 50 --upload",
     },
     StepCopy {
         title: "Preview recall",
-        body: "Check the exact memories your local agents would receive for the current diff.",
+        body: "Check the exact rules your local agents would receive for the current diff.",
         command: "difflore recall --diff",
     },
     StepCopy {
         title: "First fix",
-        body: "Preview patches from team memory. Nothing changes until you choose to apply them.",
+        body: "Preview patches from source-backed team rules. Nothing changes until you choose to apply them.",
         command: "difflore fix --preview",
     },
 ];

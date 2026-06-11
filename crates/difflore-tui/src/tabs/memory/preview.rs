@@ -213,7 +213,7 @@ pub(super) fn render_empty(frame: &mut ratatui::Frame<'_>, area: Rect) {
         Line::from(vec![
             Span::raw("  "),
             Span::styled(
-                "No team review memory yet.",
+                "No source-backed team rules yet.",
                 Style::default()
                     .fg(crate::theme::Theme::current().foreground)
                     .add_modifier(Modifier::BOLD),
@@ -221,7 +221,7 @@ pub(super) fn render_empty(frame: &mut ratatui::Frame<'_>, area: Rect) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "  Start by turning past PR comments into team memory, then sync it into local agents:",
+            "  Start by turning past PR comments into team rules, then sync them into local agents:",
             Style::default().fg(crate::theme::Theme::current().muted),
         )),
         Line::from(Span::styled(
@@ -229,7 +229,7 @@ pub(super) fn render_empty(frame: &mut ratatui::Frame<'_>, area: Rect) {
             Style::default().fg(crate::theme::Theme::current().foreground),
         )),
         Line::from(Span::styled(
-            "  After that, use `difflore recall --diff` to see exactly what agents remember.",
+            "  After that, use `difflore recall --diff` to see exactly which rules agents receive.",
             Style::default().fg(crate::theme::Theme::current().muted),
         )),
         Line::from(""),

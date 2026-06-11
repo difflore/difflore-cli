@@ -666,17 +666,17 @@ pub(super) fn build_zero_match_diagnostics(
         possible_causes.push(DiagnosticItem {
             code: "file_pattern_scope",
             message: format!(
-                "`{file}` may not match the accepted rules' file patterns, or the file scope may be narrower than the memory you need."
+                "`{file}` may not match the accepted rules' file patterns, or the file scope may be narrower than the rules you need."
             ),
         });
         next_steps.push(DiagnosticStep {
             command: Some(recall_command_for_zero_match(intent, None)),
-            message: "retry without the file scope to test whether file patterns are filtering out relevant memory".to_owned(),
+            message: "retry without the file scope to test whether file patterns are filtering out relevant rules".to_owned(),
         });
     } else {
         possible_causes.push(DiagnosticItem {
             code: "no_file_scope",
-            message: "Most review memory is scoped to file patterns, so a bare query often matches nothing without a file to anchor it.".to_owned(),
+            message: "Most source-backed rules are scoped to file patterns, so a bare query often matches nothing without a file to anchor it.".to_owned(),
         });
         next_steps.push(DiagnosticStep {
             command: Some(recall_command(intent, Some("path/to/file"))),
@@ -702,18 +702,19 @@ pub(super) fn build_zero_match_diagnostics(
     if !cloud.logged_in {
         possible_causes.push(DiagnosticItem {
             code: "cloud_not_logged_in",
-            message: "Cloud review memory was skipped because you are not logged in.".to_owned(),
+            message: "Cloud PR review rules were skipped because you are not logged in.".to_owned(),
         });
     } else if cloud.repo_full_name.is_none() {
         possible_causes.push(DiagnosticItem {
             code: "cloud_repo_scope_missing",
-            message: "Cloud review memory was skipped because no GitHub repo remote was detected."
-                .to_owned(),
+            message:
+                "Cloud PR review rules were skipped because no GitHub repo remote was detected."
+                    .to_owned(),
         });
     } else {
         possible_causes.push(DiagnosticItem {
             code: "cloud_no_overlap",
-            message: "Cloud review memory did not find an imported PR review verdict for this repo, file, and query.".to_owned(),
+            message: "Cloud PR review rules did not find an imported PR review verdict for this repo, file, and query.".to_owned(),
         });
     }
 
@@ -727,7 +728,7 @@ pub(super) fn build_zero_match_diagnostics(
     } else if empty_corpus {
         next_steps.push(DiagnosticStep {
             command: Some("difflore import-reviews --max-prs 50".to_owned()),
-            message: "create local memories from recent PR review history".to_owned(),
+            message: "create local rules from recent PR review history".to_owned(),
         });
     } else {
         next_steps.push(DiagnosticStep {

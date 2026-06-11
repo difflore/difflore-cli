@@ -212,7 +212,7 @@ pub fn uninstall_all(dry_run: bool) {
             style::emerald(sym::TIP),
         );
         println!(
-            "  {} re-add later with {} when you want team review memory back.",
+            "  {} re-add later with {} when you want source-backed team rules back.",
             style::pewter(sym::BULLET),
             style::cmd("difflore agents install"),
         );

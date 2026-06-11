@@ -74,7 +74,7 @@ fn draw_plan_snapshot(
             ),
             Span::raw("   "),
             Span::styled(
-                "·  CLI + MCP + local review memory",
+                "·  CLI + MCP + local team rules",
                 Style::default().fg(theme.muted),
             ),
         ]),
@@ -142,16 +142,13 @@ fn draw_wiring(
     } else if wiring.agents_installed == 0 {
         (
             // Static slice that lives for the duration of render.
-            "0 / detected: install once so agents can recall memory",
+            "0 / detected: install once so agents can request rules",
             theme.warn,
         )
     } else if wiring.agents_installed < wiring.agents_detected {
-        ("drift: re-run init so new IDEs see memory", theme.warn)
+        ("drift: re-run init so new IDEs see rules", theme.warn)
     } else {
-        (
-            "all detected agents can recall review memory",
-            theme.success,
-        )
+        ("all detected agents can request team rules", theme.success)
     };
     let agents_state_string = format!(
         "{} / {} · {}",
@@ -240,7 +237,7 @@ fn draw_wiring(
             group: SetupGroup::Optional,
             key: "w",
             label: "dashboard",
-            state: "open team memory dashboard".to_owned(),
+            state: "open team rules dashboard".to_owned(),
             state_color: theme.muted,
             hint: format!("\u{2192} {host}"),
         },

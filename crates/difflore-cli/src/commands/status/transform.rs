@@ -332,19 +332,19 @@ pub(super) fn local_value_loop_status(
         (
             "repo_candidates_pending",
             format!(
-                "{pending_candidates_for_repo} review-memory candidate{} drafted for this repo; accept one to enable recall",
+                "{pending_candidates_for_repo} rule candidate{} drafted for this repo; accept one to enable recall",
                 plural(pending_candidates_for_repo),
             ),
         )
     } else if scope.review_source_repo_full_name.is_some() {
         (
             "fork_memory_missing",
-            "attach upstream review memory to this fork, then test recall".to_owned(),
+            "attach upstream review rules to this fork, then test recall".to_owned(),
         )
     } else {
         (
             "repo_memory_missing",
-            "import this repo's review history before testing recall".to_owned(),
+            "import this repo's review rules before testing recall".to_owned(),
         )
     };
 
@@ -413,7 +413,7 @@ fn local_beta_lane_readiness(
     };
     let summary = if ready {
         format!(
-            "Local/design-partner beta lane has usable review memory: {}. This does not count toward production GA.",
+            "Local/design-partner beta lane has usable rule-recall signal: {}. This does not count toward production GA.",
             value_loop.buyer_evidence
         )
     } else {
@@ -432,9 +432,9 @@ fn local_beta_lane_readiness(
         release_ready_influence: "none".to_owned(),
         production_score_delta: 0,
         required_evidence: vec![
-            "repo-scoped review memory imported from PR reviews".to_owned(),
+            "repo-scoped review rules imported from PR reviews".to_owned(),
             "local recall or agent delivery that matches the current repo/file".to_owned(),
-            "accepted edit after prior memory use for stronger beta readiness".to_owned(),
+            "accepted edit after prior rule use for stronger beta readiness".to_owned(),
         ],
     }
 }
@@ -575,7 +575,7 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
     if active_rules == 0 && pending_candidates_for_repo > 0 {
         return NextAction {
             command: draft_review_command(scope),
-            reason: "review pending drafts into active local memories".to_owned(),
+            reason: "review pending drafts into active local rules".to_owned(),
         };
     }
 
@@ -588,14 +588,14 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
         }
         return NextAction {
             command: "difflore recall --diff".to_owned(),
-            reason: "preview the memories agents would see on this change".to_owned(),
+            reason: "preview the rules agents would see on this change".to_owned(),
         };
     }
 
     if active_rules > 0 && scope.repo_full_name.is_none() {
         return NextAction {
             command: "difflore recall \"review this change\"".to_owned(),
-            reason: "preview local memories; add a GitHub origin remote for repo-scoped recall"
+            reason: "preview local rules; add a GitHub origin remote for repo-scoped recall"
                 .to_owned(),
         };
     }
@@ -603,7 +603,7 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
     if pending_candidates_for_repo > 0 {
         return NextAction {
             command: draft_review_command(scope),
-            reason: "review pending drafts into active local memory before testing recall"
+            reason: "review pending drafts into active local rules before testing recall"
                 .to_owned(),
         };
     }
@@ -615,10 +615,10 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
                 .clone()
                 .unwrap_or_else(|| "difflore import-reviews".to_owned()),
             reason: if scope.review_source_repo_full_name.is_some() {
-                "create local memories from upstream PR reviews and attach them to this fork"
+                "create local rules from upstream PR reviews and attach them to this fork"
                     .to_owned()
             } else {
-                "create local review memories without Cloud".to_owned()
+                "create local review rules without Cloud".to_owned()
             },
         };
     }
@@ -633,7 +633,7 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
 
     NextAction {
         command: "difflore import-reviews".to_owned(),
-        reason: "seed local memories from past PR reviews".to_owned(),
+        reason: "seed local rules from past PR reviews".to_owned(),
     }
 }
 
@@ -1060,7 +1060,7 @@ mod tests {
         let next = next_action_for_test(10, 0, 0, &fork, &proof);
 
         assert_eq!(next.command, "difflore recall --diff");
-        assert!(next.reason.contains("preview the memories"));
+        assert!(next.reason.contains("preview the rules"));
     }
 
     #[test]
@@ -1246,7 +1246,7 @@ mod tests {
 
         assert_eq!(status.stage, "repo_candidates_pending");
         assert!(status.repo_candidates_ready);
-        assert!(status.buyer_evidence.contains("5 review-memory candidates"));
+        assert!(status.buyer_evidence.contains("5 rule candidates"));
     }
 
     #[test]

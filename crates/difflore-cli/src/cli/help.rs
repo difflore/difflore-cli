@@ -37,17 +37,17 @@ fn help_template() -> &'static str {
             );
             format!(
                 "\
-AI review memory for local coding agents.
-Agents remember team judgment before they code, so reviews repeat less.
+Source-backed team rules for local coding agents.
+Agents receive your team's review decisions before they code.
 
 USAGE
   difflore [COMMAND]
-  difflore                      {tip} show local memory status
+  difflore                      {tip} show local rule status
 
 {start}
   try                 See it work on a bundled sample
   init                First-time setup for this repo
-  status              Show local memory status and the next command
+  status              Show local rule status and the next command
   agents              Wire local agents and inspect install state
   cloud               Log in, sync, and view team impact
   providers           Choose the local AI backend for fixes
@@ -56,7 +56,7 @@ USAGE
   drafts              Review and approve pending memory drafts
 
 {use_}
-  recall              Preview memories agents would see on this change
+  recall              Preview rules agents would see on this change
   fix                 Preview/apply local patches, including PR diffs
   ask                 Ask why the team usually reviews something
 

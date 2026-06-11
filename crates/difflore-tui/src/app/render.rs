@@ -81,9 +81,9 @@ impl App {
             .map_or(0, |s| s.applied);
 
         let mut segments: Vec<String> = vec![
-            format!("{primary_count} memories"),
+            format!("{primary_count} rules"),
             format!(
-                "{}/{} agents wired for memory",
+                "{}/{} agents wired for rules",
                 wiring.agents_installed, wiring.agents_detected
             ),
             provider,
@@ -222,11 +222,11 @@ impl App {
             }
             Tab::Fixes => always.to_owned(),
             Tab::Cloud => {
-                format!("c extracted rules \u{2197} · d memory dashboard \u{2197} · {always}")
+                format!("c extracted rules \u{2197} · d rules dashboard \u{2197} · {always}")
             }
             Tab::Setup => {
                 format!(
-                    "i install once · l cloud login · a provider · w memory dashboard \u{2197} · u upgrade \u{2197} · {always}"
+                    "i install once · l cloud login · a provider · w rules dashboard \u{2197} · u upgrade \u{2197} · {always}"
                 )
             }
         }
@@ -241,7 +241,7 @@ impl App {
 const HELP_TEXT: &str = "\
 TABS\n\
   1   Memory       2   Fixes           3   Cloud           4   Setup\n\
-  DiffLore feeds team review memory to Claude, Codex, Cursor, and local agents.\n\
+  DiffLore feeds source-backed codebase rules to Claude, Codex, Cursor, and local agents.\n\
 \n\
 NAVIGATION\n\
   Tab Shift-Tab   prev / next tab\n\
@@ -256,9 +256,9 @@ MEMORY TAB\n\
   /               substring search (Esc clears, Enter commits)\n\
   f               cycle origin filter\n\
   r               cycle repo scope (this repo / all / global)\n\
-  e               edit selected memory in cloud\n\
-  p               publish selected memory in cloud\n\
-  s               view memory sources in cloud\n\
+  e               edit selected rule in cloud\n\
+  p               publish selected rule in cloud\n\
+  s               view rule sources in cloud\n\
 \n\
 FIXES TAB\n\
   Read-only event log of recalls, injections, reinforcements, and fix outcomes.\n\
@@ -266,13 +266,13 @@ FIXES TAB\n\
 \n\
 CLOUD TAB\n\
   c               review extracted rules in cloud\n\
-  d / o           open memory dashboard in browser\n\
+  d / o           open rules dashboard in browser\n\
 \n\
 SETUP TAB\n\
   i               install once / re-sync agents with `difflore init`\n\
   l               run `difflore cloud login` (then `difflore cloud sync`)\n\
   a               run `difflore providers setup` (interactive)\n\
-  w               open memory dashboard\n\
+  w               open rules dashboard\n\
   u               review pricing / upgrade\n\
 \n\
 Press ? or Esc to close.";

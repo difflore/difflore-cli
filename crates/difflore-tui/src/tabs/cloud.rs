@@ -115,7 +115,7 @@ fn draw_hotkeys(frame: &mut ratatui::Frame<'_>, area: Rect) {
             key_badge("d"),
             Span::raw("  "),
             Span::styled(
-                "Open team memory dashboard",
+                "Open team rules dashboard",
                 Style::default().fg(crate::theme::Theme::current().foreground),
             ),
             Span::raw("   "),

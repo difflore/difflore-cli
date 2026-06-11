@@ -263,7 +263,7 @@ fn emit_not_logged_in(json: bool) -> ! {
         exit_code(1);
     }
     exit_err(
-        "not logged in.\n\n  > run `difflore cloud login` to sync team review memory into local agents",
+        "not logged in.\n\n  > run `difflore cloud login` to sync source-backed team rules into local agents",
     );
 }
 
@@ -817,7 +817,7 @@ async fn emit_cold_start_hint(db: &difflore_core::SqlitePool) {
             "  {} {}",
             style::emerald(style::sym::TIP),
             style::pewter(
-                "No new rules yet. Import PR reviews, extract team memory in cloud, then sync again."
+                "No new rules yet. Import PR reviews, extract team rules in cloud, then sync again."
             ),
         );
         println!(

@@ -730,7 +730,7 @@ mod tests {
         };
         let next = NextAction {
             command: "difflore import-reviews".to_owned(),
-            reason: "seed local memories from past PR reviews".to_owned(),
+            reason: "seed local rules from past PR reviews".to_owned(),
         };
         let embedding = EmbeddingDiagnostics {
             active_profile: "sha1:local:128".to_owned(),
@@ -876,7 +876,7 @@ mod tests {
         };
         let next = NextAction {
             command: "difflore import-reviews".to_owned(),
-            reason: "seed local memories from past PR reviews".to_owned(),
+            reason: "seed local rules from past PR reviews".to_owned(),
         };
         let embedding = EmbeddingDiagnostics {
             active_profile: "sha1:local:128".to_owned(),

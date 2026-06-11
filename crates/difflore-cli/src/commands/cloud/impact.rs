@@ -420,7 +420,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
             if fixes_total >= 5 {
                 println!(
                     "    {} local fix outcome{} were recorded in 30d. Cloud plans add \
-                     shared review memory, GitHub App ingest, Reviewer Context, team controls, \
+                     shared team rules, GitHub App ingest, Reviewer Context, team controls, \
                      and impact analytics.",
                     style::emerald(&fixes_total.to_string()),
                     if fixes_total == 1 { "" } else { "s" }

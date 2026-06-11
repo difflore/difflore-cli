@@ -152,7 +152,7 @@ pub(super) fn render_agent_handoff_markdown(
     let mut out = String::new();
     out.push_str("# DiffLore local agent fix task\n\n");
     out.push_str(
-        "You are editing this repository locally with team review memory from DiffLore.\n\n",
+        "You are editing this repository locally with source-backed codebase rules from DiffLore.\n\n",
     );
 
     out.push_str("## Constraints\n\n");

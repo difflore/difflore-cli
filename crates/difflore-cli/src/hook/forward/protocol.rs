@@ -407,8 +407,16 @@ mod tests {
         // The shim resolves the endpoint via `current_project_hash`; the daemon
         // is launched with that same hash on the command line. Pin that the two
         // derivations land on the same socket so they cannot drift.
+        //
+        // Compare the hash-derived *file name* rather than the full path: the
+        // data-home parent is read from `DIFFLORE_HOME`, which sibling tests
+        // mutate via `OnceLock` setup running on other threads, so a full-path
+        // comparison races on the env between the two `data_home()` reads. The
+        // project hash is derived from `cwd` (never mutated) and is the
+        // invariant that must hold here; the parent-under-data-home property is
+        // covered by `endpoint_for_hash_is_per_project_under_data_home_root`.
         let derived = endpoint_for_current_project().expect("current endpoint");
         let explicit = endpoint_for_hash(&current_project_hash()).expect("explicit endpoint");
-        assert_eq!(derived, explicit);
+        assert_eq!(derived.file_name(), explicit.file_name());
     }
 }

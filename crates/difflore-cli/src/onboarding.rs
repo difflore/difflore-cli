@@ -239,7 +239,7 @@ pub(crate) async fn show_welcome_then_continue() -> WelcomeFlow {
         if cloud_logged_in {
             "upload PR comments for team memory"
         } else {
-            "create local memories from PR comments"
+            "create local rules from PR comments"
         },
     );
     println!("           or tell your wired agent \"remember this\" to capture a rule locally now");
@@ -257,7 +257,7 @@ pub(crate) async fn show_welcome_then_continue() -> WelcomeFlow {
     );
     println!();
     println!(
-        "  {} press {} to open the local memory dashboard ({} won't show again)",
+        "  {} press {} to open the local rule dashboard ({} won't show again)",
         style::pewter(sym::BULLET),
         style::cmd("Enter"),
         style::pewter("this message"),
@@ -646,10 +646,7 @@ fn step4_local_candidate_bridge(
         );
         println!("    {}", style::cmd("gh auth login"));
         println!("    {}", style::cmd("difflore import-reviews --dry-run"));
-        println!(
-            "  {} Then create local memories:",
-            style::pewter(sym::BULLET),
-        );
+        println!("  {} Then create local rules:", style::pewter(sym::BULLET));
         println!(
             "    {}",
             style::cmd(&format!("difflore import-reviews --max-prs {max_prs}")),
@@ -657,7 +654,7 @@ fn step4_local_candidate_bridge(
     } else {
         println!("  Step 4/5  Staying local.");
         println!(
-            "  {} Start with a preview, then create local memories:",
+            "  {} Start with a preview, then create local rules:",
             style::pewter(sym::BULLET),
         );
         println!("    {}", style::cmd("difflore import-reviews --dry-run"));
