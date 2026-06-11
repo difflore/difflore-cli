@@ -470,8 +470,30 @@ pub async fn list_all_skills(db: &sqlx::SqlitePool) -> crate::Result<Vec<SkillRe
     Ok(rows.into_iter().map(SkillRecord::from).collect())
 }
 
-pub async fn export_rules_markdown(db: &sqlx::SqlitePool) -> crate::Result<String> {
+/// Render the active rules **in the given repo scopes** as one Markdown
+/// document. A rule participates when its canonical `source_repo` matches a
+/// detected scope, or when it is an explicit local rule (`source = 'local'`
+/// with no `source_repo`). An empty `repo_scopes` therefore yields only
+/// explicit local rules — never the whole machine corpus. This filter is a
+/// deliberate behavior narrowing: the previous unscoped export leaked every
+/// project's rules to whichever agent read it, violating the project-scope
+/// invariant.
+pub async fn export_rules_markdown(
+    db: &sqlx::SqlitePool,
+    repo_scopes: &[String],
+) -> crate::Result<String> {
     let skills = list_all_skills(db).await?;
+    let all_ids: Vec<String> = skills.iter().map(|s| s.id.clone()).collect();
+    let meta = fetch_search_meta(db, &all_ids).await;
+    let skills: Vec<_> = skills
+        .into_iter()
+        .filter(|skill| {
+            let source_repo = meta.get(&skill.id).and_then(|m| m.source_repo.as_deref());
+            let scope = crate::context::rule_source::repo_scope_from_source_repo(source_repo);
+            crate::export::collect::repo_scope_matches(scope.as_deref(), repo_scopes)
+                || crate::export::collect::is_explicit_local_rule(&skill.source, source_repo)
+        })
+        .collect();
     if skills.is_empty() {
         return Ok("# Project Rules\n\n_No rules found._\n".to_owned());
     }

@@ -19,7 +19,7 @@ Returns `{title, body, file_patterns}` memories — including dismissed
 ### 2. Diff against the current library
 
 ```text
-resource: difflore://rules/active        # full library as Markdown
+resource: difflore://rules/active        # this project's library as Markdown
 ```
 
 For each memory, check whether an existing rule already covers its topic +

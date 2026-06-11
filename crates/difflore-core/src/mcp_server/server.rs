@@ -192,7 +192,14 @@ pub(super) async fn handle_resources_read(
 
     match uri {
         "difflore://rules/active" => {
-            let md = skills::export_rules_markdown(&state.db)
+            // Scoped to the current project's git remotes. This is a
+            // deliberate narrowing fix: the resource used to export the whole
+            // machine corpus, leaking every project's rules to whichever
+            // agent read it (project-scope invariant violation).
+            let root = crate::infra::db::current_project_root();
+            let repo_scopes =
+                crate::infra::git::detect_github_repo_full_names(&root.to_string_lossy());
+            let md = skills::export_rules_markdown(&state.db, &repo_scopes)
                 .await
                 .unwrap_or_else(|e| format!("Error loading rules: {e}"));
             Ok(json!({
