@@ -367,6 +367,20 @@ fn hidden_mcp_server_transport_parses_but_stays_out_of_help() {
     assert!(Cli::try_parse_from(["difflore", "eval"]).is_ok());
     assert!(Cli::try_parse_from(["difflore", "trajectory", "review-id"]).is_ok());
     assert!(Cli::try_parse_from(["difflore", "skills", "sweep"]).is_ok());
+
+    // The internal warm hook daemon parses (the shim spawns it by this exact
+    // invocation) but stays out of help — the double-underscore name marks it
+    // internal and `hide = true` keeps it off the curated surface.
+    assert!(!help.contains("__hook-daemon"));
+    let daemon = Cli::try_parse_from(["difflore", "__hook-daemon", "--project-hash", "abc123"])
+        .expect("hidden hook daemon should parse for the shim spawn");
+    assert!(matches!(
+        daemon.command,
+        Some(Commands::HookDaemon { project_hash }) if project_hash == "abc123"
+    ));
+    // It requires the hash — a bare invocation must not silently serve the
+    // wrong (cwd-derived) project.
+    assert!(Cli::try_parse_from(["difflore", "__hook-daemon"]).is_err());
 }
 
 #[test]
