@@ -33,6 +33,10 @@ pub const DIFFLORE_HOOK_CACHE_TTL_MS: &str = "DIFFLORE_HOOK_CACHE_TTL_MS";
 pub const DIFFLORE_HOOK_SHORT_CIRCUIT: &str = "DIFFLORE_HOOK_SHORT_CIRCUIT";
 pub const DIFFLORE_HOOK_CLIENT: &str = "DIFFLORE_HOOK_CLIENT";
 pub const DIFFLORE_HOOK_FORWARD: &str = "DIFFLORE_HOOK_FORWARD";
+/// Idle timeout (seconds) for a warm hook-forward daemon: after this long with
+/// no accepted connection, the daemon exits and removes its socket so an idle
+/// repo's process is reclaimed. Defaults to [`DEFAULT_HOOK_DAEMON_IDLE_SECS`].
+pub const DIFFLORE_HOOK_DAEMON_IDLE_SECS: &str = "DIFFLORE_HOOK_DAEMON_IDLE_SECS";
 pub const DIFFLORE_DEBUG_HOOKS: &str = "DIFFLORE_DEBUG_HOOKS";
 pub const DIFFLORE_HOOK_SHIM_TRACE: &str = "DIFFLORE_HOOK_SHIM_TRACE";
 /// Opt-in: allow the hook to fall back to cross-repo "starter" rules when the
@@ -141,6 +145,27 @@ pub fn debug_providers() -> bool {
 #[must_use]
 pub fn hook_cache_ttl_ms() -> Option<u64> {
     var(DIFFLORE_HOOK_CACHE_TTL_MS).and_then(|v| v.parse().ok())
+}
+
+/// Default idle timeout (seconds) for a warm hook-forward daemon: 10 minutes.
+/// Long enough that a daemon spawned on a cache miss does not immediately
+/// thrash (spawn → idle-exit → re-spawn) while the user keeps editing, short
+/// enough that an abandoned repo's process is reclaimed within minutes.
+pub const DEFAULT_HOOK_DAEMON_IDLE_SECS: u64 = 600;
+
+/// Resolve [`DIFFLORE_HOOK_DAEMON_IDLE_SECS`] into the daemon idle timeout.
+///
+/// Read on every call (no cache) so a freshly spawned daemon picks up the
+/// current env, and so tests can set a tiny value before launching. An unset,
+/// empty, zero, or unparseable value falls back to
+/// [`DEFAULT_HOOK_DAEMON_IDLE_SECS`] — a malformed knob must never disable the
+/// idle reaper or make it fire instantly.
+#[must_use]
+pub fn hook_daemon_idle_secs() -> u64 {
+    match var(DIFFLORE_HOOK_DAEMON_IDLE_SECS).and_then(|v| v.trim().parse::<u64>().ok()) {
+        Some(n) if n > 0 => n,
+        _ => DEFAULT_HOOK_DAEMON_IDLE_SECS,
+    }
 }
 
 /// Tri-state knob for the `hook_post_edit` short-circuit heuristic.
