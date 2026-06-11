@@ -153,3 +153,12 @@ Tab enum variants follow the product vocabulary: `Tab::{Rules,Activity,Team,Sett
 New (no old path): `crates/difflore-cli/src/tui_entry.rs` — bare `difflore`
 glue that builds the `WiringSnapshot`, launches the dashboard after the
 welcome flow, and maps `TuiExit` back onto the dispatch table.
+
+## R5 — hook-forward daemon wiring
+
+No renames; new code only. `crates/difflore-cli/src/hook/forward/spawn.rs` —
+OS-level detached spawn of the warm daemon (Unix `setsid`, Windows
+`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`). `forward::run_server` was
+replaced by `forward::run_server_for_hash(project_hash)` (the daemon's index
+pool is now selected by an explicit hash, not the daemon's cwd). New hidden CLI
+subcommand `difflore __hook-daemon --project-hash <hash>` (`Commands::HookDaemon`).

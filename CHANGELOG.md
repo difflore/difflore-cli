@@ -20,6 +20,21 @@ All notable changes to DiffLore are listed here. The project follows
 
 ### Added
 
+- **Warm hook-forward daemon (R5)** — the `hook::forward` server/client are now
+  wired end to end, so repeat hooks skip cold process + DB/index startup. The
+  `difflore-hook` shim forwards each event over a per-project local socket
+  (`hook-forward-<project_hash>.sock`); on a miss it best-effort spawns a
+  detached daemon (`difflore __hook-daemon --project-hash <hash>`, a hidden
+  internal subcommand) and falls back in-process for the current event. Each
+  repo gets its own daemon whose index pool is frozen from the launch hash, so
+  indexes can never cross repos; the global `data.db` stays shared. Startup is
+  single-instance (a connect-probe + bind-race make concurrent spawns
+  idempotent — exactly one daemon survives), stale/leftover sockets are safely
+  reclaimed (never unlinking a live peer's socket), and the daemon self-reaps
+  after an idle window (`DIFFLORE_HOOK_DAEMON_IDLE_SECS`, default 600s). Default
+  (`auto`) behavior is unchanged for correctness — output is identical to the
+  in-process path; only latency improves once warm. `always` keeps its hard-fail
+  semantics; `never` stays fully in-process.
 - `scripts/sync-contract.sh`: one-command cross-repo OpenAPI sync. Adopts the
   cloud spec directly when structurally compatible without shrinking generated
   types, otherwise verifies the vendored sha256 against `SOURCE` and registers
@@ -34,9 +49,9 @@ All notable changes to DiffLore are listed here. The project follows
 
 - `ARCHITECTURE.md` rewritten for the R1–R4 layout: module map, collapsed
   `hook/` structure, contract-pipeline usage, rule/skill/memory/agent
-  vocabulary, the moving-files landmine checklist, and the known-unwired items
-  (`migration::run_if_needed` is a live guard; `hook::forward` server/client
-  paths are not yet wired).
+  vocabulary, and the moving-files landmine checklist. Updated for R5: the
+  `hook::forward` daemon is now wired (its "Known unwired" note replaced with
+  the daemon lifecycle); `migration::run_if_needed` remains a live guard.
 
 ## [0.2.0] - 2026-06-10
 

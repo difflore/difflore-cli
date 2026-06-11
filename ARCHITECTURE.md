@@ -53,7 +53,7 @@ collapsed module tree:
 | `hook/runtime/` | Event dispatch: rule injection, observation capture, fire logging, session-mine triggering. |
 | `hook/banner/` | The since-last-session recap surfaced on `SessionStart`. |
 | `hook/cache.rs` | Short-window dedup so repeated edits stay off the hot path. |
-| `hook/forward/` | Local-socket forwarder + the wire protocol. |
+| `hook/forward/` | Warm per-project local-socket daemon (`mod.rs`), the OS-level detached spawn (`spawn.rs`), and the wire protocol (`protocol.rs`). Wired in R5 — see "Known unwired / non-obvious". |
 
 `hook/forward/protocol.rs` is the **single line-protocol definition** both the
 `difflore` binary and the `difflore-hook` shim binary compile against (wire
@@ -164,12 +164,34 @@ re-run the relevant gate:
   from `difflore-cli/src/lib.rs` on every run and covered by
   `tests/migration_test.rs`. It refuses to proceed if a stale global
   `~/.difflore/context-index.db` exists. Do not delete it.
-- **`hook::forward::try_forward` / `run_server`** — currently have **no callers**
-  in the workspace. The daemon that would host `run_server`, and the client path
-  that would call `try_forward`, are not yet wired. Only
-  `forward::protocol::ipc_roundtrip_blocking` is live today (used by the
-  `difflore-hook` shim). Both entry points are kept `pub` ahead of the daemon
-  landing; wiring is deferred to a later batch.
+- **`hook::forward` daemon (wired in R5)** — the warm forwarder is now live.
+  Lifecycle:
+  - The `difflore-hook` shim (`forward::protocol::ipc_roundtrip_blocking`)
+    forwards each event to the per-project socket
+    `~/.difflore/hook-forward-<project_hash>.sock` (socket kept in the data-home
+    *root*, not under `projects/<hash>/`, to stay inside the Unix `sun_path`
+    length limit).
+  - On a miss in `auto` mode the shim best-effort spawns a detached daemon —
+    `difflore __hook-daemon --project-hash <hash>` (hidden internal subcommand,
+    dispatched to `forward::run_server_for_hash`) — and falls back in-process
+    for the *current* event. It never blocks waiting for the daemon to bind.
+  - **Per-project isolation:** the daemon freezes its index pool from the launch
+    hash (`get_pool_for_project`), never from its own cwd, so one daemon serves
+    exactly one repo's index and indexes cannot cross repos. The global
+    `data.db` is shared (one pool per `data.db` path), so `Request` carries no
+    `cwd`.
+  - **Single-instance / stale sockets:** `run_server_for_hash` binds first; on
+    `AddrInUse` it classifies the path (non-socket leftover via file type, or
+    stale socket via a bounded async connect-probe) and only reclaims a
+    *confirmed-dead* path — it never unlinks a live peer's socket. Concurrent
+    spawns are idempotent: exactly one daemon survives, the rest yield `Ok`.
+  - **Idle shutdown:** the accept loop wraps `accept()` in an idle timeout
+    (`DIFFLORE_HOOK_DAEMON_IDLE_SECS`, default 600s); on expiry the daemon exits
+    and removes its socket, so an abandoned repo's process is reclaimed and a
+    later hook re-spawns a fresh one.
+  - The async `try_forward` / `roundtrip` client path remains `pub` for an
+    in-process caller but is not yet wired into a command; the live client is
+    the blocking shim path above.
 
 ## Verification
 
