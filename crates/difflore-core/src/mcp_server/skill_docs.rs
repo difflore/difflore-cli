@@ -210,6 +210,109 @@ only when you need exact lines. It never means "don't read".
 - Don't lead with heavy static analysis.
 - Don't treat the map as authoritative architecture — it's triage."################;
 
+pub(super) const KNOWLEDGE_AGENT_SKILL_MD: &str = r################"---
+name: knowledge-agent
+description: Answer broad questions from the team's DiffLore review memory — repo conventions, review history, team decisions. Use for a focused "brain" over many rules at once.
+---
+
+# Knowledge Agent
+
+Answer cross-cutting questions over DiffLore memory. Use `difflore ask` for the
+public path; reach for MCP tools only when you need provenance or full bodies.
+
+**Not for:** single-rule lookup (`rule-search`), capturing a rule
+(`remember-rule-guide`), or diff since sync (`rule-diff`).
+
+### 1. Ask the public CLI
+
+```bash
+difflore ask "What are our conventions for async task boundaries?"
+difflore ask "What should I know before changing this worker?" --file src/worker.rs
+```
+
+If answers are empty, suggest `difflore init` + `difflore import-reviews`.
+
+### 2. Ground important claims
+
+```text
+search_rules(intent="<topic>", file="<optional-path>", top_k=5)
+get_rules(ids=["<id>"])                                # 1-3 that matter
+rule_timeline(rule_id="<id>", depth_before=5, depth_after=5)
+```
+
+### 3. Report
+
+Short answer · supporting rule IDs/titles · any gap, stale signal, or conflict ·
+the next public command (`difflore recall` / `ask` / `status`).
+
+## Avoid
+
+- Don't treat `ask` as authoritative with zero citations — verify via `search_rules`.
+- Don't pass cloud tokens or secrets through the conversation.
+- Don't build a global summary when the user named a specific file/subsystem — scope first.
+- Don't call retired corpus or knowledge subcommands."################;
+
+pub(super) const SESSION_RECAP_SKILL_MD: &str = r################"---
+name: session-recap
+description: After editing code in a DiffLore repo, end your final summary with one line on what DiffLore contributed — memories applied, their source repos, review-time saved. Surfaces value that is otherwise silent. Use when wrapping up a coding task.
+---
+
+# Session Recap
+
+When you finish editing code, add **one line** to your wrap-up:
+
+```bash
+difflore status   # read the "Value (last Nd)" section
+```
+
+> 📋 DiffLore: 3 team memories shaped these edits — e.g. "no Promise.race
+> timeout" ← vitejs/vite. ~12 review-minutes saved. `difflore status` for more.
+
+## Rules
+
+- **Numbers come from `difflore status`. Never invent them.**
+- **Nothing applied? Say nothing.** No "0 memories" line.
+- Name a source repo only when a surfaced memory showed `learned from <repo>`.
+- If status says "recall-to-edit loop not captured yet", don't claim the saved
+  minutes are fully memory-driven — say "review patterns DiffLore tracks".
+- One line. Once per session. Not a pitch."################;
+
+pub(super) const DIFFLORE_ONBOARD_SKILL_MD: &str = r################"---
+name: difflore-onboard
+description: Guide a user through first local DiffLore value in a repo: init, import PR review memory locally, preview recall, and report receipts after each step.
+---
+
+# DiffLore Onboard
+
+Use this when the user wants to start using DiffLore in a repo, verify that it is wired, or get from a cold checkout to the first useful recall.
+
+## Flow
+
+1. Confirm you are in the intended git repo.
+2. Run `difflore init`.
+3. Run `difflore import-reviews --dry-run`.
+4. If the dry run is healthy, run `difflore import-reviews`.
+5. Run `difflore recall --diff`.
+6. End with the `Value (last Nd)` line from `difflore status`.
+
+## Receipts
+
+After every write step, echo the concrete receipt line DiffLore printed, such as:
+
+- `+N local memory writes`
+- `+1 rule captured from agent chat`
+- `+N accepted edits recorded for local value tracking`
+
+If a command writes nothing, say what the next command is and do not invent value numbers.
+
+## Upgrade Path
+
+Keep local memory first. Cloud login, upload, and team sync are upgrades:
+
+- Use `difflore cloud login` only when the user asks for team sync or multi-device memory.
+- Use `difflore import-reviews --upload` only after the user has opted into cloud processing.
+- Existing local conversation captures and imported candidates stay local unless explicitly synced."################;
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -236,6 +339,9 @@ mod tests {
             ("rule-why-fired", RULE_WHY_FIRED_SKILL_MD),
             ("rule-journey", RULE_JOURNEY_SKILL_MD),
             ("smart-explore", SMART_EXPLORE_SKILL_MD),
+            ("knowledge-agent", KNOWLEDGE_AGENT_SKILL_MD),
+            ("session-recap", SESSION_RECAP_SKILL_MD),
+            ("difflore-onboard", DIFFLORE_ONBOARD_SKILL_MD),
         ] {
             let path = skills_root.join(slug).join("SKILL.md");
             let expected = std::fs::read_to_string(&path)

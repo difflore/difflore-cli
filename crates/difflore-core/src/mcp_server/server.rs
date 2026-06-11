@@ -8,9 +8,10 @@ use crate::observability::trajectory::TrajectoryStep;
 use crate::skills;
 
 use super::schemas::{
-    REMEMBER_RULE_GUIDE_MD, RULE_DIFF_SKILL_MD, RULE_GAP_SKILL_MD, RULE_JOURNEY_SKILL_MD,
-    RULE_SEARCH_SKILL_MD, RULE_WHY_FIRED_SKILL_MD, SMART_EXPLORE_SKILL_MD, resource_templates_list,
-    resources_list, tools_list,
+    DIFFLORE_ONBOARD_SKILL_MD, KNOWLEDGE_AGENT_SKILL_MD, REMEMBER_RULE_GUIDE_MD, RULE_DIFF_SKILL_MD,
+    RULE_GAP_SKILL_MD, RULE_JOURNEY_SKILL_MD, RULE_SEARCH_SKILL_MD, RULE_WHY_FIRED_SKILL_MD,
+    SESSION_RECAP_SKILL_MD, SMART_EXPLORE_SKILL_MD, resource_templates_list, resources_list,
+    tools_list,
 };
 
 pub(super) const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -249,6 +250,27 @@ pub(super) async fn handle_resources_read(
                 "uri": uri,
                 "mimeType": "text/markdown",
                 "text": SMART_EXPLORE_SKILL_MD,
+            }]
+        })),
+        "difflore://skills/knowledge-agent" => Ok(json!({
+            "contents": [{
+                "uri": uri,
+                "mimeType": "text/markdown",
+                "text": KNOWLEDGE_AGENT_SKILL_MD,
+            }]
+        })),
+        "difflore://skills/session-recap" => Ok(json!({
+            "contents": [{
+                "uri": uri,
+                "mimeType": "text/markdown",
+                "text": SESSION_RECAP_SKILL_MD,
+            }]
+        })),
+        "difflore://skills/difflore-onboard" => Ok(json!({
+            "contents": [{
+                "uri": uri,
+                "mimeType": "text/markdown",
+                "text": DIFFLORE_ONBOARD_SKILL_MD,
             }]
         })),
         _ => {

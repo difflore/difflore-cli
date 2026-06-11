@@ -100,7 +100,15 @@ fn forward_once(client: &str, raw: &str) -> Result<String, String> {
             started.elapsed().as_millis()
         );
     }
-    let output = protocol::decode_response_line(&response)?;
+    let output = match protocol::decode_response_line(&response) {
+        Ok(output) => output,
+        Err(e) => {
+            if protocol::is_incompatible_forwarder_error(&e) {
+                protocol::remove_current_project_socket_best_effort();
+            }
+            return Err(e);
+        }
+    };
     if trace {
         eprintln!(
             "[difflore-hook.trace] decode={}ms",

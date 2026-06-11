@@ -1,8 +1,9 @@
 use serde_json::{Value, json};
 
 pub(super) use super::skill_docs::{
-    RULE_DIFF_SKILL_MD, RULE_GAP_SKILL_MD, RULE_JOURNEY_SKILL_MD, RULE_SEARCH_SKILL_MD,
-    RULE_WHY_FIRED_SKILL_MD, SMART_EXPLORE_SKILL_MD,
+    DIFFLORE_ONBOARD_SKILL_MD, KNOWLEDGE_AGENT_SKILL_MD, RULE_DIFF_SKILL_MD, RULE_GAP_SKILL_MD,
+    RULE_JOURNEY_SKILL_MD, RULE_SEARCH_SKILL_MD, RULE_WHY_FIRED_SKILL_MD, SESSION_RECAP_SKILL_MD,
+    SMART_EXPLORE_SKILL_MD,
 };
 
 pub(super) fn tools_list() -> Value {
@@ -229,6 +230,24 @@ pub(super) fn resources_list() -> Value {
             "uri": "difflore://skills/smart-explore",
             "name": "smart-explore SKILL",
             "description": "Cheap repo-map workflow before agents read files or expand rules.",
+            "mimeType": "text/markdown"
+        },
+        {
+            "uri": "difflore://skills/knowledge-agent",
+            "name": "knowledge-agent SKILL",
+            "description": "Answer cross-cutting questions over team review memory via `difflore ask` plus MCP rule tools.",
+            "mimeType": "text/markdown"
+        },
+        {
+            "uri": "difflore://skills/session-recap",
+            "name": "session-recap SKILL",
+            "description": "Surface DiffLore's per-session value to the user in one line at wrap-up, sourced from `difflore status`.",
+            "mimeType": "text/markdown"
+        },
+        {
+            "uri": "difflore://skills/difflore-onboard",
+            "name": "difflore-onboard SKILL",
+            "description": "Guide a repo from cold checkout to first useful recall: init, import reviews, recall, with receipts.",
             "mimeType": "text/markdown"
         }
     ])

@@ -29,10 +29,10 @@ fi
 
 (
   cd "$repo_root/crates/difflore-core"
-  cargo sqlx prepare "${prepare_args[@]}" --database-url "$database_url" -- --all-targets
+  cargo sqlx prepare ${prepare_args[@]+"${prepare_args[@]}"} --database-url "$database_url" -- --all-targets
 )
 
 (
   cd "$repo_root/crates/difflore-cli"
-  cargo sqlx prepare "${prepare_args[@]}" --database-url "$database_url" -- --all-targets
+  cargo sqlx prepare ${prepare_args[@]+"${prepare_args[@]}"} --database-url "$database_url" -- --all-targets
 )

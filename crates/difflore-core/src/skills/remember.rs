@@ -615,27 +615,27 @@ async fn remember_inner(
     let insert_origin = origin.as_str();
     let insert_captured_by_client = captured_by_client.as_deref();
     let insert_content_hash = content_hash.as_str();
-    let insert_result = sqlx::query(
+    let insert_result = sqlx::query!(
         "INSERT INTO skills
          (id, name, source, directory, version, description, type, engines, tags,
           trigger, check_prompt, file_patterns, enabled_for_claude, confidence_score,
           installed_at, updated_at, origin, captured_by_client, content_hash, hash_created_at)
          VALUES (?1, ?2, 'local', ?3, '1.0.0', ?4, 'review_standard', ?5, ?6,
                  NULL, NULL, ?7, 1, ?8, ?9, ?9, ?10, ?11, ?12, ?13)",
+        insert_id,
+        title_trimmed,
+        insert_directory,
+        insert_description,
+        insert_engines,
+        insert_tags,
+        insert_file_patterns,
+        confidence,
+        insert_now,
+        insert_origin,
+        insert_captured_by_client,
+        insert_content_hash,
+        now_ms
     )
-    .bind(insert_id)
-    .bind(title_trimmed)
-    .bind(insert_directory)
-    .bind(insert_description)
-    .bind(insert_engines)
-    .bind(insert_tags)
-    .bind(insert_file_patterns)
-    .bind(confidence)
-    .bind(insert_now)
-    .bind(insert_origin)
-    .bind(insert_captured_by_client)
-    .bind(insert_content_hash)
-    .bind(now_ms)
     .execute(db)
     .await;
     if let Err(e) = insert_result {

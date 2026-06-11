@@ -8,13 +8,14 @@
 //!
 //! ## Socket-per-project isolation
 //!
-//! Each repo gets its own `hook-forward-<project_hash>.sock` and its own warm
+//! Each repo + binary version gets its own `hook-forward-...sock` and warm
 //! daemon. The daemon is launched with the project hash on the command line
 //! ([`run_server_for_hash`]) and freezes the matching per-project index pool at
 //! startup, so a request landing on a socket is always answered against the
-//! right repo's index. The global `data.db` is shared (cross-repo features need
-//! one aggregate view); only the index pool is per-project, so isolating it by
-//! socket is sufficient — `Request` never carries `cwd`.
+//! right repo's index and current wire version. The global `data.db` is shared
+//! (cross-repo features need one aggregate view); only the index pool is
+//! per-project, so isolating it by socket is sufficient — `Request` never
+//! carries `cwd`.
 //!
 //! ## Lifecycle
 //!
@@ -258,18 +259,17 @@ async fn handle_request(state: &State, line: &str) -> Response {
     let req: Request = match serde_json::from_str(line.trim()) {
         Ok(req) => req,
         Err(e) => {
-            return Response {
-                ok: false,
-                output: None,
-                error: Some(format!("invalid forward request: {e}")),
-            };
+            return Response::error(format!("invalid forward request: {e}"));
         }
     };
-    let adapter = crate::hook::adapters::get_platform_adapter(&req.client);
+    if let Err(e) = req.protocol.validate() {
+        return Response::error(e);
+    }
+    let adapter = crate::hook::adapters::get_platform_adapter(&req.payload.client);
     let response = match crate::hook::runtime::hook_output_for_raw(
-        &req.client,
+        &req.payload.client,
         &*adapter,
-        &req.raw,
+        &req.payload.raw,
         false,
         true,
         Some(state),
@@ -283,11 +283,7 @@ async fn handle_request(state: &State, line: &str) -> Response {
                     started.elapsed().as_millis()
                 );
             }
-            Response {
-                ok: true,
-                output: Some(output),
-                error: None,
-            }
+            Response::ok(output)
         }
         Err(e) => {
             if trace {
@@ -296,11 +292,7 @@ async fn handle_request(state: &State, line: &str) -> Response {
                     started.elapsed().as_millis()
                 );
             }
-            Response {
-                ok: false,
-                output: None,
-                error: Some(e.to_string()),
-            }
+            Response::error(e.to_string())
         }
     };
     if trace {

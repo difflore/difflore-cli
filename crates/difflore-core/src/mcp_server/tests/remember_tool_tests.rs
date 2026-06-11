@@ -1446,6 +1446,18 @@ async fn resources_list_advertises_explore_and_journey_skills() {
             .any(|t| t == "difflore://skills/rule-journey"),
         "missing rule-journey resource: {resources:?}"
     );
+    // Every shipped plugin skill should also be mirrored as an MCP resource so
+    // the advertised set stays in lockstep with plugin/skills/.
+    for uri in [
+        "difflore://skills/knowledge-agent",
+        "difflore://skills/session-recap",
+        "difflore://skills/difflore-onboard",
+    ] {
+        assert!(
+            resources.iter().any(|t| t == uri),
+            "missing {uri} resource: {resources:?}"
+        );
+    }
 }
 
 #[tokio::test]
