@@ -50,6 +50,10 @@ pub struct ExportCollectOptions<'a> {
     pub local_only: bool,
     /// Load Bad/Good examples (`--no-examples` turns this off).
     pub include_examples: bool,
+    /// Cap the export to the first N in-scope rules of the deterministic
+    /// order (`--max-rules`); `None` = unlimited. Applied before example
+    /// loading so capped-away rules cost no extra queries.
+    pub max_rules: Option<usize>,
 }
 
 /// Result of a collection pass: the in-scope rules in a deterministic order
@@ -58,6 +62,10 @@ pub struct ExportCollectOptions<'a> {
 pub struct ExportCollection {
     pub rules: Vec<ExportRule>,
     pub repo_scopes: Vec<String>,
+    /// In-scope rule count before any `max_rules` cap, so report surfaces can
+    /// say "exported N of M" when truncation happened
+    /// (`total_in_scope > rules.len()`).
+    pub total_in_scope: usize,
 }
 
 /// Project-scope predicate shared by `recall` exact-title matching and static
@@ -179,6 +187,14 @@ pub async fn collect_rules_for_export_with_scopes(
         })
         .collect();
 
+    // `--max-rules` cap: keep the first N of the deterministic ORDER BY
+    // above, so the capped set is stable across re-exports (the content-hash
+    // short-circuit still fires) and is always a prefix of the full export.
+    let total_in_scope = rules.len();
+    if let Some(cap) = opts.max_rules {
+        rules.truncate(cap);
+    }
+
     if opts.include_examples && !rules.is_empty() {
         let ids: Vec<String> = rules.iter().map(|rule| rule.id.clone()).collect();
         let mut examples_map = load_rule_examples_batch(db, &ids).await?;
@@ -192,6 +208,7 @@ pub async fn collect_rules_for_export_with_scopes(
     Ok(ExportCollection {
         rules,
         repo_scopes: repo_scopes.to_vec(),
+        total_in_scope,
     })
 }
 
@@ -433,6 +450,92 @@ mod tests {
             ids,
             vec!["r-local"],
             "no repo identity must not widen to the whole machine corpus"
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_max_rules_caps_to_deterministic_prefix() {
+        let pool = pool().await;
+        // Names chosen so the deterministic order (name NOCASE, then id) is
+        // Alpha < bravo < Charlie regardless of case.
+        insert_rule(&pool, "r-c", "Charlie", "local", None, "active", 1, None).await;
+        insert_rule(&pool, "r-a", "Alpha", "local", None, "active", 1, None).await;
+        insert_rule(&pool, "r-b", "bravo", "local", None, "active", 1, None).await;
+
+        let capped = collect_rules_for_export_with_scopes(
+            &pool,
+            &[],
+            ExportCollectOptions {
+                max_rules: Some(2),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("collect capped");
+        let ids: Vec<&str> = capped.rules.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["r-a", "r-b"], "cap keeps the ordered prefix");
+        assert_eq!(
+            capped.total_in_scope, 3,
+            "pre-cap total must be reported for the truncation flag"
+        );
+
+        // Default (None) stays unlimited.
+        let unlimited =
+            collect_rules_for_export_with_scopes(&pool, &[], ExportCollectOptions::default())
+                .await
+                .expect("collect unlimited");
+        assert_eq!(unlimited.rules.len(), 3);
+        assert_eq!(unlimited.total_in_scope, 3);
+
+        // A cap >= the in-scope count changes nothing.
+        let roomy = collect_rules_for_export_with_scopes(
+            &pool,
+            &[],
+            ExportCollectOptions {
+                max_rules: Some(10),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("collect roomy");
+        assert_eq!(roomy.rules.len(), 3);
+        assert_eq!(roomy.total_in_scope, 3);
+    }
+
+    #[tokio::test]
+    async fn collect_max_rules_skips_example_loading_for_capped_rules() {
+        let pool = pool().await;
+        insert_rule(&pool, "r-a", "Alpha", "local", None, "active", 1, None).await;
+        insert_rule(&pool, "r-b", "Bravo", "local", None, "active", 1, None).await;
+        for (ex, skill) in [("ex-a", "r-a"), ("ex-b", "r-b")] {
+            sqlx::query(
+                "INSERT INTO rule_examples (id, skill_id, bad_code, good_code, description) \
+                 VALUES (?1, ?2, 'bad()', 'good()', 'why')",
+            )
+            .bind(ex)
+            .bind(skill)
+            .execute(&pool)
+            .await
+            .expect("insert example");
+        }
+
+        let got = collect_rules_for_export_with_scopes(
+            &pool,
+            &[],
+            ExportCollectOptions {
+                include_examples: true,
+                max_rules: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("collect");
+        assert_eq!(got.rules.len(), 1);
+        assert_eq!(got.rules[0].id, "r-a");
+        assert_eq!(
+            got.rules[0].examples.len(),
+            1,
+            "kept rule still gets its examples"
         );
     }
 

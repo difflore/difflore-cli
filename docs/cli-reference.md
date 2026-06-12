@@ -17,6 +17,7 @@ difflore export --dry-run                    # plan only, nothing written
 difflore export --json                       # machine-readable plan/result
 difflore export --no-examples                # skip Bad/Good example blocks
 difflore export --local-only                 # exclude team/cloud-synced rules
+difflore export --max-rules 20               # cap the export to 20 rules
 ```
 
 ### Flags
@@ -28,6 +29,14 @@ difflore export --local-only                 # exclude team/cloud-synced rules
 | `--json` | Emit the plan/result as JSON. |
 | `--no-examples` | Omit Bad/Good example blocks to keep the export small. |
 | `--local-only` | Export local rules only; team/cloud-synced rules are excluded. |
+| `--max-rules <N>` | Cap the export to the first `N` rules of the deterministic order (name, then id). Unlimited when omitted; `N` must be ≥ 1. |
+
+When the cap drops rules, the plan says so: the human output shows
+`N of M rules (--max-rules cap)` per target, and the `--json` report carries
+`truncated: true` plus `total_rules` (the in-scope count before the cap)
+alongside `rules` (the count actually exported). Because the cap keeps a
+prefix of the same deterministic order, re-exports with the same cap stay
+byte-stable and the content-hash short-circuit still applies.
 
 ### Which rules are exported
 

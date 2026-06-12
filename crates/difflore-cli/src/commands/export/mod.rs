@@ -28,6 +28,9 @@ pub(crate) struct ExportArgs {
     pub(crate) json: bool,
     pub(crate) no_examples: bool,
     pub(crate) local_only: bool,
+    /// `--max-rules <N>`: cap the export to the first N rules of the
+    /// deterministic collection order. `None` = unlimited (the default).
+    pub(crate) max_rules: Option<usize>,
 }
 
 impl From<crate::cli::ExportCliArgs> for ExportArgs {
@@ -38,6 +41,11 @@ impl From<crate::cli::ExportCliArgs> for ExportArgs {
             json: args.json,
             no_examples: args.no_examples,
             local_only: args.local_only,
+            // clap parses the cap as u64 (range-checked >= 1); saturate on
+            // 32-bit targets rather than wrap.
+            max_rules: args
+                .max_rules
+                .map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
         }
     }
 }
@@ -48,7 +56,12 @@ struct TargetReport {
     file: &'static str,
     path: String,
     action: &'static str,
+    /// Rules actually exported (after any `--max-rules` cap).
     rules: usize,
+    /// In-scope rules before the cap; `total_rules > rules` ⇔ `truncated`.
+    total_rules: usize,
+    /// Whether `--max-rules` dropped rules from this target.
+    truncated: bool,
     content_hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
@@ -58,6 +71,8 @@ struct TargetReport {
 struct ExportReport {
     dry_run: bool,
     local_only: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_rules: Option<usize>,
     repo_scopes: Vec<String>,
     targets: Vec<TargetReport>,
 }
@@ -80,6 +95,7 @@ pub(crate) async fn handle_export(ctx: &CommandContext, args: ExportArgs) {
                 engine: emitter.engine,
                 local_only: args.local_only,
                 include_examples: !args.no_examples,
+                max_rules: args.max_rules,
             },
         )
         .await
@@ -93,6 +109,8 @@ pub(crate) async fn handle_export(ctx: &CommandContext, args: ExportArgs) {
                     path: ctx.project.join(emitter.file_name).display().to_string(),
                     action: "skipped",
                     rules: 0,
+                    total_rules: 0,
+                    truncated: false,
                     content_hash: String::new(),
                     reason: Some(format!("failed to collect rules: {e}")),
                 });
@@ -100,6 +118,7 @@ pub(crate) async fn handle_export(ctx: &CommandContext, args: ExportArgs) {
             }
         };
         repo_scopes.clone_from(&collection.repo_scopes);
+        let truncated = collection.total_in_scope > collection.rules.len();
 
         let path = ctx.project.join(emitter.file_name);
         // An empty rule set refreshes an existing block (so a stale export
@@ -111,6 +130,8 @@ pub(crate) async fn handle_export(ctx: &CommandContext, args: ExportArgs) {
                 path: path.display().to_string(),
                 action: "skipped",
                 rules: 0,
+                total_rules: collection.total_in_scope,
+                truncated,
                 content_hash: String::new(),
                 reason: Some(
                     "no rules in scope for this repo; run `difflore import-reviews` first"
@@ -149,6 +170,8 @@ pub(crate) async fn handle_export(ctx: &CommandContext, args: ExportArgs) {
                     path: path.display().to_string(),
                     action: outcome.action.as_str(),
                     rules: collection.rules.len(),
+                    total_rules: collection.total_in_scope,
+                    truncated,
                     content_hash,
                     reason: outcome.reason,
                 });
@@ -161,6 +184,8 @@ pub(crate) async fn handle_export(ctx: &CommandContext, args: ExportArgs) {
                     path: path.display().to_string(),
                     action: "skipped",
                     rules: collection.rules.len(),
+                    total_rules: collection.total_in_scope,
+                    truncated,
                     content_hash,
                     reason: Some(e.to_string()),
                 });
@@ -171,6 +196,7 @@ pub(crate) async fn handle_export(ctx: &CommandContext, args: ExportArgs) {
     let report = ExportReport {
         dry_run: args.dry_run,
         local_only: args.local_only,
+        max_rules: args.max_rules,
         repo_scopes,
         targets,
     };
@@ -198,7 +224,7 @@ fn print_human(report: &ExportReport) {
     for target in &report.targets {
         let line = match target.action {
             "created" => format!(
-                "{} {} {} — {} rule{} (hash {})",
+                "{} {} {} — {} (hash {})",
                 style::ok(sym::OK),
                 style::ident(target.file),
                 if report.dry_run {
@@ -206,12 +232,11 @@ fn print_human(report: &ExportReport) {
                 } else {
                     "created"
                 },
-                target.rules,
-                plural_s(target.rules),
+                rules_phrase(target),
                 target.content_hash,
             ),
             "updated" => format!(
-                "{} {} {} — {} rule{} (hash {})",
+                "{} {} {} — {} (hash {})",
                 style::ok(sym::OK),
                 style::ident(target.file),
                 if report.dry_run {
@@ -219,16 +244,14 @@ fn print_human(report: &ExportReport) {
                 } else {
                     "updated"
                 },
-                target.rules,
-                plural_s(target.rules),
+                rules_phrase(target),
                 target.content_hash,
             ),
             "unchanged" => format!(
-                "{} {} unchanged — {} rule{} (hash {})",
+                "{} {} unchanged — {} (hash {})",
                 style::pewter(sym::BULLET),
                 style::ident(target.file),
-                target.rules,
-                plural_s(target.rules),
+                rules_phrase(target),
                 target.content_hash,
             ),
             _ => format!(
@@ -264,6 +287,19 @@ fn print_human(report: &ExportReport) {
         "{} Commit the exported file(s) to share rules with your repo, or add them to .gitignore yourself — DiffLore never edits .gitignore.",
         style::emerald(sym::TIP),
     );
+}
+
+/// `"N rules"` normally; `"N of M rules (--max-rules cap)"` when the cap
+/// dropped rules, so a truncated plan is visible without `--json`.
+fn rules_phrase(target: &TargetReport) -> String {
+    if target.truncated {
+        format!(
+            "{} of {} rules (--max-rules cap)",
+            target.rules, target.total_rules
+        )
+    } else {
+        format!("{} rule{}", target.rules, plural_s(target.rules))
+    }
 }
 
 const fn plural_s(n: usize) -> &'static str {

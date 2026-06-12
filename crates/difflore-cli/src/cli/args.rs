@@ -190,6 +190,11 @@ pub(crate) struct ExportCliArgs {
     /// Export local rules only; exclude team/cloud-synced rules.
     #[arg(long)]
     pub(crate) local_only: bool,
+
+    /// Cap the export to the first N rules of the deterministic order
+    /// (name, then id). Unlimited when omitted.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+    pub(crate) max_rules: Option<u64>,
 }
 
 #[derive(Args)]
