@@ -752,7 +752,7 @@ async fn try_handle_github(
     };
 
     let uploaded_reviews = if v.upload {
-        run_upload(ctx, db, "github", &local_repo, &import_result, v.json).await?
+        run_upload(ctx, db, "github", &local_repo, None, &import_result, v.json).await?
     } else {
         0
     };
@@ -854,7 +854,16 @@ async fn try_handle_gitlab(
     };
 
     let uploaded_reviews = if v.upload {
-        run_upload(ctx, db, "gitlab", &gitlab_project, &import_result, v.json).await?
+        run_upload(
+            ctx,
+            db,
+            "gitlab",
+            &gitlab_project,
+            Some(host),
+            &import_result,
+            v.json,
+        )
+        .await?
     } else {
         0
     };
@@ -937,6 +946,7 @@ mod tests {
     use super::upload::{
         build_upload_batches, cloud_upload_next_step_commands, comment_event_type,
         comment_file_path_from_metadata, gitlab_host_from_metadata, imported_review_upload,
+        matches_upload_target,
     };
     use super::{ImportArgs, dry_run_payload, import_json_payload, validate_args};
 
@@ -1403,6 +1413,43 @@ mod tests {
         assert_eq!(
             gitlab_host_from_metadata(Some(r#"{"gitlabHost":"https://gitlab.corp.example/g/p"}"#)),
             None
+        );
+    }
+
+    #[test]
+    fn upload_target_filters_gitlab_reviews_by_host_dimension() {
+        let mut corp_item = imported_item(
+            Some("group/project"),
+            Some(r#"{"gitlabHost":"gitlab.corp.example"}"#),
+        );
+        corp_item.item.source = "gitlab".to_owned();
+        let mut dotcom_item = imported_item(
+            Some("group/project"),
+            Some(r#"{"gitlabHost":"gitlab.com"}"#),
+        );
+        dotcom_item.item.source = "gitlab".to_owned();
+
+        assert!(matches_upload_target(
+            &corp_item,
+            "gitlab",
+            "group/project",
+            Some("gitlab.corp.example"),
+        ));
+        assert!(!matches_upload_target(
+            &dotcom_item,
+            "gitlab",
+            "group/project",
+            Some("gitlab.corp.example"),
+        ));
+        assert!(matches_upload_target(
+            &dotcom_item,
+            "gitlab",
+            "group/project",
+            Some("https://gitlab.com/"),
+        ));
+        assert!(
+            !matches_upload_target(&corp_item, "gitlab", "group/project", None),
+            "GitLab upload filtering must fail closed without the requested host"
         );
     }
 

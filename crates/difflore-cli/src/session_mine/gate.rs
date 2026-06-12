@@ -65,6 +65,14 @@ const PROMPT_MAX_CHARS: usize = 30_000;
 /// prompt budget gets dominated by digests rather than session content.
 const MAX_EXISTING_RULES_IN_PROMPT: usize = 24;
 
+const DEFAULT_GATE_AGENT: AgentKind = AgentKind::Codex;
+const FALLBACK_GATE_AGENTS: [AgentKind; 4] = [
+    AgentKind::Codex,
+    AgentKind::ClaudeCode,
+    AgentKind::Cursor,
+    AgentKind::GeminiCli,
+];
+
 /// How long we'll wait for the agent CLI to return. 90s is generous —
 /// Haiku-class models usually finish in 5-15s but cold CLI starts
 /// (especially `claude` on Windows) can add ~30s. Anything over 90s
@@ -97,14 +105,13 @@ pub struct GateArgs<'a> {
     pub source_repo: &'a str,
     pub pairs: &'a [Pair],
     pub existing_rules: &'a [ExistingRule],
-    /// Provider:model identifier recorded on the candidate (e.g.
-    /// `"claude-code:gate"`). Not used to pick the agent CLI — that is
-    /// derived from `client_name` — but stored on the
-    /// [`SessionMinedCandidate`] for audits.
+    /// Legacy provider:model identifier recorded on the candidate when a
+    /// caller maps a parsed verdict directly. Normal [`run_gate`] execution
+    /// records the actual successful agent instead.
     pub gate_model: &'a str,
     /// Hook adapter client name (`"claude-code"`, `"cursor"`, …). Maps
-    /// to an [`AgentKind`] via `AgentKind::from_client_name`; unknown
-    /// values default to Claude Code (the most common install).
+    /// to an [`AgentKind`] via `AgentKind::from_client_name`; gate execution
+    /// now prefers Codex locally and falls back through compatible CLIs.
     pub client_name: &'a str,
     /// Unix-ms timestamp to stamp on the produced candidate when the
     /// gate keeps the session. Passed in (rather than read from the
@@ -122,6 +129,7 @@ pub enum GateVerdict {
     /// extend. `updated_body` is the gate's proposed replacement
     /// body for the merged rule.
     Merge {
+        gate_model: String,
         rule_id: String,
         title: Option<String>,
         updated_body: String,
@@ -162,21 +170,59 @@ pub async fn run_gate(args: GateArgs<'_>) -> Result<GateVerdict, GateError> {
         return Err(GateError::EmptyInput);
     }
 
-    let agent = AgentKind::from_client_name(args.client_name).unwrap_or(AgentKind::ClaudeCode);
     let prompt = build_prompt(args.pairs, args.existing_rules);
+    let mut dispatch_errors = Vec::new();
 
-    let result: GateResult = dispatch_gate(agent, &prompt, GATE_TIMEOUT).await;
-    if result.errored {
-        let message = if result.error_message.is_empty() {
-            "agent CLI reported error with no message".to_owned()
-        } else {
-            result.error_message
-        };
-        return Err(GateError::Dispatch { message });
+    for agent in gate_agent_candidates(args.client_name) {
+        let result: GateResult = dispatch_gate(agent, &prompt, GATE_TIMEOUT).await;
+        if result.errored {
+            dispatch_errors.push(format!(
+                "{}: {}",
+                agent.label(),
+                dispatch_error_message(result)
+            ));
+            continue;
+        }
+
+        let parsed = parse_gate_json(&result.stdout)?;
+        let gate_model = format!("{}:gate", agent.label());
+        return parsed_to_verdict(parsed, &args, &gate_model);
     }
 
-    let parsed = parse_gate_json(&result.stdout)?;
-    parsed_to_verdict(parsed, &args)
+    Err(GateError::Dispatch {
+        message: if dispatch_errors.is_empty() {
+            "no compatible gate agents were configured".to_owned()
+        } else {
+            format!("all gate agents failed: {}", dispatch_errors.join("; "))
+        },
+    })
+}
+
+fn dispatch_error_message(result: GateResult) -> String {
+    if result.error_message.is_empty() {
+        "agent CLI reported error with no message".to_owned()
+    } else {
+        result.error_message
+    }
+}
+
+fn gate_agent_candidates(client_name: &str) -> Vec<AgentKind> {
+    let mut agents = Vec::with_capacity(FALLBACK_GATE_AGENTS.len());
+    push_gate_agent(&mut agents, DEFAULT_GATE_AGENT);
+    if let Some(client_agent) = AgentKind::from_client_name(client_name) {
+        push_gate_agent(&mut agents, client_agent);
+    }
+    for agent in FALLBACK_GATE_AGENTS {
+        push_gate_agent(&mut agents, agent);
+    }
+    agents
+}
+
+fn push_gate_agent(agents: &mut Vec<AgentKind>, agent: AgentKind) {
+    if matches!(agent, AgentKind::Windsurf) || agents.contains(&agent) {
+        return;
+    }
+    agents.push(agent);
 }
 
 /// Parsed JSON shape from the gate. Optional fields are normalized to
@@ -430,7 +476,11 @@ fn locate_json_object(s: &str) -> Option<String> {
     None
 }
 
-fn parsed_to_verdict(parsed: GateJson, args: &GateArgs<'_>) -> Result<GateVerdict, GateError> {
+fn parsed_to_verdict(
+    parsed: GateJson,
+    args: &GateArgs<'_>,
+    gate_model: &str,
+) -> Result<GateVerdict, GateError> {
     let verdict_uc = parsed.verdict.to_ascii_uppercase();
     match verdict_uc.as_str() {
         "KEEP" => {
@@ -460,7 +510,7 @@ fn parsed_to_verdict(parsed: GateJson, args: &GateArgs<'_>) -> Result<GateVerdic
                 title,
                 body,
                 file_patterns: parsed.file_patterns,
-                gate_model: args.gate_model.to_owned(),
+                gate_model: gate_model.to_owned(),
                 gate_verdict: "KEEP".to_owned(),
             })
             .map_err(|e| GateError::InvalidCandidate {
@@ -476,6 +526,7 @@ fn parsed_to_verdict(parsed: GateJson, args: &GateArgs<'_>) -> Result<GateVerdic
                 reason: "MERGE verdict missing body".to_owned(),
             })?;
             Ok(GateVerdict::Merge {
+                gate_model: gate_model.to_owned(),
                 rule_id,
                 title: parsed.title,
                 updated_body,
@@ -734,13 +785,13 @@ mod tests {
         };
         let pairs = vec![pair("u", "a")];
         let a = args(&pairs, &[]);
-        let verdict = parsed_to_verdict(parsed, &a).expect("verdict");
+        let verdict = parsed_to_verdict(parsed, &a, "codex:gate").expect("verdict");
         match verdict {
             GateVerdict::Keep { candidate } => {
                 assert_eq!(candidate.source_repo, "owner/repo");
                 assert_eq!(candidate.session_id, "sess_test");
                 assert_eq!(candidate.gate_verdict, "KEEP");
-                assert_eq!(candidate.gate_model, "claude-code:gate");
+                assert_eq!(candidate.gate_model, "codex:gate");
                 assert!(candidate.requires_human_approval);
                 assert_eq!(candidate.file_patterns, vec!["crates/**/*.rs"]);
             }
@@ -760,10 +811,11 @@ mod tests {
         };
         let pairs = vec![pair("u", "a")];
         let a = args(&pairs, &[]);
-        let verdict = parsed_to_verdict(parsed, &a).expect("verdict");
+        let verdict = parsed_to_verdict(parsed, &a, "codex:gate").expect("verdict");
         assert_eq!(
             verdict,
             GateVerdict::Merge {
+                gate_model: "codex:gate".to_owned(),
                 rule_id: "rule-42".to_owned(),
                 title: Some("Extended".to_owned()),
                 updated_body: "Refined body".to_owned(),
@@ -784,7 +836,7 @@ mod tests {
         };
         let pairs = vec![pair("u", "a")];
         let a = args(&pairs, &[]);
-        let verdict = parsed_to_verdict(parsed, &a).expect("verdict");
+        let verdict = parsed_to_verdict(parsed, &a, "codex:gate").expect("verdict");
         assert_eq!(
             verdict,
             GateVerdict::Skip {
@@ -808,7 +860,7 @@ mod tests {
         };
         let pairs = vec![pair("u", "a")];
         let a = args(&pairs, &[]);
-        let err = parsed_to_verdict(parsed, &a).unwrap_err();
+        let err = parsed_to_verdict(parsed, &a, "codex:gate").unwrap_err();
         assert!(matches!(err, GateError::InvalidCandidate { .. }));
     }
 
@@ -824,7 +876,7 @@ mod tests {
         };
         let pairs = vec![pair("u", "a")];
         let a = args(&pairs, &[]);
-        let err = parsed_to_verdict(parsed, &a).unwrap_err();
+        let err = parsed_to_verdict(parsed, &a, "codex:gate").unwrap_err();
         match err {
             GateError::InvalidCandidate { reason } => {
                 assert!(reason.contains("file_patterns"));
@@ -845,11 +897,50 @@ mod tests {
         };
         let pairs = vec![pair("u", "a")];
         let a = args(&pairs, &[]);
-        let err = parsed_to_verdict(parsed, &a).unwrap_err();
+        let err = parsed_to_verdict(parsed, &a, "codex:gate").unwrap_err();
         assert!(matches!(err, GateError::ParseFailure { .. }));
     }
 
     // Public surface
+    #[test]
+    fn gate_agent_candidates_prefers_codex_for_claude_code_hooks() {
+        assert_eq!(
+            gate_agent_candidates("claude-code"),
+            vec![
+                AgentKind::Codex,
+                AgentKind::ClaudeCode,
+                AgentKind::Cursor,
+                AgentKind::GeminiCli,
+            ],
+        );
+    }
+
+    #[test]
+    fn gate_agent_candidates_keeps_client_agent_as_first_fallback() {
+        assert_eq!(
+            gate_agent_candidates("cursor"),
+            vec![
+                AgentKind::Codex,
+                AgentKind::Cursor,
+                AgentKind::ClaudeCode,
+                AgentKind::GeminiCli,
+            ],
+        );
+    }
+
+    #[test]
+    fn gate_agent_candidates_skips_agents_without_headless_cli() {
+        assert_eq!(
+            gate_agent_candidates("windsurf"),
+            vec![
+                AgentKind::Codex,
+                AgentKind::ClaudeCode,
+                AgentKind::Cursor,
+                AgentKind::GeminiCli
+            ],
+        );
+    }
+
     #[tokio::test]
     async fn run_gate_rejects_empty_input_without_spawning() {
         // No pairs → no CLI call. The worker upstream already filters,

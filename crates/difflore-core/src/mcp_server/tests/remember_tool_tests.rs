@@ -75,6 +75,26 @@ async fn build_state() -> McpState {
     }
 }
 
+static REPO_DETECTION_TEST_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+struct RepoDetectionTestGuard {
+    _guard: tokio::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for RepoDetectionTestGuard {
+    fn drop(&mut self) {
+        clear_repo_detection_cache_for_test();
+        set_configured_gitlab_hosts_for_remote_detection_for_test(Vec::new());
+    }
+}
+
+async fn repo_detection_test_guard() -> RepoDetectionTestGuard {
+    let guard = REPO_DETECTION_TEST_SERIAL.lock().await;
+    clear_repo_detection_cache_for_test();
+    set_configured_gitlab_hosts_for_remote_detection_for_test(Vec::new());
+    RepoDetectionTestGuard { _guard: guard }
+}
+
 #[tokio::test]
 async fn tools_list_advertises_expected_tools() {
     // Pin every advertised tool name in one snapshot: if a tool is dropped
@@ -241,8 +261,9 @@ async fn remember_rule_writes_then_search_and_get_rules_recalls() {
 /// real-remote test owns the end-to-end self-managed GitLab path (refresh →
 /// real remote → host-prefixed scope → recall); this one isolates the
 /// `RepoScope::canonical` routing guarantee for the fifth `source_repo` write
-/// path without touching the process-global detection cache, cwd, or auth DB,
-/// so it never races the rest of the suite.
+/// path without mutating cwd or the auth DB. It still reads the process-global
+/// detection cache via the production tool path, so it takes the same serial
+/// guard as the hook/cwd tests.
 ///
 /// Guarantee: `remember_rule` routes its `source_repo` write through
 /// `RepoScope::canonical`. Whatever remote this process detects, the stored
@@ -254,6 +275,7 @@ async fn remember_rule_writes_then_search_and_get_rules_recalls() {
 /// normalizer rejects).
 #[tokio::test]
 async fn remember_rule_routes_source_repo_through_repo_scope_canonical() {
+    let _repo_detection_guard = repo_detection_test_guard().await;
     // The routing gate must be the host-aware canonical normalizer: it accepts
     // the self-managed GitLab host dimension and leaves it intact.
     const GITLAB_SCOPE: &str = "gitlab.corp.example:8443/platform/api";
@@ -325,6 +347,7 @@ async fn remember_rule_routes_source_repo_through_repo_scope_canonical() {
 /// never decrypts the value — so the test needs no crypto/keyring/master-key.
 #[tokio::test]
 async fn remember_rule_self_managed_gitlab_real_remote_refresh_drives_scope() {
+    let _repo_detection_guard = repo_detection_test_guard().await;
     // Self-managed host with a port and mixed case in the remote, to prove the
     // canonical host-dimension normalizer (lowercasing, host:port preserved)
     // ran on the detected remote.
@@ -1078,6 +1101,7 @@ async fn get_rules_does_not_count_universal_rule_as_strict_file_proof() {
 
 #[tokio::test]
 async fn hook_injection_records_local_serve_proof() {
+    let _repo_detection_guard = repo_detection_test_guard().await;
     let state = build_state().await;
     let rule_id = remember_rule_with_patterns(
         &state,
@@ -1117,6 +1141,7 @@ async fn hook_injection_records_local_serve_proof() {
 
 #[tokio::test]
 async fn hook_injection_renders_why_segment_on_header() {
+    let _repo_detection_guard = repo_detection_test_guard().await;
     // whyRanked end to end on the hook path: the injected block's header
     // carries the compact why segment (strict **/*.go hit, top survivor →
     // band 10/10, remember_rule origin → conversation).
@@ -1155,6 +1180,7 @@ async fn hook_injection_renders_why_segment_on_header() {
 
 #[tokio::test]
 async fn hook_post_edit_gate_keeps_on_subject_and_drops_adjacent_rule() {
+    let _repo_detection_guard = repo_detection_test_guard().await;
     // C6 misapply unification, end to end on the hook path with the shipped
     // default (intent gate ON):
     //   * the on-subject rule survives the intent-alignment gate — no
@@ -1206,6 +1232,7 @@ async fn hook_post_edit_gate_keeps_on_subject_and_drops_adjacent_rule() {
 
 #[tokio::test]
 async fn hook_intent_gate_applies_to_post_edit_but_not_bash_error_path() {
+    let _repo_detection_guard = repo_detection_test_guard().await;
     // The C6 gate is post-edit only: bash-error recall keeps its own
     // copy/recall semantics (cli-spec misapply guard is described per face).
     let state = build_state().await;
@@ -1295,6 +1322,7 @@ async fn search_rules_results_carry_compact_why_ranking() {
 
 #[tokio::test]
 async fn hook_rebuild_failure_returns_error_instead_of_serving_stale_index() {
+    let _repo_detection_guard = repo_detection_test_guard().await;
     let state = build_state().await;
     let rule_id = remember_rule_with_patterns(
         &state,

@@ -11,6 +11,7 @@
 //! adapter.
 
 pub mod claude_code;
+pub mod codex;
 pub mod cursor;
 pub mod gemini_cli;
 pub(crate) mod synth;
@@ -194,6 +195,7 @@ pub fn get_platform_adapter(client_name: &str) -> Box<dyn PlatformAdapter> {
 fn adapter_for(id: crate::clients::ClientId) -> Box<dyn PlatformAdapter> {
     use crate::clients::ClientId;
     match id {
+        ClientId::Codex => Box::new(codex::CodexAdapter),
         ClientId::Cursor => Box::new(cursor::CursorAdapter),
         ClientId::GeminiCli => Box::new(gemini_cli::GeminiCliAdapter),
         ClientId::Windsurf => Box::new(windsurf::WindsurfAdapter),
@@ -201,7 +203,6 @@ fn adapter_for(id: crate::clients::ClientId) -> Box<dyn PlatformAdapter> {
         // dedicated lifecycle-hook surface (or whose hooks we install in the
         // Claude shape) parse with its adapter.
         ClientId::ClaudeCode
-        | ClientId::Codex
         | ClientId::CopilotCli
         | ClientId::Antigravity
         | ClientId::Goose
@@ -221,6 +222,8 @@ mod tests {
             ("claude-code", "claude-code"),
             ("claude_code", "claude-code"),
             ("claude", "claude-code"),
+            ("codex", "codex"),
+            ("codex-cli", "codex"),
             ("cursor", "cursor"),
             ("Cursor", "cursor"),
             ("gemini-cli", "gemini-cli"),

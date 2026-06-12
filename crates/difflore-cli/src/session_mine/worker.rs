@@ -148,6 +148,7 @@ async fn run_worker_inner(
             }
         },
         GateVerdict::Merge {
+            gate_model,
             rule_id,
             title,
             updated_body,

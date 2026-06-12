@@ -212,6 +212,32 @@ pub(super) fn imported_review_upload(
     })
 }
 
+pub(super) fn matches_upload_target(
+    item: &ReviewItemWithComments,
+    source: &str,
+    repo: &str,
+    gitlab_host: Option<&str>,
+) -> bool {
+    let Some(item_repo) = item.item.repo_full_name.as_deref() else {
+        return false;
+    };
+
+    if source != "gitlab" {
+        return item_repo == repo;
+    }
+
+    let Some(target_host) = gitlab_host else {
+        return false;
+    };
+    let Some(target_scope) = canonical_gitlab_repo_scope(target_host, repo) else {
+        return false;
+    };
+    let Some(item_host) = gitlab_host_from_metadata(item.item.metadata.as_deref()) else {
+        return false;
+    };
+    canonical_gitlab_repo_scope(&item_host, item_repo).as_deref() == Some(target_scope.as_str())
+}
+
 pub(super) const fn cloud_upload_next_step_commands() -> &'static [(&'static str, &'static str)] {
     &[
         ("difflore cloud sync", "# pull the new rules down"),
@@ -254,6 +280,7 @@ pub(super) async fn run_upload(
     db: &SqlitePool,
     source: &str,
     repo: &str,
+    gitlab_host: Option<&str>,
     import_result: &ImportProgress,
     json: bool,
 ) -> Result<usize, String> {
@@ -282,7 +309,7 @@ pub(super) async fn run_upload(
 
     let upload_reviews: Vec<ImportedReviewUpload> = items
         .iter()
-        .filter(|item| item.item.repo_full_name.as_deref() == Some(repo))
+        .filter(|item| matches_upload_target(item, source, repo, gitlab_host))
         .filter_map(imported_review_upload)
         .collect();
 
