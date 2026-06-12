@@ -480,7 +480,7 @@ fn print_wizard_header(resume: bool) {
 }
 
 async fn step1_repo_confirm(state: &mut WizardState) -> StepFlow {
-    state.detected_repo = detect_repo_label();
+    state.detected_repo = detect_repo_label().await;
     let repo_label = state.detected_repo.as_deref().unwrap_or("this repo");
     let q1 = format!(
         "Step 1/5  Detected: {}. Use this as your first source?",
@@ -924,12 +924,15 @@ fn parse_import_depth_answer(answer: &str, default: usize) -> Result<usize, Stri
     Ok(parsed)
 }
 
-fn detect_repo_label() -> Option<String> {
+async fn detect_repo_label() -> Option<String> {
     if let Ok(cwd) = std::env::current_dir() {
-        if let Some(repo) =
-            difflore_core::infra::git::detect_github_repo_full_names(&cwd.to_string_lossy())
-                .into_iter()
-                .next()
+        let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
+        if let Some(repo) = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+            &cwd.to_string_lossy(),
+            &configured_gitlab_hosts,
+        )
+        .into_iter()
+        .next()
         {
             return Some(repo);
         }

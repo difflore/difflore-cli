@@ -432,6 +432,16 @@ pub async fn install_pack(
         // Reuse the `remember.rs` INSERT-INTO-skills shape, swapping
         // source='pack', origin='pack', synthetic source_repo, and the 0.55
         // confidence floor. `enabled_for_claude = 1` mirrors the remember path.
+        //
+        // INTENTIONAL RepoScope exemption: `source_repo` here is the synthetic
+        // `pack:<id>` value (see `pack_source_repo`), NOT a git repo scope. It
+        // must NEVER be routed through `RepoScope::canonical` — the `pack:`
+        // prefix is the isolation key that keeps pack rules confined to the
+        // cross-repo starter fallback and unable to collide with any real
+        // `owner/repo` / `host/group/project` scope. Canonicalizing it would
+        // either reject the value (no valid host/owner) or, worse, strip the
+        // isolation prefix. This is the one `skills.source_repo` writer that is
+        // deliberately outside the RepoScope normalization gate.
         sqlx::query(
             "INSERT INTO skills
              (id, name, source, directory, version, description, type, engines, tags,

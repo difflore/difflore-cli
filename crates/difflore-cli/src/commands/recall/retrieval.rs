@@ -54,8 +54,12 @@ pub(super) async fn recall_local_rules(
     // Detect both origin and upstream so recall can use imported review
     // history from either remote. `repo_full_name` is the display label;
     // `repo_scopes` carries the full list into retrieval.
+    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
     let detected_repo_full_names =
-        difflore_core::infra::git::detect_github_repo_full_names(&project_path());
+        difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+            &project_path(),
+            &configured_gitlab_hosts,
+        );
     let repo_full_names = difflore_core::skills::expand_repo_scopes_with_source_aliases(
         db,
         &detected_repo_full_names,
@@ -660,14 +664,14 @@ pub(super) fn build_zero_match_diagnostics(
     // A no-remote / non-GitHub checkout also reports rules_indexed == 0 (the
     // scope filter copies nothing in), so diagnose a missing scope FIRST.
     // Otherwise it is mislabeled "no memory, import reviews" when the real fix is
-    // adding a GitHub remote.
+    // adding a supported git remote.
     let no_scope = local.repo_full_name.is_none();
     let empty_corpus = !no_scope && local.rules_indexed == 0;
 
     if no_scope {
         possible_causes.push(DiagnosticItem {
             code: "repo_scope_missing",
-            message: "No GitHub origin/upstream remote was detected; local recall scopes rules by repo, so an unscoped checkout retrieves nothing. This is by design, not empty local memory.".to_owned(),
+            message: "No supported origin/upstream git remote was detected; local recall scopes rules by repo, so an unscoped checkout retrieves nothing. This is by design, not empty local memory.".to_owned(),
         });
     } else if empty_corpus {
         possible_causes.push(DiagnosticItem {
@@ -731,7 +735,7 @@ pub(super) fn build_zero_match_diagnostics(
         possible_causes.push(DiagnosticItem {
             code: "cloud_repo_scope_missing",
             message:
-                "Cloud PR review rules were skipped because no GitHub repo remote was detected."
+                "Cloud PR review rules were skipped because no supported repo remote was detected."
                     .to_owned(),
         });
     } else {
@@ -742,11 +746,11 @@ pub(super) fn build_zero_match_diagnostics(
     }
 
     if no_scope {
-        // Without a recognized GitHub remote there is no scope to attach
+        // Without a recognized supported git remote there is no scope to attach
         // imported rules to, so the first step is the remote, not import-reviews.
         next_steps.push(DiagnosticStep {
             command: Some("git remote -v".to_owned()),
-            message: "local recall is repo-scoped; add a GitHub origin/upstream remote (or run inside a repo that has one) so this checkout has memory to retrieve".to_owned(),
+            message: "local recall is repo-scoped; add a supported origin/upstream git remote (or run inside a repo that has one) so this checkout has memory to retrieve".to_owned(),
         });
     } else if empty_corpus {
         next_steps.push(DiagnosticStep {
@@ -813,8 +817,12 @@ pub(super) async fn recall_cloud_review_memory(
 ) -> CloudRecallResult {
     let client = ctx.cloud().await;
     let has_saved_token = client.is_logged_in();
+    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
     let detected_repo_full_names =
-        difflore_core::infra::git::detect_github_repo_full_names(&project_path());
+        difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+            &project_path(),
+            &configured_gitlab_hosts,
+        );
     let repo_full_names = difflore_core::skills::expand_repo_scopes_with_source_aliases(
         &ctx.db,
         &detected_repo_full_names,

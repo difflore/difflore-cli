@@ -221,14 +221,7 @@ pub fn language_from_file_patterns(file_patterns_json: Option<&str>) -> Option<S
 }
 
 pub fn repo_scope_from_source_repo(source_repo: Option<&str>) -> Option<String> {
-    if let Some(repo) = source_repo.map(str::trim)
-        && let Some((owner, name)) = repo.split_once('/')
-        && !owner.trim().is_empty()
-        && !name.trim().is_empty()
-    {
-        return Some(format!("{}/{}", owner.trim(), name.trim()).to_ascii_lowercase());
-    }
-    None
+    crate::infra::git::normalize_canonical_repo_scope(source_repo?)
 }
 
 impl From<RuleRow> for RuleDocument {
@@ -617,9 +610,19 @@ mod tests {
             repo_scope_from_source_repo(Some("vitejs/vite")).as_deref(),
             Some("vitejs/vite")
         );
+        assert_eq!(
+            repo_scope_from_source_repo(Some("gitlab.com/group/sub/project")).as_deref(),
+            Some("gitlab.com/group/sub/project")
+        );
+        assert_eq!(
+            repo_scope_from_source_repo(Some("gitlab.corp.example/group/project")).as_deref(),
+            Some("gitlab.corp.example/group/project")
+        );
         assert!(repo_scope_from_source_repo(None).is_none());
         assert!(repo_scope_from_source_repo(Some("vitejs")).is_none());
         assert!(repo_scope_from_source_repo(Some(" /vite")).is_none());
+        assert!(repo_scope_from_source_repo(Some("github.com/owner/repo")).is_none());
+        assert!(repo_scope_from_source_repo(Some("group/sub/project")).is_none());
     }
 
     #[test]

@@ -524,7 +524,7 @@ pub(super) fn repo_scope_status(
         scoped_active_rules,
         review_source_active_rules,
     ) {
-        (None, _, _, _) => "no GitHub origin/upstream remote was detected".to_owned(),
+        (None, _, _, _) => "no supported origin/upstream git remote was detected".to_owned(),
         (Some(_repo), Some(source_repo), 0, source_count) if source_count > 0 => format!(
             "{source_count} upstream active memor{} from {source_repo} are available to this fork",
             if source_count == 1 { "y" } else { "ies" }
@@ -595,7 +595,7 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
     if active_rules > 0 && scope.repo_full_name.is_none() {
         return NextAction {
             command: "difflore recall \"review this change\"".to_owned(),
-            reason: "preview local rules; add a GitHub origin remote for repo-scoped recall"
+            reason: "preview local rules; add a supported origin remote for repo-scoped recall"
                 .to_owned(),
         };
     }
@@ -626,7 +626,7 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
     if pending_candidates > 0 && scope.repo_full_name.is_none() {
         return NextAction {
             command: "difflore drafts review".to_owned(),
-            reason: "review pending drafts; add a GitHub origin remote for repo-scoped guidance"
+            reason: "review pending drafts; add a supported origin remote for repo-scoped guidance"
                 .to_owned(),
         };
     }
@@ -885,7 +885,7 @@ mod tests {
     fn repo_scope_status_requires_repo_and_scoped_rules() {
         let no_repo = scope(None, 3);
         assert!(!no_repo.scoped_recall_ready);
-        assert!(no_repo.reason.contains("no GitHub origin"));
+        assert!(no_repo.reason.contains("no supported origin"));
 
         let empty_repo = scope(Some("acme/app"), 0);
         assert!(!empty_repo.scoped_recall_ready);

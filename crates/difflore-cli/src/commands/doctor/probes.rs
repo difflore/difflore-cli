@@ -180,8 +180,11 @@ async fn probe_project_db(
         };
     }
 
-    let detected_repo_remotes =
-        difflore_core::infra::git::detect_github_repo_full_names(&project.to_string_lossy());
+    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
+    let detected_repo_remotes = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+        &project.to_string_lossy(),
+        &configured_gitlab_hosts,
+    );
     let repo_remotes =
         difflore_core::skills::expand_repo_scopes_with_source_aliases(pool, &detected_repo_remotes)
             .await

@@ -80,8 +80,11 @@ pub async fn ensure_rules_indexed_with_embedding_timeout(
     embedding_timeout: Option<std::time::Duration>,
 ) -> Result<usize, CoreError> {
     let project_root = crate::infra::db::current_project_root();
-    let repo_scopes =
-        crate::infra::git::detect_github_repo_full_names(project_root.to_string_lossy().as_ref());
+    let configured_gitlab_hosts = crate::ingest::gitlab::auth::configured_hosts().await;
+    let repo_scopes = crate::infra::git::detect_repo_full_names_with_gitlab_hosts(
+        project_root.to_string_lossy().as_ref(),
+        &configured_gitlab_hosts,
+    );
     ensure_rules_indexed_for_repo_scopes_with_embedding_timeout(
         app_pool,
         index_pool,
@@ -297,11 +300,12 @@ async fn project_hash_for(app_pool: &SqlitePool, project_id: &str) -> String {
     crate::infra::db::project_hash_from_root(&root)
 }
 
-/// Detect every GitHub `owner/repo` scope reachable from the project's
-/// git remotes (`origin` first, then `upstream` — see
-/// `git::detect_github_repo_full_names`). Returning the full `Vec` lets
+/// Detect every supported repo scope reachable from the project's git remotes
+/// (`origin` first, then `upstream` — see
+/// `git::detect_repo_full_names`). Returning the full `Vec` lets
 /// callers retrieve rules from the current fork and its upstream.
 async fn repo_scopes_for(app_pool: &SqlitePool, project_id: &str) -> Vec<String> {
+    let configured_gitlab_hosts = crate::ingest::gitlab::auth::configured_hosts().await;
     if !project_id.is_empty()
         && let Ok(Some(row)) = sqlx::query_scalar!(
             r#"SELECT path as "path!: String" FROM projects WHERE id = ?1"#,
@@ -310,11 +314,17 @@ async fn repo_scopes_for(app_pool: &SqlitePool, project_id: &str) -> Vec<String>
         .fetch_optional(app_pool)
         .await
     {
-        return crate::infra::git::detect_github_repo_full_names(&row);
+        return crate::infra::git::detect_repo_full_names_with_gitlab_hosts(
+            &row,
+            &configured_gitlab_hosts,
+        );
     }
 
     let root = crate::infra::db::current_project_root();
-    crate::infra::git::detect_github_repo_full_names(&root.to_string_lossy())
+    crate::infra::git::detect_repo_full_names_with_gitlab_hosts(
+        &root.to_string_lossy(),
+        &configured_gitlab_hosts,
+    )
 }
 
 fn rule_title(content: &str) -> Option<String> {
@@ -838,5 +848,28 @@ mod tests {
         let scoped = filter_rules_for_repo_scopes(rules, &["ACME/Widgets".to_owned()]);
         assert_eq!(scoped.len(), 1);
         assert_eq!(scoped[0].skill_id, "a");
+    }
+
+    #[test]
+    fn filter_rules_for_repo_scopes_keeps_gitlab_host_dimension() {
+        let rules = vec![
+            doc("github", Some("acme/app")),
+            doc("gitlab", Some("gitlab.com/acme/app")),
+            doc("corp", Some("gitlab.corp.example/acme/app")),
+        ];
+
+        let github = filter_rules_for_repo_scopes(rules.clone(), &["acme/app".to_owned()]);
+        assert_eq!(github.len(), 1);
+        assert_eq!(github[0].skill_id, "github");
+
+        let gitlab =
+            filter_rules_for_repo_scopes(rules.clone(), &["gitlab.com/acme/app".to_owned()]);
+        assert_eq!(gitlab.len(), 1);
+        assert_eq!(gitlab[0].skill_id, "gitlab");
+
+        let corp =
+            filter_rules_for_repo_scopes(rules, &["gitlab.corp.example/acme/app".to_owned()]);
+        assert_eq!(corp.len(), 1);
+        assert_eq!(corp[0].skill_id, "corp");
     }
 }

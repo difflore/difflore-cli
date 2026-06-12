@@ -84,8 +84,13 @@ pub(super) async fn prepare_fix_context(
         } else {
             let requested_scope = parse_diff_scope(diff_scope_arg)?;
             let (diff_records, diff_scope) = collect_diff(&path, requested_scope).await?;
+            let configured_gitlab_hosts =
+                difflore_core::ingest::gitlab::auth::configured_hosts().await;
             let repo_full_name_aliases =
-                difflore_core::infra::git::detect_github_repo_full_names(&path_str);
+                difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+                    &path_str,
+                    &configured_gitlab_hosts,
+                );
             let repo_full_name = repo_full_name_aliases.first().cloned();
             (
                 diff_records,

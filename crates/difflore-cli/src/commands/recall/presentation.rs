@@ -175,7 +175,7 @@ pub(super) fn render_zero_match_compact_human(diagnostics: &RecallDiagnostics) {
         .iter()
         .any(|cause| cause.code == "local_corpus_empty");
     let message = if repo_scope_missing {
-        "No team rules matched because this checkout has no GitHub origin/upstream remote."
+        "No team rules matched because this checkout has no supported origin/upstream git remote."
     } else if local_corpus_empty {
         "No team rules matched because this repo has no local rules yet."
     } else {
@@ -186,7 +186,7 @@ pub(super) fn render_zero_match_compact_human(diagnostics: &RecallDiagnostics) {
     let next = if repo_scope_missing {
         DiagnosticStep {
             command: Some("git remote -v".to_owned()),
-            message: "add or check a GitHub remote so DiffLore can scope rules to this repo"
+            message: "add or check a supported git remote so DiffLore can scope rules to this repo"
                 .to_owned(),
         }
     } else if local_corpus_empty {
@@ -236,7 +236,7 @@ pub(super) fn render_local_recall_human(
             // No repo scope -> empty by design, not an empty corpus. Steer to the
             // remote rather than import-reviews (which can't help without a scope).
             println!(
-                "  {} Local recall needs a GitHub remote for repo-scoped rules: {}",
+                "  {} Local recall needs a supported git remote for repo-scoped rules: {}",
                 style::pewter(sym::TIP),
                 style::cmd("git remote -v"),
             );
@@ -354,7 +354,7 @@ pub(super) fn render_cloud_recall_human(
     }
     let Some(repo) = recall.repo_full_name.as_deref() else {
         println!(
-            "  {} Cloud PR review rules skipped: no GitHub repo remote detected. Local recall above is still usable.",
+            "  {} Cloud PR review rules skipped: no supported repo remote detected. Local recall above is still usable.",
             style::pewter(sym::BULLET),
         );
         return;

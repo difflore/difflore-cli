@@ -2,7 +2,9 @@ use difflore_core::contract::{
     ImportedCommentEventType, ImportedCommentUpload, ImportedReviewUpload,
     UploadImportedReviewsRequest,
 };
+use difflore_core::infra::git::canonical_gitlab_repo_scope;
 use difflore_core::ingest::github::ImportProgress;
+use difflore_core::ingest::gitlab::auth::normalize_gitlab_host;
 use difflore_core::review_store::{self, ReviewItemWithComments};
 use sqlx::SqlitePool;
 
@@ -66,6 +68,16 @@ pub(super) fn source_repo_from_metadata(
     } else {
         Some(source_repo.to_owned())
     }
+}
+
+pub(super) fn gitlab_host_from_metadata(metadata: Option<&str>) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(metadata?).ok()?;
+    value
+        .get("gitlabHost")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| normalize_gitlab_host(s).ok())
 }
 
 /// Read the inline comment's file path back out of the per-comment metadata
@@ -137,6 +149,31 @@ pub(super) fn imported_review_upload(
     item: &ReviewItemWithComments,
 ) -> Option<ImportedReviewUpload> {
     let repo_full_name = item.item.repo_full_name.clone()?;
+    let provider = item.item.source.clone();
+    let provider_host = if provider == "gitlab" {
+        gitlab_host_from_metadata(item.item.metadata.as_deref())
+    } else {
+        None
+    };
+    let source_repo_full_name =
+        source_repo_from_metadata(item.item.metadata.as_deref(), &repo_full_name);
+    let upload_repo_full_name = if provider == "gitlab" {
+        provider_host
+            .as_deref()
+            .and_then(|host| canonical_gitlab_repo_scope(host, &repo_full_name))
+            .unwrap_or_else(|| repo_full_name.clone())
+    } else {
+        repo_full_name
+    };
+    let upload_source_repo_full_name = if provider == "gitlab" {
+        source_repo_full_name.and_then(|source_repo| {
+            provider_host
+                .as_deref()
+                .and_then(|host| canonical_gitlab_repo_scope(host, &source_repo))
+        })
+    } else {
+        source_repo_full_name
+    };
     let comments: Vec<ImportedCommentUpload> = item
         .comments
         .iter()
@@ -165,11 +202,10 @@ pub(super) fn imported_review_upload(
     }
 
     Some(ImportedReviewUpload {
-        repo_full_name: repo_full_name.clone(),
-        source_repo_full_name: source_repo_from_metadata(
-            item.item.metadata.as_deref(),
-            &repo_full_name,
-        ),
+        provider: Some(provider),
+        provider_host,
+        repo_full_name: upload_repo_full_name,
+        source_repo_full_name: upload_source_repo_full_name,
         pr_number: item.item.pr_number.unwrap_or(0),
         pr_title: Some(item.item.file_path.clone()),
         comments,
@@ -210,8 +246,9 @@ pub(super) fn print_next_steps(uploaded_reviews: usize) {
 
 /// Upload imported reviews for `repo` (filtered to the given import
 /// `source`: "github" or "gitlab"). The payload shape is provider-neutral —
-/// GitLab items carry their bare namespace path as `repo_full_name` and
-/// their `gl:`-prefixed external ids never leave the local dedupe table.
+/// GitHub keeps `owner/repo`, while GitLab uploads canonical
+/// `host/group/project` repo keys so cloud upserts cannot collide across
+/// providers or self-managed hosts.
 pub(super) async fn run_upload(
     ctx: &CommandContext,
     db: &SqlitePool,

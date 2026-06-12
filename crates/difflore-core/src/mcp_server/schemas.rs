@@ -10,7 +10,7 @@ pub(super) fn tools_list() -> Value {
     json!([
         {
             "name": "search_rules",
-            "description": "Compact memory search. Returns rule ids/titles/origins plus match reasons before fetching details. Memory is scoped to the current git remotes; pass `repo_full_name` (GitHub owner/repo) when auto-detection is unavailable. Results are deterministically ordered (strict file-pattern hit, then relative-score band, then source priority manual > team > pr_review > extracted > conversation) and each carries a compact `why` ranking explanation (e.g. `strict-hit; band 9/10; source manual`). When team review history is available, results include citedCount and trustRate so agents can prefer rules that led to accepted edits. Use with get_rules to expand only matched rules.",
+            "description": "Compact memory search. Returns rule ids/titles/origins plus match reasons before fetching details. Memory is scoped to the current git remotes; pass `repo_full_name` (repo namespace path such as GitHub owner/repo or GitLab group/project) when auto-detection is unavailable. Results are deterministically ordered (strict file-pattern hit, then relative-score band, then source priority manual > team > pr_review > extracted > conversation) and each carries a compact `why` ranking explanation (e.g. `strict-hit; band 9/10; source manual`). When team review history is available, results include citedCount and trustRate so agents can prefer rules that led to accepted edits. Use with get_rules to expand only matched rules.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -67,7 +67,7 @@ pub(super) fn tools_list() -> Value {
         },
         {
             "name": "get_past_verdicts",
-            "description": "Search team review history (WHAT the team decided on similar code before). Memory is scoped to the current repo/project only; pass `repo_full_name` (GitHub owner/repo) when auto-detection is unavailable. Pass `file` (the path you're editing) so DiffLore can prioritize matching file patterns and show useful gaps for that file. Use this to cite concrete prior decisions; use `rule_timeline` when you need the *why this rule exists* narrative for a specific rule.",
+            "description": "Search team review history (WHAT the team decided on similar code before). Memory is scoped to the current repo/project only; pass `repo_full_name` (repo namespace path such as GitHub owner/repo or GitLab group/project) when auto-detection is unavailable. Pass `file` (the path you're editing) so DiffLore can prioritize matching file patterns and show useful gaps for that file. Use this to cite concrete prior decisions; use `rule_timeline` when you need the *why this rule exists* narrative for a specific rule.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

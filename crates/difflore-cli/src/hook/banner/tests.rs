@@ -194,7 +194,7 @@ async fn pending_and_no_source_repo_rules_are_excluded() {
 
 #[tokio::test]
 async fn empty_alias_list_returns_empty_without_querying() {
-    // Defensive: a repo with no detectable GitHub origin shouldn't
+    // Defensive: a repo with no detectable supported origin shouldn't
     // pull every rule on the user's machine. The query function
     // early-outs so even if `data.db` has a million skills, we do no
     // I/O and emit nothing.

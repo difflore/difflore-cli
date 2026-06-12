@@ -40,11 +40,11 @@ pub async fn expand_repo_scopes_with_source_aliases(
     let mut repo_names = Vec::new();
 
     for raw in repo_full_names {
-        let Some(repo) = crate::infra::git::normalize_github_repo_full_name(raw) else {
+        let Some(repo) = crate::infra::git::normalize_canonical_repo_scope(raw) else {
             continue;
         };
         if seen.insert(repo.clone()) {
-            if let Some((_, name)) = repo.rsplit_once('/')
+            if let Some((_, name)) = legacy_github_scope(&repo)
                 && !repo_names.iter().any(|existing| existing == name)
             {
                 repo_names.push(name.to_owned());
@@ -70,10 +70,9 @@ pub async fn expand_repo_scopes_with_source_aliases(
 
         let candidates: Vec<String> = rows
             .into_iter()
-            .filter_map(|repo| crate::infra::git::normalize_github_repo_full_name(&repo))
+            .filter_map(|repo| crate::infra::git::normalize_canonical_repo_scope(&repo))
             .filter(|repo| {
-                repo.rsplit_once('/')
-                    .is_some_and(|(_, name)| name == repo_name)
+                legacy_github_scope(repo).is_some_and(|(_, name)| name == repo_name)
                     && !seen.contains(repo)
             })
             .collect();
@@ -88,6 +87,14 @@ pub async fn expand_repo_scopes_with_source_aliases(
     }
 
     Ok(scopes)
+}
+
+fn legacy_github_scope(scope: &str) -> Option<(&str, &str)> {
+    let (owner, repo) = scope.split_once('/')?;
+    if owner.contains('.') || repo.contains('/') || repo.is_empty() {
+        return None;
+    }
+    Some((owner, repo))
 }
 
 pub async fn list(db: &sqlx::SqlitePool) -> crate::Result<Vec<SkillRecord>> {

@@ -193,7 +193,7 @@ fn project_db_row(probe: &ProjectDbProbe) -> Row {
             format!("difflore import-reviews --repo {repo}"),
         ),
         None => (
-            format!("{total_rules} memories on this machine | no GitHub repo detected"),
+            format!("{total_rules} memories on this machine | no supported repo remote detected"),
             "difflore status".to_owned(),
         ),
     };

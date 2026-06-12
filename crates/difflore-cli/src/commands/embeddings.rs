@@ -335,8 +335,10 @@ pub(crate) async fn handle_rebuild(json: bool) {
     // Detect repo scope like recall / the hook (origin + upstream, with
     // fork->source alias expansion). The per-project index is the scope
     // boundary, so an unscoped checkout has nothing to rebuild.
-    let detected = difflore_core::infra::git::detect_github_repo_full_names(
+    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
+    let detected = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
         &crate::support::util::project_path(),
+        &configured_gitlab_hosts,
     );
     let repo_scopes = difflore_core::skills::expand_repo_scopes_with_source_aliases(&db, &detected)
         .await
@@ -353,7 +355,7 @@ pub(crate) async fn handle_rebuild(json: bool) {
             );
         } else {
             println!(
-                "{} No GitHub origin/upstream remote detected; the index is repo-scoped, so there is nothing to rebuild here.",
+                "{} No supported origin/upstream git remote detected; the index is repo-scoped, so there is nothing to rebuild here.",
                 style::warn(style::sym::WARN),
             );
             println!(

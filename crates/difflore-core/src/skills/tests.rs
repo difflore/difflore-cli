@@ -288,6 +288,33 @@ body text";
             .await
             .unwrap();
         assert_eq!(ambiguous, vec!["acme/widgets".to_owned()]);
+
+        sqlx::query(
+            "INSERT INTO skills
+             (id, name, source, directory, version, description, source_repo, status)
+             VALUES (?1, ?1, 'cloud', '/tmp', '1.0.0', 'body', ?2, 'active')",
+        )
+        .bind("github-app-rule")
+        .bind("acme/app")
+        .execute(&db)
+        .await
+        .unwrap();
+        let gitlab =
+            expand_repo_scopes_with_source_aliases(&db, &["gitlab.com/acme/app".to_owned()])
+                .await
+                .unwrap();
+        assert_eq!(gitlab, vec!["gitlab.com/acme/app".to_owned()]);
+
+        let self_managed = expand_repo_scopes_with_source_aliases(
+            &db,
+            &["gitlab.corp.example/acme/app".to_owned()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            self_managed,
+            vec!["gitlab.corp.example/acme/app".to_owned()]
+        );
     }
 
     #[tokio::test]
@@ -513,6 +540,60 @@ body text";
             .expect("source repo conflict metadata must be JSON");
         assert_eq!(metadata["existingSourceRepo"], "acme/old-widgets");
         assert_eq!(metadata["incomingSourceRepo"], "acme/new-widgets");
+    }
+
+    #[tokio::test]
+    async fn apply_sync_result_canonicalizes_cloud_source_repo_before_writing() {
+        let db = DedupTestEnv::db().await;
+        let mut rule = synced_rule("cloud-source-repo-canonical");
+        rule.source_repo = Some("GitLab.Corp.Example:8443/Group/Project".to_owned());
+
+        apply_sync_result(
+            &db,
+            &crate::cloud::sync::SyncResult {
+                created: vec![rule],
+                updated: vec![],
+                deleted: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        let source_repo: String =
+            sqlx::query_scalar("SELECT source_repo FROM skills WHERE id = ?1")
+                .bind("cloud-source-repo-canonical")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        assert_eq!(source_repo, "gitlab.corp.example:8443/group/project");
+    }
+
+    #[tokio::test]
+    async fn apply_sync_result_rejects_noncanonical_cloud_source_repo() {
+        let db = DedupTestEnv::db().await;
+        let mut rule = synced_rule("cloud-source-repo-invalid");
+        rule.source_repo = Some("project".to_owned());
+
+        apply_sync_result(
+            &db,
+            &crate::cloud::sync::SyncResult {
+                created: vec![rule],
+                updated: vec![],
+                deleted: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        let source_repo: Option<String> =
+            sqlx::query_scalar("SELECT source_repo FROM skills WHERE id = ?1")
+                .bind("cloud-source-repo-invalid")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        assert_eq!(source_repo, None);
     }
 
     #[tokio::test]

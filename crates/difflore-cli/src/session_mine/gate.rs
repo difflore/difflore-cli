@@ -445,10 +445,18 @@ fn parsed_to_verdict(parsed: GateJson, args: &GateArgs<'_>) -> Result<GateVerdic
                     reason: "KEEP verdict missing file_patterns".to_owned(),
                 });
             }
+            // Funnel the worker-supplied scope through `RepoScope` so the
+            // candidate's `source_repo` write goes through the one normalization
+            // gate. The worker only ever passes a canonical scope, so this
+            // fails closed (rejects the candidate) on anything unexpected.
+            let source_repo = difflore_core::infra::git::RepoScope::canonical(args.source_repo)
+                .ok_or_else(|| GateError::InvalidCandidate {
+                    reason: format!("non-canonical source_repo: {}", args.source_repo),
+                })?;
             let candidate = SessionMinedCandidate::try_new(SessionMinedCandidateArgs {
                 session_id: args.session_id.to_owned(),
                 ts_ms: args.ts_ms,
-                source_repo: args.source_repo.to_owned(),
+                source_repo,
                 title,
                 body,
                 file_patterns: parsed.file_patterns,

@@ -705,6 +705,11 @@ pub(crate) async fn tool_plan_pr(state: &McpState, args: &Value) -> Result<Value
         .map_or(5, |v| v.clamp(1, 20) as usize);
 
     let corpus = load_pr_corpus(&state.db).await;
+    // Warm the configured-GitLab-host cache before detecting remotes so a fresh
+    // MCP-server process that calls plan_pr before any recall can still resolve
+    // self-managed GitLab scopes; otherwise the corpus scoping falls empty.
+    // Mirrors hook.rs / search_rules.rs / remember_rule.rs.
+    crate::mcp_server::hook::refresh_configured_gitlab_hosts_for_remote_detection().await;
     let detected_repos = crate::mcp_server::hook::detect_git_remote_owner_repos();
 
     if corpus.is_empty() {

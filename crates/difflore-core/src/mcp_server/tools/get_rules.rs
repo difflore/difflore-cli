@@ -124,6 +124,10 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
     })?;
 
     let tokens_used = estimate_tokens(&text);
+    // Telemetry-only here (repo_full_name attribution), but warm the host cache
+    // anyway so the recorded scope is accurate for self-managed GitLab on a
+    // cold-cache MCP process. Mirrors the other tool detect sites.
+    crate::mcp_server::hook::refresh_configured_gitlab_hosts_for_remote_detection().await;
     let detected_repos = crate::mcp_server::hook::detect_git_remote_owner_repos();
     let detail_query = format!("get_rules:{}", ids.join(","));
     let strict_match_count = strict_file_match_count_for_ids(&meta_map, &present_ids, file);

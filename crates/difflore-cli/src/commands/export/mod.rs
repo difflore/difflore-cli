@@ -266,7 +266,7 @@ fn print_human(report: &ExportReport) {
 
     if report.repo_scopes.is_empty() {
         println!(
-            "  {} no GitHub remote detected; only explicit local rules were exported",
+            "  {} no supported git remote detected; only explicit local rules were exported",
             style::pewter(sym::BULLET),
         );
     } else {

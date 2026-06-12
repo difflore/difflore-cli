@@ -111,15 +111,18 @@ struct ExportRuleRow {
 
 /// Collect the export rule set for the project at `project_root`. Repo scopes
 /// come from the same remote detection the recall orchestrator uses
-/// (`infra::git::detect_github_repo_full_names`: `origin` first, then
+/// (`infra::git::detect_repo_full_names_with_gitlab_hosts`: `origin` first, then
 /// `upstream`).
 pub async fn collect_rules_for_export(
     db: &SqlitePool,
     project_root: &std::path::Path,
     opts: ExportCollectOptions<'_>,
 ) -> Result<ExportCollection, CoreError> {
-    let repo_scopes =
-        crate::infra::git::detect_github_repo_full_names(&project_root.to_string_lossy());
+    let configured_gitlab_hosts = crate::ingest::gitlab::auth::configured_hosts().await;
+    let repo_scopes = crate::infra::git::detect_repo_full_names_with_gitlab_hosts(
+        &project_root.to_string_lossy(),
+        &configured_gitlab_hosts,
+    );
     collect_rules_for_export_with_scopes(db, &repo_scopes, opts).await
 }
 

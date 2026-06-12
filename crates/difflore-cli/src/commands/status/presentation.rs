@@ -230,7 +230,7 @@ pub(super) fn render_text(
         let _ = writeln!(out, "{}", style::ok("Repository"));
         let _ = writeln!(
             out,
-            "  {} no GitHub origin/upstream remote detected",
+            "  {} no supported origin/upstream git remote detected",
             style::warn(sym::WARN)
         );
         let _ = writeln!(out);
@@ -379,7 +379,7 @@ pub(super) fn render_text(
         &next.command
     };
     let next_reason = if missing_repo_scope {
-        "add or verify a GitHub origin/upstream remote before repo-scoped recall"
+        "add or verify a supported origin/upstream git remote before repo-scoped recall"
     } else {
         &next.reason
     };
@@ -436,7 +436,7 @@ fn top_candidates_scope_note(
             "current repo {repo} has 0 pending memory drafts; these are not counted as ready for this repo"
         )),
         ("all", None, _) => Some(
-            "no GitHub origin/upstream remote detected; add one for repo-scoped memory guidance"
+            "no supported origin/upstream git remote detected; add one for repo-scoped memory guidance"
                 .to_owned(),
         ),
         _ => None,
@@ -766,7 +766,7 @@ mod tests {
         let out = render_with_proof(&proof_with(0, 0, 0));
 
         // New user is guided toward the first concrete next step. With no
-        // GitHub origin detected (`repo_scope(None)`), the genuine first step
+        // supported origin detected (`repo_scope(None)`), the genuine first step
         // is to wire up a remote so repo-scoped recall can work at all.
         assert!(out.contains("no accepted edits yet"), "{out}");
         assert!(out.contains("next: "), "{out}");

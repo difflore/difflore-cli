@@ -12,6 +12,7 @@
 use difflore_core::cloud::outbox::{OutboxQueue, kind as outbox_kind};
 use difflore_core::cloud::session_mined::{SessionMinedCandidate, SessionMinedCandidateArgs};
 use difflore_core::infra::db::current_project_root;
+use difflore_core::infra::git::RepoScope;
 use sqlx::Row;
 
 use super::extract::Pair;
@@ -90,11 +91,12 @@ async fn run_worker_inner(
         return Ok(());
     }
 
-    let Some(source_repo) = resolve_source_repo(cwd) else {
+    let Some(source_repo) = resolve_source_repo(cwd).await else {
         // Project Scope Invariant: never enqueue a scopeless
         // candidate. We no-op rather than fabricate a `source_repo`.
         return Ok(());
     };
+    let source_repo = source_repo.into_string();
 
     let session_id = session_id.unwrap_or("").trim().to_owned();
     if session_id.is_empty() {
@@ -271,10 +273,19 @@ fn merge_candidate_from_verdict(
         .and_then(|rule| non_empty_owned(&rule.title))
         .or_else(|| input.gate_title.and_then(non_empty_owned))
         .ok_or_else(|| format!("MERGE:{} missing title", input.rule_id))?;
+    // Inherit the target rule's canonical scope when present, else fall back to
+    // the worker's detected scope. Both branches resolve to a `RepoScope`, so
+    // the candidate's `source_repo` write stays funnelled through the newtype.
     let candidate_source_repo = target
         .and_then(|rule| rule.source_repo.as_deref())
-        .and_then(non_empty_owned)
-        .unwrap_or_else(|| input.source_repo.to_owned());
+        .and_then(RepoScope::canonical)
+        .or_else(|| RepoScope::canonical(input.source_repo))
+        .ok_or_else(|| {
+            format!(
+                "MERGE:{} non-canonical source_repo: {}",
+                input.rule_id, input.source_repo
+            )
+        })?;
     let file_patterns = merge_file_patterns(input.mined_file_patterns, target);
 
     SessionMinedCandidate::try_new(SessionMinedCandidateArgs {
@@ -392,29 +403,29 @@ fn extract_pairs(client_name: &str, transcript_path: Option<&str>) -> Vec<Pair> 
     super::extract::extract_recent_session_pairs(args).unwrap_or_default()
 }
 
-/// Resolve `source_repo` per the Project Scope Invariant. Tries the
-/// git origin `owner/repo` first, then the lowercased cwd basename.
-/// Returns `None` only when both fail (e.g. running from `/`).
-fn resolve_source_repo(cwd: Option<&str>) -> Option<String> {
+/// Resolve `source_repo` per the Project Scope Invariant.
+///
+/// Detection must use the same configured GitLab hosts as recall. If no
+/// canonical repo scope can be detected, fail closed instead of fabricating a
+/// basename that can never match the eventual recall scope.
+async fn resolve_source_repo(cwd: Option<&str>) -> Option<RepoScope> {
+    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
+    resolve_source_repo_with_gitlab_hosts(cwd, &configured_gitlab_hosts)
+}
+
+fn resolve_source_repo_with_gitlab_hosts(
+    cwd: Option<&str>,
+    configured_gitlab_hosts: &[String],
+) -> Option<RepoScope> {
     let path = cwd.map_or_else(current_project_root, std::path::PathBuf::from);
     let path_str = path.to_string_lossy().to_string();
 
-    if let Some(repo) = difflore_core::infra::git::detect_github_repo_full_names(&path_str)
-        .into_iter()
-        .next()
-    {
-        let trimmed = repo.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_owned());
-        }
-    }
-
-    let basename = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())?;
-    Some(basename.to_ascii_lowercase())
+    difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+        &path_str,
+        configured_gitlab_hosts,
+    )
+    .into_iter()
+    .find_map(|repo| RepoScope::canonical(&repo))
 }
 
 /// Serialize the candidate and append it to the cloud outbox under
@@ -444,7 +455,7 @@ mod tests {
         SessionMinedCandidate::try_new(SessionMinedCandidateArgs {
             session_id: "sess_w".to_owned(),
             ts_ms: 1_714_000_000_000,
-            source_repo: "owner/repo".to_owned(),
+            source_repo: RepoScope::canonical("owner/repo").expect("canonical scope"),
             title: "Reject scopeless rules".to_owned(),
             body: "Sessions without a resolvable source_repo must drop their candidate \
                    instead of enqueueing a scopeless row."
@@ -617,18 +628,112 @@ mod tests {
     }
 
     #[test]
-    fn resolve_source_repo_prefers_git_remote_then_basename() {
-        // Outside a git repo, the cwd basename still satisfies the
-        // Project Scope Invariant.
+    fn resolve_source_repo_fails_closed_without_supported_remote() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path();
-        let repo = resolve_source_repo(Some(path.to_str().unwrap()));
-        assert!(
-            repo.is_some(),
-            "tempdir basename must satisfy the invariant"
+        assert_eq!(
+            resolve_source_repo_with_gitlab_hosts(Some(path.to_str().unwrap()), &[]),
+            None,
+            "session-mine must not fabricate a basename source_repo"
         );
-        let repo = repo.unwrap();
-        // Basenames are lowercased for stable casing across OSes.
-        assert_eq!(repo, repo.to_ascii_lowercase());
+    }
+
+    #[tokio::test]
+    async fn self_managed_gitlab_session_scope_recalls_only_matching_repo_rules() {
+        let gitlab_repo = tempfile::TempDir::new().unwrap();
+        init_git_repo_with_origin(
+            gitlab_repo.path(),
+            "ssh://git@gitlab.corp.example:8443/group/project.git",
+        );
+        let github_repo = tempfile::TempDir::new().unwrap();
+        init_git_repo_with_origin(github_repo.path(), "https://github.com/group/project.git");
+
+        let gitlab_hosts = vec!["gitlab.corp.example:8443".to_owned()];
+        let gitlab_scope = resolve_source_repo_with_gitlab_hosts(
+            Some(gitlab_repo.path().to_str().unwrap()),
+            &gitlab_hosts,
+        )
+        .expect("configured self-managed GitLab host must resolve");
+        assert_eq!(
+            gitlab_scope.as_str(),
+            "gitlab.corp.example:8443/group/project"
+        );
+        assert_eq!(
+            resolve_source_repo_with_gitlab_hosts(Some(gitlab_repo.path().to_str().unwrap()), &[]),
+            None,
+            "self-managed GitLab must fail closed when the host is not configured"
+        );
+
+        let github_scope =
+            resolve_source_repo_with_gitlab_hosts(Some(github_repo.path().to_str().unwrap()), &[])
+                .expect("GitHub remote must still resolve without configured GitLab hosts");
+        assert_eq!(github_scope.as_str(), "group/project");
+        assert_ne!(
+            gitlab_scope.as_str(),
+            github_scope.as_str(),
+            "provider/host dimension must prevent same-namespace repo collisions"
+        );
+
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(":memory:")
+            .await
+            .expect("memory db");
+        sqlx::query(
+            "CREATE TABLE skills (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL,
+                repo_owner TEXT,
+                repo_name TEXT,
+                cloud_id TEXT,
+                source_repo TEXT,
+                file_patterns TEXT,
+                status TEXT NOT NULL,
+                installed_at TEXT NOT NULL
+            )",
+        )
+        .execute(&db)
+        .await
+        .expect("schema");
+        sqlx::query(
+            "INSERT INTO skills
+             (id, name, description, repo_owner, repo_name, cloud_id, source_repo, file_patterns, status, installed_at)
+             VALUES
+             ('11111111-1111-4111-8111-111111111111', 'GitLab scoped', 'Body', NULL, NULL, NULL, 'gitlab.corp.example:8443/group/project', '[\"src/**/*.rs\"]', 'active', '2026-01-02'),
+             ('22222222-2222-4222-8222-222222222222', 'GitHub scoped', 'Body', NULL, NULL, NULL, 'group/project', '[\"src/**/*.rs\"]', 'active', '2026-01-03')",
+        )
+        .execute(&db)
+        .await
+        .expect("insert");
+
+        let recalled = load_existing_rules(&db, gitlab_scope.as_str()).await;
+
+        assert_eq!(recalled.len(), 1);
+        assert_eq!(recalled[0].title, "GitLab scoped");
+        assert_eq!(
+            recalled[0].source_repo.as_deref(),
+            Some("gitlab.corp.example:8443/group/project")
+        );
+    }
+
+    fn init_git_repo_with_origin(path: &std::path::Path, origin_url: &str) {
+        run_git_test(path, &["init"]);
+        run_git_test(path, &["remote", "add", "origin", origin_url]);
+    }
+
+    fn run_git_test(path: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .expect("git command must run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: stdout={} stderr={}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

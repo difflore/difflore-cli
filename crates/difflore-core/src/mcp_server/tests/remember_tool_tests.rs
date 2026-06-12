@@ -237,6 +237,222 @@ async fn remember_rule_writes_then_search_and_get_rules_recalls() {
     );
 }
 
+/// Deterministic companion to the real-remote refresh test below. The
+/// real-remote test owns the end-to-end self-managed GitLab path (refresh →
+/// real remote → host-prefixed scope → recall); this one isolates the
+/// `RepoScope::canonical` routing guarantee for the fifth `source_repo` write
+/// path without touching the process-global detection cache, cwd, or auth DB,
+/// so it never races the rest of the suite.
+///
+/// Guarantee: `remember_rule` routes its `source_repo` write through
+/// `RepoScope::canonical`. Whatever remote this process detects, the stored
+/// scope equals the canonical normalization of it — never a raw bind. Dropping
+/// the `RepoScope::canonical` routing would let a non-canonical remote land
+/// verbatim and fail this. We also pin that `RepoScope::canonical` is the
+/// host-aware normalizer (it accepts the `host:port/group/project` GitLab key
+/// the recurring collision bug lived in, which the GitHub-only two-segment
+/// normalizer rejects).
+#[tokio::test]
+async fn remember_rule_routes_source_repo_through_repo_scope_canonical() {
+    // The routing gate must be the host-aware canonical normalizer: it accepts
+    // the self-managed GitLab host dimension and leaves it intact.
+    const GITLAB_SCOPE: &str = "gitlab.corp.example:8443/platform/api";
+    assert_eq!(
+        crate::infra::git::RepoScope::canonical(GITLAB_SCOPE)
+            .map(crate::infra::git::RepoScope::into_string)
+            .as_deref(),
+        Some(GITLAB_SCOPE),
+        "RepoScope::canonical must preserve the self-managed GitLab host dimension"
+    );
+
+    let state = build_state().await;
+
+    let remember = call_ok(
+        &state,
+        &call_tool(
+            5,
+            "remember_rule",
+            json!({
+                "title": "Validate webhook signatures",
+                "body": "Verify the X-Gitlab-Token header before trusting a webhook payload.",
+                "file_patterns": ["**/*.rb"],
+            }),
+        ),
+    )
+    .await;
+    let rule_id = remember["_meta"]["rule_id"]
+        .as_str()
+        .expect("rule_id in _meta")
+        .to_owned();
+
+    // The stored scope is the canonical normalization of whatever remote this
+    // process detected — proof the write went through `RepoScope`, not a raw
+    // bind. `remember_rule` does refresh-then-detect, so mirror that here to
+    // compute the expectation against the same detection the tool saw.
+    hook::refresh_configured_gitlab_hosts_for_remote_detection().await;
+    let detected = detect_git_remote_owner_repos();
+    let expected_scope = detected
+        .first()
+        .map(String::as_str)
+        .and_then(crate::infra::git::RepoScope::canonical)
+        .map(crate::infra::git::RepoScope::into_string);
+    let stored: Option<String> = sqlx::query_scalar("SELECT source_repo FROM skills WHERE id = ?1")
+        .bind(&rule_id)
+        .fetch_one(&state.db)
+        .await
+        .expect("read back source_repo");
+    assert_eq!(
+        stored, expected_scope,
+        "remember_rule must store source_repo as RepoScope::canonical(detected), not a raw bind"
+    );
+}
+
+/// Stronger companion to `remember_rule_self_managed_gitlab_scopes_then_recalls`.
+///
+/// The sibling test injects the detected scope via the
+/// `set_detected_repos_for_current_dir_for_test` seam, which bypasses the
+/// host-cache → remote-parse chain — so removing the production `refresh`
+/// call would NOT fail it. This test closes that gap: it drives the *real*
+/// detection path against a temp git checkout with a self-managed GitLab
+/// origin, where the only way the host cache learns about the host is the
+/// `refresh_configured_gitlab_hosts_for_remote_detection().await` call inside
+/// `tool_remember_rule`. Delete that line and detection drops the GitLab
+/// remote (host not allowed) → no `source_repo` attached → the recall
+/// assertion below fails. This is the regression that has slipped four rounds.
+///
+/// The configured host is registered by inserting the `gitlab_pat::<host>`
+/// row directly into the auth pool — `configured_hosts()` only reads the key,
+/// never decrypts the value — so the test needs no crypto/keyring/master-key.
+#[tokio::test]
+async fn remember_rule_self_managed_gitlab_real_remote_refresh_drives_scope() {
+    // Self-managed host with a port and mixed case in the remote, to prove the
+    // canonical host-dimension normalizer (lowercasing, host:port preserved)
+    // ran on the detected remote.
+    const HOST: &str = "gitlab.selfmanaged.test:8443";
+    const REMOTE: &str = "ssh://git@GitLab.SelfManaged.Test:8443/Platform/Edge-API.git";
+    const EXPECTED_SCOPE: &str = "gitlab.selfmanaged.test:8443/platform/edge-api";
+
+    let state = build_state().await;
+
+    // Register the self-managed host in the auth DB so the production
+    // `refresh` resolves it. Direct row insert (no crypto): `configured_hosts`
+    // keys off `gitlab_pat::%`, value is never read.
+    let auth_pool = crate::cloud::client::CloudClient::auth_pool_public()
+        .await
+        .expect("auth pool");
+    let pat_key = crate::ingest::gitlab::auth::pat_storage_key(HOST);
+    sqlx::query("INSERT OR REPLACE INTO auth (key, value) VALUES (?1, 'test-marker')")
+        .bind(&pat_key)
+        .execute(&auth_pool)
+        .await
+        .expect("seed gitlab_pat auth row");
+
+    // A real git checkout with the self-managed GitLab origin. `tool_remember_rule`
+    // detects remotes from the process cwd, so point cwd at it.
+    let repo = tempfile::TempDir::new().expect("temp git repo");
+    run_git_in(repo.path(), &["init"]);
+    run_git_in(repo.path(), &["remote", "add", "origin", REMOTE]);
+
+    let original_cwd = std::env::current_dir().expect("cwd");
+    std::env::set_current_dir(repo.path()).expect("enter temp repo cwd");
+
+    // Start from an empty host cache and a cleared detection cache: this is the
+    // "fresh MCP process before any recall" precondition. Only the in-tool
+    // `refresh` can repopulate the host cache, and only a real git invocation
+    // against the temp cwd can populate the detection cache — nothing here
+    // injects a scope, so the refresh dependency is genuinely under test.
+    set_configured_gitlab_hosts_for_remote_detection_for_test(Vec::new());
+    clear_repo_detection_cache_for_test();
+
+    let result = std::panic::AssertUnwindSafe(async {
+        let remember = call_ok(
+            &state,
+            &call_tool(
+                7,
+                "remember_rule",
+                json!({
+                    "title": "Pin self-managed GitLab CI runner tags",
+                    "body": "Always pin runner tags so jobs land on the hardened self-hosted fleet.",
+                    "file_patterns": ["**/.gitlab-ci.yml"],
+                }),
+            ),
+        )
+        .await;
+        let rule_id = remember["_meta"]["rule_id"]
+            .as_str()
+            .expect("rule_id in _meta")
+            .to_owned();
+
+        // The refresh-driven detection must have produced the canonical
+        // host-prefixed scope from the real remote — proving both that the
+        // host cache was warmed (refresh) and that the write was canonicalized
+        // (RepoScope::canonical lowercased host + path).
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT source_repo FROM skills WHERE id = ?1")
+                .bind(&rule_id)
+                .fetch_one(&state.db)
+                .await
+                .expect("read back source_repo");
+        assert_eq!(
+            stored.as_deref(),
+            Some(EXPECTED_SCOPE),
+            "real-remote detection (refresh-warmed host cache) must store the canonical \
+             self-managed GitLab scope; empty cache (no refresh) would drop the remote and \
+             leave source_repo NULL"
+        );
+
+        // End-to-end recall on the same self-managed scope.
+        let (search_body, _) = call_tool_json(
+            &state,
+            8,
+            "search_rules",
+            json!({
+                "file": ".gitlab-ci.yml",
+                "intent": "pin self-managed gitlab ci runner tags",
+                "repo_full_name": EXPECTED_SCOPE
+            }),
+        )
+        .await;
+        let results = search_body["results"].as_array().expect("results array");
+        assert!(
+            results
+                .iter()
+                .any(|entry| entry["id"].as_str() == Some(rule_id.as_str())),
+            "self-managed GitLab rule must be recalled by its canonical host-prefixed scope, got: {results:?}"
+        );
+    });
+    let outcome = futures_util::FutureExt::catch_unwind(result).await;
+
+    // Always restore cwd and the shared caches/auth row, even on assertion
+    // failure, so a failure here cannot cascade into unrelated tests.
+    std::env::set_current_dir(&original_cwd).expect("restore cwd");
+    clear_repo_detection_cache_for_test();
+    set_configured_gitlab_hosts_for_remote_detection_for_test(Vec::new());
+    let _ = sqlx::query("DELETE FROM auth WHERE key = ?1")
+        .bind(&pat_key)
+        .execute(&auth_pool)
+        .await;
+
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+fn run_git_in(path: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .output()
+        .expect("git command must run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: stdout={} stderr={}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[tokio::test]
 async fn retired_one_shot_rule_tool_is_not_callable() {
     let state = build_state().await;

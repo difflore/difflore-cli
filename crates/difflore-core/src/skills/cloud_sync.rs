@@ -167,9 +167,11 @@ async fn apply_cloud_source_repo(
     skill_id: &str,
     incoming_repo: Option<&str>,
 ) -> crate::Result<()> {
-    let Some(incoming_repo) = incoming_repo.map(str::trim).filter(|repo| !repo.is_empty()) else {
+    let Some(incoming_repo_scope) = incoming_repo.and_then(crate::infra::git::RepoScope::canonical)
+    else {
         return Ok(());
     };
+    let incoming_repo = incoming_repo_scope.as_str();
 
     let updated = sqlx::query(
         "UPDATE skills

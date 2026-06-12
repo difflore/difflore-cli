@@ -230,6 +230,13 @@ pub struct UploadImportedReviewsRequest {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportedReviewUpload {
+    /// Source provider for the imported review. Omitted by older CLIs, in
+    /// which case the cloud treats the payload as GitHub for compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Provider host for non-GitHub imports (for example self-managed GitLab).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_host: Option<String>,
     /// Repository the imported memory should attach to. For fork workflows this
     /// is the user's fork, even when review history was read from upstream.
     pub repo_full_name: String,

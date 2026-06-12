@@ -70,7 +70,7 @@ async fn render_inner(ctx: &BannerContext) -> Option<String> {
     let project_root = resolve_project_root(&ctx.cwd);
     let project_hash = difflore_core::infra::db::project_hash_from_root(&project_root);
 
-    let repo_aliases = repo_aliases_for(&project_root);
+    let repo_aliases = repo_aliases_for(&project_root).await;
     if repo_aliases.is_empty() {
         // No repo identity → no way to filter `source_repo`, so we'd spam every
         // rule from every repo. Bail rather than mislead.
@@ -135,9 +135,12 @@ fn resolve_project_root(cwd: &str) -> std::path::PathBuf {
 /// Normalized lower-case `owner/repo` aliases for the project, matching
 /// `commands::status::queries::normalized_repo_aliases` so the SQL filter joins
 /// cleanly with `source_repo` values (also lowercased on write).
-fn repo_aliases_for(project_root: &std::path::Path) -> Vec<String> {
-    let raw =
-        difflore_core::infra::git::detect_github_repo_full_names(&project_root.to_string_lossy());
+async fn repo_aliases_for(project_root: &std::path::Path) -> Vec<String> {
+    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
+    let raw = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+        &project_root.to_string_lossy(),
+        &configured_gitlab_hosts,
+    );
     raw.into_iter()
         .map(|r| r.trim().to_ascii_lowercase())
         .filter(|r| !r.is_empty())

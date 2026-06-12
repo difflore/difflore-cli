@@ -15,10 +15,13 @@ mod skill_docs;
 mod tools;
 mod trust_proof;
 
-#[cfg(test)]
-pub(crate) use hook::set_detected_repos_for_current_dir_for_test;
 pub use hook::{
     HookRuleContext, fetch_relevant_rules_for_bash_error, fetch_relevant_rules_for_hook, run,
+};
+#[cfg(test)]
+pub(crate) use hook::{
+    clear_repo_detection_cache_for_test, set_configured_gitlab_hosts_for_remote_detection_for_test,
+    set_detected_repos_for_current_dir_for_test,
 };
 pub use pr_scope::{predict_pr_scope, predict_pr_scope_for_repos};
 #[cfg(test)]

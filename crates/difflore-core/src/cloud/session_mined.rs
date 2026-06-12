@@ -16,6 +16,8 @@
 
 use sha2::{Digest, Sha256};
 
+use crate::infra::git::RepoScope;
+
 /// Cap on `title`, in chars not bytes. Matches `Observation::title` so
 /// cloud-side renderers share truncation logic.
 pub const TITLE_MAX_CHARS: usize = 120;
@@ -42,9 +44,14 @@ pub struct SessionMinedCandidate {
     pub session_id: String,
     /// Unix-ms when the gate produced its verdict.
     pub ts_ms: i64,
-    /// `owner/repo`, or the cwd basename for non-GitHub repos. Never empty,
-    /// otherwise the candidate has no Project Scope and the cloud cannot
-    /// attribute it.
+    /// Canonical repo scope (`owner/repo` for GitHub, `host/group/project` for
+    /// GitLab). Never empty, otherwise the candidate has no Project Scope and
+    /// the cloud cannot attribute it. The wire field stays a bare string for
+    /// payload compatibility, but the only way to populate it is via
+    /// [`SessionMinedCandidate::try_new`], which requires a [`RepoScope`] — so
+    /// this column shares the single canonicalization gate every other
+    /// `source_repo` write goes through (the structural fix for the recurring
+    /// host-dimension scope bug).
     pub source_repo: String,
     /// Single-line title, ≤ [`TITLE_MAX_CHARS`] chars. Written as a bare
     /// behavioural rule; the cloud adds prefixes like "Remember:".
@@ -111,8 +118,13 @@ impl SessionMinedCandidate {
         if session_id.is_empty() {
             return Err(CandidateError::MissingSessionId);
         }
-        let source_repo = source_repo.trim().to_owned();
-        if source_repo.is_empty() {
+        // `source_repo` arrives as a `RepoScope`, so the canonical/non-empty
+        // invariant is already enforced by the newtype's constructor — there is
+        // no path to build a candidate from a raw, unnormalized String. We keep
+        // a defensive empty check for symmetry with `validate`, which also runs
+        // on candidates rehydrated from the outbox wire format.
+        let source_repo = source_repo.into_string();
+        if source_repo.trim().is_empty() {
             return Err(CandidateError::MissingSourceRepo);
         }
         let title = truncate_chars(title.trim(), TITLE_MAX_CHARS);
@@ -193,11 +205,17 @@ impl SessionMinedCandidate {
 }
 
 /// Builder bundle accepted by [`SessionMinedCandidate::try_new`].
+///
+/// `source_repo` is a [`RepoScope`], not a raw `String`: the session-mined
+/// candidate is one of the five `skills.source_repo` write entry points, and
+/// routing it through the newtype makes `RepoScope` the single normalization
+/// gate for every one of them. A caller cannot construct a candidate from an
+/// unnormalized remote string.
 #[derive(Debug, Clone)]
 pub struct SessionMinedCandidateArgs {
     pub session_id: String,
     pub ts_ms: i64,
-    pub source_repo: String,
+    pub source_repo: RepoScope,
     pub title: String,
     pub body: String,
     pub file_patterns: Vec<String>,
@@ -250,7 +268,7 @@ mod tests {
         SessionMinedCandidateArgs {
             session_id: "sess_test".to_owned(),
             ts_ms: 1_714_000_000_000,
-            source_repo: "owner/repo".to_owned(),
+            source_repo: RepoScope::canonical("owner/repo").expect("canonical scope"),
             title: "Prefer typed deserialization over Value::as_str".to_owned(),
             body: "When parsing oRPC payloads, deserialize into a concrete struct \
                    instead of walking serde_json::Value with as_str()."
@@ -272,11 +290,17 @@ mod tests {
     }
 
     #[test]
-    fn try_new_rejects_missing_source_repo() {
-        let mut a = args();
-        a.source_repo = String::new();
-        let err = SessionMinedCandidate::try_new(a).unwrap_err();
-        assert_eq!(err, CandidateError::MissingSourceRepo);
+    fn source_repo_cannot_be_constructed_from_empty_or_noncanonical_string() {
+        // The `MissingSourceRepo` gap is now structurally unreachable: the
+        // candidate's `source_repo` is a `RepoScope`, and `RepoScope::canonical`
+        // refuses empty / unnormalized input, so there is no way to even build
+        // the args for a scopeless candidate.
+        assert!(RepoScope::canonical("").is_none());
+        assert!(RepoScope::canonical("   ").is_none());
+        assert!(RepoScope::canonical("not a repo").is_none());
+        // A valid canonical scope still round-trips into the candidate.
+        let cand = SessionMinedCandidate::try_new(args()).expect("valid");
+        assert_eq!(cand.source_repo, "owner/repo");
     }
 
     #[test]

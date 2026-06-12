@@ -101,11 +101,7 @@ fn unique_repo_scopes(repo_scopes: &[String]) -> Vec<String> {
 }
 
 fn normalize_repo_scope(scope: &str) -> Option<String> {
-    let scope = scope.trim();
-    if scope.is_empty() {
-        return None;
-    }
-    Some(scope.to_ascii_lowercase())
+    crate::infra::git::normalize_canonical_repo_scope(scope)
 }
 
 use crate::context::retrieval::merge_scored_rule_chunks;
@@ -410,10 +406,14 @@ mod tests {
                 " ".to_owned(),
                 "ViteJS/Vite".to_owned(),
                 "vitejs/vite ".to_owned(),
+                " GitLab.Corp.Example:8443/Group/Project ".to_owned(),
+                "gitlab.corp.example:8443/group/project".to_owned(),
+                "github.com/vitejs/vite".to_owned(),
             ]),
             vec![
                 "difflore-fixtures/vite".to_owned(),
-                "vitejs/vite".to_owned()
+                "vitejs/vite".to_owned(),
+                "gitlab.corp.example:8443/group/project".to_owned(),
             ]
         );
     }

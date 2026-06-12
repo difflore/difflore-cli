@@ -123,6 +123,13 @@ pub(crate) async fn tool_remember_rule(
         captured_by_client: Some(capture_client.to_owned()),
     };
 
+    // Warm the configured-GitLab-host cache from the auth DB before detecting
+    // remotes. A fresh MCP-server process starts with an empty host cache; if
+    // remember_rule runs before any recall (search_rules/hook), self-managed
+    // GitLab remotes would otherwise fail to resolve and the rule would be
+    // captured without a repo scope — invisible to the next repo-scoped recall.
+    // Mirrors hook.rs and search_rules.rs.
+    crate::mcp_server::hook::refresh_configured_gitlab_hosts_for_remote_detection().await;
     let detected_repos = crate::mcp_server::hook::detect_git_remote_owner_repos();
 
     let outcome = skills::remember(&state.db, input)
@@ -130,15 +137,23 @@ pub(crate) async fn tool_remember_rule(
         .map_err(|e| (-32603, format!("Failed to remember rule: {e}")))?;
     let skill = &outcome.skill;
 
-    if let Some(repo_full_name) = detected_repos
+    // Route the detected remote through `RepoScope::canonical` so this UPDATE
+    // shares the one normalization gate every other `source_repo` write uses.
+    // The detected value is already canonical, but funnelling it through the
+    // newtype keeps RepoScope the single source_repo write entry point and
+    // fails closed (skips the write) on any non-canonical value rather than
+    // binding a raw String.
+    if let Some(repo_scope) = detected_repos
         .first()
         .map(String::as_str)
         .filter(|r| !r.trim().is_empty())
+        .and_then(crate::infra::git::RepoScope::canonical)
     {
         // MCP recall is repo-scoped. Without attaching the remembered
         // conversation rule to the current repo, the next search_rules /
         // get_rules call filters out the very rule the user just
         // asked the agent to remember.
+        let repo_full_name = repo_scope.as_str();
         let skill_id = skill.id.as_str();
         if let Err(e) = sqlx::query!(
             "UPDATE skills

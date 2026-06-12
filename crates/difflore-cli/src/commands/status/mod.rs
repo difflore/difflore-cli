@@ -79,7 +79,11 @@ pub(crate) async fn compact_value_summary_for_current_project(
     db: &difflore_core::SqlitePool,
 ) -> CompactValueSummary {
     let project = project_path();
-    let detected_repo_remotes = difflore_core::infra::git::detect_github_repo_full_names(&project);
+    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
+    let detected_repo_remotes = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+        &project,
+        &configured_gitlab_hosts,
+    );
     let repo_remotes =
         difflore_core::skills::expand_repo_scopes_with_source_aliases(db, &detected_repo_remotes)
             .await
@@ -226,7 +230,11 @@ async fn compute_status_payload(
         .await
         .unwrap_or_default();
 
-    let detected_repo_remotes = difflore_core::infra::git::detect_github_repo_full_names(project);
+    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
+    let detected_repo_remotes = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+        project,
+        &configured_gitlab_hosts,
+    );
     let repo_remotes =
         difflore_core::skills::expand_repo_scopes_with_source_aliases(db, &detected_repo_remotes)
             .await
@@ -488,7 +496,7 @@ mod tests {
         assert!(text.contains("Memory"), "missing Memory section: {text}");
         assert!(text.contains("Value"), "missing Value section: {text}");
         assert!(text.contains("next:"), "missing next action: {text}");
-        // With no GitHub origin, the humanized view surfaces a plain
+        // With no supported origin, the humanized view surfaces a plain
         // Repository section; release-gate details stay in JSON.
         assert!(
             text.contains("Repository"),

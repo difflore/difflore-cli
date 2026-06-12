@@ -550,8 +550,11 @@ async fn maybe_emit_fix_outcomes(session_id: Option<&str>, cwd: Option<&str>) ->
             .push(edit.file_path);
     }
 
-    let detected_repos =
-        difflore_core::infra::git::detect_github_repo_full_names(cwd.unwrap_or("."));
+    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
+    let detected_repos = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+        cwd.unwrap_or("."),
+        &configured_gitlab_hosts,
+    );
     let repo_full_name = detected_repos.first().map(String::as_str);
     // 30-minute cross-link window: the accepted edit must follow the MCP serve
     // closely enough that the agent context still plausibly included the rule.

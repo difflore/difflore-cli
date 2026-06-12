@@ -469,7 +469,7 @@ async fn handle_recall_copy(
             // No repo scope -> empty by design, not an empty corpus (mirror the
             // precedence used by the styled renderer + diagnostics).
             println!(
-                "_difflore recalled 0 local rules for \"{intent}\"; this checkout has no GitHub remote, and local recall is repo-scoped (add one with `git remote -v`)._"
+                "_difflore recalled 0 local rules for \"{intent}\"; this checkout has no supported git remote, and local recall is repo-scoped (add one with `git remote -v`)._"
             );
         } else if local.rules_indexed == 0 {
             println!(
@@ -482,7 +482,7 @@ async fn handle_recall_copy(
             println!("_Cloud PR review rules were skipped because you are not logged in._");
         } else if cloud.repo_full_name.is_none() {
             println!(
-                "_Cloud PR review rules were skipped because no GitHub repo remote was detected._"
+                "_Cloud PR review rules were skipped because no supported repo remote was detected._"
             );
         }
         println!();
@@ -544,7 +544,7 @@ async fn handle_recall_copy(
         println!("_Cloud PR review rules skipped: not logged in._");
     } else if cloud.repo_full_name.is_none() {
         println!();
-        println!("_Cloud PR review rules skipped: no GitHub repo remote detected._");
+        println!("_Cloud PR review rules skipped: no supported repo remote detected._");
     }
     // Same honesty note as the styled surface: if this paste-ready block was
     // ranked by the local keyword hash, say so, so a user pasting it into an
@@ -1904,7 +1904,7 @@ mod tests {
                 .next_steps
                 .iter()
                 .any(|step| step.command.as_deref() == Some("git remote -v")),
-            "the actionable step is adding a GitHub remote"
+            "the actionable step is adding a supported git remote"
         );
         assert!(
             diagnostics

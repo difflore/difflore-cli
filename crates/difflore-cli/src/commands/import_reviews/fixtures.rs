@@ -201,8 +201,87 @@ pub(super) async fn seed_pr_with_directive(
     .expect("insert imported review comment");
 }
 
+pub(super) async fn seed_gitlab_pr_with_directive(
+    db: &sqlx::SqlitePool,
+    host: &str,
+    repo: &str,
+    pr_number: i32,
+    directive: &str,
+    path: &str,
+) {
+    let item_id = format!("gl-import:{host}:{repo}#{pr_number}");
+    let project_path = std::path::PathBuf::from(std::env::var("DIFFLORE_HOME").expect("home"))
+        .join("fixtures")
+        .join(format!("{host}-{repo}-{pr_number}").replace(['/', ':'], "-"));
+    std::fs::create_dir_all(&project_path).expect("create project fixture dir");
+    let project = difflore_core::domain::projects::add(
+        db,
+        difflore_core::domain::models::AddProjectInput {
+            path: project_path.to_string_lossy().to_string(),
+        },
+    )
+    .await
+    .expect("insert project");
+    difflore_core::review_store::ensure_item(
+        db,
+        EnsureItemInput {
+            id: Some(item_id.clone()),
+            session_id: None,
+            project_id: project.id,
+            file_path: path.to_owned(),
+            diff_content: String::new(),
+            status: "imported".to_owned(),
+            source: "gitlab".to_owned(),
+            source_kind: "gitlab_import".to_owned(),
+            external_review_id: Some(item_id.clone()),
+            repo_full_name: Some(repo.to_owned()),
+            pr_number: Some(pr_number),
+            author: Some("alice".to_owned()),
+            synced_at: None,
+            metadata: Some(
+                serde_json::json!({
+                    "gitlabHost": host,
+                    "sourceRepoFullName": repo,
+                })
+                .to_string(),
+            ),
+            reviewed_at: None,
+        },
+    )
+    .await
+    .expect("insert imported review item");
+    difflore_core::review_store::add_comment(
+        db,
+        AddCommentInput {
+            review_item_id: item_id.clone(),
+            external_comment_id: Some(format!("discussion-{pr_number}")),
+            line_number: Some(1),
+            content: directive.to_owned(),
+            author: Some("reviewer".to_owned()),
+            comment_url: Some(format!(
+                "https://{host}/{repo}/-/merge_requests/{pr_number}#note_1"
+            )),
+            thread_id: Some(format!("review-{pr_number}")),
+            metadata: Some(
+                serde_json::json!({
+                    "filePath": path,
+                    "gitlabHost": host,
+                    "sourceRepoFullName": repo,
+                    "attachedRepoFullName": repo,
+                    "resolved": true,
+                })
+                .to_string(),
+            ),
+        },
+    )
+    .await
+    .expect("insert imported review comment");
+}
+
 pub(super) fn review(pr: i32, comments: usize) -> ImportedReviewUpload {
     ImportedReviewUpload {
+        provider: Some("github".to_owned()),
+        provider_host: None,
         repo_full_name: "difflore-fixtures/example".to_owned(),
         source_repo_full_name: Some("upstream/example".to_owned()),
         pr_number: pr,

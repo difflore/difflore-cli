@@ -37,6 +37,12 @@ pub(crate) async fn tool_get_past_verdicts(
     let repo_scopes: Vec<String> = if let Some(repo) = explicit_repo {
         vec![repo]
     } else {
+        // Warm the configured-GitLab-host cache before detecting remotes so a
+        // fresh MCP-server process that calls get_past_verdicts before any
+        // recall can still resolve self-managed GitLab scopes. Without it the
+        // detection falls empty and the verdict recall silently returns nothing.
+        // Mirrors hook.rs / search_rules.rs / remember_rule.rs.
+        crate::mcp_server::hook::refresh_configured_gitlab_hosts_for_remote_detection().await;
         detect_git_remote_owner_repos()
     };
 

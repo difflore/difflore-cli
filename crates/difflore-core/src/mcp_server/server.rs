@@ -197,8 +197,11 @@ pub(super) async fn handle_resources_read(
             // machine corpus, leaking every project's rules to whichever
             // agent read it (project-scope invariant violation).
             let root = crate::infra::db::current_project_root();
-            let repo_scopes =
-                crate::infra::git::detect_github_repo_full_names(&root.to_string_lossy());
+            let configured_gitlab_hosts = crate::ingest::gitlab::auth::configured_hosts().await;
+            let repo_scopes = crate::infra::git::detect_repo_full_names_with_gitlab_hosts(
+                &root.to_string_lossy(),
+                &configured_gitlab_hosts,
+            );
             let md = skills::export_rules_markdown(&state.db, &repo_scopes)
                 .await
                 .unwrap_or_else(|e| format!("Error loading rules: {e}"));

@@ -182,6 +182,11 @@ pub(super) fn parse_pr_spec(
             .map(str::to_owned)
             .or_else(|| repo_from_remote(cwd, "upstream"))
             .or_else(|| {
+                // intentionally GitHub-only: `difflore fix --pr` is the GitHub
+                // pull-request flow (gh CLI, github.com PR URLs). GitLab MRs go
+                // through their own path, so the host-aware detector is wrong
+                // here — a self-managed GitLab remote must NOT be inferred as a
+                // `--pr` target.
                 difflore_core::infra::git::detect_github_repo_full_names(&cwd.to_string_lossy())
                     .into_iter()
                     .next()
@@ -224,6 +229,8 @@ fn normalize_repo(repo: &str) -> anyhow::Result<String> {
 
 fn repo_from_remote(repo_root: &Path, remote: &str) -> Option<String> {
     let url = git_stdout(repo_root, &["remote", "get-url", remote], None).ok()?;
+    // intentionally GitHub-only: the `--pr` flow targets github.com PRs, so a
+    // non-GitHub remote here must resolve to None rather than a GitLab scope.
     difflore_core::infra::git::parse_github_remote_url(&url)
 }
 
@@ -537,6 +544,8 @@ fn prepared_from_meta(
     if !aliases.iter().any(|repo| repo == &meta.head_repo_full_name) {
         aliases.push(meta.head_repo_full_name.clone());
     }
+    // intentionally GitHub-only: PR-fix attribution aliases are github.com
+    // repo scopes; GitLab MR scopes are never `--pr` aliases.
     for repo in difflore_core::infra::git::detect_github_repo_full_names(&project_path) {
         if !aliases.iter().any(|existing| existing == &repo) {
             aliases.push(repo);
@@ -620,6 +629,8 @@ fn remote_for_repo(repo_root: &Path, repo_full_name: &str) -> anyhow::Result<Opt
         let Ok(url) = git_stdout(repo_root, &["remote", "get-url", remote], None) else {
             continue;
         };
+        // intentionally GitHub-only: matching the PR's head/base repo against
+        // local remotes is a github.com operation in the `--pr` flow.
         let Some(remote_repo) = difflore_core::infra::git::parse_github_remote_url(&url) else {
             continue;
         };

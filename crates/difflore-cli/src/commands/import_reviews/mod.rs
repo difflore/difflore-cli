@@ -1,3 +1,4 @@
+use difflore_core::infra::git::RepoScope;
 use difflore_core::ingest::github::{ImportOptions, ImportProgress};
 use difflore_core::ingest::provider::ReviewProvider;
 use sqlx::SqlitePool;
@@ -700,6 +701,8 @@ async fn try_handle_github(
         .from_upstream
         .clone()
         .unwrap_or_else(|| local_repo.clone());
+    let source_repo_scope = RepoScope::github(&source_repo)
+        .ok_or_else(|| format!("--from-upstream '{source_repo}' is invalid for GitHub"))?;
 
     if v.dry_run {
         run_dry_run(&v, &local_repo, &source_repo);
@@ -734,7 +737,7 @@ async fn try_handle_github(
             db,
             "github",
             &local_repo,
-            &source_repo,
+            &source_repo_scope,
             budget,
             &v.pr_numbers,
             &v.exclude_prs,
@@ -797,6 +800,8 @@ async fn try_handle_gitlab(
     let gitlab_project = resolve_gitlab_project_path(v.repo.clone(), remote_url, host)?;
     difflore_core::ingest::provider::validate_gitlab_project_path(&gitlab_project)
         .map_err(|msg| format!("--repo is invalid for GitLab: {msg}"))?;
+    let gitlab_repo_scope = RepoScope::gitlab(host, &gitlab_project)
+        .ok_or_else(|| format!("--repo is invalid for GitLab: {gitlab_project}"))?;
 
     if v.dry_run {
         run_gitlab_dry_run(&v, host, &gitlab_project);
@@ -834,7 +839,7 @@ async fn try_handle_gitlab(
             db,
             "gitlab",
             &gitlab_project,
-            &gitlab_project,
+            &gitlab_repo_scope,
             budget,
             &v.pr_numbers,
             &v.exclude_prs,
@@ -859,7 +864,7 @@ async fn try_handle_gitlab(
             "gitlab",
             Some(host),
             &gitlab_project,
-            &gitlab_project,
+            gitlab_repo_scope.as_str(),
             &import_result,
             local_candidate_progress.as_ref(),
             uploaded_reviews,
@@ -911,11 +916,13 @@ mod tests {
     use std::collections::HashSet;
 
     use crate::support::review_text::strip_review_markdown_noise;
+    use difflore_core::infra::git::RepoScope;
     use difflore_core::ingest::github::ImportProgress;
 
     use super::fixtures::{
-        fresh_import_pool, imported_item, review, seed_imported_review_comments,
-        seed_imported_review_comments_with_resolution, seed_pr_with_directive,
+        fresh_import_pool, imported_item, review, seed_gitlab_pr_with_directive,
+        seed_imported_review_comments, seed_imported_review_comments_with_resolution,
+        seed_pr_with_directive,
     };
     use super::github::{format_github_import_err, gh_repo_view_failure_detail};
     use super::gitlab::format_gitlab_import_err;
@@ -929,9 +936,17 @@ mod tests {
     use super::scope::file_pattern_from_path;
     use super::upload::{
         build_upload_batches, cloud_upload_next_step_commands, comment_event_type,
-        comment_file_path_from_metadata, imported_review_upload,
+        comment_file_path_from_metadata, gitlab_host_from_metadata, imported_review_upload,
     };
     use super::{ImportArgs, dry_run_payload, import_json_payload, validate_args};
+
+    fn github_scope(repo: &str) -> RepoScope {
+        RepoScope::github(repo).expect("test GitHub repo scope")
+    }
+
+    fn gitlab_scope(host: &str, repo: &str) -> RepoScope {
+        RepoScope::gitlab(host, repo).expect("test GitLab repo scope")
+    }
 
     #[test]
     fn strip_review_markdown_noise_drops_severity_banners_and_emphasis() {
@@ -1362,6 +1377,36 @@ mod tests {
     }
 
     #[test]
+    fn import_upload_payload_preserves_gitlab_provider_and_host() {
+        let mut item = imported_item(
+            Some("group/sub/project"),
+            Some(
+                r#"{"gitlabHost":"GitLab.Corp.Example","sourceRepoFullName":"group/sub/project"}"#,
+            ),
+        );
+        item.item.source = "gitlab".to_owned();
+
+        let upload = imported_review_upload(&item).expect("review with comments should upload");
+
+        assert_eq!(upload.provider.as_deref(), Some("gitlab"));
+        assert_eq!(upload.provider_host.as_deref(), Some("gitlab.corp.example"));
+        assert_eq!(
+            upload.repo_full_name,
+            "gitlab.corp.example/group/sub/project"
+        );
+        assert_eq!(upload.source_repo_full_name, None);
+        assert_eq!(
+            gitlab_host_from_metadata(Some(r#"{"gitlabHost":"https://gitlab.corp.example/"}"#))
+                .as_deref(),
+            Some("gitlab.corp.example")
+        );
+        assert_eq!(
+            gitlab_host_from_metadata(Some(r#"{"gitlabHost":"https://gitlab.corp.example/g/p"}"#)),
+            None
+        );
+    }
+
+    #[test]
     fn import_upload_payload_does_not_invent_source_repo_without_metadata() {
         let item = imported_item(Some("user/fork"), None);
 
@@ -1369,6 +1414,23 @@ mod tests {
 
         assert_eq!(upload.repo_full_name, "user/fork");
         assert_eq!(upload.source_repo_full_name, None);
+    }
+
+    #[test]
+    fn import_upload_payload_canonicalizes_gitlab_source_repo() {
+        let mut item = imported_item(
+            Some("user/fork"),
+            Some(r#"{"gitlabHost":"gitlab.com","sourceRepoFullName":"upstream/project"}"#),
+        );
+        item.item.source = "gitlab".to_owned();
+
+        let upload = imported_review_upload(&item).expect("review with comments should upload");
+
+        assert_eq!(upload.repo_full_name, "gitlab.com/user/fork");
+        assert_eq!(
+            upload.source_repo_full_name.as_deref(),
+            Some("gitlab.com/upstream/project")
+        );
     }
 
     #[test]
@@ -1618,9 +1680,10 @@ mod tests {
                 .to_owned();
         item.comments[0].metadata = Some(r#"{"filePath":"src/http/headers.py"}"#.to_owned());
 
-        let input = local_candidate_input(&item, &item.comments[0], "upstream/project")
-            .expect("candidate")
-            .input;
+        let input =
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .expect("candidate")
+                .input;
 
         assert!(input.body.starts_with(
             "Rule:\nWhen touching `src/http/**/*.py`, prefer Mapping[str, str] here instead of dict[str, str]."
@@ -1644,7 +1707,10 @@ mod tests {
             .to_owned();
         item.comments[0].metadata = None;
 
-        assert!(local_candidate_input(&item, &item.comments[0], "upstream/project").is_none());
+        assert!(
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1678,7 +1744,8 @@ mod tests {
             item.comments[0].content = content.to_owned();
 
             assert!(
-                local_candidate_input(&item, &item.comments[0], "upstream/project").is_none(),
+                local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                    .is_none(),
                 "content should be skipped: {content}"
             );
         }
@@ -1705,7 +1772,8 @@ mod tests {
             item.comments[0].content = content.to_owned();
 
             assert!(
-                local_candidate_input(&item, &item.comments[0], "upstream/project").is_none(),
+                local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                    .is_none(),
                 "content should be skipped: {content}"
             );
         }
@@ -1722,9 +1790,10 @@ mod tests {
             "Could you add a regression test that verifies malformed headers return 400 instead of panicking?"
                 .to_owned();
 
-        let input = local_candidate_input(&item, &item.comments[0], "upstream/project")
-            .expect("candidate")
-            .input;
+        let input =
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .expect("candidate")
+                .input;
 
         assert!(input.body.contains("add a regression test"));
     }
@@ -1741,9 +1810,10 @@ mod tests {
             "Also `copilot` should be replaced with the const to keep this command consistent."
                 .to_owned();
 
-        let input = local_candidate_input(&item, &item.comments[0], "upstream/project")
-            .expect("candidate")
-            .input;
+        let input =
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .expect("candidate")
+                .input;
 
         assert!(input.body.contains("`pkg/cmd/copilot/**/*.go`"));
         assert!(
@@ -1770,7 +1840,8 @@ mod tests {
             item.comments[0].content = content.to_owned();
 
             assert!(
-                local_candidate_input(&item, &item.comments[0], "upstream/project").is_none(),
+                local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                    .is_none(),
                 "content should be skipped: {content}"
             );
         }
@@ -1796,9 +1867,10 @@ mod tests {
             clean_review_comment(&item.comments[0].content)
         );
 
-        let input = local_candidate_input(&item, &item.comments[0], "upstream/project")
-            .expect("candidate")
-            .input;
+        let input =
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .expect("candidate")
+                .input;
 
         assert!(input.body.contains("keep `HTTPException` untranslated"));
     }
@@ -1813,9 +1885,10 @@ mod tests {
         item.comments[0].content = "Hi @alice, thank you for the correction. That's a great help. Please add the following test for the fallback path."
             .to_owned();
 
-        let input = local_candidate_input(&item, &item.comments[0], "upstream/project")
-            .expect("candidate")
-            .input;
+        let input =
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .expect("candidate")
+                .input;
 
         assert!(input.title.contains("Add the following test"));
         assert!(input.body.contains(
@@ -1836,9 +1909,10 @@ mod tests {
             "This works great! As suggested, we should add the `-w` option as webpack does."
                 .to_owned();
 
-        let input = local_candidate_input(&item, &item.comments[0], "upstream/project")
-            .expect("candidate")
-            .input;
+        let input =
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .expect("candidate")
+                .input;
 
         assert!(input.body.contains("add the `-w` option as webpack does."));
         assert!(!input.title.contains("This works great"));
@@ -1863,7 +1937,8 @@ mod tests {
             item.comments[0].content = content.to_owned();
 
             assert!(
-                local_candidate_input(&item, &item.comments[0], "upstream/project").is_none(),
+                local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                    .is_none(),
                 "content should be skipped: {content}"
             );
         }
@@ -1885,9 +1960,10 @@ mod tests {
 | ConsumerGroup.java | Bare generated table filename without a directory. |"
                 .to_owned();
 
-        let input = local_candidate_input(&item, &item.comments[0], "upstream/project")
-            .expect("candidate")
-            .input;
+        let input =
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .expect("candidate")
+                .input;
         let patterns = input.file_patterns.expect("file patterns");
 
         assert_eq!(patterns, vec![".github/workflows/**/*.yml".to_owned()]);
@@ -1910,9 +1986,10 @@ mod tests {
             "Please validate serializer state and keep behavior consistent across these modules.\n\n| File | Comment |\n| ---- | ------- |\n{rows}"
         );
 
-        let input = local_candidate_input(&item, &item.comments[0], "upstream/project")
-            .expect("candidate")
-            .input;
+        let input =
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .expect("candidate")
+                .input;
         let patterns = input.file_patterns.expect("file patterns");
 
         assert_eq!(
@@ -1938,9 +2015,10 @@ mod tests {
             "Please validate serializer state and keep behavior consistent across these modules.\n\n| File | Comment |\n| ---- | ------- |\n{rows}"
         );
 
-        let input = local_candidate_input(&item, &item.comments[0], "upstream/project")
-            .expect("candidate")
-            .input;
+        let input =
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .expect("candidate")
+                .input;
 
         assert!(
             input
@@ -1974,7 +2052,10 @@ Some comments are outside the diff and cannot be posted inline due to platform l
 </details>"
             .to_owned();
 
-        assert!(local_candidate_input(&item, &item.comments[0], "upstream/project").is_none());
+        assert!(
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1992,7 +2073,10 @@ We should validate the header before parsing because malformed requests panic.\n
 </details>"
             .to_owned();
 
-        assert!(local_candidate_input(&item, &item.comments[0], "upstream/project").is_none());
+        assert!(
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -2011,9 +2095,10 @@ We should validate the header before parsing because malformed requests panic.\n
 | +14 more | Additional files hidden by the review UI. |"
                 .to_owned();
 
-        let input = local_candidate_input(&item, &item.comments[0], "upstream/project")
-            .expect("candidate")
-            .input;
+        let input =
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .expect("candidate")
+                .input;
         let patterns = input.file_patterns.expect("file patterns");
 
         assert_eq!(patterns, vec![".github/workflows/**/*.yml".to_owned()]);
@@ -2034,7 +2119,10 @@ We should validate the header before parsing because malformed requests panic.\n
                 .to_owned();
         item.comments[0].metadata = Some(r#"{"filePath":"tree_test.go"}"#.to_owned());
 
-        assert!(local_candidate_input(&item, &item.comments[0], "upstream/project").is_none());
+        assert!(
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -2058,9 +2146,13 @@ We should validate the header before parsing because malformed requests panic.\n
             "This is great and amazing, but it needs to be fixed for portable/zip builds and stuff too."
                 .to_owned();
 
-        let input = local_candidate_input(&item, &item.comments[0], "microsoft/terminal")
-            .expect("candidate")
-            .input;
+        let input = local_candidate_input(
+            &item,
+            &item.comments[0],
+            &github_scope("microsoft/terminal"),
+        )
+        .expect("candidate")
+        .input;
 
         assert_eq!(
             input.file_patterns.as_deref(),
@@ -2086,8 +2178,9 @@ We should validate the header before parsing because malformed requests panic.\n
         item.comments[0].content =
             "Please ensure workflow versions stay consistent across CI files.".to_owned();
 
-        let candidate = local_candidate_input(&item, &item.comments[0], "upstream/project")
-            .expect("unadopted bot directive should draft a candidate, not be vetoed");
+        let candidate =
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .expect("unadopted bot directive should draft a candidate, not be vetoed");
         assert_eq!(
             candidate.route,
             CaptureRoute::Candidate,
@@ -2115,8 +2208,9 @@ We should validate the header before parsing because malformed requests panic.\n
             "Please validate the header before parsing because otherwise malformed requests panic."
                 .to_owned();
 
-        let candidate = local_candidate_input(&item, &item.comments[0], "upstream/project")
-            .expect("resolved bot directive should draft a candidate");
+        let candidate =
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .expect("resolved bot directive should draft a candidate");
         assert_eq!(
             candidate.route,
             CaptureRoute::Active,
@@ -2139,8 +2233,9 @@ We should validate the header before parsing because malformed requests panic.\n
             "We should validate the header before parsing because otherwise malformed requests panic."
                 .to_owned();
 
-        let candidate = local_candidate_input(&item, &item.comments[0], "upstream/project")
-            .expect("resolved human directive should draft a candidate");
+        let candidate =
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .expect("resolved human directive should draft a candidate");
         assert_eq!(candidate.route, CaptureRoute::Active);
         assert!(candidate.confidence >= CAPTURE_CONFIDENCE_HIGH);
     }
@@ -2158,8 +2253,9 @@ We should validate the header before parsing because malformed requests panic.\n
             "We should validate the header before parsing because otherwise malformed requests panic."
                 .to_owned();
 
-        let candidate = local_candidate_input(&item, &item.comments[0], "upstream/project")
-            .expect("unadopted human directive should still draft a candidate");
+        let candidate =
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .expect("unadopted human directive should still draft a candidate");
         assert_eq!(candidate.route, CaptureRoute::Candidate);
         assert!(candidate.confidence < CAPTURE_CONFIDENCE_HIGH);
         assert!(candidate.confidence >= CAPTURE_CONFIDENCE_LOW);
@@ -2182,7 +2278,8 @@ We should validate the header before parsing because malformed requests panic.\n
                 .to_owned();
 
         assert!(
-            local_candidate_input(&item, &item.comments[0], "upstream/project").is_none(),
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .is_none(),
             "a contradicted directive must be dropped, not drafted"
         );
     }
@@ -2205,8 +2302,11 @@ We should validate the header before parsing because malformed requests panic.\n
             "We should validate the header before parsing because otherwise malformed requests panic."
                 .to_owned();
 
-        let candidate = local_candidate_input(&item, &item.comments[0], "upstream/project")
-            .expect("resolved-but-downvoted directive should draft a candidate, not be dropped");
+        let candidate =
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .expect(
+                    "resolved-but-downvoted directive should draft a candidate, not be dropped",
+                );
         assert_eq!(
             candidate.route,
             CaptureRoute::Candidate,
@@ -2234,8 +2334,9 @@ We should validate the header before parsing because malformed requests panic.\n
             "We should validate the header before parsing because otherwise malformed requests panic."
                 .to_owned();
 
-        let candidate = local_candidate_input(&item, &item.comments[0], "upstream/project")
-            .expect("resolved directive should draft a candidate");
+        let candidate =
+            local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                .expect("resolved directive should draft a candidate");
         assert_eq!(
             candidate.route,
             CaptureRoute::Active,
@@ -2285,7 +2386,8 @@ We should validate the header before parsing because malformed requests panic.\n
             item.comments[0].content = content.to_owned();
 
             assert!(
-                local_candidate_input(&item, &item.comments[0], "upstream/project").is_none(),
+                local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
+                    .is_none(),
                 "content should be skipped: {content}"
             );
         }
@@ -2310,6 +2412,51 @@ We should validate the header before parsing because malformed requests panic.\n
                 "recovery_test.go",
             ),
             "When touching `**/*.go`, the test should verify that `http.ErrAbortHandler` is actually being treated as a broken pipe error by asserting that the output does NOT contain \"panic recovered\"."
+        );
+    }
+
+    #[test]
+    fn gitlab_same_repo_local_candidate_does_not_widen_file_patterns() {
+        let mut item = imported_item(Some("group/project"), None);
+        item.item.source = "gitlab".to_owned();
+        item.comments[0].metadata = Some(
+            serde_json::json!({
+                "filePath": "src/http/request.rs",
+                "gitlabHost": "gitlab.com",
+                "sourceRepoFullName": "group/project",
+                "attachedRepoFullName": "group/project",
+                "resolved": true,
+            })
+            .to_string(),
+        );
+        item.comments[0].content =
+            "We should validate the header before parsing because otherwise malformed requests panic."
+                .to_owned();
+
+        let input = local_candidate_input(
+            &item,
+            &item.comments[0],
+            &gitlab_scope("gitlab.com", "group/project"),
+        )
+        .expect("candidate")
+        .input;
+
+        assert_eq!(
+            input.file_patterns.as_deref(),
+            Some(
+                [
+                    String::from("src/http/**/*.rs"),
+                    String::from("src/**/*.rs"),
+                ]
+                .as_slice()
+            )
+        );
+        assert!(
+            !input
+                .file_patterns
+                .as_deref()
+                .unwrap_or_default()
+                .contains(&String::from("**/*.rs"))
         );
     }
 
@@ -2401,11 +2548,12 @@ We should validate the header before parsing because malformed requests panic.\n
         )
         .await;
 
+        let source_scope = github_scope("acme/widgets");
         let progress = run_local_candidates(
             &db,
             "github",
             "acme/widgets",
-            "acme/widgets",
+            &source_scope,
             2,
             &[],
             &HashSet::new(),
@@ -2438,6 +2586,200 @@ We should validate the header before parsing because malformed requests panic.\n
     }
 
     #[tokio::test]
+    async fn gitlab_local_import_recalls_and_stays_isolated_from_same_github_namespace() {
+        let db = fresh_import_pool().await;
+        seed_gitlab_pr_with_directive(
+            &db,
+            "gitlab.com",
+            "group/project",
+            7,
+            "We should validate the header before parsing because otherwise malformed requests panic.",
+            "src/http/request.rs",
+        )
+        .await;
+        seed_pr_with_directive(
+            &db,
+            "group/project",
+            8,
+            "We should prefer Mapping[str, str] here instead of dict[str, str] to keep callers flexible.",
+            "src/http/headers.py",
+        )
+        .await;
+
+        let gitlab_source_scope = gitlab_scope("gitlab.com", "group/project");
+        let gitlab_progress = run_local_candidates(
+            &db,
+            "gitlab",
+            "group/project",
+            &gitlab_source_scope,
+            25,
+            &[],
+            &HashSet::new(),
+        )
+        .await;
+        assert_eq!(gitlab_progress.candidates_created, 1);
+        assert_eq!(gitlab_progress.candidates_activated, 1);
+
+        let github_source_scope = github_scope("group/project");
+        let github_progress = run_local_candidates(
+            &db,
+            "github",
+            "group/project",
+            &github_source_scope,
+            25,
+            &[],
+            &HashSet::new(),
+        )
+        .await;
+        assert_eq!(github_progress.candidates_created, 1);
+        assert_eq!(github_progress.candidates_activated, 1);
+
+        let source_repos = difflore_core::skills::list_source_repos(&db)
+            .await
+            .expect("load source repos");
+        let mut source_repo_values = source_repos
+            .values()
+            .filter_map(|repo| repo.as_deref())
+            .collect::<Vec<_>>();
+        source_repo_values.sort_unstable();
+        assert_eq!(
+            source_repo_values,
+            vec!["gitlab.com/group/project", "group/project"]
+        );
+
+        let gitlab_patterns: Option<String> =
+            sqlx::query_scalar("SELECT file_patterns FROM skills WHERE source_repo = ?1")
+                .bind(gitlab_source_scope.as_str())
+                .fetch_one(&db)
+                .await
+                .expect("load gitlab file patterns");
+        let gitlab_patterns: Vec<String> =
+            serde_json::from_str(&gitlab_patterns.expect("gitlab file patterns"))
+                .expect("parse gitlab file patterns");
+        assert_eq!(gitlab_patterns, vec!["src/http/**/*.rs"]);
+
+        let gitlab_export = difflore_core::export::collect_rules_for_export_with_scopes(
+            &db,
+            &[gitlab_source_scope.as_str().to_owned()],
+            difflore_core::export::ExportCollectOptions::default(),
+        )
+        .await
+        .expect("collect gitlab export");
+        assert_eq!(gitlab_export.rules.len(), 1);
+        assert!(
+            gitlab_export.rules[0].name.contains("Validate the header"),
+            "gitlab export: {:?}",
+            gitlab_export.rules
+        );
+
+        let github_export = difflore_core::export::collect_rules_for_export_with_scopes(
+            &db,
+            &[github_source_scope.as_str().to_owned()],
+            difflore_core::export::ExportCollectOptions::default(),
+        )
+        .await
+        .expect("collect github export");
+        assert_eq!(github_export.rules.len(), 1);
+        assert!(
+            github_export.rules[0].name.contains("Prefer Mapping"),
+            "github export: {:?}",
+            github_export.rules
+        );
+
+        let gitlab_project_path: String = sqlx::query_scalar(
+            "SELECT p.path FROM projects p \
+             INNER JOIN review_items ri ON ri.project_id = p.id \
+             WHERE ri.source = ?1 LIMIT 1",
+        )
+        .bind("gitlab")
+        .fetch_one(&db)
+        .await
+        .expect("load gitlab project path");
+        let project_hash = difflore_core::infra::db::project_hash_from_root(std::path::Path::new(
+            &gitlab_project_path,
+        ));
+        let index_pool = difflore_core::context::index_db::get_pool_for_project(&project_hash)
+            .await
+            .expect("open test index pool");
+        let repo_scopes = vec![
+            gitlab_source_scope.as_str().to_owned(),
+            github_source_scope.as_str().to_owned(),
+        ];
+        difflore_core::context::orchestrator::ensure_rules_indexed_for_repo_scopes_with_embedding_timeout(
+            &db,
+            &index_pool,
+            &repo_scopes,
+            Some(std::time::Duration::from_millis(0)),
+        )
+        .await
+        .expect("index scoped rules");
+
+        let gitlab_filter = difflore_core::context::index_db::QueryFilter {
+            language: Some("rust".to_owned()),
+            repo_scope: Some(gitlab_source_scope.as_str().to_owned()),
+        };
+        let gitlab_hits = difflore_core::context::retrieval::retrieve_rules_with_confidence(
+            &index_pool,
+            "validate header parsing malformed requests",
+            difflore_core::context::retrieval::RetrievalOptions {
+                top_k: Some(5),
+                target_scope: Some(difflore_core::context::retrieval::TargetScope::File(
+                    "src/http/request.rs",
+                )),
+                filter: Some(&gitlab_filter),
+                ann_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("retrieve gitlab rules");
+        assert!(
+            gitlab_hits
+                .iter()
+                .any(|rule| rule.content.contains("Validate the header")),
+            "gitlab recall hits: {gitlab_hits:?}"
+        );
+        assert!(
+            !gitlab_hits
+                .iter()
+                .any(|rule| rule.content.contains("Prefer Mapping")),
+            "gitlab recall leaked github rule: {gitlab_hits:?}"
+        );
+
+        let github_filter = difflore_core::context::index_db::QueryFilter {
+            language: Some("python".to_owned()),
+            repo_scope: Some(github_source_scope.as_str().to_owned()),
+        };
+        let github_hits = difflore_core::context::retrieval::retrieve_rules_with_confidence(
+            &index_pool,
+            "prefer mapping strings flexible callers",
+            difflore_core::context::retrieval::RetrievalOptions {
+                top_k: Some(5),
+                target_scope: Some(difflore_core::context::retrieval::TargetScope::File(
+                    "src/http/headers.py",
+                )),
+                filter: Some(&github_filter),
+                ann_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("retrieve github rules");
+        assert!(
+            github_hits
+                .iter()
+                .any(|rule| rule.content.contains("Prefer Mapping")),
+            "github recall hits: {github_hits:?}"
+        );
+        assert!(
+            !github_hits
+                .iter()
+                .any(|rule| rule.content.contains("Validate the header")),
+            "github recall leaked gitlab rule: {github_hits:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn run_local_candidates_leaves_unresolved_directives_pending() {
         // End-to-end routing: an unresolved (un-adopted) directive must NOT
         // be served by the MCP active-rule path; it lands as a pending
@@ -2453,11 +2795,12 @@ We should validate the header before parsing because malformed requests panic.\n
         )
         .await;
 
+        let source_scope = github_scope("acme/widgets");
         let progress = run_local_candidates(
             &db,
             "github",
             "acme/widgets",
-            "acme/widgets",
+            &source_scope,
             5,
             &[],
             &HashSet::new(),
@@ -2629,11 +2972,12 @@ We should validate the header before parsing because malformed requests panic.\n
         .await;
 
         let exclude: HashSet<i32> = std::iter::once(8).collect();
+        let source_scope = github_scope("acme/widgets");
         let progress = run_local_candidates(
             &db,
             "github",
             "acme/widgets",
-            "acme/widgets",
+            &source_scope,
             25,
             &[],
             &exclude,
@@ -2684,11 +3028,12 @@ We should validate the header before parsing because malformed requests panic.\n
         )
         .await;
 
+        let source_scope = github_scope("acme/widgets");
         let progress = run_local_candidates(
             &db,
             "github",
             "acme/widgets",
-            "acme/widgets",
+            &source_scope,
             25,
             &[],
             &HashSet::new(),

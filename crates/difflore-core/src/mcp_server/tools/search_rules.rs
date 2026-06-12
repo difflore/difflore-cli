@@ -547,15 +547,20 @@ async fn repo_scopes_for_search_rules(
         .filter(|value| !value.is_empty())
     {
         validate_mcp_text_arg("repo_full_name", raw, MCP_TEXT_ARG_CHAR_LIMIT)?;
-        let Some(repo) = crate::infra::git::normalize_github_repo_full_name(raw) else {
+        let configured_gitlab_hosts = crate::ingest::gitlab::auth::configured_hosts().await;
+        let Some(repo) = crate::infra::git::normalize_repo_scope_with_gitlab_hosts(
+            raw,
+            &configured_gitlab_hosts,
+        ) else {
             return Err((
                 -32602,
-                "Invalid repo_full_name; expected GitHub owner/repo or GitHub remote URL"
+                "Invalid repo_full_name; expected GitHub owner/repo, GitLab host/namespace/project, or a supported git remote URL"
                     .to_owned(),
             ));
         };
         vec![repo]
     } else {
+        crate::mcp_server::hook::refresh_configured_gitlab_hosts_for_remote_detection().await;
         crate::mcp_server::hook::detect_git_remote_owner_repos()
     };
 

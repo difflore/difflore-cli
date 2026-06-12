@@ -1,4 +1,5 @@
 use difflore_core::domain::models::RememberRuleInput;
+use difflore_core::infra::git::RepoScope;
 use difflore_core::review_store::{ReviewCommentRecord, ReviewItemWithComments};
 use sqlx::SqlitePool;
 
@@ -1103,8 +1104,9 @@ pub(super) struct LocalCandidate {
 pub(super) fn local_candidate_input(
     item: &ReviewItemWithComments,
     comment: &ReviewCommentRecord,
-    source_repo: &str,
+    source_repo: &RepoScope,
 ) -> Option<LocalCandidate> {
+    let source_repo = source_repo.as_str();
     if is_pr_author_response(item, comment) {
         return None;
     }
@@ -1181,7 +1183,8 @@ pub(super) fn local_candidate_input(
         .item
         .repo_full_name
         .as_deref()
-        .is_some_and(|repo| !repo.eq_ignore_ascii_case(source_repo));
+        .and_then(|repo| candidate_repo_scope_for_comparison(repo, source_repo))
+        .is_some_and(|repo| repo.as_str() != source_repo);
     let file_patterns = candidate_file_patterns(&scope_paths, widen_for_upstream);
     // Pre-persist secret barrier: the title and body carry reviewer-quoted
     // prose / code snippets that may contain a leaked credential. Scrub it
@@ -1205,6 +1208,16 @@ pub(super) fn local_candidate_input(
         confidence,
         route,
     })
+}
+
+fn candidate_repo_scope_for_comparison(repo: &str, source_repo: &str) -> Option<RepoScope> {
+    if let Some((host, _)) = source_repo.split_once('/')
+        && host.contains('.')
+        && let Some(scope) = RepoScope::gitlab(host, repo)
+    {
+        return Some(scope);
+    }
+    RepoScope::canonical(repo)
 }
 
 fn candidate_file_patterns(
@@ -1241,8 +1254,9 @@ fn candidate_file_patterns(
 async fn attach_candidate_repo_scope(
     db: &SqlitePool,
     skill_id: &str,
-    repo: &str,
+    repo: &RepoScope,
 ) -> Result<(), sqlx::Error> {
+    let repo = repo.as_str();
     sqlx::query!(
         "UPDATE skills SET source_repo = ?1 WHERE id = ?2",
         repo,
@@ -1257,7 +1271,7 @@ pub(super) async fn run_local_candidates(
     db: &SqlitePool,
     source: &str,
     repo: &str,
-    source_repo: &str,
+    source_repo: &RepoScope,
     max_candidates: usize,
     pr_numbers: &[i32],
     exclude_prs: &std::collections::HashSet<i32>,
@@ -1332,7 +1346,7 @@ pub(super) async fn run_local_candidates(
                         progress.candidates_deduped += 1;
                     } else {
                         if let Err(e) =
-                            attach_candidate_repo_scope(db, &outcome.skill.id, repo).await
+                            attach_candidate_repo_scope(db, &outcome.skill.id, source_repo).await
                         {
                             exit_err(&format!("failed to attach local memory to repo: {e}"));
                         }

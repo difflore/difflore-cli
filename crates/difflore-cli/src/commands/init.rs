@@ -55,8 +55,11 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
     // [fork, upstream(s)…] — the same alias chain `fix --preview` uses, so the
     // memory preview resolves to upstream for a fork the user hasn't imported
     // reviews under yet.
-    let repo_aliases =
-        difflore_core::infra::git::detect_github_repo_full_names(&cwd.to_string_lossy());
+    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
+    let repo_aliases = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+        &cwd.to_string_lossy(),
+        &configured_gitlab_hosts,
+    );
 
     let db = &ctx.db;
     // Called for its side effect: registering the cwd in the projects table so

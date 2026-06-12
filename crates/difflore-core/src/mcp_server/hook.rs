@@ -201,6 +201,7 @@ async fn fetch_relevant_rules_for_hook_inner(
     let query = format!("{file} {intent}");
     // Scope to the calling repo/project only. On 0 hits we return no
     // rules; runtime recall must not fall back to another project.
+    refresh_configured_gitlab_hosts_for_remote_detection().await;
     let detected_repos = detect_git_remote_owner_repos();
     let repo_scopes = crate::skills::expand_repo_scopes_with_source_aliases(db, &detected_repos)
         .await
@@ -512,6 +513,59 @@ fn repo_detection_cache() -> &'static Mutex<HashMap<PathBuf, Vec<String>>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn configured_gitlab_hosts_cache() -> &'static Mutex<Vec<String>> {
+    static CACHE: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn normalize_gitlab_host_cache(hosts: Vec<String>) -> Vec<String> {
+    let mut normalized = hosts
+        .into_iter()
+        .filter_map(|host| crate::ingest::gitlab::auth::normalize_gitlab_host(&host).ok())
+        .collect::<Vec<_>>();
+    normalized.sort_unstable();
+    normalized.dedup();
+    normalized
+}
+
+fn set_configured_gitlab_hosts_for_remote_detection(hosts: Vec<String>) {
+    let hosts = normalize_gitlab_host_cache(hosts);
+    let mut guard = configured_gitlab_hosts_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *guard == hosts {
+        return;
+    }
+    *guard = hosts;
+    repo_detection_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+}
+
+pub(crate) async fn refresh_configured_gitlab_hosts_for_remote_detection() {
+    set_configured_gitlab_hosts_for_remote_detection(
+        crate::ingest::gitlab::auth::configured_hosts().await,
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn set_configured_gitlab_hosts_for_remote_detection_for_test(hosts: Vec<String>) {
+    set_configured_gitlab_hosts_for_remote_detection(hosts);
+}
+
+/// Drop every cached remote-detection result. Tests that drive the real
+/// cwd-based detection path need this so a previously-cached (and possibly
+/// empty) entry for the test's working directory cannot mask the production
+/// `refresh` + git-remote-parse chain under test.
+#[cfg(test)]
+pub(crate) fn clear_repo_detection_cache_for_test() {
+    repo_detection_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+}
+
 pub(crate) fn detect_git_remote_owner_repos() -> Vec<String> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     {
@@ -540,10 +594,15 @@ pub(crate) fn set_detected_repos_for_current_dir_for_test(repos: Vec<String>) {
     guard.insert(cwd, repos);
 }
 
-/// Parse GitHub `owner/repo`s from `origin` then `upstream` remotes, dropping
-/// duplicates while preserving origin-first order. Empty when no git repo or no
-/// GitHub remotes. Keeps MCP recall scoped to the project.
+/// Parse supported hosted repo scopes from `origin` then `upstream` remotes,
+/// dropping duplicates while preserving origin-first order. Empty when no git
+/// repo or no supported hosted git remotes. Keeps MCP recall scoped to the
+/// project.
 fn detect_git_remote_owner_repos_uncached() -> Vec<String> {
+    let configured_gitlab_hosts = configured_gitlab_hosts_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     let mut repos = Vec::new();
     for remote in ["origin", "upstream"] {
         let output = match std::process::Command::new("git")
@@ -554,7 +613,8 @@ fn detect_git_remote_owner_repos_uncached() -> Vec<String> {
             _ => continue,
         };
         let url = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        let Some(repo) = parse_github_owner_repo(&url) else {
+        let Some(repo) = parse_github_owner_repo_with_gitlab_hosts(&url, &configured_gitlab_hosts)
+        else {
             continue;
         };
         if !repos.iter().any(|existing| existing == &repo) {
@@ -564,10 +624,22 @@ fn detect_git_remote_owner_repos_uncached() -> Vec<String> {
     repos
 }
 
-/// `Some("owner/repo")` for GitHub-hosted SSH/HTTPS remotes (with or without
-/// `.git`); `None` otherwise.
+/// `Some(scope)` for supported hosted SSH/HTTPS remotes (GitHub owner/repo or
+/// GitLab host/namespace path, with or without `.git`); `None` otherwise.
+#[cfg(test)]
 pub(crate) fn parse_github_owner_repo(url: &str) -> Option<String> {
-    crate::infra::git::parse_github_remote_url(url)
+    let configured_gitlab_hosts = configured_gitlab_hosts_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    parse_github_owner_repo_with_gitlab_hosts(url, &configured_gitlab_hosts)
+}
+
+fn parse_github_owner_repo_with_gitlab_hosts(
+    url: &str,
+    configured_gitlab_hosts: &[String],
+) -> Option<String> {
+    crate::infra::git::parse_repo_remote_url_with_gitlab_hosts(url, configured_gitlab_hosts)
 }
 
 #[cfg(test)]
