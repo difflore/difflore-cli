@@ -43,6 +43,15 @@ impl std::fmt::Display for ReviewProvider {
 /// for local paths and anything without a recognizable host.
 #[must_use]
 pub fn remote_url_host(url: &str) -> Option<String> {
+    remote_url_host_and_path(url).map(|(host, _)| host)
+}
+
+/// Like [`remote_url_host`] but also returns the repository path: slashes
+/// trimmed at both ends and a trailing `.git` suffix stripped. The path may
+/// be empty (`https://gitlab.com`). GitLab callers use it as the project's
+/// full namespace path (`group/subgroup/project`).
+#[must_use]
+pub fn remote_url_host_and_path(url: &str) -> Option<(String, String)> {
     let url = url.trim();
 
     let after_scheme = if let Some(rest) = url.strip_prefix("https://") {
@@ -53,23 +62,43 @@ pub fn remote_url_host(url: &str) -> Option<String> {
         url.strip_prefix("ssh://")
     };
 
-    let Some(authority_and_path) = after_scheme else {
+    let (host_raw, path_raw) = if let Some(authority_and_path) = after_scheme {
+        let (authority, path) = authority_and_path
+            .split_once('/')
+            .unwrap_or((authority_and_path, ""));
+        let host = authority.rsplit('@').next().unwrap_or(authority);
+        (host, path)
+    } else {
         // scp-like `user@host:path`. Require the `@` so a Windows drive path
         // (`C:\repo`) or a relative path with a colon never parses as a host.
         let (userinfo, rest) = url.split_once('@')?;
         if userinfo.is_empty() || userinfo.contains('/') {
             return None;
         }
-        let (host, _path) = rest.split_once(':')?;
-        return normalize_host(host);
+        rest.split_once(':')?
     };
 
-    let authority = authority_and_path
-        .split('/')
-        .next()
-        .unwrap_or(authority_and_path);
-    let host = authority.rsplit('@').next().unwrap_or(authority);
-    normalize_host(host)
+    let host = normalize_host(host_raw)?;
+    let path = path_raw.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path).trim_matches('/');
+    Some((host, path.to_owned()))
+}
+
+/// Read the `origin` remote URL of the working tree at `project_path`.
+/// `None` when git is unavailable, the directory is not a repo, or no
+/// `origin` remote is configured — callers fall back to explicit flags.
+#[must_use]
+pub fn git_remote_origin_url(project_path: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(project_path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!url.is_empty()).then_some(url)
 }
 
 /// Lowercase and sanity-check a host[:port] candidate.
@@ -222,6 +251,37 @@ mod tests {
         ];
         for (url, expected) in cases {
             assert_eq!(remote_url_host(url).as_deref(), *expected, "url: {url}");
+        }
+    }
+
+    #[test]
+    fn remote_url_host_and_path_strips_git_suffix_and_keeps_subgroups() {
+        let cases: &[(&str, Option<(&str, &str)>)] = &[
+            (
+                "https://gitlab.com/group/sub/project.git",
+                Some(("gitlab.com", "group/sub/project")),
+            ),
+            (
+                "git@gitlab.corp.example:group/sub/project.git",
+                Some(("gitlab.corp.example", "group/sub/project")),
+            ),
+            (
+                "ssh://git@gitlab.corp.example:8443/group/project",
+                Some(("gitlab.corp.example:8443", "group/project")),
+            ),
+            (
+                "https://github.com/owner/repo.git",
+                Some(("github.com", "owner/repo")),
+            ),
+            // Empty path still yields the host (callers validate the path).
+            ("https://gitlab.com", Some(("gitlab.com", ""))),
+            ("/srv/git/repo.git", None),
+            ("C:\\repos\\widget", None),
+        ];
+        for (url, expected) in cases {
+            let got = remote_url_host_and_path(url);
+            let got_ref = got.as_ref().map(|(h, p)| (h.as_str(), p.as_str()));
+            assert_eq!(got_ref, *expected, "url: {url}");
         }
     }
 

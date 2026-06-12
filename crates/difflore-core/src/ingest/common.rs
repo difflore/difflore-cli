@@ -3,8 +3,24 @@
 //! The durability signal and the comment-metadata JSON shape are consumed by
 //! the local-candidate gate and the cloud upload path, neither of which cares
 //! which VCS provider produced the comment. Provider modules
-//! ([`super::github`], future GitLab) construct these from their own wire
+//! ([`super::github`], [`super::gitlab`]) construct these from their own wire
 //! shapes and persist the serialized form.
+
+/// Check whether a comment with the given `external_comment_id` already
+/// exists. Provider-neutral dedupe so re-running an import never duplicates
+/// rows (GitHub uses raw database ids, GitLab `gl:`-prefixed note ids).
+pub(crate) async fn comment_exists(
+    db: &sqlx::SqlitePool,
+    external_id: &str,
+) -> crate::Result<bool> {
+    let count = sqlx::query_scalar!(
+        "SELECT COUNT(*) as \"n!: i64\" FROM review_comments WHERE external_comment_id = ?1",
+        external_id
+    )
+    .fetch_one(db)
+    .await?;
+    Ok(count > 0)
+}
 
 /// Durability signal for a single review comment, derived from the provider's
 /// thread/reaction shape and serialized into the comment metadata JSON so the

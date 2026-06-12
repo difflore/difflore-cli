@@ -7,7 +7,7 @@ use crate::review_store::{AddCommentInput, EnsureItemInput};
 mod parse;
 mod schema;
 
-use crate::ingest::common::{CommentDurabilitySignal, comment_metadata_json};
+use crate::ingest::common::{CommentDurabilitySignal, comment_exists, comment_metadata_json};
 use parse::{drop_excluded_prs, imported_external_id};
 use schema::{DirectGraphResponse, GraphResponse, PrNode};
 
@@ -34,23 +34,9 @@ pub struct ImportOptions {
     pub include_open: bool,
 }
 
-pub struct ImportProgress {
-    /// PRs we've finished processing (regardless of whether they had content).
-    pub prs_fetched: usize,
-    /// PRs with at least one review comment or non-empty top-level review.
-    /// This is the number the progress bar divides by — a repo with mostly
-    /// empty PRs won't spam the user with `0 comments imported` lines.
-    pub prs_total: usize,
-    pub comments_imported: usize,
-    pub comments_skipped: usize,
-    /// PRs that were requested by number but not found / inaccessible (deleted,
-    /// private, or never existed). Only populated by the direct-PR query path.
-    pub prs_missing: usize,
-    /// Exact direct-PR numbers that GitHub returned as missing / inaccessible.
-    pub missing_pr_numbers: Vec<i32>,
-}
-
-pub type ProgressCallback = Box<dyn Fn(&ImportProgress) + Send>;
+// Progress counters live one level up so the GitLab importer can reuse them;
+// re-exported here so existing `ingest::github::ImportProgress` paths hold.
+pub use crate::ingest::{ImportProgress, ProgressCallback};
 
 const GRAPHQL_SEARCH_PAGE_SIZE: usize = 30;
 const GRAPHQL_MIN_SEARCH_PAGE_SIZE: usize = 5;
@@ -390,17 +376,6 @@ fn is_missing_direct_pr_error(message: &str) -> bool {
     lower.contains("could not resolve to a pullrequest")
         || lower.contains("could not resolve to pullrequest")
         || (lower.contains("pullrequest") && lower.contains("not found"))
-}
-
-/// Check whether a comment with the given `external_comment_id` already exists.
-async fn comment_exists(db: &SqlitePool, external_id: &str) -> crate::Result<bool> {
-    let count = sqlx::query_scalar!(
-        "SELECT COUNT(*) as \"n!: i64\" FROM review_comments WHERE external_comment_id = ?1",
-        external_id
-    )
-    .fetch_one(db)
-    .await?;
-    Ok(count > 0)
 }
 
 // Core import logic
