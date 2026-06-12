@@ -1255,6 +1255,7 @@ async fn attach_candidate_repo_scope(
 
 pub(super) async fn run_local_candidates(
     db: &SqlitePool,
+    source: &str,
     repo: &str,
     source_repo: &str,
     max_candidates: usize,
@@ -1267,7 +1268,7 @@ pub(super) async fn run_local_candidates(
     let items = match review_store::list_by_source_with_comments(
         db,
         review_store::ReviewSourceInput {
-            source: "github".into(),
+            source: source.into(),
         },
     )
     .await

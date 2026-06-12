@@ -1,6 +1,8 @@
 use difflore_core::ingest::github::{ImportOptions, ImportProgress};
+use difflore_core::ingest::provider::ReviewProvider;
 use sqlx::SqlitePool;
 
+use crate::cli::ImportProviderArg;
 use crate::runtime::CommandContext;
 use crate::style;
 use crate::support::util::{ensure_project, exit_err, project_path, validate_owner_repo};
@@ -8,12 +10,14 @@ use crate::support::util::{ensure_project, exit_err, project_path, validate_owne
 #[cfg(test)]
 mod fixtures;
 mod github;
+mod gitlab;
 mod local_candidates;
 mod scope;
 mod upload;
 
 pub(crate) use github::format_github_import_err;
 use github::verify_source_repo_access;
+use gitlab::{run_gitlab_import, verify_gitlab_project_access};
 use local_candidates::{
     LocalCandidateProgress, local_candidate_budget, print_local_candidate_next_steps,
     run_local_candidates,
@@ -25,6 +29,11 @@ use upload::run_upload;
 pub(crate) struct ImportArgs {
     pub repo: Option<String>,
     pub from_upstream: Option<String>,
+    /// Explicit `--provider` override; `None` → detect from the git remote.
+    pub provider: Option<ImportProviderArg>,
+    /// Explicit `--gitlab-host` for self-managed instances; implies the
+    /// gitlab provider.
+    pub gitlab_host: Option<String>,
     pub max_prs: usize,
     pub pr_numbers: Vec<i32>,
     /// PR numbers to exclude from import (parsed from `--exclude-prs`). Any PR
@@ -43,6 +52,8 @@ impl From<crate::cli::ImportReviewsCliArgs> for ImportArgs {
         Self {
             repo: args.repo,
             from_upstream: args.from_upstream,
+            provider: args.provider,
+            gitlab_host: args.gitlab_host,
             max_prs: args.max_prs,
             pr_numbers: args.pr_numbers,
             exclude_prs: args.exclude_prs,
@@ -63,6 +74,8 @@ pub(crate) struct ImportRunOutcome {
 struct ValidatedArgs {
     repo: Option<String>,
     from_upstream: Option<String>,
+    provider: Option<ImportProviderArg>,
+    gitlab_host: Option<String>,
     max_prs: usize,
     pr_numbers: Vec<i32>,
     /// PR numbers to exclude from import, deduped into a set. Any PR whose
@@ -76,10 +89,16 @@ struct ValidatedArgs {
     json: bool,
 }
 
+/// Provider-neutral argument validation. `--repo` / `--from-upstream` shape
+/// checks are deliberately NOT here: their grammar differs per provider
+/// (GitHub `owner/repo` vs GitLab nested namespace paths), so they run after
+/// provider resolution.
 fn validate_args(args: ImportArgs) -> ValidatedArgs {
     let ImportArgs {
         repo,
         from_upstream,
+        provider,
+        gitlab_host,
         max_prs,
         pr_numbers,
         exclude_prs,
@@ -113,22 +132,13 @@ fn validate_args(args: ImportArgs) -> ValidatedArgs {
     }
     let exclude_prs: std::collections::HashSet<i32> = exclude_prs.into_iter().collect();
 
-    if let Some(r) = repo.as_deref()
-        && let Err(msg) = validate_owner_repo(r)
-    {
-        exit_err(&format!("--repo '{r}' is invalid: {msg}"));
-    }
-    if let Some(r) = from_upstream.as_deref()
-        && let Err(msg) = validate_owner_repo(r)
-    {
-        exit_err(&format!("--from-upstream '{r}' is invalid: {msg}"));
-    }
-
     let local_candidates = !upload;
 
     ValidatedArgs {
         repo,
         from_upstream,
+        provider,
+        gitlab_host,
         max_prs,
         pr_numbers,
         exclude_prs,
@@ -138,6 +148,77 @@ fn validate_args(args: ImportArgs) -> ValidatedArgs {
         local_candidates,
         dry_run,
         json,
+    }
+}
+
+/// Which provider this run targets, after flags + remote detection settle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResolvedProvider {
+    Github,
+    Gitlab { host: String },
+}
+
+/// Resolve the review provider from explicit flags first, then the git
+/// remote. Detection is conservative (`ingest::provider`): github.com →
+/// GitHub, gitlab.com or a PAT-configured host → GitLab, any other host →
+/// error demanding an explicit `--provider` instead of guessing — a wrong
+/// guess would import review history from the wrong API surface.
+fn resolve_provider(
+    provider: Option<ImportProviderArg>,
+    gitlab_host: Option<&str>,
+    remote_url: Option<&str>,
+    configured_gitlab_hosts: &[String],
+) -> Result<ResolvedProvider, String> {
+    use difflore_core::ingest::gitlab::auth as gitlab_auth;
+    use difflore_core::ingest::provider as ingest_provider;
+
+    if let Some(host_input) = gitlab_host {
+        if provider == Some(ImportProviderArg::Github) {
+            return Err(
+                "--gitlab-host conflicts with --provider github; drop one of the two.".to_owned(),
+            );
+        }
+        let host = gitlab_auth::normalize_gitlab_host(host_input)?;
+        return Ok(ResolvedProvider::Gitlab { host });
+    }
+
+    match provider {
+        Some(ImportProviderArg::Github) => Ok(ResolvedProvider::Github),
+        Some(ImportProviderArg::Gitlab) => {
+            // Forced GitLab without --gitlab-host: adopt the remote's host
+            // when it plausibly is the instance, else default to gitlab.com.
+            let host = remote_url
+                .and_then(ingest_provider::remote_url_host)
+                .filter(|host| host != "github.com")
+                .unwrap_or_else(|| gitlab_auth::DEFAULT_GITLAB_HOST.to_owned());
+            Ok(ResolvedProvider::Gitlab { host })
+        }
+        None => {
+            // No remote (or a local-path remote): keep the long-standing
+            // GitHub default — that path already reports a clear "--repo
+            // required" error when nothing is detectable.
+            let Some(url) = remote_url else {
+                return Ok(ResolvedProvider::Github);
+            };
+            match ingest_provider::detect_provider_from_remote_url(url, configured_gitlab_hosts) {
+                Some(ReviewProvider::Github) => Ok(ResolvedProvider::Github),
+                Some(ReviewProvider::Gitlab) => {
+                    let host = ingest_provider::remote_url_host(url)
+                        .unwrap_or_else(|| gitlab_auth::DEFAULT_GITLAB_HOST.to_owned());
+                    Ok(ResolvedProvider::Gitlab { host })
+                }
+                None => ingest_provider::remote_url_host(url).map_or(
+                    Ok(ResolvedProvider::Github),
+                    |host| {
+                        Err(format!(
+                            "Could not infer the review provider for remote host '{host}'.\n  \
+                             Pass --provider github, or --provider gitlab --gitlab-host {host} for a self-managed GitLab.\n  \
+                             Tip: `difflore auth gitlab --host {host}` stores a PAT and makes detection automatic next time."
+                        ))
+                    },
+                ),
+            }
+        }
     }
 }
 
@@ -217,6 +298,7 @@ fn sorted_exclude_prs(exclude_prs: &std::collections::HashSet<i32>) -> Vec<i32> 
 fn dry_run_payload(v: &ValidatedArgs, local_repo: &str, source_repo: &str) -> serde_json::Value {
     serde_json::json!({
         "dryRun": true,
+        "provider": "github",
         "repo": local_repo,
         "sourceRepo": source_repo,
         "fromUpstream": v.from_upstream.as_deref(),
@@ -234,6 +316,110 @@ fn dry_run_payload(v: &ValidatedArgs, local_repo: &str, source_repo: &str) -> se
         "writes": false,
         "networkCalls": false,
     })
+}
+
+fn run_gitlab_dry_run(v: &ValidatedArgs, host: &str, gitlab_project: &str) {
+    if v.json {
+        println!(
+            "{}",
+            crate::support::util::json_or(&gitlab_dry_run_payload(v, host, gitlab_project), "{}")
+        );
+        return;
+    }
+    style::println_wrapped(&format!(
+        "{} Dry run | would import up to {} merged MRs from {host}/{gitlab_project}.",
+        style::ok(style::sym::TIP),
+        v.max_prs,
+    ));
+    if v.upload {
+        style::println_wrapped(
+            "  Would upload to cloud for extraction; `difflore cloud sync` then pulls rules down.",
+        );
+    }
+    if v.local_candidates {
+        style::println_wrapped(
+            "  Would draft local rule candidates from high-signal review comments; no cloud needed.",
+        );
+        println!(
+            "  Up to {} rule drafts would be created.",
+            local_candidate_budget(v)
+        );
+    }
+    println!(
+        "  {}",
+        style::pewter("(no DB writes, no network calls performed)")
+    );
+}
+
+fn gitlab_dry_run_payload(
+    v: &ValidatedArgs,
+    host: &str,
+    gitlab_project: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "dryRun": true,
+        "provider": "gitlab",
+        "gitlabHost": host,
+        "repo": gitlab_project,
+        "sourceRepo": gitlab_project,
+        "maxPrs": v.max_prs,
+        "prNumbers": v.pr_numbers,
+        "excludePrs": sorted_exclude_prs(&v.exclude_prs),
+        "upload": v.upload,
+        "localCandidates": v.local_candidates,
+        "localCandidateBudget": if v.local_candidates {
+            Some(local_candidate_budget(v))
+        } else {
+            None
+        },
+        "writes": false,
+        "networkCalls": false,
+    })
+}
+
+fn print_gitlab_import_plan(v: &ValidatedArgs, host: &str, gitlab_project: &str) {
+    if v.json {
+        return;
+    }
+    style::println_wrapped(&format!(
+        "{} Import plan: scan {} from {host}/{gitlab_project}.",
+        style::ok(style::sym::TIP),
+        if v.pr_numbers.is_empty() {
+            format!("up to {} merged MRs", v.max_prs)
+        } else {
+            format!(
+                "MR {}",
+                v.pr_numbers
+                    .iter()
+                    .map(|n| format!("!{n}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        },
+    ));
+    if !v.exclude_prs.is_empty() {
+        let excluded = sorted_exclude_prs(&v.exclude_prs)
+            .iter()
+            .map(|n| format!("!{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        style::println_wrapped(&format!(
+            "  {} excluding {} (contributes zero rules)",
+            style::pewter(style::sym::BULLET),
+            excluded,
+        ));
+    }
+    style::println_wrapped(&format!(
+        "  {} preview only: {}",
+        style::pewter(style::sym::BULLET),
+        style::cmd("difflore import-reviews --dry-run"),
+    ));
+    style::println_wrapped(&format!(
+        "  {} recovery: if GitLab throttles, retry with {} or {}.",
+        style::pewter(style::sym::BULLET),
+        style::cmd("--max-prs 20"),
+        style::cmd("--since YYYY-MM-DD"),
+    ));
 }
 
 fn print_import_plan(v: &ValidatedArgs, local_repo: &str, source_repo: &str) {
@@ -394,7 +580,11 @@ async fn run_import(
     Ok(result)
 }
 
+#[allow(clippy::too_many_arguments)]
+// reason: flat JSON-reporting glue; bundling into a struct would only move the field list.
 fn print_import_json(
+    provider: &str,
+    gitlab_host: Option<&str>,
     repo: &str,
     source_repo: &str,
     result: &ImportProgress,
@@ -402,6 +592,8 @@ fn print_import_json(
     uploaded_reviews: usize,
 ) {
     let payload = import_json_payload(
+        provider,
+        gitlab_host,
         repo,
         source_repo,
         result,
@@ -411,7 +603,11 @@ fn print_import_json(
     println!("{}", crate::support::util::json_or(&payload, "{}"));
 }
 
+#[allow(clippy::too_many_arguments)]
+// reason: flat JSON-reporting glue; bundling into a struct would only move the field list.
 fn import_json_payload(
+    provider: &str,
+    gitlab_host: Option<&str>,
     repo: &str,
     source_repo: &str,
     result: &ImportProgress,
@@ -419,6 +615,8 @@ fn import_json_payload(
     uploaded_reviews: usize,
 ) -> serde_json::Value {
     serde_json::json!({
+        "provider": provider,
+        "gitlabHost": gitlab_host,
         "repo": repo,
         "sourceRepo": source_repo,
         "prsFetched": result.prs_fetched,
@@ -454,11 +652,50 @@ pub(crate) async fn try_handle(
 ) -> Result<ImportRunOutcome, String> {
     let v = validate_args(args);
 
-    let db = &ctx.db;
     let pp = project_path();
-    let project = ensure_project(db, &pp).await;
+    let remote_url = difflore_core::ingest::provider::git_remote_origin_url(&pp);
+    // PAT-configured self-managed hosts only matter for auto-detection, so
+    // skip the auth-db read when an explicit flag already decides.
+    let configured_hosts = if v.provider.is_none() && v.gitlab_host.is_none() {
+        difflore_core::ingest::gitlab::auth::configured_hosts().await
+    } else {
+        Vec::new()
+    };
+    let provider = resolve_provider(
+        v.provider,
+        v.gitlab_host.as_deref(),
+        remote_url.as_deref(),
+        &configured_hosts,
+    )?;
 
-    let local_repo = resolve_local_repo(v.repo.clone(), v.from_upstream.as_deref(), &pp)?;
+    match provider {
+        ResolvedProvider::Github => try_handle_github(ctx, &pp, v).await,
+        ResolvedProvider::Gitlab { host } => {
+            try_handle_gitlab(ctx, &pp, remote_url.as_deref(), &host, v).await
+        }
+    }
+}
+
+async fn try_handle_github(
+    ctx: &CommandContext,
+    pp: &str,
+    v: ValidatedArgs,
+) -> Result<ImportRunOutcome, String> {
+    if let Some(r) = v.repo.as_deref()
+        && let Err(msg) = validate_owner_repo(r)
+    {
+        return Err(format!("--repo '{r}' is invalid: {msg}"));
+    }
+    if let Some(r) = v.from_upstream.as_deref()
+        && let Err(msg) = validate_owner_repo(r)
+    {
+        return Err(format!("--from-upstream '{r}' is invalid: {msg}"));
+    }
+
+    let db = &ctx.db;
+    let project = ensure_project(db, pp).await;
+
+    let local_repo = resolve_local_repo(v.repo.clone(), v.from_upstream.as_deref(), pp)?;
     let source_repo = v
         .from_upstream
         .clone()
@@ -495,6 +732,7 @@ pub(crate) async fn try_handle(
         let budget = local_candidate_budget(&v);
         let progress = run_local_candidates(
             db,
+            "github",
             &local_repo,
             &source_repo,
             budget,
@@ -511,13 +749,15 @@ pub(crate) async fn try_handle(
     };
 
     let uploaded_reviews = if v.upload {
-        run_upload(ctx, db, &local_repo, &import_result, v.json).await?
+        run_upload(ctx, db, "github", &local_repo, &import_result, v.json).await?
     } else {
         0
     };
 
     if v.json {
         print_import_json(
+            "github",
+            None,
             &local_repo,
             &source_repo,
             &import_result,
@@ -528,6 +768,140 @@ pub(crate) async fn try_handle(
     Ok(ImportRunOutcome {
         cloud_upload_queued: uploaded_reviews > 0,
     })
+}
+
+async fn try_handle_gitlab(
+    ctx: &CommandContext,
+    pp: &str,
+    remote_url: Option<&str>,
+    host: &str,
+    v: ValidatedArgs,
+) -> Result<ImportRunOutcome, String> {
+    // Flags whose semantics don't exist in the GitLab v1 importer fail loud
+    // instead of being silently ignored.
+    if v.from_upstream.is_some() {
+        return Err(
+            "--from-upstream is GitHub-only for now; GitLab imports read the project directly \
+             (pass --repo group/project)."
+                .to_owned(),
+        );
+    }
+    if v.include_open {
+        return Err(
+            "--include-open is not supported for GitLab yet; the GitLab importer reads merged \
+             MRs only."
+                .to_owned(),
+        );
+    }
+
+    let gitlab_project = resolve_gitlab_project_path(v.repo.clone(), remote_url, host)?;
+    difflore_core::ingest::provider::validate_gitlab_project_path(&gitlab_project)
+        .map_err(|msg| format!("--repo is invalid for GitLab: {msg}"))?;
+
+    if v.dry_run {
+        run_gitlab_dry_run(&v, host, &gitlab_project);
+        return Ok(ImportRunOutcome::default());
+    }
+
+    print_gitlab_import_plan(&v, host, &gitlab_project);
+
+    let Some((token, _source)) = difflore_core::ingest::gitlab::auth::resolve_token(host).await
+    else {
+        return Err(missing_gitlab_token_error(host));
+    };
+
+    verify_gitlab_project_access(host, &token, &gitlab_project).await?;
+
+    let db = &ctx.db;
+    let project = ensure_project(db, pp).await;
+    let opts = difflore_core::ingest::gitlab::ImportOptions {
+        host: host.to_owned(),
+        project_path: gitlab_project.clone(),
+        project_id: project.id,
+        token,
+        max_mrs: v.max_prs,
+        // `--pr` carries MR IIDs in the GitLab context (flag reuse by design).
+        mr_iids: v.pr_numbers.clone(),
+        exclude_mrs: v.exclude_prs.clone(),
+        since: v.since.clone(),
+    };
+
+    let import_result = run_gitlab_import(db, opts, v.upload, v.json).await?;
+
+    let local_candidate_progress = if v.local_candidates {
+        let budget = local_candidate_budget(&v);
+        let progress = run_local_candidates(
+            db,
+            "gitlab",
+            &gitlab_project,
+            &gitlab_project,
+            budget,
+            &v.pr_numbers,
+            &v.exclude_prs,
+        )
+        .await;
+        if !v.json {
+            print_local_candidate_next_steps(&progress);
+        }
+        Some(progress)
+    } else {
+        None
+    };
+
+    let uploaded_reviews = if v.upload {
+        run_upload(ctx, db, "gitlab", &gitlab_project, &import_result, v.json).await?
+    } else {
+        0
+    };
+
+    if v.json {
+        print_import_json(
+            "gitlab",
+            Some(host),
+            &gitlab_project,
+            &gitlab_project,
+            &import_result,
+            local_candidate_progress.as_ref(),
+            uploaded_reviews,
+        );
+    }
+    Ok(ImportRunOutcome {
+        cloud_upload_queued: uploaded_reviews > 0,
+    })
+}
+
+/// `--repo` wins; otherwise the namespace path comes from the git remote,
+/// but only when the remote actually points at the resolved host — silently
+/// importing `group/project` from the wrong instance would be worse than
+/// asking for the flag.
+fn resolve_gitlab_project_path(
+    repo: Option<String>,
+    remote_url: Option<&str>,
+    host: &str,
+) -> Result<String, String> {
+    if let Some(repo) = repo {
+        return Ok(repo);
+    }
+    remote_url
+        .and_then(difflore_core::ingest::provider::remote_url_host_and_path)
+        .filter(|(remote_host, _)| remote_host.eq_ignore_ascii_case(host))
+        .map(|(_, path)| path)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "Could not detect the GitLab project path from the git remote for {host}.\n  \
+                 Pass `--repo group/project` (subgroups allowed, e.g. group/subgroup/project)."
+            )
+        })
+}
+
+fn missing_gitlab_token_error(host: &str) -> String {
+    format!(
+        "No GitLab token found for {host}.\n  \
+         Store one first: echo \"<TOKEN>\" | difflore auth gitlab --host {host}\n  \
+         Or set DIFFLORE_GITLAB_TOKEN / GITLAB_TOKEN in this shell.\n  \
+         Mint a PAT with the read_api scope at https://{host}/-/user_settings/personal_access_tokens"
+    )
 }
 
 #[cfg(test)]
@@ -544,6 +918,7 @@ mod tests {
         seed_imported_review_comments_with_resolution, seed_pr_with_directive,
     };
     use super::github::{format_github_import_err, gh_repo_view_failure_detail};
+    use super::gitlab::format_gitlab_import_err;
     use super::local_candidates::{
         CAPTURE_CONFIDENCE_HIGH, CAPTURE_CONFIDENCE_LOW, CaptureRoute, candidate_title,
         clean_review_comment, distilled_rule_statement, is_high_signal_review_comment_for_paths,
@@ -703,6 +1078,223 @@ mod tests {
         assert_eq!(
             format_github_import_err("Import failed", "novel github error xyz"),
             "Import failed: novel github error xyz"
+        );
+    }
+
+    #[test]
+    fn format_gitlab_import_err_classifies_statuses_with_actionable_recovery() {
+        let host = "gitlab.corp.example";
+        // (raw, must-contain): one row per branch in format_gitlab_import_err.
+        let cases: &[(&str, &str)] = &[
+            (
+                "GitLab API error: HTTP 401 Unauthorized for GET /api/v4/projects/g%2Fp",
+                "read_api",
+            ),
+            (
+                "GitLab API error: HTTP 404 Not Found for GET /api/v4/projects/g%2Fp",
+                "404 — not 403",
+            ),
+            (
+                "GitLab API error: HTTP 403 Forbidden for GET /api/v4/projects/g%2Fp",
+                "IP allowlists",
+            ),
+            (
+                "GitLab API error: HTTP 429 Too Many Requests for GET /api/v4/projects/g%2Fp",
+                "--max-prs 20",
+            ),
+            (
+                "GitLab API error: HTTP 503 Service Unavailable for GET /api/v4/projects/g%2Fp",
+                "rerun the same command",
+            ),
+            (
+                "GitLab API request failed for GET /api/v4/projects/g%2Fp: invalid peer certificate",
+                "trusted at the OS level",
+            ),
+            (
+                "GitLab API request failed for GET /api/v4/projects/g%2Fp: operation timed out",
+                "VPN/proxy",
+            ),
+            (
+                "GitLab API request failed for GET /api/v4/projects/g%2Fp: dns error: failed to lookup address",
+                "--gitlab-host",
+            ),
+            // Windows connection reset, rendered through the reqwest source
+            // chain (observed live against an unreachable host).
+            (
+                "GitLab API request failed for GET /api/v4/projects/g%2Fp: error sending request for url (https://h/): client error (Connect): An existing connection was forcibly closed by the remote host. (os error 10054)",
+                "--gitlab-host",
+            ),
+        ];
+        for (raw, expect) in cases {
+            let out = format_gitlab_import_err("Import failed", host, raw);
+            assert!(
+                out.contains(expect),
+                "want {expect:?} for {raw:?}, got: {out}"
+            );
+            assert!(
+                out.contains(raw) && out.contains("raw:"),
+                "raw input {raw:?} not retained at tail in: {out}"
+            );
+        }
+
+        // Auth-shaped errors must point at the instance's PAT settings page.
+        let unauthorized = format_gitlab_import_err(
+            "Import failed",
+            host,
+            "GitLab API error: HTTP 401 Unauthorized for GET /api/v4/projects/g%2Fp",
+        );
+        assert!(unauthorized.contains(&format!(
+            "https://{host}/-/user_settings/personal_access_tokens"
+        )));
+        assert!(unauthorized.contains(&format!("difflore auth gitlab --host {host}")));
+
+        // The 404 path must explain the GitLab quirk (no-access private
+        // projects answer 404, not 403) so users check BOTH path and scope.
+        let missing = format_gitlab_import_err(
+            "Import failed",
+            host,
+            "GitLab API error: HTTP 404 Not Found for GET /api/v4/projects/g%2Fp",
+        );
+        assert!(missing.contains("wrong project path or a permission gap"));
+
+        // Unknown errors fall through to the generic core mapper, never
+        // silently swallowed.
+        assert_eq!(
+            format_gitlab_import_err("Import failed", host, "novel gitlab error xyz"),
+            "Import failed: novel gitlab error xyz"
+        );
+    }
+
+    #[test]
+    fn provider_resolution_prefers_flags_then_remote_then_errors_on_unknown_hosts() {
+        use super::{ImportProviderArg, ResolvedProvider, resolve_provider};
+
+        let gitlab = |host: &str| ResolvedProvider::Gitlab {
+            host: host.to_owned(),
+        };
+
+        // Explicit --gitlab-host wins and implies the gitlab provider.
+        assert_eq!(
+            resolve_provider(
+                None,
+                Some("GitLab.Corp.Example"),
+                Some("https://github.com/o/r.git"),
+                &[],
+            ),
+            Ok(gitlab("gitlab.corp.example"))
+        );
+        // ...but conflicts with an explicit github provider.
+        assert!(
+            resolve_provider(
+                Some(ImportProviderArg::Github),
+                Some("gitlab.corp.example"),
+                None,
+                &[],
+            )
+            .is_err()
+        );
+
+        // Explicit provider flags decide without a remote.
+        assert_eq!(
+            resolve_provider(Some(ImportProviderArg::Github), None, None, &[]),
+            Ok(ResolvedProvider::Github)
+        );
+        assert_eq!(
+            resolve_provider(Some(ImportProviderArg::Gitlab), None, None, &[]),
+            Ok(gitlab("gitlab.com"))
+        );
+        // Forced gitlab adopts a plausible remote host...
+        assert_eq!(
+            resolve_provider(
+                Some(ImportProviderArg::Gitlab),
+                None,
+                Some("git@gitlab.corp.example:group/project.git"),
+                &[],
+            ),
+            Ok(gitlab("gitlab.corp.example"))
+        );
+        // ...but never adopts github.com as a GitLab instance.
+        assert_eq!(
+            resolve_provider(
+                Some(ImportProviderArg::Gitlab),
+                None,
+                Some("https://github.com/o/r.git"),
+                &[],
+            ),
+            Ok(gitlab("gitlab.com"))
+        );
+
+        // Auto-detection: known hosts map to their provider.
+        assert_eq!(
+            resolve_provider(None, None, Some("git@github.com:o/r.git"), &[]),
+            Ok(ResolvedProvider::Github)
+        );
+        assert_eq!(
+            resolve_provider(None, None, Some("https://gitlab.com/g/p.git"), &[]),
+            Ok(gitlab("gitlab.com"))
+        );
+        // PAT-configured self-managed hosts detect automatically.
+        assert_eq!(
+            resolve_provider(
+                None,
+                None,
+                Some("https://gitlab.corp.example/g/p.git"),
+                &["gitlab.corp.example".to_owned()],
+            ),
+            Ok(gitlab("gitlab.corp.example"))
+        );
+
+        // Unknown host: refuse to guess, demand an explicit provider.
+        let err = resolve_provider(None, None, Some("https://gitea.corp.example/o/r.git"), &[])
+            .expect_err("unknown host must not be guessed");
+        assert!(err.contains("--provider gitlab --gitlab-host gitea.corp.example"));
+        assert!(err.contains("--provider github"));
+
+        // No remote / local-path remote: legacy GitHub default.
+        assert_eq!(
+            resolve_provider(None, None, None, &[]),
+            Ok(ResolvedProvider::Github)
+        );
+        assert_eq!(
+            resolve_provider(None, None, Some("/srv/git/repo.git"), &[]),
+            Ok(ResolvedProvider::Github)
+        );
+    }
+
+    #[test]
+    fn gitlab_project_path_comes_from_flag_or_matching_remote_only() {
+        use super::resolve_gitlab_project_path;
+
+        // --repo wins unconditionally.
+        assert_eq!(
+            resolve_gitlab_project_path(
+                Some("group/sub/project".to_owned()),
+                Some("https://elsewhere.example/x/y.git"),
+                "gitlab.com",
+            ),
+            Ok("group/sub/project".to_owned())
+        );
+        // Remote path is used when the remote host matches the instance.
+        assert_eq!(
+            resolve_gitlab_project_path(
+                None,
+                Some("git@gitlab.com:group/sub/project.git"),
+                "gitlab.com",
+            ),
+            Ok("group/sub/project".to_owned())
+        );
+        // Host mismatch → require the flag instead of importing from the
+        // wrong instance.
+        let err = resolve_gitlab_project_path(
+            None,
+            Some("git@gitlab.com:group/project.git"),
+            "gitlab.corp.example",
+        )
+        .expect_err("mismatched remote host must not leak a project path");
+        assert!(err.contains("--repo group/project"));
+        assert!(
+            resolve_gitlab_project_path(None, None, "gitlab.com").is_err(),
+            "no remote and no flag must error"
         );
     }
 
@@ -1683,9 +2275,16 @@ We should validate the header before parsing because malformed requests panic.\n
         )
         .await;
 
-        let progress =
-            run_local_candidates(&db, "acme/widgets", "acme/widgets", 2, &[], &HashSet::new())
-                .await;
+        let progress = run_local_candidates(
+            &db,
+            "github",
+            "acme/widgets",
+            "acme/widgets",
+            2,
+            &[],
+            &HashSet::new(),
+        )
+        .await;
 
         assert_eq!(progress.candidates_created, 2);
         // Seeded comments are resolved threads, so the gate auto-activates
@@ -1728,9 +2327,16 @@ We should validate the header before parsing because malformed requests panic.\n
         )
         .await;
 
-        let progress =
-            run_local_candidates(&db, "acme/widgets", "acme/widgets", 5, &[], &HashSet::new())
-                .await;
+        let progress = run_local_candidates(
+            &db,
+            "github",
+            "acme/widgets",
+            "acme/widgets",
+            5,
+            &[],
+            &HashSet::new(),
+        )
+        .await;
 
         assert_eq!(progress.candidates_created, 1);
         assert_eq!(progress.candidates_activated, 0);
@@ -1766,6 +2372,8 @@ We should validate the header before parsing because malformed requests panic.\n
         let args = validate_args(ImportArgs {
             repo: Some("acme/fork".to_owned()),
             from_upstream: Some("acme/upstream".to_owned()),
+            provider: None,
+            gitlab_host: None,
             max_prs: 2,
             pr_numbers: vec![7, 8],
             exclude_prs: vec![9, 9, 10],
@@ -1779,6 +2387,7 @@ We should validate the header before parsing because malformed requests panic.\n
         let payload = dry_run_payload(&args, "acme/fork", "acme/upstream");
 
         assert_eq!(payload["dryRun"], true);
+        assert_eq!(payload["provider"], "github");
         assert_eq!(payload["repo"], "acme/fork");
         assert_eq!(payload["sourceRepo"], "acme/upstream");
         assert_eq!(payload["fromUpstream"], "acme/upstream");
@@ -1804,8 +2413,18 @@ We should validate the header before parsing because malformed requests panic.\n
             prs_missing: 2,
             missing_pr_numbers: vec![404, 405],
         };
-        let payload = import_json_payload("acme/fork", "acme/upstream", &progress, None, 7);
+        let payload = import_json_payload(
+            "github",
+            None,
+            "acme/fork",
+            "acme/upstream",
+            &progress,
+            None,
+            7,
+        );
 
+        assert_eq!(payload["provider"], "github");
+        assert!(payload["gitlabHost"].is_null());
         assert_eq!(payload["repo"], "acme/fork");
         assert_eq!(payload["sourceRepo"], "acme/upstream");
         assert_eq!(payload["prsFetched"], 1);
@@ -1816,10 +2435,38 @@ We should validate the header before parsing because malformed requests panic.\n
         assert_eq!(payload["cloudUploadQueued"], true);
     }
 
+    #[test]
+    fn import_json_payload_names_the_gitlab_provider_and_host() {
+        let progress = ImportProgress {
+            prs_total: 1,
+            prs_fetched: 1,
+            comments_imported: 4,
+            comments_skipped: 0,
+            prs_missing: 0,
+            missing_pr_numbers: Vec::new(),
+        };
+        let payload = import_json_payload(
+            "gitlab",
+            Some("gitlab.corp.example"),
+            "group/sub/project",
+            "group/sub/project",
+            &progress,
+            None,
+            0,
+        );
+
+        assert_eq!(payload["provider"], "gitlab");
+        assert_eq!(payload["gitlabHost"], "gitlab.corp.example");
+        assert_eq!(payload["repo"], "group/sub/project");
+        assert_eq!(payload["cloudUploadQueued"], false);
+    }
+
     fn import_args_with_budget(max_prs: usize) -> ImportArgs {
         ImportArgs {
             repo: None,
             from_upstream: None,
+            provider: None,
+            gitlab_host: None,
             max_prs,
             pr_numbers: Vec::new(),
             exclude_prs: Vec::new(),
@@ -1856,8 +2503,16 @@ We should validate the header before parsing because malformed requests panic.\n
         .await;
 
         let exclude: HashSet<i32> = std::iter::once(8).collect();
-        let progress =
-            run_local_candidates(&db, "acme/widgets", "acme/widgets", 25, &[], &exclude).await;
+        let progress = run_local_candidates(
+            &db,
+            "github",
+            "acme/widgets",
+            "acme/widgets",
+            25,
+            &[],
+            &exclude,
+        )
+        .await;
 
         // Only PR #7's directive survives — PR #8 produced no candidate.
         assert_eq!(
@@ -1905,6 +2560,7 @@ We should validate the header before parsing because malformed requests panic.\n
 
         let progress = run_local_candidates(
             &db,
+            "github",
             "acme/widgets",
             "acme/widgets",
             25,

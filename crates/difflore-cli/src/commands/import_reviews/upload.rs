@@ -148,9 +148,14 @@ pub(super) fn print_next_steps(uploaded_reviews: usize) {
     }
 }
 
+/// Upload imported reviews for `repo` (filtered to the given import
+/// `source`: "github" or "gitlab"). The payload shape is provider-neutral —
+/// GitLab items carry their bare namespace path as `repo_full_name` and
+/// their `gl:`-prefixed external ids never leave the local dedupe table.
 pub(super) async fn run_upload(
     ctx: &CommandContext,
     db: &SqlitePool,
+    source: &str,
     repo: &str,
     import_result: &ImportProgress,
     json: bool,
@@ -164,7 +169,7 @@ pub(super) async fn run_upload(
     let items = match review_store::list_by_source_with_comments(
         db,
         review_store::ReviewSourceInput {
-            source: "github".into(),
+            source: source.into(),
         },
     )
     .await

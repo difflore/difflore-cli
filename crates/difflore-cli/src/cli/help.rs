@@ -53,7 +53,7 @@ USAGE
   auth                Store provider tokens (GitLab PAT) for review import
   providers           Choose the local AI backend for fixes
   embeddings          Optional semantic search for better recall
-  import-reviews      Draft local rules from past GitHub PR reviews
+  import-reviews      Draft local rules from past reviews (GitHub PRs, GitLab MRs)
   drafts              Review and approve pending memory drafts
 
 {use_}

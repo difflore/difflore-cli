@@ -163,7 +163,13 @@ impl GitlabClient {
             let response = match result {
                 Ok(response) => response,
                 Err(e) => {
-                    let message = format!("GitLab API request failed for GET {url_path}: {e}");
+                    // Render the full source chain: reqwest's `Display` alone
+                    // is "error sending request for url (...)", hiding the
+                    // dns/tls/connect classification the CLI mapper keys on.
+                    let message = format!(
+                        "GitLab API request failed for GET {url_path}: {}",
+                        crate::error::error_chain_text(&e)
+                    );
                     // Timeouts are the one transport failure worth retrying;
                     // TLS/DNS/connect errors won't fix themselves in 40s and
                     // the CLI maps them to actionable recovery text instead.

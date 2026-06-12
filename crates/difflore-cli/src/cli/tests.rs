@@ -589,10 +589,15 @@ fn import_reviews_help_promotes_cli_only_value_path() {
         .expect("import-reviews command should exist");
     let help = import_reviews.render_long_help().to_string();
 
-    assert!(help.contains("past GitHub PR review comments"));
+    assert!(help.contains("past GitHub PR or GitLab MR review comments"));
     assert!(help.contains("--dry-run"));
     assert!(help.contains("difflore recall --diff"));
     assert!(help.contains("--upload"));
+    // GitLab surface: provider flags exist and `--pr` explains its MR-IID
+    // meaning so the flag reuse is discoverable from --help alone.
+    assert!(help.contains("--provider"));
+    assert!(help.contains("--gitlab-host"));
+    assert!(help.contains("MR IID"));
     assert!(!help.contains("difflore candidates"));
     assert!(!help.contains("--local-candidates"));
     assert!(!help.contains("--max-candidates"));

@@ -577,6 +577,10 @@ async fn step3_import(state: &mut WizardState) -> StepFlow {
         crate::commands::import_reviews::ImportArgs {
             repo: None,
             from_upstream: None,
+            // Onboarding leaves provider detection to the import command:
+            // github.com/gitlab.com (or a PAT-configured host) auto-detect.
+            provider: None,
+            gitlab_host: None,
             max_prs,
             pr_numbers: Vec::new(),
             exclude_prs: Vec::new(),

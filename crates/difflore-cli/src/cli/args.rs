@@ -105,22 +105,41 @@ pub(crate) struct SyncCliArgs {
     pub(crate) json: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ImportProviderArg {
+    /// Import PR review history via the GitHub CLI (`gh`).
+    Github,
+    /// Import MR discussions via the GitLab REST API (PAT from `difflore auth gitlab`).
+    Gitlab,
+}
+
 #[derive(Args)]
 pub(crate) struct ImportReviewsCliArgs {
-    /// GitHub repository (owner/repo). Auto-detected from git remote if omitted.
+    /// Repository: GitHub `owner/repo` or GitLab project path
+    /// (`group/project`, subgroups allowed). Auto-detected from git remote if omitted.
     #[arg(long)]
     pub(crate) repo: Option<String>,
 
     /// Pull review history from an upstream repo (e.g. `cli/cli`) and attach
-    /// the imported memory to the local repo. Useful when working from a fork.
+    /// the imported memory to the local repo. Useful when working from a fork. GitHub only.
     #[arg(long, value_name = "OWNER/REPO")]
     pub(crate) from_upstream: Option<String>,
 
-    /// Maximum number of PRs to import.
+    /// Review provider. Auto-detected from the git remote (github.com,
+    /// gitlab.com, or a host stored via `difflore auth gitlab --host`).
+    #[arg(long, value_enum, value_name = "PROVIDER")]
+    pub(crate) provider: Option<ImportProviderArg>,
+
+    /// Self-managed GitLab host (e.g. gitlab.corp.example). Implies `--provider gitlab`.
+    #[arg(long, value_name = "HOST")]
+    pub(crate) gitlab_host: Option<String>,
+
+    /// Maximum number of PRs (GitLab: MRs) to import.
     #[arg(long, default_value_t = 50)]
     pub(crate) max_prs: usize,
 
-    /// Import one specific PR number regardless of merged/open state. Repeat for multiple PRs.
+    /// Import one specific PR number (GitLab: MR IID, the `!N` number) regardless
+    /// of merged/open state. Repeat for multiple PRs.
     #[arg(long = "pr", value_name = "NUMBER")]
     pub(crate) pr_numbers: Vec<i32>,
 

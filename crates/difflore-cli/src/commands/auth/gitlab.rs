@@ -202,7 +202,9 @@ fn check_status_error(host: &str, status: reqwest::StatusCode) -> String {
 }
 
 fn network_error_message(host: &str, e: &reqwest::Error) -> String {
-    let detail = e.to_string();
+    // Source chain included: reqwest's `Display` alone hides the
+    // certificate/dns/connect classification this mapper keys on.
+    let detail = difflore_core::error::error_chain_text(e);
     let lower = detail.to_ascii_lowercase();
     if e.is_timeout() {
         return format!(

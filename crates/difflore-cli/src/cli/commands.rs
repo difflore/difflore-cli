@@ -50,10 +50,12 @@ Nothing leaves your laptop and nothing is written to disk."
         lane: StatusLane,
     },
 
-    /// Import past GitHub PR review comments as source-backed rule evidence.
+    /// Import past PR/MR review comments (GitHub, GitLab) as source-backed rule evidence.
     #[command(
         next_line_help = false,
-        long_about = "Import past GitHub PR review comments into local source-backed rules. \
+        long_about = "Import past GitHub PR or GitLab MR review comments into local source-backed rules. \
+The provider is auto-detected from the git remote; self-managed GitLab needs `--provider gitlab --gitlab-host <HOST>` once \
+(or a PAT stored via `difflore auth gitlab --host <HOST>`, which makes detection automatic). \
 Use `--dry-run` to preview first, then run `difflore recall --diff` to see which rules agents will receive."
     )]
     ImportReviews(ImportReviewsCliArgs),
