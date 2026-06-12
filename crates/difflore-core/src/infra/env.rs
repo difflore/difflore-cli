@@ -70,6 +70,10 @@ pub const DIFFLORE_DISABLE_RULES: &str = "DIFFLORE_DISABLE_RULES";
 /// hook + `search_rules`), restoring the pre-arbitration ordering. The
 /// `why` ranking facts remain available either way.
 pub const DIFFLORE_DISABLE_SOURCE_PRIORITY: &str = "DIFFLORE_DISABLE_SOURCE_PRIORITY";
+/// Switch for the hook post-edit intent-alignment gate (C6 misapply
+/// unification): `0`/`off`/`false`/`disabled` disables, any other non-empty
+/// value enables, unset falls back to [`DEFAULT_HOOK_INTENT_GATE`].
+pub const DIFFLORE_HOOK_INTENT_GATE: &str = "DIFFLORE_HOOK_INTENT_GATE";
 /// Probability (0.0–0.10) that an MCP recall serve with caller-requested
 /// `top_k == 5` is transparently bumped to `top_k = 8` so we accrue data on
 /// whether rules at ranks 6–8 ever get accepted.
@@ -296,6 +300,46 @@ pub fn source_priority_disabled() -> bool {
     truthy(DIFFLORE_DISABLE_SOURCE_PRIORITY)
 }
 
+/// Default for the hook post-edit intent-alignment gate when
+/// [`DIFFLORE_HOOK_INTENT_GATE`] is unset.
+///
+/// Default ON: the workspace regression run (hook serve-proof tests +
+/// `difflore eval` self-recall, which goes through the untouched
+/// `retrieve_rules_for_search` path) showed no regression with the gate
+/// applied to the post-edit hook lane, and the gate-on hook tests pin the
+/// no-empty-injection behaviour for aligned post-edit serves.
+///
+/// External-messaging note (C6): with the gate ON, the misapply guard can be
+/// described as covering BOTH recall surfaces — explicit `search_rules` /
+/// `recall` queries AND unsolicited post-edit hook injection. If this default
+/// is ever flipped OFF, the claim must be split per surface again: "intent
+/// alignment on explicit recall; hook injection guarded by file patterns +
+/// score floors only".
+pub const DEFAULT_HOOK_INTENT_GATE: bool = true;
+
+/// Pure parse of a raw [`DIFFLORE_HOOK_INTENT_GATE`] value:
+/// `0`/`off`/`false`/`disabled` disables, any other non-empty value enables,
+/// unset/empty falls back to [`DEFAULT_HOOK_INTENT_GATE`]. Split from the env
+/// read so the off-switch grammar is unit-testable without process-global
+/// env mutation.
+#[must_use]
+pub fn parse_hook_intent_gate(raw: Option<&str>) -> bool {
+    match raw.map(str::trim) {
+        Some(v) if !v.is_empty() => {
+            let v = v.to_ascii_lowercase();
+            !matches!(v.as_str(), "0" | "off" | "false" | "disabled" | "disable")
+        }
+        _ => DEFAULT_HOOK_INTENT_GATE,
+    }
+}
+
+/// Resolve [`DIFFLORE_HOOK_INTENT_GATE`]. Read on every call (no cache) so
+/// warm hook daemons pick up changes without a restart.
+#[must_use]
+pub fn hook_intent_gate_enabled() -> bool {
+    parse_hook_intent_gate(var(DIFFLORE_HOOK_INTENT_GATE).as_deref())
+}
+
 #[must_use]
 pub fn master_key_hex() -> Option<String> {
     var(DIFFLORE_MASTER_KEY)
@@ -376,6 +420,28 @@ mod tests {
             HookShortCircuitMode::parse("yolo"),
             HookShortCircuitMode::Auto
         );
+    }
+
+    #[test]
+    fn parse_hook_intent_gate_honours_off_grammar_and_default() {
+        // Explicit off spellings.
+        for off in ["0", "off", "OFF", "false", "disabled", "disable", " off "] {
+            assert!(
+                !parse_hook_intent_gate(Some(off)),
+                "{off:?} must disable the hook intent gate"
+            );
+        }
+        // Any other non-empty value enables.
+        for on in ["1", "on", "true", "yes", "anything"] {
+            assert!(
+                parse_hook_intent_gate(Some(on)),
+                "{on:?} must enable the hook intent gate"
+            );
+        }
+        // Unset / empty fall back to the shipped default.
+        assert_eq!(parse_hook_intent_gate(None), DEFAULT_HOOK_INTENT_GATE);
+        assert_eq!(parse_hook_intent_gate(Some("")), DEFAULT_HOOK_INTENT_GATE);
+        assert_eq!(parse_hook_intent_gate(Some("  ")), DEFAULT_HOOK_INTENT_GATE);
     }
 
     #[test]

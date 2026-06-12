@@ -265,6 +265,22 @@ async fn fetch_relevant_rules_for_hook_inner(
         &strict_skill_ids,
     );
 
+    // C6 misapply unification: run the same intent-alignment gate the explicit
+    // `search_rules` path applies, on the post-edit lane only (pre-read and
+    // bash-error keep their narrower copy/recall semantics). The post-edit
+    // intent carries the diff excerpt, so the gate aligns rule directives
+    // against the actual change. Behind `DIFFLORE_HOOK_INTENT_GATE`
+    // (default: see `env::DEFAULT_HOOK_INTENT_GATE`).
+    //
+    // External-messaging note: gate ON ⇒ "misapply guard covers explicit
+    // recall AND hook injection"; gate OFF ⇒ the claim must be split per
+    // surface ("intent alignment on explicit recall; hook injection guarded
+    // by file patterns + score floors only"). Keep README/cli-spec wording in
+    // sync with the shipped default.
+    if is_post_edit_path && crate::infra::env::hook_intent_gate_enabled() {
+        crate::context::retrieval::apply_intent_alignment_gate(&mut scored, intent);
+    }
+
     // Deterministic serve arbitration (strict hit → 10% score band → source
     // priority → confidence → skill_id), reusing the metadata batch fetched
     // above — zero additional queries. `DIFFLORE_DISABLE_SOURCE_PRIORITY`

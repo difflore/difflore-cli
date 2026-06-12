@@ -938,6 +938,103 @@ async fn hook_injection_renders_why_segment_on_header() {
 }
 
 #[tokio::test]
+async fn hook_post_edit_gate_keeps_on_subject_and_drops_adjacent_rule() {
+    // C6 misapply unification, end to end on the hook path with the shipped
+    // default (intent gate ON):
+    //   * the on-subject rule survives the intent-alignment gate — no
+    //     injection-empty-rate regression for aligned post-edit serves;
+    //   * the topically-adjacent wrong-subject rule is dropped.
+    let state = build_state().await;
+    let on_subject = remember_rule_with_patterns(
+        &state,
+        "Return false rather than panic on invalid input",
+        "When binding user input fails validation, return false so callers can surface a 4xx.",
+        &["**/*.go"],
+    )
+    .await;
+    scope_rule_to_current_git_repo(&state, &on_subject).await;
+    let adjacent = remember_rule_with_patterns(
+        &state,
+        "Panic messages should describe the violated invariant",
+        "Write panic messages that name the violated invariant and the offending value.",
+        &["**/*.go"],
+    )
+    .await;
+    scope_rule_to_current_git_repo(&state, &adjacent).await;
+
+    let ctx = fetch_relevant_rules_for_hook(
+        &state.db,
+        state.index_pool.as_ref().expect("index pool"),
+        "binding/form.go",
+        "post-edit\nreturn false instead of panic on invalid input",
+        Some("hook-session"),
+    )
+    .await
+    .expect("hook recall");
+
+    assert!(
+        ctx.rule_ids.contains(&on_subject),
+        "the intent-aligned rule must survive the post-edit gate, got {:?}",
+        ctx.rule_ids
+    );
+    assert!(
+        !ctx.rule_ids.contains(&adjacent),
+        "the wrong-subject rule must be dropped by the post-edit gate, got {:?}",
+        ctx.rule_ids
+    );
+    assert!(
+        ctx.rules_injected >= 1,
+        "gate must not empty an aligned post-edit injection"
+    );
+}
+
+#[tokio::test]
+async fn hook_intent_gate_applies_to_post_edit_but_not_bash_error_path() {
+    // The C6 gate is post-edit only: bash-error recall keeps its own
+    // copy/recall semantics (cli-spec misapply guard is described per face).
+    let state = build_state().await;
+    let adjacent = remember_rule_with_patterns(
+        &state,
+        "Panic messages should describe the violated invariant",
+        "Write panic messages that name the violated invariant and the offending value.",
+        &["**/*.go"],
+    )
+    .await;
+    scope_rule_to_current_git_repo(&state, &adjacent).await;
+    let index_pool = state.index_pool.as_ref().expect("index pool");
+
+    let post_edit = fetch_relevant_rules_for_hook(
+        &state.db,
+        index_pool,
+        "binding/form.go",
+        "post-edit\nreturn false instead of panic on invalid input",
+        Some("hook-session"),
+    )
+    .await
+    .expect("post-edit recall");
+    assert!(
+        !post_edit.rule_ids.contains(&adjacent),
+        "post-edit gate must drop the wrong-subject rule, got {:?}",
+        post_edit.rule_ids
+    );
+
+    let bash_error = fetch_relevant_rules_for_bash_error(
+        &state.db,
+        index_pool,
+        "binding/form.go",
+        "bash-error command=go test error=return false instead of panic on invalid input",
+        Some("hook-session"),
+    )
+    .await
+    .expect("bash-error recall");
+    assert!(
+        bash_error.rule_ids.contains(&adjacent),
+        "bash-error recall is exempt from the post-edit intent gate, got {:?}",
+        bash_error.rule_ids
+    );
+}
+
+#[tokio::test]
 async fn search_rules_results_carry_compact_why_ranking() {
     let state = build_state().await;
     let rule_id = remember_rule_with_patterns(
