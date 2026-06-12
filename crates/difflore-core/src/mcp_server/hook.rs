@@ -164,12 +164,16 @@ async fn fetch_relevant_rules_for_hook_inner(
     };
 
     // Short-circuit empty-prone post-edit extensions before the index
-    // round-trip; pre-read stays on the full path.
+    // round-trip. Two lanes reach this function: post-edit and bash-error.
+    // (The retired "pre-read" intent has no remaining producer: the CLI
+    // dispatcher noops PreToolUse(Read) before any retrieval call, and the
+    // hook-forward IPC ships raw events — never intent strings — behind a
+    // version-pinned socket, so an old shim cannot inject one either.)
     let ext_key = super::hook_short_circuit::extension_key(file);
     let short_circuit_mode = crate::infra::env::hook_short_circuit_mode();
     let short_circuit_cache = super::hook_short_circuit::global_cache();
     let is_bash_error_path = intent == "bash-error" || intent.starts_with("bash-error ");
-    let is_post_edit_path = intent != "pre-read" && !is_bash_error_path;
+    let is_post_edit_path = !is_bash_error_path;
     let short_circuit_now = is_post_edit_path
         && !ext_key.is_empty()
         && match short_circuit_mode {
@@ -266,8 +270,8 @@ async fn fetch_relevant_rules_for_hook_inner(
     );
 
     // C6 misapply unification: run the same intent-alignment gate the explicit
-    // `search_rules` path applies, on the post-edit lane only (pre-read and
-    // bash-error keep their narrower copy/recall semantics). The post-edit
+    // `search_rules` path applies, on the post-edit lane only (bash-error
+    // keeps its narrower copy/recall semantics). The post-edit
     // intent carries the diff excerpt, so the gate aligns rule directives
     // against the actual change. Behind `DIFFLORE_HOOK_INTENT_GATE`
     // (default: see `env::DEFAULT_HOOK_INTENT_GATE`).
@@ -321,9 +325,7 @@ async fn fetch_relevant_rules_for_hook_inner(
         mark("cross_repo_starter");
     }
 
-    let (hook_label, hook_tool) = if intent == "pre-read" {
-        ("pre-read", "hook_pre_read")
-    } else if is_bash_error_path {
+    let (hook_label, hook_tool) = if is_bash_error_path {
         ("bash-error", "hook_bash_error")
     } else {
         ("post-edit", "hook_post_edit")
