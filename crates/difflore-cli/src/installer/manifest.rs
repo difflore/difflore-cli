@@ -26,8 +26,8 @@ use super::{
     common::{MCP_SERVER_ARG, difflore_mcp_record_path},
     goose_yaml::{extract_goose_block, render_goose_block},
     hooks_install::{
-        extract_hook_groups_on_disk, render_claude_code_hook_block, render_cursor_hook_block,
-        render_gemini_cli_hook_block, render_windsurf_hook_block,
+        extract_hook_groups_on_disk, legacy_claude_code_hook_blocks, render_claude_code_hook_block,
+        render_cursor_hook_block, render_gemini_cli_hook_block, render_windsurf_hook_block,
     },
     json_config::{extract_mcp_json_block, render_mcp_json_block},
     registry::{self, AgentSpec, BlockKind, HookSurface},
@@ -160,6 +160,24 @@ pub(super) fn on_disk_block_hash(spec: &AgentSpec, _cli_bin: &str) -> Option<Str
         }
         BlockKind::ExternalCli => None,
     }
+}
+
+/// Update-time recognition aid: the hashes of every *historical* render of
+/// `spec`'s block (excluding the current one), canonicalised identically to
+/// [`render_block_hash`]. `agents update` treats an on-disk block matching one
+/// of these as DiffLore-authored — pristine, just old — and upgrades it instead
+/// of skipping it as locally edited. Empty for surfaces whose rendered shape
+/// never changed.
+pub(super) fn legacy_render_hashes(spec: &AgentSpec, cli_bin: &str) -> Vec<String> {
+    if registry::block_kind_of(spec) == BlockKind::HooksJson
+        && matches!(registry::hook_surface_of(spec), Some(HookSurface::Claude))
+    {
+        return legacy_claude_code_hook_blocks(cli_bin)
+            .iter()
+            .map(|groups| hash_block(&hook_groups_bytes(groups)))
+            .collect();
+    }
+    Vec::new()
 }
 
 /// The render fn for each hook surface. Kept here so the manifest, not the
@@ -394,7 +412,9 @@ mod tests {
     use std::fs;
 
     use super::super::goose_yaml::merge_goose_yaml_config;
-    use super::super::hooks_install::merge_cursor_hooks;
+    use super::super::hooks_install::{
+        hook_command_string, merge_claude_code_hooks, merge_cursor_hooks,
+    };
     use super::super::json_config::install_json_config_at;
     use super::super::registry::find_spec;
     use super::*;
@@ -500,6 +520,106 @@ mod tests {
             "freshly-installed cursor hooks must re-hash to the render hash, \
              independent of the file's event-iteration order"
         );
+    }
+
+    #[test]
+    fn claude_hooks_block_round_trips_render_and_merge() {
+        // Guard-rail for the render↔merge lockstep: when the two matcher
+        // tables drift (as they once did over `|Bash` on PostToolUse), a
+        // freshly-merged block no longer re-hashes to the render hash and
+        // `agents update` wrongly classifies every pristine install as
+        // locally edited.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let path = tmp.path().join("settings.json");
+        merge_claude_code_hooks(&path, MCP_BIN).expect("install");
+
+        let render_hash = hash_block(&hook_groups_bytes(&render_claude_code_hook_block(MCP_BIN)));
+        let groups = extract_hook_groups_on_disk(&path, "claude-code");
+        assert!(!groups.is_empty(), "extracted difflore hook groups");
+        assert_eq!(
+            hash_block(&hook_groups_bytes(&groups)),
+            render_hash,
+            "merge_claude_code_hooks and render_claude_code_hook_block drifted \
+             — they must share one event/matcher table"
+        );
+    }
+
+    /// Seed `path` with the exact hook groups an old-era merge wrote:
+    /// PreToolUse(Read) still registered and `post_matcher` on PostToolUse.
+    fn seed_legacy_claude_settings(path: &std::path::Path, post_matcher: &str) {
+        let command = hook_command_string(MCP_BIN, "claude-code");
+        let group = |matcher: Option<&str>, timeout: u32| {
+            let mut g = serde_json::Map::new();
+            if let Some(m) = matcher {
+                g.insert("matcher".to_owned(), Value::from(m));
+            }
+            g.insert(
+                "hooks".to_owned(),
+                serde_json::json!([{"type": "command", "command": command, "timeout": timeout}]),
+            );
+            Value::Array(vec![Value::Object(g)])
+        };
+        let seed = serde_json::json!({
+            "hooks": {
+                "PreToolUse": group(Some("Read"), 2000),
+                "PostToolUse": group(Some(post_matcher), 5000),
+                "SessionStart": group(Some("startup|clear|compact"), 10000),
+                "UserPromptSubmit": group(None, 5000),
+                "Stop": group(None, 10000),
+                "SessionEnd": group(None, 10000),
+            }
+        });
+        fs::write(
+            path,
+            serde_json::to_string_pretty(&seed).expect("serialise seed"),
+        )
+        .expect("seed");
+    }
+
+    #[test]
+    fn legacy_claude_hook_installs_hash_to_known_legacy_renders() {
+        // Both historical shapes — the initial release (no `Bash`) and the
+        // interim one (with `Bash`, PreToolUse still registered) — must be
+        // recognised via `legacy_render_hashes` so `agents update` upgrades
+        // them instead of skipping them as locally edited. Neither may be
+        // mistaken for the current standard render.
+        let hook_spec = spec("Claude Code hooks");
+        let legacy = legacy_render_hashes(hook_spec, MCP_BIN);
+        let standard = render_block_hash(hook_spec, MCP_BIN, MCP_BIN).expect("standard hash");
+
+        let mut seen = Vec::new();
+        for post_matcher in ["Edit|MultiEdit|Write", "Edit|MultiEdit|Write|Bash"] {
+            let tmp = tempfile::TempDir::new().expect("tempdir");
+            let path = tmp.path().join("settings.json");
+            seed_legacy_claude_settings(&path, post_matcher);
+
+            let on_disk = extract_hook_groups_on_disk(&path, "claude-code");
+            assert_eq!(on_disk.len(), 6, "all six old-era groups extracted");
+            let on_disk_hash = hash_block(&hook_groups_bytes(&on_disk));
+            assert!(
+                legacy.contains(&on_disk_hash),
+                "old install ({post_matcher}) must hash to a known legacy render: \
+                 {on_disk_hash} not in {legacy:?}"
+            );
+            assert_ne!(
+                on_disk_hash, standard,
+                "legacy shape must not collide with the current standard render"
+            );
+            seen.push(on_disk_hash);
+        }
+        assert_ne!(seen[0], seen[1], "the two legacy eras hash differently");
+    }
+
+    #[test]
+    fn legacy_render_hashes_only_cover_the_claude_hook_surface() {
+        // Other surfaces never changed shape; their legacy list must be empty
+        // so the recognition path cannot mis-adopt anything there.
+        for name in ["Cursor hooks", "Cursor", "Goose"] {
+            assert!(
+                legacy_render_hashes(spec(name), MCP_BIN).is_empty(),
+                "{name} should have no legacy renders"
+            );
+        }
     }
 
     #[test]

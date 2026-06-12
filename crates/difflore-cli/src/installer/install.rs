@@ -408,8 +408,10 @@ pub(super) enum UpdateAction {
 
 /// Decide the action for one target from the facts: the recorded hash (`None`
 /// for v1 records / external-cli), the recorded version, the current in-binary
-/// version, the *on-disk* hash (`None` = gone), and the *standard render* hash
-/// (what the current writer would produce; used for v1 adoption).
+/// version, the *on-disk* hash (`None` = gone), the *standard render* hash
+/// (what the current writer would produce), and whether the on-disk bytes
+/// match a *known legacy render* (a shape an older DiffLore wrote verbatim;
+/// see `manifest::legacy_render_hashes`).
 pub(super) fn plan_update_target(
     is_external: bool,
     recorded_hash: Option<&str>,
@@ -417,6 +419,7 @@ pub(super) fn plan_update_target(
     current_version: u32,
     on_disk_hash: Option<&str>,
     standard_render_hash: Option<&str>,
+    on_disk_is_legacy_render: bool,
 ) -> UpdateAction {
     if is_external {
         return if recorded_version < current_version {
@@ -447,12 +450,30 @@ pub(super) fn plan_update_target(
                 UpdateAction::UpToDate
             }
         }
+        // The recorded hash can be stale through no fault of the user's: the
+        // claude-code render/merge matcher drift recorded install-time hashes
+        // that never matched the bytes the merge actually wrote. Recognise a
+        // pristine block by its bytes instead of giving up: on-disk == our
+        // current standard render → just re-stamp the manifest (Adopt);
+        // on-disk == a known legacy render → rewrite it (Upgrade). Only a
+        // block matching neither is treated as a real local edit.
+        Some(_) if standard_render_hash == Some(on_disk) => UpdateAction::Adopt,
+        Some(_) if on_disk_is_legacy_render => UpdateAction::Upgrade {
+            from: recorded_version,
+            to: current_version,
+        },
         Some(_) => UpdateAction::SkippedLocalEdits,
-        // v1 record adoption: no recorded hash. If the on-disk block matches
-        // the current writer's standard render, adopt; otherwise skip.
+        // v1 record adoption: no recorded hash. On-disk matching the current
+        // writer's standard render is adopted in place; a known legacy render
+        // is upgraded; anything else is a local edit → skip.
         None => {
             if standard_render_hash == Some(on_disk) {
                 UpdateAction::Adopt
+            } else if on_disk_is_legacy_render {
+                UpdateAction::Upgrade {
+                    from: recorded_version,
+                    to: current_version,
+                }
             } else {
                 UpdateAction::SkippedLocalEdits
             }
@@ -539,6 +560,11 @@ pub fn update_all(dry_run: bool, force: bool) {
 
         let recorded_version = manifest.targets[idx].block_version;
         let recorded_hash = manifest.targets[idx].block_hash.clone();
+        let on_disk_is_legacy_render = on_disk_hash.as_deref().is_some_and(|h| {
+            manifest::legacy_render_hashes(spec, &cli_bin)
+                .iter()
+                .any(|legacy| legacy == h)
+        });
 
         let mut action = plan_update_target(
             is_external,
@@ -547,6 +573,7 @@ pub fn update_all(dry_run: bool, force: bool) {
             current_version,
             on_disk_hash.as_deref(),
             standard_render_hash.as_deref(),
+            on_disk_is_legacy_render,
         );
         // `--force` overrides the protected "local edits" skip, overwriting the
         // hand-edited block with our current render.
@@ -867,11 +894,11 @@ mod update_tests {
     fn external_cli_reissues_only_on_version_bump() {
         // Behind → re-issue; current → up to date. No file is ever touched.
         assert_eq!(
-            plan_update_target(true, None, 1, 2, None, None),
+            plan_update_target(true, None, 1, 2, None, None, false),
             UpdateAction::ReissueCli { from: 1, to: 2 }
         );
         assert_eq!(
-            plan_update_target(true, None, 2, 2, None, None),
+            plan_update_target(true, None, 2, 2, None, None, false),
             UpdateAction::UpToDateExternal
         );
     }
@@ -886,7 +913,8 @@ mod update_tests {
                 1,
                 2,
                 Some("sha256:aa"),
-                Some("sha256:bb")
+                Some("sha256:bb"),
+                false
             ),
             UpdateAction::Upgrade { from: 1, to: 2 }
         );
@@ -901,7 +929,8 @@ mod update_tests {
                 1,
                 1,
                 Some("sha256:aa"),
-                Some("sha256:aa")
+                Some("sha256:aa"),
+                false
             ),
             UpdateAction::UpToDate
         );
@@ -917,7 +946,8 @@ mod update_tests {
                 1,
                 2,
                 Some("sha256:zz"),
-                Some("sha256:bb")
+                Some("sha256:bb"),
+                false
             ),
             UpdateAction::SkippedLocalEdits
         );
@@ -926,7 +956,15 @@ mod update_tests {
     #[test]
     fn missing_on_disk_block_is_gone() {
         assert_eq!(
-            plan_update_target(false, Some("sha256:aa"), 1, 1, None, Some("sha256:bb")),
+            plan_update_target(
+                false,
+                Some("sha256:aa"),
+                1,
+                1,
+                None,
+                Some("sha256:bb"),
+                false
+            ),
             UpdateAction::Gone
         );
     }
@@ -935,12 +973,97 @@ mod update_tests {
     fn v1_record_adopts_standard_render_else_skips() {
         // No recorded hash (v1 record). On-disk == standard render → adopt.
         assert_eq!(
-            plan_update_target(false, None, 1, 1, Some("sha256:std"), Some("sha256:std")),
+            plan_update_target(
+                false,
+                None,
+                1,
+                1,
+                Some("sha256:std"),
+                Some("sha256:std"),
+                false
+            ),
             UpdateAction::Adopt
         );
         // On-disk != standard render → it's been edited → skip (don't clobber).
         assert_eq!(
-            plan_update_target(false, None, 1, 1, Some("sha256:edited"), Some("sha256:std")),
+            plan_update_target(
+                false,
+                None,
+                1,
+                1,
+                Some("sha256:edited"),
+                Some("sha256:std"),
+                false
+            ),
+            UpdateAction::SkippedLocalEdits
+        );
+    }
+
+    #[test]
+    fn stale_recorded_hash_with_standard_on_disk_adopts_not_skips() {
+        // The claude-code matcher drift recorded hashes that never matched
+        // the merged bytes. If the on-disk block IS our current standard
+        // render, the stale record must be corrected (Adopt), not treated as
+        // a local edit.
+        assert_eq!(
+            plan_update_target(
+                false,
+                Some("sha256:drifted-render"),
+                1,
+                2,
+                Some("sha256:std"),
+                Some("sha256:std"),
+                false
+            ),
+            UpdateAction::Adopt
+        );
+    }
+
+    #[test]
+    fn legacy_render_on_disk_upgrades_not_skips() {
+        // Old-matcher install: on-disk bytes equal a known legacy render →
+        // recognised as ours and rewritten, regardless of the recorded hash.
+        assert_eq!(
+            plan_update_target(
+                false,
+                Some("sha256:drifted-render"),
+                1,
+                2,
+                Some("sha256:legacy"),
+                Some("sha256:std"),
+                true
+            ),
+            UpdateAction::Upgrade { from: 1, to: 2 }
+        );
+        // Same recognition for v1 records (no recorded hash).
+        assert_eq!(
+            plan_update_target(
+                false,
+                None,
+                0,
+                2,
+                Some("sha256:legacy"),
+                Some("sha256:std"),
+                true
+            ),
+            UpdateAction::Upgrade { from: 0, to: 2 }
+        );
+    }
+
+    #[test]
+    fn unknown_on_disk_bytes_still_skip_even_with_stale_record() {
+        // Neither the standard render nor a legacy render → a real local
+        // edit; never clobber without --force.
+        assert_eq!(
+            plan_update_target(
+                false,
+                Some("sha256:drifted-render"),
+                1,
+                2,
+                Some("sha256:user-edited"),
+                Some("sha256:std"),
+                false
+            ),
             UpdateAction::SkippedLocalEdits
         );
     }

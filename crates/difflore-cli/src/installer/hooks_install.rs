@@ -69,6 +69,59 @@ fn write_json_object_anyhow(
 
 // ── Claude Code hooks ────────────────────────────────────────────────────
 
+/// Single source of truth for the Claude Code `PostToolUse` matcher.
+///
+/// The writer ([`merge_claude_code_hooks`]) and the hash source
+/// ([`render_claude_code_hook_block`]) MUST agree on this string: `agents
+/// update` compares the hash of our rendered block against the bytes on disk,
+/// so a drifted matcher makes every fresh install re-hash as "locally edited"
+/// and blocks it from ever upgrading.
+pub(super) const CLAUDE_POST_TOOL_USE_MATCHER: &str = "Edit|MultiEdit|Write|Bash";
+
+/// The Claude Code lifecycle events DiffLore registers, with their matchers.
+/// Shared verbatim by [`merge_claude_code_hooks`] and
+/// [`render_claude_code_hook_block`] so the two cannot drift.
+///
+/// NOTE: no PreToolUse(Read) registration. Pre-read injection was retired to
+/// a dispatcher noop (a Read is too weak a signal — see
+/// hook/runtime/dispatch.rs), so registering it spawned the hook binary on
+/// EVERY Read for a guaranteed empty response. The dead registration is also
+/// stripped from existing installs by the cleanup pass in
+/// [`merge_claude_code_hooks`].
+const CLAUDE_HOOK_EVENT_MATCHERS: &[(&str, Option<&str>)] = &[
+    ("PostToolUse", Some(CLAUDE_POST_TOOL_USE_MATCHER)),
+    ("SessionStart", Some("startup|clear|compact")),
+    ("UserPromptSubmit", None),
+    ("Stop", None),
+    ("SessionEnd", None),
+];
+
+/// Build the hook group object for one Claude Code event — the single shape
+/// both [`merge_claude_code_hooks`] writes and [`render_claude_code_hook_block`]
+/// hashes. (`PreToolUse` only occurs in the legacy tables of
+/// [`legacy_claude_code_hook_blocks`]; its 2s budget is kept so legacy hashes
+/// reproduce the bytes old installers wrote.)
+fn claude_hook_group(event: &str, matcher: Option<&str>, command: &str) -> Value {
+    let timeout_ms = match event {
+        "PreToolUse" => 2000,
+        "PostToolUse" | "UserPromptSubmit" => 5000,
+        _ => 10000,
+    };
+    let mut group = serde_json::Map::new();
+    if let Some(m) = matcher {
+        group.insert("matcher".to_owned(), Value::from(m));
+    }
+    group.insert(
+        "hooks".to_owned(),
+        Value::Array(vec![json!({
+            "type": "command",
+            "command": command,
+            "timeout": timeout_ms,
+        })]),
+    );
+    Value::Object(group)
+}
+
 /// Merge `DiffLore` lifecycle hooks into `~/.claude/settings.json`. Returns the
 /// number of event matchers added or refreshed (`Ok(0)` = already wired).
 pub(super) fn install_claude_code_hooks(bin: &str) -> CliResult<usize> {
@@ -89,19 +142,6 @@ pub(super) fn merge_claude_code_hooks(settings_path: &Path, bin: &str) -> anyhow
     let hooks_obj = hooks_value
         .as_object_mut()
         .ok_or_else(|| anyhow!("{}: `hooks` is not a JSON object", settings_path.display()))?;
-
-    // NOTE: no PreToolUse(Read) registration. Pre-read injection was retired
-    // to a dispatcher noop (a Read is too weak a signal — see
-    // hook/runtime/dispatch.rs), so registering it spawned the hook binary on
-    // EVERY Read for a guaranteed empty response. The dead registration is
-    // also stripped from existing installs by the cleanup pass below.
-    let event_matchers: &[(&str, Option<&str>)] = &[
-        ("PostToolUse", Some("Edit|MultiEdit|Write|Bash")),
-        ("SessionStart", Some("startup|clear|compact")),
-        ("UserPromptSubmit", None),
-        ("Stop", None),
-        ("SessionEnd", None),
-    ];
 
     let mut changed = 0usize;
     // Strip every existing difflore claude-code group first — including
@@ -139,7 +179,7 @@ pub(super) fn merge_claude_code_hooks(settings_path: &Path, bin: &str) -> anyhow
         hooks_obj.remove(&event);
     }
 
-    for (event, matcher) in event_matchers {
+    for (event, matcher) in CLAUDE_HOOK_EVENT_MATCHERS {
         let groups_value = hooks_obj
             .entry((*event).to_owned())
             .or_insert_with(|| Value::Array(Vec::new()));
@@ -147,23 +187,7 @@ pub(super) fn merge_claude_code_hooks(settings_path: &Path, bin: &str) -> anyhow
             .as_array_mut()
             .ok_or_else(|| anyhow!("{}: hooks.{event} is not an array", settings_path.display()))?;
 
-        let timeout_ms = match *event {
-            "PostToolUse" | "UserPromptSubmit" => 5000,
-            _ => 10000,
-        };
-        let mut group = serde_json::Map::new();
-        if let Some(m) = matcher {
-            group.insert("matcher".to_owned(), Value::from(*m));
-        }
-        group.insert(
-            "hooks".to_owned(),
-            Value::Array(vec![json!({
-                "type": "command",
-                "command": command,
-                "timeout": timeout_ms,
-            })]),
-        );
-        groups.push(Value::Object(group));
+        groups.push(claude_hook_group(event, *matcher, &command));
         changed += 1;
     }
 
@@ -804,37 +828,58 @@ pub(super) fn probe_json_hooks_by_nested_command(
 // our render. They MUST stay in lockstep with the matching `merge_*` writer;
 // guard-rail tests in `manifest.rs` install, re-extract, and assert byte-equality.
 
-/// The Claude Code hook groups DiffLore contributes, in event order. Must
-/// mirror the `(event, matcher, timeout)` table in [`merge_claude_code_hooks`].
+/// The Claude Code hook groups DiffLore contributes, in event order. Built
+/// from the same [`CLAUDE_HOOK_EVENT_MATCHERS`] table and
+/// [`claude_hook_group`] builder as [`merge_claude_code_hooks`], so the hash
+/// always covers exactly the bytes the merge writes.
 pub(super) fn render_claude_code_hook_block(bin: &str) -> Vec<Value> {
     let command = hook_command_string(bin, "claude-code");
-    let event_matchers: &[(&str, Option<&str>)] = &[
-        ("PostToolUse", Some("Edit|MultiEdit|Write")),
-        ("SessionStart", Some("startup|clear|compact")),
-        ("UserPromptSubmit", None),
-        ("Stop", None),
-        ("SessionEnd", None),
-    ];
-    event_matchers
+    CLAUDE_HOOK_EVENT_MATCHERS
         .iter()
-        .map(|(event, matcher)| {
-            let timeout_ms = match *event {
-                "PostToolUse" | "UserPromptSubmit" => 5000,
-                _ => 10000,
-            };
-            let mut group = serde_json::Map::new();
-            if let Some(m) = matcher {
-                group.insert("matcher".to_owned(), Value::from(*m));
-            }
-            group.insert(
-                "hooks".to_owned(),
-                Value::Array(vec![json!({
-                    "type": "command",
-                    "command": command,
-                    "timeout": timeout_ms,
-                })]),
-            );
-            Value::Object(group)
+        .map(|(event, matcher)| claude_hook_group(event, *matcher, &command))
+        .collect()
+}
+
+/// Every historical Claude Code hook block shape, oldest first, so `agents
+/// update` can recognise a pristine old install by its bytes and upgrade it
+/// instead of skipping it as "locally edited":
+///
+/// 1. initial release: PreToolUse(Read) registered, PostToolUse matcher
+///    without `Bash`;
+/// 2. interim: PostToolUse gained `Bash` while PreToolUse(Read) was still
+///    registered (the render fn missed that matcher change, so manifests from
+///    that window recorded hashes that never matched any bytes on disk).
+///
+/// Append a new entry whenever the rendered shape changes (and bump
+/// `HOOKS_JSON_BLOCK_VERSION`); never edit existing entries — they must keep
+/// reproducing the bytes old installers wrote.
+pub(super) fn legacy_claude_code_hook_blocks(bin: &str) -> Vec<Vec<Value>> {
+    let command = hook_command_string(bin, "claude-code");
+    let legacy_tables: &[&[(&str, Option<&str>)]] = &[
+        &[
+            ("PreToolUse", Some("Read")),
+            ("PostToolUse", Some("Edit|MultiEdit|Write")),
+            ("SessionStart", Some("startup|clear|compact")),
+            ("UserPromptSubmit", None),
+            ("Stop", None),
+            ("SessionEnd", None),
+        ],
+        &[
+            ("PreToolUse", Some("Read")),
+            ("PostToolUse", Some("Edit|MultiEdit|Write|Bash")),
+            ("SessionStart", Some("startup|clear|compact")),
+            ("UserPromptSubmit", None),
+            ("Stop", None),
+            ("SessionEnd", None),
+        ],
+    ];
+    legacy_tables
+        .iter()
+        .map(|table| {
+            table
+                .iter()
+                .map(|(event, matcher)| claude_hook_group(event, *matcher, &command))
+                .collect()
         })
         .collect()
 }
@@ -1111,6 +1156,50 @@ mod tests {
             "stale entry leaked through: {post_cmd}"
         );
         assert_eq!(v["permissions"]["allow"][0], "Bash(**)");
+    }
+
+    #[test]
+    fn claude_hooks_upgrade_replaces_old_matcher_block_without_duplicating() {
+        // An install written before the PostToolUse matcher gained `Bash`:
+        // the merge must recognise the old-matcher group as ours (recognition
+        // is by hook command, not matcher), replace it in place, and never
+        // append a second difflore group next to it.
+        let (_tmp, path) = tmp_settings_path();
+        fs::write(
+            &path,
+            r#"{
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": "Edit|MultiEdit|Write",
+                            "hooks": [{"type": "command", "command": "/old/bin/difflore-hook --client claude-code", "timeout": 5000}]
+                        }
+                    ]
+                }
+            }"#,
+        )
+        .expect("seed");
+
+        merge_claude_code_hooks(&path, BIN).expect("merge");
+        let v = read_json(&path);
+        let groups = v["hooks"]["PostToolUse"].as_array().expect("groups");
+        let difflore_groups: Vec<_> = groups
+            .iter()
+            .filter(|g| {
+                g["hooks"][0]["command"]
+                    .as_str()
+                    .is_some_and(|c| hook_command_matches_client(c, "claude-code"))
+            })
+            .collect();
+        assert_eq!(
+            difflore_groups.len(),
+            1,
+            "old-matcher block must be replaced, not duplicated: {difflore_groups:?}"
+        );
+        assert_eq!(
+            difflore_groups[0]["matcher"], CLAUDE_POST_TOOL_USE_MATCHER,
+            "replaced block must carry the unified matcher"
+        );
     }
 
     #[test]

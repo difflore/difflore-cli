@@ -37,7 +37,10 @@ use super::{
 /// Version of the JSON MCP-server block (`{command, args:["mcp-server"]}`).
 pub(super) const MCP_JSON_BLOCK_VERSION: u32 = 1;
 /// Version of the JSON lifecycle-hooks block (the per-client event matchers).
-pub(super) const HOOKS_JSON_BLOCK_VERSION: u32 = 1;
+/// v2: Claude Code dropped the retired PreToolUse(Read) registration and its
+/// PostToolUse matcher gained `Bash` (see `legacy_claude_code_hook_blocks`);
+/// the other hook clients re-render unchanged.
+pub(super) const HOOKS_JSON_BLOCK_VERSION: u32 = 2;
 /// Version of the Goose YAML `difflore:` block.
 pub(super) const GOOSE_YAML_BLOCK_VERSION: u32 = 1;
 /// Version of the externally-CLI-managed shape (the `mcp add … mcp-server`
