@@ -34,6 +34,24 @@ All notable changes to DiffLore are listed here. The project follows
   `Retry-After`-aware backoff. v1 limits: merged MRs only, `--from-upstream`
   and `--include-open` stay GitHub-only, per-note award emoji are not
   fetched.
+- **Static rule export** — new `difflore export` command projects the
+  repo-scoped rule set into a marker-delimited, AUTO-GENERATED section of
+  `AGENTS.md` and/or `CLAUDE.md` at the repo root (`--format
+  agents-md|claude-md|all`, repeatable; `--dry-run` prints a
+  create/update/unchanged/skipped plan, `--json` emits it structurally;
+  `--no-examples` and `--local-only` trim scope). Export collects with the
+  same project-scope predicate as recall, so the two cannot drift. Writes
+  are atomic with a content-hash short-circuit and byte-exact preservation
+  of everything outside the marker block (CRLF included); symlinked targets
+  and corrupted BEGIN/END pairs are refused with a non-zero exit. The block
+  header pins provenance (version, generated-at, rule count, content hash,
+  repo scope) and the upgrade hint that static snapshots go stale —
+  `difflore agents install` is the live path.
+- `difflore export --max-rules <N>` caps the export to the first N rules of
+  the deterministic collection order (omitted = unlimited, N ≥ 1). The
+  capped set is a stable prefix, so re-exports stay byte-stable and the
+  content-hash short-circuit still fires; plan output reflects truncation
+  ("N of M rules" in human output, `truncated` / `total_rules` in `--json`).
 - **Warm hook-forward daemon (R5)** — the `hook::forward` server/client are now
   wired end to end, so repeat hooks skip cold process + DB/index startup. The
   `difflore-hook` shim forwards each event over a per-project local socket
