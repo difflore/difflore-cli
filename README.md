@@ -54,8 +54,10 @@ cargo install difflore-cli
 cargo install --git https://github.com/difflore/difflore-cli difflore-cli # unreleased main
 ```
 
-Prerequisites for importing PR reviews: `git` and GitHub CLI `gh`.
-Run `gh auth login` once before importing PR reviews.
+Prerequisites for importing GitHub PR reviews: `git` and GitHub CLI `gh`.
+Run `gh auth login` once before importing PR reviews. GitLab repos need no
+extra CLI — store a personal access token once with `difflore auth gitlab`
+(see [Importing from GitLab](#importing-from-gitlab)).
 
 ## Quickstart
 
@@ -65,7 +67,7 @@ Run the bundled demo without touching a repo:
 difflore try
 ```
 
-Use it in a GitHub repo:
+Use it in a GitHub or GitLab repo:
 
 ```bash
 cd your-repo
@@ -98,7 +100,7 @@ DiffLore never commits, pushes, opens PRs, or posts GitHub comments.
 |---|---|
 | `difflore try` | Run the zero-setup demo |
 | `difflore init` | Set up DiffLore for the current repo |
-| `difflore import-reviews` | Import GitHub PR review history |
+| `difflore import-reviews` | Import GitHub PR / GitLab MR review history |
 | `difflore recall --diff` | Preview relevant rules for the current diff |
 | `difflore fix --preview` | Preview rule-aware local fixes |
 | `difflore status` | Show local memory health and next steps |
@@ -108,6 +110,56 @@ DiffLore never commits, pushes, opens PRs, or posts GitHub comments.
 | `difflore doctor --report` | Write a diagnostic report |
 
 Run `difflore --help` for the full command list.
+
+## Importing from GitLab
+
+`difflore import-reviews` also imports merge request discussions from GitLab —
+both **gitlab.com and self-managed instances** (subgroups included). It talks
+to the GitLab REST API directly over HTTPS with a personal access token, so it
+passes enterprise IT policy without installing `glab` or any other CLI.
+
+One-time setup — mint a PAT with the **`read_api` scope only** (no write
+access is ever needed) and store it encrypted:
+
+```bash
+echo "<TOKEN>" | difflore auth gitlab                  # gitlab.com
+echo "<TOKEN>" | difflore auth gitlab --host gitlab.corp.example
+difflore auth gitlab --check                           # verify before importing
+```
+
+A PAT is required even for public projects: gitlab.com rejects anonymous calls
+to the MR discussions API.
+
+Then import as usual — `gitlab.com` remotes are detected automatically, and a
+self-managed host is detected automatically once its PAT is stored:
+
+```bash
+cd your-repo
+difflore import-reviews --dry-run
+difflore import-reviews
+```
+
+Without a stored PAT, point a one-off run at a self-managed instance
+explicitly (`--gitlab-host` implies the GitLab provider):
+
+```bash
+difflore import-reviews --gitlab-host gitlab.corp.example --repo group/subgroup/project
+```
+
+GitLab specifics worth knowing:
+
+- `--pr <N>` means the MR IID (the `!N` number); `--max-prs` caps MRs.
+- A `404` from GitLab can mean a wrong project path **or** missing token
+  access — GitLab deliberately answers 404 (not 403) for private projects
+  your token cannot see. The error text walks you through both.
+- Self-managed instances behind a private CA need that CA trusted at the OS
+  level; DiffLore uses the platform certificate verifier and has no
+  insecure-skip option.
+- v1 imports merged MRs only; `--from-upstream` and `--include-open` are
+  GitHub-only for now.
+
+See [docs/cli-reference.md](docs/cli-reference.md) for the full provider
+resolution rules and token handling.
 
 ## How Injection Works
 

@@ -20,6 +20,20 @@ All notable changes to DiffLore are listed here. The project follows
 
 ### Added
 
+- **GitLab review import** — `difflore import-reviews` now imports merged-MR
+  discussions from gitlab.com and self-managed GitLab instances (subgroup
+  paths included) via the REST v4 API, converging with the GitHub path in the
+  same local review store so candidate drafting, `--upload`, and recall work
+  identically. The provider is auto-detected from the git remote (github.com;
+  gitlab.com; any host with a stored PAT), or forced with `--provider gitlab`
+  / `--gitlab-host <HOST>`. `--pr <N>` means the MR IID in the GitLab
+  context. New `difflore auth gitlab` stores per-host `read_api` PATs
+  encrypted at rest (`--check` verifies, `--remove` deletes). Error mapping
+  spells out GitLab's 404-for-no-access quirk, 401 scope problems, TLS with
+  private CAs, and rate-limit recovery; 429/5xx are retried with capped
+  `Retry-After`-aware backoff. v1 limits: merged MRs only, `--from-upstream`
+  and `--include-open` stay GitHub-only, per-note award emoji are not
+  fetched.
 - **Warm hook-forward daemon (R5)** — the `hook::forward` server/client are now
   wired end to end, so repeat hooks skip cold process + DB/index startup. The
   `difflore-hook` shim forwards each event over a per-project local socket
