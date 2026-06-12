@@ -209,6 +209,7 @@ pub(super) fn review(pr: i32, comments: usize) -> ImportedReviewUpload {
         pr_title: Some(format!("PR {pr}")),
         comments: (0..comments)
             .map(|i| ImportedCommentUpload {
+                event_type: None,
                 file_path: Some("src/lib.rs".to_owned()),
                 line_number: i as i32 + 1,
                 content: format!("comment {i}"),

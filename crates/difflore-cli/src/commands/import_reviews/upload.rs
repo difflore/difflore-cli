@@ -1,5 +1,6 @@
 use difflore_core::contract::{
-    ImportedCommentUpload, ImportedReviewUpload, UploadImportedReviewsRequest,
+    ImportedCommentEventType, ImportedCommentUpload, ImportedReviewUpload,
+    UploadImportedReviewsRequest,
 };
 use difflore_core::ingest::github::ImportProgress;
 use difflore_core::review_store::{self, ReviewItemWithComments};
@@ -82,6 +83,56 @@ pub(super) fn comment_file_path_from_metadata(metadata: Option<&str>) -> Option<
         .map(str::to_owned)
 }
 
+/// Derive the webhook-aligned event type for one imported comment so the
+/// cloud labels `pr_review_comments.event_type` from the CLI's own import
+/// provenance instead of re-deriving it server-side.
+///
+/// Order matters: the GitHub ingest path anchors PR discussion comments to
+/// the first changed file (`sourceKind: "issue_comment"` plus a borrowed
+/// `filePath` in the comment metadata), so the source-kind check must run
+/// before the file-path check or those comments would be mislabeled as
+/// inline review comments. GitLab MR-level discussion notes carry
+/// `sourceKind: "mr_comment"` and map to the same discussion bucket.
+///
+/// Top-level review bodies have neither key (their metadata is durability
+/// signal only, or absent), so they are recognized by the GitHub URL
+/// fragment. `None` means "the local metadata cannot identify the bucket":
+/// the optional field is omitted from the payload and the cloud falls back
+/// to its own derivation, keeping older rows and unknown shapes behaviorally
+/// unchanged.
+pub(super) fn comment_event_type(
+    metadata: Option<&str>,
+    file_path: Option<&str>,
+    comment_url: &str,
+) -> Option<ImportedCommentEventType> {
+    let source_kind = metadata
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|v| {
+            v.get("sourceKind")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        });
+    if matches!(source_kind.as_deref(), Some("issue_comment" | "mr_comment")) {
+        return Some(ImportedCommentEventType::IssueComment);
+    }
+    if file_path.is_some() {
+        return Some(ImportedCommentEventType::PullRequestReviewComment);
+    }
+    let fragment = comment_url
+        .split_once('#')
+        .map_or("", |(_, fragment)| fragment);
+    if fragment.starts_with("pullrequestreview-") {
+        return Some(ImportedCommentEventType::PullRequestReview);
+    }
+    if fragment.starts_with("issuecomment-") {
+        return Some(ImportedCommentEventType::IssueComment);
+    }
+    if fragment.starts_with("discussion_r") {
+        return Some(ImportedCommentEventType::PullRequestReviewComment);
+    }
+    None
+}
+
 pub(super) fn imported_review_upload(
     item: &ReviewItemWithComments,
 ) -> Option<ImportedReviewUpload> {
@@ -89,14 +140,23 @@ pub(super) fn imported_review_upload(
     let comments: Vec<ImportedCommentUpload> = item
         .comments
         .iter()
-        .map(|c| ImportedCommentUpload {
-            file_path: comment_file_path_from_metadata(c.metadata.as_deref()),
-            line_number: c.line_number.unwrap_or(0),
-            content: c.content.clone(),
-            author: c.author.clone(),
-            comment_url: c.comment_url.clone().unwrap_or_default(),
-            thread_id: c.thread_id.clone(),
-            occurred_at: Some(c.created_at.clone()),
+        .map(|c| {
+            let file_path = comment_file_path_from_metadata(c.metadata.as_deref());
+            let comment_url = c.comment_url.clone().unwrap_or_default();
+            ImportedCommentUpload {
+                event_type: comment_event_type(
+                    c.metadata.as_deref(),
+                    file_path.as_deref(),
+                    &comment_url,
+                ),
+                file_path,
+                line_number: c.line_number.unwrap_or(0),
+                content: c.content.clone(),
+                author: c.author.clone(),
+                comment_url,
+                thread_id: c.thread_id.clone(),
+                occurred_at: Some(c.created_at.clone()),
+            }
         })
         .collect();
 

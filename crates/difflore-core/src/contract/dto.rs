@@ -20,7 +20,7 @@
 //! | `POST /reviews/{prReviewId}/trajectory` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `SaveTrajectoryRequest` |
 //! | `GET /reviews/{prReviewId}/trajectory` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `GetTrajectoryResponse` |
 //! | `POST /accepted-edits` (in spec; kept hand-written for serde derives until the R4 contract pipeline migrates it to `generated`) | `RecordAcceptedEditRequest`, `RecordAcceptedEditResponse`, `accepted_edit_diff_signature` |
-//! | `POST /reviews/uploadImported` | `UploadImportedReviewsRequest`, `ImportedReviewUpload`, `ImportedCommentUpload` |
+//! | `POST /reviews/uploadImported` | `UploadImportedReviewsRequest`, `ImportedReviewUpload`, `ImportedCommentUpload`, `ImportedCommentEventType` |
 //! | `GET /impact/*` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `ImpactBannerDto`, `ImpactWeeklyDto`, `ImpactWeeklyPointDto`, `ImpactTopRuleDto`, `ImpactTopRulesDto`, `ImpactPromotionProgressDto`, `ImpactCoverageDto`, `ImpactFixWindowDto`, `ImpactRoiDto`, `ImpactFixScorecardDto` |
 //! | outbox `kind="observation"` wire payload (not an HTTP endpoint) | `Observation`, `ObservationScope` |
 //! | `POST /knowledge/corpus` (in spec; hand-written for serde derives, migration is contract-pipeline debt), `POST /knowledge/corpus/{id}/prime`, `POST /knowledge/corpus/{id}/query`, `GET /knowledge/corpora` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `BuildCorpusFilters`, `BuildCorpusRequest`, `BuildCorpusResult`, `PrimeCorpusResult`, `QueryCorpusRequest`, `QueryCitation`, `QueryCorpusResult`, `CorpusSummary` |
@@ -242,9 +242,32 @@ pub struct ImportedReviewUpload {
     pub comments: Vec<ImportedCommentUpload>,
 }
 
+/// Webhook-aligned source bucket for one imported comment, mirroring the
+/// cloud's `importedCommentEventTypes` zod enum
+/// (`src/domain/reviews/imported-comment-event-type.ts`). The serialized
+/// values match the webhook ingestion path's `pr_review_comments.event_type`
+/// values exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportedCommentEventType {
+    /// Inline file comment (carries a file path).
+    PullRequestReviewComment,
+    /// Top-level review body.
+    PullRequestReview,
+    /// PR/MR discussion comment.
+    IssueComment,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportedCommentUpload {
+    /// Explicit source bucket so the cloud labels
+    /// `pr_review_comments.event_type` from CLI provenance instead of
+    /// re-deriving it from `file_path`/`comment_url`. Omitted when the local
+    /// metadata cannot identify the bucket — the cloud then falls back to its
+    /// own derivation, so older payload shapes keep working unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<ImportedCommentEventType>,
     pub file_path: Option<String>,
     pub line_number: i32,
     pub content: String,

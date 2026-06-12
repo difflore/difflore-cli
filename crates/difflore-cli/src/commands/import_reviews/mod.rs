@@ -928,8 +928,8 @@ mod tests {
     };
     use super::scope::file_pattern_from_path;
     use super::upload::{
-        build_upload_batches, cloud_upload_next_step_commands, comment_file_path_from_metadata,
-        imported_review_upload,
+        build_upload_batches, cloud_upload_next_step_commands, comment_event_type,
+        comment_file_path_from_metadata, imported_review_upload,
     };
     use super::{ImportArgs, dry_run_payload, import_json_payload, validate_args};
 
@@ -1407,6 +1407,132 @@ mod tests {
         );
         assert_eq!(comment_file_path_from_metadata(Some("not json")), None);
         assert_eq!(comment_file_path_from_metadata(None), None);
+    }
+
+    #[test]
+    fn import_upload_payload_labels_inline_comments_as_review_comments() {
+        use difflore_core::contract::ImportedCommentEventType;
+
+        let mut item = imported_item(Some("user/fork"), None);
+        item.comments[0].metadata = Some(
+            r#"{"filePath":"src/http/request.rs","sourceRepoFullName":"user/fork","attachedRepoFullName":"user/fork"}"#
+                .to_owned(),
+        );
+
+        let upload = imported_review_upload(&item).expect("review with comments should upload");
+
+        assert_eq!(
+            upload.comments[0].event_type,
+            Some(ImportedCommentEventType::PullRequestReviewComment),
+            "a recorded filePath means the comment was inline on a diff"
+        );
+    }
+
+    #[test]
+    fn import_upload_payload_labels_discussion_comments_as_issue_comments() {
+        use difflore_core::contract::ImportedCommentEventType;
+
+        // GitHub PR discussion comments are anchored to the first changed
+        // file at import time, so they carry BOTH `sourceKind: issue_comment`
+        // and a borrowed filePath. The sourceKind must win, or the cloud
+        // would label them as inline review comments.
+        let mut item = imported_item(Some("user/fork"), None);
+        item.comments[0].metadata = Some(
+            r#"{"filePath":"src/lib.rs","sourceRepoFullName":"user/fork","attachedRepoFullName":"user/fork","sourceKind":"issue_comment"}"#
+                .to_owned(),
+        );
+        item.comments[0].comment_url =
+            Some("https://github.com/user/fork/pull/7#issuecomment-99".to_owned());
+
+        let upload = imported_review_upload(&item).expect("review with comments should upload");
+        assert_eq!(
+            upload.comments[0].event_type,
+            Some(ImportedCommentEventType::IssueComment),
+            "sourceKind=issue_comment outranks the anchored filePath"
+        );
+        assert_eq!(
+            upload.comments[0].file_path.as_deref(),
+            Some("src/lib.rs"),
+            "the anchored path still flows into the payload for file-pattern extraction"
+        );
+
+        // GitLab MR-level discussion notes carry `sourceKind: mr_comment`
+        // and map to the same webhook bucket.
+        assert_eq!(
+            comment_event_type(
+                Some(r#"{"filePath":null,"sourceKind":"mr_comment"}"#),
+                None,
+                "https://gitlab.com/group/project/-/merge_requests/4#note_200",
+            ),
+            Some(ImportedCommentEventType::IssueComment),
+        );
+    }
+
+    #[test]
+    fn import_upload_payload_labels_review_bodies_as_pull_request_review() {
+        use difflore_core::contract::ImportedCommentEventType;
+
+        // Top-level review bodies carry no filePath/sourceKind metadata
+        // (durability signal only, or nothing) — the GitHub URL fragment is
+        // the local marker.
+        let mut item = imported_item(Some("user/fork"), None);
+        item.comments[0].metadata = Some(r#"{"resolved":true,"reactionsTotal":1}"#.to_owned());
+        item.comments[0].comment_url =
+            Some("https://github.com/user/fork/pull/7#pullrequestreview-42".to_owned());
+        item.comments[0].line_number = None;
+
+        let upload = imported_review_upload(&item).expect("review with comments should upload");
+        assert_eq!(
+            upload.comments[0].event_type,
+            Some(ImportedCommentEventType::PullRequestReview),
+        );
+    }
+
+    #[test]
+    fn comment_event_type_is_omitted_when_locally_unknown() {
+        use difflore_core::contract::ImportedCommentEventType;
+
+        // No metadata + unrecognized URL: stay silent so the cloud's own
+        // derivation (which sees the same inputs) decides — explicit wrong
+        // labels would override it.
+        assert_eq!(
+            comment_event_type(
+                None,
+                None,
+                "https://gitlab.example/p/-/merge_requests/4#note_7"
+            ),
+            None,
+        );
+        assert_eq!(comment_event_type(Some("not json"), None, ""), None);
+        // Legacy inline rows that lost filePath metadata are still recognized
+        // by their GitHub fragment, mirroring the cloud's derivation.
+        assert_eq!(
+            comment_event_type(None, None, "https://github.com/u/r/pull/7#discussion_r100"),
+            Some(ImportedCommentEventType::PullRequestReviewComment),
+        );
+
+        // The optional field must vanish from the wire payload (not serialize
+        // as null) so pre-eventType cloud deployments see an unchanged shape,
+        // and the serialized values must match the cloud zod enum exactly.
+        let mut wire = review(7, 1);
+        wire.comments[0].event_type = None;
+        let json = serde_json::to_string(&wire).expect("serialize upload payload");
+        assert!(!json.contains("eventType"), "omitted, got: {json}");
+
+        wire.comments[0].event_type = Some(ImportedCommentEventType::IssueComment);
+        let json = serde_json::to_string(&wire).expect("serialize upload payload");
+        assert!(
+            json.contains(r#""eventType":"issue_comment""#),
+            "got: {json}"
+        );
+        assert_eq!(
+            serde_json::to_string(&ImportedCommentEventType::PullRequestReviewComment).unwrap(),
+            r#""pull_request_review_comment""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ImportedCommentEventType::PullRequestReview).unwrap(),
+            r#""pull_request_review""#
+        );
     }
 
     #[test]
