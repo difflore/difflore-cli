@@ -1,7 +1,7 @@
-use crate::commands::audit_history::load_audit_history;
+use crate::commands::doctor::audit_history::load_audit_history;
 use crate::commands::doctor::labels::doctor_probe_freshness;
-use crate::commands::util::git_str;
-use crate::hook_runtime;
+use crate::hook::runtime as hook_runtime;
+use crate::support::util::git_str;
 
 use super::formatters::doctor_command_version;
 use super::validators::{
@@ -48,7 +48,7 @@ pub(super) fn env_and_git_section(s: &mut String) {
         "DIFFLORE_EMBEDDING_KEY",
     ];
     for key in env_keys {
-        let present = difflore_core::env::var_os(key).is_some_and(|v| !v.is_empty());
+        let present = difflore_core::infra::env::var_os(key).is_some_and(|v| !v.is_empty());
         let mark = if present { "✓" } else { "·" };
         let label = if present { "set" } else { "unset" };
         sw!(s, "- {mark} `{key}`: {label}");
@@ -76,7 +76,7 @@ pub(super) async fn startup_section(
     let now = chrono::Utc::now();
     let mut cloud_logged_in = false;
     let cloud_probe: String;
-    match difflore_core::startup::ensure_ready(false).await {
+    match difflore_core::infra::startup::ensure_ready(false).await {
         Ok(status) => {
             sw!(s, "- startup cache version: `{}`", status.version);
             sw!(
@@ -129,7 +129,7 @@ pub(super) fn paths_section(s: &mut String) {
     let cwd =
         std::env::current_dir().map_or_else(|_| "(unknown)".into(), |p| p.display().to_string());
     sw!(s, "- cwd: `{cwd}`");
-    let project_root = difflore_core::db::current_project_root();
+    let project_root = difflore_core::infra::db::current_project_root();
     sw!(s, "- project root: `{}`", project_root.display());
     if let Some(home) = dirs::home_dir() {
         let difflore_dir = home.join(".difflore");
@@ -177,7 +177,7 @@ async fn db_tables_subsection(pool: &difflore_core::SqlitePool, s: &mut String) 
         "providers",
         "cloud_outbox",
     ];
-    let counts = difflore_core::db::table_counts(pool, &tables).await;
+    let counts = difflore_core::infra::db::table_counts(pool, &tables).await;
     for (table, result) in counts {
         match result {
             Ok(n) => sw!(s, "- {table}: {n}"),
@@ -240,8 +240,8 @@ pub(super) fn hook_activity_section(s: &mut String) -> hook_runtime::HookFireSum
             .join(", ");
         sw!(s, "- by event: {by_event}");
     }
-    // Pre-instrumentation entries land in count_24h but not injected_fires,
-    // so the rate may dip right after upgrade.
+    // Entries predating the instrumentation count toward count_24h but not
+    // injected_fires, so the rate may dip right after upgrade.
     if hook_summary.count_24h > 0 {
         let pct = (hook_summary.injected_fires as f64 / hook_summary.count_24h as f64) * 100.0;
         let avg = if hook_summary.injected_fires > 0 {
@@ -297,7 +297,7 @@ pub(super) fn hook_activity_section(s: &mut String) -> hook_runtime::HookFireSum
 }
 
 pub(super) fn injection_paths_section(s: &mut String) {
-    let path_summary = difflore_core::injection_log::summary_24h();
+    let path_summary = difflore_core::observability::injection_log::summary_24h();
     let path_mark = if path_summary
         .detail
         .as_deref()
@@ -358,7 +358,7 @@ pub(super) async fn rules_origin_section(ctx: &crate::runtime::CommandContext, s
 }
 
 pub(super) fn memory_pipeline_section(s: &mut String) {
-    let stream_events = difflore_core::activity_stream::tail(200);
+    let stream_events = difflore_core::observability::activity_stream::tail(200);
     let stream_mark = if stream_events.is_empty() {
         "⚠"
     } else {
@@ -384,7 +384,7 @@ pub(super) fn memory_pipeline_section(s: &mut String) {
         for ev in &stream_events {
             newest_ts = newest_ts.max(ev.ts_ms);
             oldest_ts = oldest_ts.min(ev.ts_ms);
-            use difflore_core::activity_stream::ActivityPayload as P;
+            use difflore_core::observability::activity_stream::ActivityPayload as P;
             match &ev.payload {
                 P::RuleRecalled { .. } => recalled += 1,
                 P::RuleInjected { .. } => injected += 1,
@@ -454,7 +454,7 @@ pub(super) fn memory_pipeline_section(s: &mut String) {
             );
         }
     }
-    let bfs_env = difflore_core::env::var(difflore_core::env::DIFFLORE_BFS_RETRIEVAL);
+    let bfs_env = difflore_core::infra::env::var(difflore_core::infra::env::DIFFLORE_BFS_RETRIEVAL);
     let bfs_state = match bfs_env.as_deref() {
         Some(v) if matches!(v.trim(), "1" | "true" | "on" | "yes") => "ON (cloud-side)",
         Some(_) => "explicitly OFF",
@@ -467,7 +467,8 @@ pub(super) fn memory_pipeline_section(s: &mut String) {
             "  → self-host only: set `DIFFLORE_BFS_RETRIEVAL=1` on the cloud worker (experimental — expands matches via Supersedes/RelatesTo edges, capped 3 hops). Managed cloud will flip default-on once eval clears regression bar."
         );
     }
-    let rerank_env = difflore_core::env::var(difflore_core::env::DIFFLORE_INTENT_RERANK);
+    let rerank_env =
+        difflore_core::infra::env::var(difflore_core::infra::env::DIFFLORE_INTENT_RERANK);
     let rerank_state = match rerank_env.as_deref() {
         None => "default ON · cap=5".to_owned(),
         Some(v) if matches!(v.trim(), "0" | "false" | "" | "off") => "explicitly OFF".to_owned(),
@@ -475,7 +476,7 @@ pub(super) fn memory_pipeline_section(s: &mut String) {
     };
     sw!(s, "- intent rerank: {rerank_state}");
     let disable_rules =
-        difflore_core::env::var(difflore_core::env::DIFFLORE_DISABLE_RULES).is_some();
+        difflore_core::infra::env::var(difflore_core::infra::env::DIFFLORE_DISABLE_RULES).is_some();
     if disable_rules {
         sw!(
             s,
@@ -527,7 +528,7 @@ pub(super) async fn sync_timestamps_section(
             sw!(s, "- ✗ rule sync timestamp unavailable: {e}");
         }
     }
-    match difflore_core::reviews::list_recent(pool, 500).await {
+    match difflore_core::review_store::list_recent(pool, 500).await {
         Ok(items) => {
             let last_review_sync = items
                 .iter()
@@ -585,7 +586,7 @@ fn cloud_flags_subsection(
     if !cloud_logged_in && hook_summary.count_24h > 0 {
         sw!(
             s,
-            "- ⚠ telemetry: {} hook fire(s) in 24h NOT reaching cloud (unauthenticated). Dashboard activity feed + weekly digest will stay empty until `difflore cloud login`.",
+            "- ! activity: {} hook fire(s) in 24h did not reach cloud (unauthenticated). Dashboard activity feed + weekly digest will stay empty until `difflore cloud login`.",
             hook_summary.count_24h,
         );
     }

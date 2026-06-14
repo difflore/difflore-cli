@@ -54,6 +54,16 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
+      - name: Layer gate (structural lints)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash scripts/layer-gate.sh
+
+      - name: Contract spec sha256 gate
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash scripts/sync-contract.sh --check
+
       - name: cargo check (workspace)
         env:
           RUSTFLAGS: -D warnings

@@ -1,8 +1,8 @@
 #![allow(clippy::expect_used)]
 #![allow(unsafe_code)]
 
-use difflore_core::cloud::api_types::{ImportedCommentUpload, ImportedReviewUpload};
-use difflore_core::reviews::{
+use difflore_core::contract::{ImportedCommentUpload, ImportedReviewUpload};
+use difflore_core::review_store::{
     AddCommentInput, EnsureItemInput, ReviewCommentRecord, ReviewItemRecord, ReviewItemWithComments,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -33,7 +33,7 @@ pub(super) async fn fresh_import_pool() -> sqlx::SqlitePool {
         .connect_with(opts)
         .await
         .expect("open in-memory db");
-    difflore_core::db::run_migrations(&pool)
+    difflore_core::infra::db::run_migrations(&pool)
         .await
         .expect("apply migrations");
     pool
@@ -46,10 +46,10 @@ pub(super) async fn seed_imported_review_comments(
     seed_imported_review_comments_with_resolution(db, comments, true).await;
 }
 
-/// Like [`seed_imported_review_comments`] but lets a test choose whether the
-/// seeded thread is resolved. Unresolved directives carry no adoption signal,
-/// so the correctness-aware gate routes them to a pending candidate instead
-/// of auto-activating — exercise the medium-confidence path with `false`.
+/// Like [`seed_imported_review_comments`] but lets a test pick whether the
+/// thread is resolved. Unresolved directives carry no adoption signal, so the
+/// capture gate routes them to a pending candidate rather than auto-activating;
+/// pass `false` to exercise the medium-confidence path.
 pub(super) async fn seed_imported_review_comments_with_resolution(
     db: &sqlx::SqlitePool,
     comments: &[(&str, &str)],
@@ -60,15 +60,15 @@ pub(super) async fn seed_imported_review_comments_with_resolution(
         .join("fixtures")
         .join("acme-widgets");
     std::fs::create_dir_all(&project_path).expect("create project fixture dir");
-    let project = difflore_core::projects::add(
+    let project = difflore_core::domain::projects::add(
         db,
-        difflore_core::models::AddProjectInput {
+        difflore_core::domain::models::AddProjectInput {
             path: project_path.to_string_lossy().to_string(),
         },
     )
     .await
     .expect("insert project");
-    difflore_core::reviews::ensure_item(
+    difflore_core::review_store::ensure_item(
         db,
         EnsureItemInput {
             id: Some(item_id.to_owned()),
@@ -92,7 +92,7 @@ pub(super) async fn seed_imported_review_comments_with_resolution(
     .expect("insert imported review item");
 
     for (idx, (content, path)) in comments.iter().enumerate() {
-        let comment = difflore_core::reviews::add_comment(
+        let comment = difflore_core::review_store::add_comment(
             db,
             AddCommentInput {
                 review_item_id: item_id.to_owned(),
@@ -110,8 +110,7 @@ pub(super) async fn seed_imported_review_comments_with_resolution(
                         "sourceRepoFullName": "acme/widgets",
                         "attachedRepoFullName": "acme/widgets",
                         // `resolved` is the v1 adoption proxy: when true the
-                        // correctness-aware capture gate treats these seeded
-                        // directives as adopted and auto-activates them.
+                        // capture gate treats the directive as adopted and auto-activates it.
                         "resolved": resolved,
                     })
                     .to_string(),
@@ -129,10 +128,10 @@ pub(super) async fn seed_imported_review_comments_with_resolution(
     }
 }
 
-/// Seed a single imported review item under `repo` for a specific PR number,
-/// carrying one resolved high-signal directive comment. Used to exercise
-/// per-PR filtering (e.g. `--exclude-prs`) where the seeded PR number must be
-/// controllable, unlike [`seed_imported_review_comments`] which pins PR #7.
+/// Seed one imported review item under `repo` for a given PR number with a
+/// single resolved directive comment. Unlike [`seed_imported_review_comments`]
+/// (which pins PR #7), the PR number is controllable to exercise per-PR
+/// filtering such as `--exclude-prs`.
 pub(super) async fn seed_pr_with_directive(
     db: &sqlx::SqlitePool,
     repo: &str,
@@ -145,15 +144,15 @@ pub(super) async fn seed_pr_with_directive(
         .join("fixtures")
         .join(format!("{repo}-{pr_number}").replace('/', "-"));
     std::fs::create_dir_all(&project_path).expect("create project fixture dir");
-    let project = difflore_core::projects::add(
+    let project = difflore_core::domain::projects::add(
         db,
-        difflore_core::models::AddProjectInput {
+        difflore_core::domain::models::AddProjectInput {
             path: project_path.to_string_lossy().to_string(),
         },
     )
     .await
     .expect("insert project");
-    difflore_core::reviews::ensure_item(
+    difflore_core::review_store::ensure_item(
         db,
         EnsureItemInput {
             id: Some(item_id.clone()),
@@ -175,7 +174,7 @@ pub(super) async fn seed_pr_with_directive(
     )
     .await
     .expect("insert imported review item");
-    difflore_core::reviews::add_comment(
+    difflore_core::review_store::add_comment(
         db,
         AddCommentInput {
             review_item_id: item_id.clone(),
@@ -202,14 +201,94 @@ pub(super) async fn seed_pr_with_directive(
     .expect("insert imported review comment");
 }
 
+pub(super) async fn seed_gitlab_pr_with_directive(
+    db: &sqlx::SqlitePool,
+    host: &str,
+    repo: &str,
+    pr_number: i32,
+    directive: &str,
+    path: &str,
+) {
+    let item_id = format!("gl-import:{host}:{repo}#{pr_number}");
+    let project_path = std::path::PathBuf::from(std::env::var("DIFFLORE_HOME").expect("home"))
+        .join("fixtures")
+        .join(format!("{host}-{repo}-{pr_number}").replace(['/', ':'], "-"));
+    std::fs::create_dir_all(&project_path).expect("create project fixture dir");
+    let project = difflore_core::domain::projects::add(
+        db,
+        difflore_core::domain::models::AddProjectInput {
+            path: project_path.to_string_lossy().to_string(),
+        },
+    )
+    .await
+    .expect("insert project");
+    difflore_core::review_store::ensure_item(
+        db,
+        EnsureItemInput {
+            id: Some(item_id.clone()),
+            session_id: None,
+            project_id: project.id,
+            file_path: path.to_owned(),
+            diff_content: String::new(),
+            status: "imported".to_owned(),
+            source: "gitlab".to_owned(),
+            source_kind: "gitlab_import".to_owned(),
+            external_review_id: Some(item_id.clone()),
+            repo_full_name: Some(repo.to_owned()),
+            pr_number: Some(pr_number),
+            author: Some("alice".to_owned()),
+            synced_at: None,
+            metadata: Some(
+                serde_json::json!({
+                    "gitlabHost": host,
+                    "sourceRepoFullName": repo,
+                })
+                .to_string(),
+            ),
+            reviewed_at: None,
+        },
+    )
+    .await
+    .expect("insert imported review item");
+    difflore_core::review_store::add_comment(
+        db,
+        AddCommentInput {
+            review_item_id: item_id.clone(),
+            external_comment_id: Some(format!("discussion-{pr_number}")),
+            line_number: Some(1),
+            content: directive.to_owned(),
+            author: Some("reviewer".to_owned()),
+            comment_url: Some(format!(
+                "https://{host}/{repo}/-/merge_requests/{pr_number}#note_1"
+            )),
+            thread_id: Some(format!("review-{pr_number}")),
+            metadata: Some(
+                serde_json::json!({
+                    "filePath": path,
+                    "gitlabHost": host,
+                    "sourceRepoFullName": repo,
+                    "attachedRepoFullName": repo,
+                    "resolved": true,
+                })
+                .to_string(),
+            ),
+        },
+    )
+    .await
+    .expect("insert imported review comment");
+}
+
 pub(super) fn review(pr: i32, comments: usize) -> ImportedReviewUpload {
     ImportedReviewUpload {
+        provider: Some("github".to_owned()),
+        provider_host: None,
         repo_full_name: "difflore-fixtures/example".to_owned(),
         source_repo_full_name: Some("upstream/example".to_owned()),
         pr_number: pr,
         pr_title: Some(format!("PR {pr}")),
         comments: (0..comments)
             .map(|i| ImportedCommentUpload {
+                event_type: None,
                 file_path: Some("src/lib.rs".to_owned()),
                 line_number: i as i32 + 1,
                 content: format!("comment {i}"),

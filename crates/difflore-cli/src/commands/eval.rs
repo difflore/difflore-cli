@@ -1,31 +1,20 @@
 //! `difflore eval` — a fast, repeatable self-recall sanity check.
 //!
 //! IMPORTANT: this is a SELF-RECALL probe, NOT real-world recall. Each query is
-//! the rule's OWN first ~8 significant words, so the corpus is being asked to
-//! find a rule from (a distillation of) its own text. That is an OPTIMISTIC
-//! UPPER BOUND on retrieval quality — useful as a fast, offline, deterministic
-//! sanity check that the index/embedder/rerank are wired up and ranking the
-//! obvious case, but it overstates how well DiffLore recalls a rule from a
-//! *paraphrase* (the real agent query). Real-world paraphrase recall needs
-//! separate task-query evaluation; this command only checks the local
-//! self-match path.
+//! the rule's own first ~8 significant words, so the corpus is asked to find a
+//! rule from a distillation of its own text — an optimistic upper bound that
+//! overstates recall from a real paraphrased agent query. Paraphrase recall
+//! needs separate task-query evaluation.
 //!
-//! Until this module, the doctor self-recall check measured the WRONG path: it
-//! called raw `retrieve_rules_with_confidence`, while every real recall surface
-//! (`recall`, `fix`, MCP `search_rules`, the hook hot path) applies the lexical
-//! and strict-file re-rank on top, so the reported numbers understated what the
-//! self-recall query itself would surface. This module measures self-recall
-//! through `retrieve_rules_for_search` — the exact reranked path the agent uses
-//! — so the upper bound is computed over the real ranking pipeline. Both
-//! `difflore eval` and the doctor section call [`measure_self_recall`], so the
-//! metric can never drift between the two (part of the public eval-seed contract).
+//! Measurement goes through `retrieve_rules_for_search` — the same reranked
+//! path the agent uses — so the upper bound reflects the real ranking pipeline.
+//! Both `difflore eval` and the doctor section call [`measure_self_recall`], so
+//! the metric can't drift between them.
 //!
-//! `difflore eval` builds the measurement index in an isolated `TempDir` with
-//! the local lexical (SHA1) embedder, so it is deterministic, offline, fast,
-//! and leaves the user's real per-project indexes untouched. SHA1 is also the
-//! zero-setup mode every new user starts in (and the effective mode whenever
-//! the cloud embedder is paused), so this is the recall quality that matters
-//! most for the "first fired rule" goal.
+//! The index is built in an isolated `TempDir` with the local lexical (SHA1)
+//! embedder, so it is deterministic, offline, and leaves the user's real
+//! per-project indexes untouched. SHA1 is also the zero-setup mode new users
+//! start in, so this is the recall quality that matters most for first recall.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -38,7 +27,6 @@ use crate::runtime::CommandContext;
 use crate::style::{self, sym};
 
 /// Stop-words dropped when distilling a rule's body into a self-recall query.
-/// Kept identical to the historical doctor list so numbers stay comparable.
 const STOP: &[&str] = &[
     "the", "a", "an", "and", "or", "of", "to", "for", "in", "on", "at", "by", "with", "when",
     "use", "using", "as", "is", "are", "be", "this", "that", "from", "into", "do", "not", "should",
@@ -158,7 +146,7 @@ pub(crate) async fn measure_self_recall(
                 top_k: 5,
                 confidence_map: None,
                 age_days_map: None,
-                target_file: None,
+                target_scope: None,
                 repo_scopes: &[],
                 ann_enabled: false,
                 embedding_timeout,
@@ -235,8 +223,7 @@ pub(crate) async fn handle_eval(ctx: &CommandContext, samples: Option<usize>, js
         return;
     }
 
-    // Progress notice on stderr (keeps stdout clean for `--json`): the
-    // whole-corpus index build + sampling can take a few seconds.
+    // Progress notice on stderr keeps stdout clean for `--json`.
     if !json {
         eprintln!(
             "  {} measuring recall over {} rules ({} sample{})…",

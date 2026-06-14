@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
-use difflore_core::models::DiffContentRecord;
+use difflore_core::domain::models::DiffContentRecord;
 
-use crate::commands::util::{ensure_project, project_path};
 use crate::runtime::CommandContext;
+use crate::support::util::{ensure_project, project_path};
 
 use super::pr::{PreparePrOptions, PreparedPrFix, prepare_pr_fix};
 use super::scope::{DiffScope, collect_diff, parse_diff_scope};
@@ -84,8 +84,13 @@ pub(super) async fn prepare_fix_context(
         } else {
             let requested_scope = parse_diff_scope(diff_scope_arg)?;
             let (diff_records, diff_scope) = collect_diff(&path, requested_scope).await?;
+            let configured_gitlab_hosts =
+                difflore_core::ingest::gitlab::auth::configured_hosts().await;
             let repo_full_name_aliases =
-                difflore_core::git::detect_github_repo_full_names(&path_str);
+                difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+                    &path_str,
+                    &configured_gitlab_hosts,
+                );
             let repo_full_name = repo_full_name_aliases.first().cloned();
             (
                 diff_records,
@@ -122,8 +127,8 @@ fn normalize_target_path(repo_root: &std::path::Path, path: &std::path::Path) ->
     relative.to_string_lossy().replace('\\', "/")
 }
 
-// Prefer a representative source path so retrieval has a language signal
-// instead of only diff headers and import noise.
+// Prefer a real source file so retrieval has a language signal rather than
+// only diff headers and import noise.
 pub(super) fn primary_file_for_retrieval(diff_records: &[DiffContentRecord]) -> Option<String> {
     let first_changed = diff_records.iter().find_map(non_empty_file_path);
     diff_records
@@ -137,6 +142,18 @@ pub(super) fn primary_file_for_retrieval(diff_records: &[DiffContentRecord]) -> 
             }
         })
         .or(first_changed)
+}
+
+/// Every changed file path in the diff, in record order (the authoritative
+/// changeset for retrieval's strict file-pattern cascade). Deduped and
+/// blank-filtered; empty when the diff carries no usable paths.
+pub(super) fn changed_files_for_retrieval(diff_records: &[DiffContentRecord]) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    diff_records
+        .iter()
+        .filter_map(non_empty_file_path)
+        .filter(|file| seen.insert(file.clone()))
+        .collect()
 }
 
 fn non_empty_file_path(record: &DiffContentRecord) -> Option<String> {
@@ -219,5 +236,20 @@ mod tests {
             primary_file_for_retrieval(&records).as_deref(),
             Some(".changeset/whole-views-wear.md")
         );
+    }
+
+    #[test]
+    fn changed_files_keep_order_dedupe_and_skip_blanks() {
+        let records = vec![
+            diff_record("db/schema/users.sql"),
+            diff_record("  "),
+            diff_record("src/api.ts"),
+            diff_record("db/schema/users.sql"),
+        ];
+        assert_eq!(
+            changed_files_for_retrieval(&records),
+            vec!["db/schema/users.sql".to_owned(), "src/api.ts".to_owned()],
+        );
+        assert!(changed_files_for_retrieval(&[]).is_empty());
     }
 }

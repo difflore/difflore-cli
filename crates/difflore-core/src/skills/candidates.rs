@@ -1,5 +1,5 @@
-use crate::errors::CoreError;
-use crate::models::SkillRecord;
+use crate::domain::models::SkillRecord;
+use crate::error::CoreError;
 use uuid::Uuid;
 
 use super::SkillRow;
@@ -22,9 +22,8 @@ impl CandidateSourceProof {
     }
 }
 
-/// One row in the local candidate queue. Mirrors `SkillRecord` but
-/// drops the engine flags that aren't actionable for a pending rule
-/// and adds the ingest-time provenance we surface in the UI.
+/// One row in the local candidate queue. Like `SkillRecord` minus the
+/// engine flags, plus the ingest-time provenance surfaced in the UI.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CandidateRule {
@@ -33,6 +32,7 @@ pub struct CandidateRule {
     pub description: String,
     pub origin: String,
     pub installed_at: String,
+    pub source_repo: Option<String>,
     pub file_patterns: Vec<String>,
     pub drafted_rule: Option<String>,
     pub source_proof: Option<CandidateSourceProof>,
@@ -45,6 +45,7 @@ struct CandidateRuleRow {
     description: String,
     origin: String,
     installed_at: String,
+    source_repo: Option<String>,
     file_patterns: Option<String>,
 }
 
@@ -74,6 +75,7 @@ impl From<CandidateRuleRow> for CandidateRule {
             description: row.description,
             origin: row.origin,
             installed_at: row.installed_at,
+            source_repo: row.source_repo,
             file_patterns,
             drafted_rule,
             source_proof,
@@ -103,34 +105,31 @@ fn candidate_actionability_rank(file_patterns: Option<&str>) -> u8 {
     )
 }
 
-/// List pending candidates, with high-leverage file-scoped work first.
+/// List pending candidates, high-leverage file-scoped work first.
 ///
-/// `repo` filters to rows whose canonical `source_repo` matches the given
-/// `owner/repo` slug. `limit` caps the number of returned rows after that
-/// filter; `None` means no cap. The filter happens at the SQL layer where it's
-/// cheap and the cap is applied in Rust so a missing cap doesn't change the
-/// generated query shape.
+/// `repo` filters (at the SQL layer) to rows whose `source_repo` matches
+/// the `owner/repo` slug. `limit` caps the result in Rust afterwards;
+/// `None` means no cap.
 pub async fn list_candidates(
     db: &sqlx::SqlitePool,
     repo: Option<&str>,
     limit: Option<usize>,
 ) -> crate::Result<Vec<CandidateRule>> {
-    // Two static SQL variants — the repo filter must be conditional, and
-    // sqlx macros need a literal SQL string, so we branch at the call site.
+    // Two static SQL variants: sqlx macros need a literal SQL string, so
+    // the conditional repo filter is branched here.
     let mut rows: Vec<CandidateRuleRow> = if let Some(r) = repo {
         sqlx::query_as(
-            "SELECT id, name, description, origin, installed_at, file_patterns FROM skills \
+            "SELECT id, name, description, origin, installed_at, source_repo, file_patterns FROM skills \
              WHERE status = 'pending' \
-             AND source_repo = ?1 \
+             AND lower(source_repo) = lower(?1) \
              ORDER BY installed_at DESC",
         )
         .bind(r)
         .fetch_all(db)
         .await?
     } else {
-        sqlx::query_as!(
-            CandidateRuleRow,
-            "SELECT id, name, description, origin, installed_at, file_patterns FROM skills \
+        sqlx::query_as(
+            "SELECT id, name, description, origin, installed_at, source_repo, file_patterns FROM skills \
              WHERE status = 'pending' ORDER BY installed_at DESC",
         )
         .fetch_all(db)
@@ -150,8 +149,7 @@ pub async fn list_candidates(
 }
 
 /// Count pending candidates, optionally filtered to a repo. Cheaper than
-/// `list_candidates(...).len()` when the caller only needs the total
-/// (e.g. the "+N more — `--limit 0` to see all" hint in `candidates list`).
+/// `list_candidates(...).len()` when only the total is needed.
 pub async fn count_pending_candidates(
     db: &sqlx::SqlitePool,
     repo: Option<&str>,
@@ -160,7 +158,7 @@ pub async fn count_pending_candidates(
         sqlx::query_scalar(
             "SELECT COUNT(*) FROM skills \
              WHERE status = 'pending' \
-             AND source_repo = ?1",
+             AND lower(source_repo) = lower(?1)",
         )
         .bind(r)
         .fetch_one(db)
@@ -198,7 +196,7 @@ pub async fn promote_candidate(db: &sqlx::SqlitePool, id: &str) -> crate::Result
         let existing = rule_status(db, id).await?;
         return match existing.as_deref() {
             Some("active") => Err(CoreError::Validation(format!(
-                "rule '{id}' is already active — nothing to promote. Inspect local memory with `difflore status --json`."
+                "rule '{id}' is already active; nothing to promote. Inspect local memory with `difflore status --json`."
             ))),
             _ => Err(CoreError::NotFound(format!(
                 "memory draft '{id}' not found. Run `difflore status` for the next action."
@@ -216,13 +214,12 @@ pub async fn promote_candidate(db: &sqlx::SqlitePool, id: &str) -> crate::Result
     .await?;
     if updated.rows_affected() == 0 {
         tx.rollback().await?;
-        // Same disambiguation as `reject_candidate`: tell the user when
-        // they're trying to promote something already active so they
-        // don't go looking for it on the candidates list.
+        // Disambiguate "already active" from "not found" so the user
+        // isn't sent looking on the candidates list for an active rule.
         let existing = rule_status(db, id).await?;
         return match existing.as_deref() {
             Some("active") => Err(CoreError::Validation(format!(
-                "rule '{id}' is already active — nothing to promote. Inspect local memory with `difflore status --json`."
+                "rule '{id}' is already active; nothing to promote. Inspect local memory with `difflore status --json`."
             ))),
             _ => Err(CoreError::NotFound(format!(
                 "memory draft '{id}' not found. Run `difflore status` for the next action."
@@ -254,10 +251,8 @@ pub async fn reject_candidate(db: &sqlx::SqlitePool, id: &str) -> crate::Result<
     .execute(db)
     .await?;
     if result.rows_affected() == 0 {
-        // Disambiguate "doesn't exist" vs "is already active" — both
-        // hit `rows_affected == 0` but the user-facing fix differs.
-        // The previous wording told both cases to look in
-        // `candidates list`, where an active rule won't appear.
+        // Disambiguate "doesn't exist" vs "already active" — both hit
+        // `rows_affected == 0` but the user-facing fix differs.
         let existing = rule_status(db, id).await?;
         return match existing.as_deref() {
             Some("active") => Err(CoreError::Validation(format!(
@@ -396,6 +391,7 @@ mod tests {
             description: "desc".into(),
             origin: "agent-memory".into(),
             installed_at: String::new(),
+            source_repo: None,
             file_patterns: vec![],
             drafted_rule: None,
             source_proof: None,

@@ -5,38 +5,26 @@ description: Capture a local DiffLore rule when the user explicitly asks to reme
 
 # Remember Rule
 
-Use this skill only when the user clearly wants a rule saved for future agent
-sessions, for example:
-
-- "remember this"
-- "save this as a rule"
-- "for this repo, always do X"
-- "do not do X again"
-- "from now on, use Y here"
-
-If the user's wording is ambiguous, ask one short confirmation before calling
-`remember_rule`.
-
-## Capture
+Only when the user clearly wants a rule saved — "remember this", "save this as a
+rule", "for this repo always X", "don't do X again", "from now on use Y". If the
+wording is ambiguous, ask one short confirmation first.
 
 ```text
 remember_rule(
   title="short actionable rule",
   body="fuller explanation with context",
-  file_patterns=["src/**/*.rs"],
+  file_patterns=["src/**/*.rs"],     # narrow when file/subsystem-specific
   severity="low|medium|high",
-  bad_code="optional example of what to avoid",
-  good_code="optional example of preferred form",
+  bad_code="optional: what to avoid",
+  good_code="optional: preferred form",
 )
 ```
 
-Prefer narrow `file_patterns` when the rule is file- or subsystem-specific.
-After capturing, tell the user the rule was saved locally and can be checked
-with `difflore recall` or `difflore ask`.
+After saving, tell the user it's local and checkable with `difflore recall` / `difflore ask`.
 
 ## Avoid
 
-- Do not capture vague complaints; turn them into actionable guidance first.
-- Do not save secrets, private chat content, or broad project history.
-- Do not duplicate an existing rule; search first if unsure.
-- Do not silently capture when the user has not asked to save a rule.
+- Don't capture vague complaints — make them actionable first.
+- Don't save secrets, private chat content, or broad project history.
+- Don't duplicate an existing rule — search first if unsure.
+- Don't capture when the user hasn't asked to save a rule.

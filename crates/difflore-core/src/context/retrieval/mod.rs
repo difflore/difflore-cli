@@ -1,9 +1,14 @@
+mod arbitration;
 mod past_verdicts;
 mod query_embed;
 mod rule_bodies;
 mod rules;
 mod scoring;
 
+pub use arbitration::{
+    ARBITRATION_BANDS, RuleRankingWhy, UNKNOWN_SOURCE_RANK, arbitrate_rule_order,
+    relative_score_band, source_rank,
+};
 pub use past_verdicts::{
     PastVerdictRecaller, merge_past_verdicts, retrieve_past_verdicts,
     retrieve_past_verdicts_by_text, retrieve_past_verdicts_by_text_with_team,
@@ -11,8 +16,8 @@ pub use past_verdicts::{
 };
 pub use rule_bodies::{RenderedRuleBody, RenderedRuleExample, render_full_rule_bodies};
 pub use rules::{
-    RetrievalOptions, apply_explicit_recall_threshold, apply_intent_alignment_gate, retrieve_rules,
-    retrieve_rules_with_confidence,
+    RetrievalOptions, TargetScope, apply_explicit_recall_threshold, apply_intent_alignment_gate,
+    retrieve_rules, retrieve_rules_with_confidence,
 };
 pub use scoring::{RuleKind, effective_confidence, infer_rule_kind};
 
@@ -33,11 +38,9 @@ fn compare_scored_rule_chunks(a: &ScoredRuleChunk, b: &ScoredRuleChunk) -> std::
 
 /// Merge multiple groups of scored rule chunks into one ranked list.
 ///
-/// De-dupes by `skill_id`. On collision the higher-scoring copy wins.
-/// Sorts descending by `score` and truncates to `limit`. Pure / sync —
-/// the orchestrator, the MCP tool helpers, and the CLI search command
-/// share this canonical implementation; runtime callers should pass one
-/// current repo/project scope, not a cross-project set.
+/// De-dupes by `skill_id` (higher-scoring copy wins), sorts descending by
+/// `score`, and truncates to `limit`. Callers should pass a single
+/// repo/project scope, not a cross-project set.
 pub fn merge_scored_rule_chunks(
     groups: impl IntoIterator<Item = Vec<ScoredRuleChunk>>,
     limit: usize,
@@ -75,11 +78,11 @@ fn unique_repo_scopes(repo_scopes: &[String]) -> Vec<String> {
 }
 
 fn search_filter(
-    target_file: Option<&str>,
+    target_scope: Option<TargetScope<'_>>,
     repo_scope: Option<&str>,
 ) -> crate::context::index_db::QueryFilter {
     crate::context::index_db::QueryFilter {
-        language: target_file.and_then(detect_language_from_path),
+        language: target_scope.and_then(|scope| scope.language_hint()),
         repo_scope: repo_scope.map(String::from),
     }
 }
@@ -191,17 +194,17 @@ pub fn rerank_scored_rule_chunks_by_lexical_query(
     chunks
 }
 
-/// Options for the CLI/MCP search-style retrieval helper. The helper fans
-/// out across repo scopes, applies the shared confidence + age decay inputs
-/// at the `retrieve_rules_with_confidence` layer, merges duplicates, then
-/// applies the same lexical re-rank used by the MCP search tools.
+/// Options for the CLI/MCP search-style retrieval helper, which fans out
+/// across repo scopes, merges duplicates, then applies a lexical re-rank.
 pub struct RuleSearchRetrievalOptions<'a> {
     pub query: &'a str,
     pub lexical_query: &'a str,
     pub top_k: usize,
     pub confidence_map: Option<&'a std::collections::HashMap<String, f64>>,
     pub age_days_map: Option<&'a std::collections::HashMap<String, f32>>,
-    pub target_file: Option<&'a str>,
+    /// Strict-cascade scope: one file, or the whole changeset for diff-shaped
+    /// callers (`recall --diff` / `fix`). Also drives the SQL language filter.
+    pub target_scope: Option<TargetScope<'a>>,
     pub repo_scopes: &'a [String],
     pub ann_enabled: bool,
     pub embedding_timeout: Option<std::time::Duration>,
@@ -213,31 +216,25 @@ pub struct RuleSearchRetrievalOptions<'a> {
     pub adaptive_prune: bool,
 }
 
-/// One canonical multi-scope rule fan-out.
-///
-/// The CLI/MCP `search` path (`retrieve_rules_for_search`) and the
-/// orchestrator's `prepare`/`debug` path used to implement the *same*
-/// algorithm twice: dedup+cap repo scopes, clamp `top_k`, derive the
-/// per-scope SQL filter (language from the target file), fan out across
-/// scope × query-variant, merge by best-score dedup, then lexical
-/// re-rank and truncate. The only real divergence between the two was
-/// defaults — search expands an intent query-variant lane and never
-/// constrains to an eligible-skill set, whereas the orchestrator passes
-/// a single query plus an `eligible_skill_ids` allow-list. Those are now
-/// just different inputs to this one function.
+/// Canonical multi-scope rule fan-out shared by the search path and the
+/// orchestrator. Both dedup+cap repo scopes, clamp `top_k`, derive the
+/// per-scope SQL filter, fan out across scope × query-variant, merge by
+/// best-score dedup, then lexical re-rank and truncate; they differ only
+/// in inputs (search expands an intent query-variant lane and passes no
+/// eligible-skill set; the orchestrator passes one query plus an
+/// `eligible_skill_ids` allow-list).
 pub(crate) struct RuleFanoutQuery<'a> {
     /// Primary query string (path + intent, or just intent).
     pub query: &'a str,
     /// Lexical lane used for the final re-rank and for deciding whether
     /// to add a second (intent-only) retrieval variant. Pass the same
-    /// string as `query` to collapse to a single-variant, single-lane
-    /// fan-out (the orchestrator's behaviour).
+    /// string as `query` to collapse to a single-variant fan-out.
     pub lexical_query: &'a str,
     pub top_k: usize,
     pub confidence_map: Option<&'a std::collections::HashMap<String, f64>>,
     pub eligible_skill_ids: Option<&'a std::collections::HashSet<String>>,
     pub age_days_map: Option<&'a std::collections::HashMap<String, f32>>,
-    pub target_file: Option<&'a str>,
+    pub target_scope: Option<TargetScope<'a>>,
     pub repo_scopes: &'a [String],
     pub ann_enabled: bool,
     pub embedding_timeout: Option<std::time::Duration>,
@@ -259,7 +256,7 @@ pub(crate) async fn retrieve_rules_fanout(
         confidence_map,
         eligible_skill_ids,
         age_days_map,
-        target_file,
+        target_scope,
         repo_scopes,
         ann_enabled,
         embedding_timeout,
@@ -276,11 +273,11 @@ pub(crate) async fn retrieve_rules_fanout(
         .take(4)
         .collect();
     let candidate_limit = top_k.saturating_mul(5).clamp(top_k, 50);
-    // A `None` filter retrieves the whole per-project index. That is safe
-    // BECAUSE the index is the scope boundary: it only holds rules copied in
+    // A `None` filter retrieves the whole per-project index, which is safe
+    // because the index is the scope boundary: it only holds rules copied in
     // for the current project's scopes (see `filter_rules_for_repo_scopes`,
-    // which now copies nothing when there is no scope). When the caller did
-    // detect scopes, narrow further per scope.
+    // which copies nothing when there is no scope). With detected scopes,
+    // narrow further per scope.
     let scope_filters: Vec<Option<String>> = if repo_scopes.is_empty() {
         vec![None]
     } else {
@@ -291,7 +288,7 @@ pub(crate) async fn retrieve_rules_fanout(
     let mut retrievals = Vec::with_capacity(scope_filters.len() * query_variants.len());
     for repo_scope in &scope_filters {
         for query_variant in &query_variants {
-            let filter = search_filter(target_file, repo_scope.as_deref());
+            let filter = search_filter(target_scope, repo_scope.as_deref());
             retrievals.push(async move {
                 retrieve_rules_with_confidence(
                     index_pool,
@@ -301,7 +298,7 @@ pub(crate) async fn retrieve_rules_fanout(
                         confidence_map,
                         eligible_skill_ids,
                         age_days_map,
-                        target_file,
+                        target_scope,
                         filter: Some(&filter),
                         ann_enabled,
                         embedding_timeout,
@@ -337,7 +334,7 @@ pub async fn retrieve_rules_for_search(
         top_k,
         confidence_map,
         age_days_map,
-        target_file,
+        target_scope,
         repo_scopes,
         ann_enabled,
         embedding_timeout,
@@ -352,11 +349,11 @@ pub async fn retrieve_rules_for_search(
             lexical_query,
             top_k,
             confidence_map,
-            // The search path intentionally never constrains to an
-            // engine-eligible allow-list — callers filter afterwards.
+            // The search path never constrains to an engine-eligible
+            // allow-list; callers filter afterwards.
             eligible_skill_ids: None,
             age_days_map,
-            target_file,
+            target_scope,
             repo_scopes,
             ann_enabled,
             embedding_timeout,
@@ -372,14 +369,11 @@ pub async fn retrieve_rules_for_search(
 /// lower-ranked but co-occurring results surface reliably.
 const RRF_K: f64 = 60.0;
 
-/// Map a file path (or bare filename) to a canonical language tag. Matches
-/// the spelling used in skill tags so `QueryFilter.language` can round-trip
-/// cleanly between the MCP caller and the indexed chunk metadata. Unknown
-/// extensions return `None` — callers pass that through as "no language
-/// filter" rather than guessing at a language that'd drop real hits.
-///
-/// Single canonical extension-to-language map shared by orchestrator and
-/// retrieval call sites.
+/// Map a file path (or bare filename) to a canonical language tag matching
+/// the spelling used in skill tags, so `QueryFilter.language` round-trips
+/// between the MCP caller and the indexed chunk metadata. Unknown extensions
+/// return `None` (treated as "no language filter") rather than guessing a
+/// language that would drop real hits.
 pub fn detect_language_from_path(path: &str) -> Option<String> {
     let lower = path.to_ascii_lowercase();
     // Match on the last dotted suffix so compound names like `foo.d.ts`
@@ -415,7 +409,6 @@ pub fn detect_language_from_path(path: &str) -> Option<String> {
 /// doesn't run away. Total saturated at 6 in the caller.
 fn concreteness_score(content: &str) -> usize {
     let mut score = 0usize;
-    // Backticks: the simplest "I name a specific thing" signal.
     let backticks = content.matches('`').count() / 2; // each token wraps in two backticks
     score += backticks.min(3);
     // Path-like fragments: at least one slash-separated word with a dot
@@ -459,142 +452,101 @@ fn concreteness_score(content: &str) -> usize {
 /// burns agent tokens for negative value.
 const MIN_RELEVANCE_SCORE: f64 = 0.001;
 
-/// Adaptive top-K injection threshold. When the top-ranked rule's score
-/// is below this, return zero rules instead of padding to k. Weak rules
-/// on simple tasks are more likely to distract than help.
-///
-/// Threshold value: ~5× `MIN_RELEVANCE_SCORE`. RRF with k=60 produces a
-/// top-1 score around 0.008-0.015 for genuinely strong matches and
-/// 0.001-0.003 for cascade-only tail. The 0.005 cut sits in the gap.
+/// Adaptive top-K injection threshold. When the top-ranked rule's score is
+/// below this, return zero rules instead of padding to k — weak rules on
+/// simple tasks distract more than they help. RRF with k=60 yields a top-1
+/// score around 0.008-0.015 for strong matches and 0.001-0.003 for
+/// cascade-only tail; this 0.005 cut sits in the gap.
 const ADAPTIVE_INJECT_THRESHOLD: f64 = 0.005;
 
-/// Relative floor — drop tail rules whose score is less than this
-/// fraction of the top-ranked rule's score. Catches the "everything
-/// scored 0.02" pathological flat distribution we saw in claude
-/// sessions, where 10 rules within 5% of each other meant the agent
-/// couldn't tell signal from noise. 0.35 keeps any rule worth at
-/// least ~1/3 of the leader and drops the rest.
+/// Relative floor — drop tail rules whose score is less than this fraction
+/// of the top-ranked rule's score. Catches pathological flat distributions
+/// where many rules cluster within a few percent of each other and the
+/// agent can't tell signal from noise. Keeps any rule worth ~1/3 of the
+/// leader.
 const RELATIVE_RELEVANCE_FLOOR: f64 = 0.35;
 
-/// Absolute relevance floor for the EXPLICIT recall surfaces
-/// (`search_rules` tool + CLI `recall`), applied by
-/// [`rules::apply_explicit_recall_threshold`] on the FINAL re-ranked
-/// score. When even the top hit is below this, the whole result set is
-/// treated as noise and explicit recall returns nothing rather than weak
-/// filler rules.
+/// Absolute relevance floor for the explicit recall surfaces (`search_rules`
+/// tool + CLI `recall`), applied by [`rules::apply_explicit_recall_threshold`]
+/// on the final re-ranked score. When even the top hit is below this, the
+/// whole result set is treated as noise and explicit recall returns nothing.
 ///
-/// Tuned conservatively. After the lexical-intent re-rank a genuinely
-/// relevant top hit is boosted well into the 0.1+ range, and
-/// exact-title-strict / starter hits sit at `2.0 + conf` — all an order
-/// of magnitude above this floor, so strong matches are never suppressed.
-/// A cascade-only / no-intent-overlap top hit (the Codecov-in-a-wrong-file
-/// case the audit flagged) gets no lexical boost and stays in the raw
-/// fused RRF band (~0.001–0.005), falling below the floor. The value sits
-/// in the gap: 2× the hook's `ADAPTIVE_INJECT_THRESHOLD` (0.005) and below
-/// the boosted strong-match range.
+/// After the lexical-intent re-rank a relevant top hit sits well above 0.1
+/// (exact-title-strict / starter hits at `2.0 + conf`), so strong matches are
+/// never suppressed. A cascade-only / no-intent-overlap top hit gets no
+/// lexical boost and stays in the raw fused RRF band (~0.001-0.005), below
+/// this floor. The value sits in the gap, 2x the hook's
+/// `ADAPTIVE_INJECT_THRESHOLD`.
 const EXPLICIT_RECALL_MIN_RELEVANCE: f64 = 0.01;
 
-/// Relative tail floor for the explicit recall gate — drop results below
-/// this fraction of the (surviving) top hit. Deliberately looser than the
-/// in-retrieval `RELATIVE_RELEVANCE_FLOOR` (0.35): an explicit user query
-/// should keep more of a genuine result set and only shed the clearly
-/// irrelevant tail (e.g. a rule worth <1/5 of the leader), never trim a
-/// borderline-but-related supporting rule.
+/// Relative tail floor for the explicit recall gate — drop results below this
+/// fraction of the surviving top hit. Looser than the in-retrieval
+/// `RELATIVE_RELEVANCE_FLOOR` (0.35): an explicit user query keeps more of a
+/// genuine result set, shedding only the clearly irrelevant tail (worth <1/5
+/// of the leader).
 const EXPLICIT_RECALL_RELATIVE_FLOOR: f64 = 0.20;
 
 /// Minimum count of distinct salient (non-stop-word) query terms that a
-/// candidate rule's *directive* (its `Rule Name:` title + leading body)
-/// must share with the query intent to be considered intent-aligned.
+/// candidate rule's directive (its `Rule Name:` title + leading body) must
+/// share with the query intent to be considered intent-aligned.
 ///
-/// This is the core of the intent-alignment gate (the leak-free A/B
-/// diagnosis): hybrid retrieval + the relative floors admit rules that are
-/// TOPICALLY ADJACENT but address a different ACTION/SUBJECT — e.g. a
-/// "return false vs panic" directive recalls "panic-message wording" and
-/// "test-timing" rules because they share the topical anchor token
-/// (`panic`) and the same file area. A LONE shared anchor token is exactly
-/// that noise, so the bar is **2**: a genuinely on-subject directive shares
-/// the verb/object pair (`return` + `false`, or `validate` + `input`), not
-/// just the one topical word. Set to 2 so a single topical-anchor overlap
-/// is insufficient while the on-subject rule (which shares the action plus
-/// its object) clears it. Self-recall — where the query *is* the rule's own
-/// intent text — shares nearly every directive term, so it clears this by a
-/// wide margin and is never regressed.
+/// Hybrid retrieval and the relative floors admit topically-adjacent rules
+/// that address a different action/subject (e.g. a "return false vs panic"
+/// directive pulling in "panic-message wording" rules via the shared anchor
+/// `panic`). The bar is 2 so a lone topical-anchor overlap is insufficient
+/// while an on-subject rule sharing the verb/object pair clears it.
+/// Self-recall shares nearly every directive term and clears it easily.
 ///
-/// Iter-2 (2026-06-02): the count alone proved too weak — two GENERIC anchors
-/// (e.g. `panic` + `input`) could clear it without any real subject overlap.
-/// The absolute path now ALSO requires the shared set to contain at least
-/// [`MIN_DISTINCTIVE_SHARED_TERMS`] non-generic term AND to cover
-/// [`MIN_RULE_DIRECTIVE_COVERAGE_RATIO`] of the rule's own directive, so this
-/// count is a necessary-but-not-sufficient gate, not the whole test.
+/// This is necessary-but-not-sufficient: the absolute path also requires the
+/// shared set to contain at least [`MIN_DISTINCTIVE_SHARED_TERMS`] non-generic
+/// term, since two generic anchors alone could otherwise pass.
 const MIN_INTENT_DIRECTIVE_OVERLAP: usize = 2;
 
 /// Alternate (ratio) path to intent alignment: a candidate also passes when
-/// the SHARED (distinctive) terms cover at least this fraction of the query's
+/// the shared distinctive terms cover at least this fraction of the query's
 /// salient terms, even if the absolute count is below
-/// [`MIN_INTENT_DIRECTIVE_OVERLAP`]. This is what keeps SHORT, sharp queries
-/// — and the realistic per-rule fan-out of a two-word intent ("batching and
-/// retries", where each seeded rule matches one of the two terms) — from
-/// over-pruning: a 2-salient-term intent whose single shared term is half the
-/// query is still a real subject match, not a lone-anchor coincidence.
-///
-/// Kept at **0.5** (a half-coverage match). The iter-2 precision gain comes
-/// from the DISTINCTIVENESS requirement ([`MIN_DISTINCTIVE_SHARED_TERMS`])
-/// that now guards BOTH this path and the absolute path, not from raising
-/// this fraction — raising it to 0.6 was tried and regressed the realistic
-/// "one rule matches each half of a two-word intent" fan-out. A lone GENERIC
-/// anchor that is half of a 2-term query no longer slips through here, because
-/// the distinctiveness gate rejects it before this ratio is ever consulted.
+/// [`MIN_INTENT_DIRECTIVE_OVERLAP`]. Keeps short, sharp queries from
+/// over-pruning (e.g. a two-word intent whose seeded rules each match one
+/// term). Raising it to 0.6 regressed that fan-out; precision instead comes
+/// from the [`MIN_DISTINCTIVE_SHARED_TERMS`] gate, which rejects a lone
+/// generic anchor before this ratio is consulted.
 const MIN_INTENT_DIRECTIVE_OVERLAP_RATIO: f64 = 0.5;
 
-/// Minimum number of shared terms that are DISTINCTIVE — i.e. not in the
-/// generic topical/code-anchor set ([`is_generic_anchor`]) — required for a
-/// concern match. This is the iter-2 precision lever and guards BOTH the
-/// absolute-overlap and ratio paths.
+/// Minimum number of shared terms that are distinctive — not in the generic
+/// topical/code-anchor set ([`is_generic_anchor`]) — required for a concern
+/// match. Guards both the absolute-overlap and ratio paths.
 ///
-/// The leak-free A/B diagnosis is precise: the extra false positives came
-/// from rules sharing a generic TOPICAL ANCHOR (`panic`, `test`, `error`)
-/// plus incidental filler, not a genuine subject/action overlap. Counting raw
-/// term overlap can't tell "shares the subject" from "name-drops the same
-/// topic word": an all-anchor pair scores >= 2 just like a real verb/object
-/// pair. Requiring at least one DISTINCTIVE shared term forces the overlap to
-/// include a specific subject/action token (`false`, `invalid`, `hijack`,
-/// `memchr`, `yaml`), not merely the topic everyone in that file area
-/// mentions. A match made ONLY of generic anchors fails the gate regardless of
-/// count or ratio — which is exactly the topically-adjacent, wrong-subject
-/// case the A/B blamed for the FP penalty. Chosen over a rule-side coverage
-/// ratio because distinctiveness keys off the SHARED set, so it is robust to
-/// directive phrasing (body-phrased directives, bare-label titles) that a
-/// fixed coverage floor mis-handles.
+/// Raw term overlap can't distinguish "shares the subject" from "name-drops
+/// the same topic word": an all-anchor pair (`panic` + `test`) scores >= 2
+/// just like a real verb/object pair. Requiring one distinctive shared term
+/// forces the overlap to include a specific subject/action token (`false`,
+/// `invalid`, `hijack`, `yaml`), so a match made only of generic anchors fails
+/// regardless of count or ratio. Keyed off the shared set rather than a
+/// rule-side coverage ratio, so it is robust to varied directive phrasing.
 const MIN_DISTINCTIVE_SHARED_TERMS: usize = 1;
 
-/// Score ceiling above which a candidate is EXEMPT from the intent-alignment
-/// gate entirely — it is kept regardless of directive overlap. The explicit
-/// paths inject very high-value, already-intent-validated signals after
-/// fusion: exact-title-strict matches (`2.0 + conf`), the cross-repo starter
-/// set, and the lexical-intent re-rank boost. A candidate scoring at or above
-/// this ceiling earned its place through one of those strong signals, so the
-/// alignment gate must never second-guess it (that would risk the
-/// strong-match / self-recall regression the goal forbids). Sits an order of
-/// magnitude above the boosted strong-match RRF band (~0.1–0.45 after the
-/// lexical re-rank) but below the exact-title-strict `2.0 + conf` floor, so
-/// it exempts the unambiguous winners while still scrutinising the
-/// topically-adjacent middle band that the diagnosis flagged.
+/// Score ceiling above which a candidate is exempt from the intent-alignment
+/// gate and kept regardless of directive overlap. Candidates here earned
+/// their place through a strong post-fusion signal (exact-title-strict
+/// `2.0 + conf`, the cross-repo starter set, or the lexical-intent re-rank
+/// boost), so the gate must not second-guess them. Sits above the boosted
+/// strong-match RRF band (~0.1-0.45) but below the exact-title-strict floor,
+/// exempting unambiguous winners while still scrutinising the
+/// topically-adjacent middle band.
 const INTENT_ALIGNMENT_EXEMPT_SCORE: f64 = 0.6;
 
 #[cfg(test)]
 mod tests {
     use super::rules::pattern_allows;
     use super::*;
-    use crate::cloud::api_types::RecallPastVerdictsRequest;
     use crate::context::index_db::{QueryFilter, open_pool_at, upsert_rule_chunks};
     use crate::context::rule_source::RuleDocument;
     use crate::context::types::{PastVerdict, PastVerdictScope};
-    use crate::errors::CoreError;
-    use crate::review_trajectory::{TrajectoryBuilder, TrajectoryStep};
+    use crate::contract::RecallPastVerdictsRequest;
+    use crate::error::CoreError;
+    use crate::observability::trajectory::{TrajectoryBuilder, TrajectoryStep};
     use async_trait::async_trait;
     use tempfile::TempDir;
-
-    // -- Cascade pattern_allows tests (Iter-9) --
 
     #[test]
     fn pattern_allows_table() {
@@ -831,7 +783,7 @@ mod tests {
                 top_k: 1,
                 confidence_map: None,
                 age_days_map: None,
-                target_file: Some("src/context.go"),
+                target_scope: Some(TargetScope::File("src/context.go")),
                 repo_scopes: &[repo.to_owned()],
                 ann_enabled: false,
                 embedding_timeout: Some(std::time::Duration::from_millis(2500)),
@@ -869,7 +821,7 @@ mod tests {
                 top_k: 1,
                 confidence_map: None,
                 age_days_map: None,
-                target_file: Some("src/http/handler.rs"),
+                target_scope: Some(TargetScope::File("src/http/handler.rs")),
                 repo_scopes: &[],
                 ann_enabled: false,
                 embedding_timeout: Some(std::time::Duration::from_millis(2500)),
@@ -1169,7 +1121,7 @@ mod tests {
             "request handlers database",
             RetrievalOptions {
                 top_k: Some(5),
-                target_file: Some("src/server.rs"),
+                target_scope: Some(TargetScope::File("src/server.rs")),
                 filter: Some(&filter),
                 ann_enabled: false,
                 ..Default::default()
@@ -1210,7 +1162,7 @@ mod tests {
             "request handlers structured errors",
             RetrievalOptions {
                 top_k: Some(5),
-                target_file: Some("src/server.rs"),
+                target_scope: Some(TargetScope::File("src/server.rs")),
                 filter: Some(&filter),
                 ann_enabled: false,
                 ..Default::default()
@@ -1222,6 +1174,110 @@ mod tests {
         assert_eq!(
             hits.first().map(|hit| hit.skill_id.as_str()),
             Some("universal")
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_cascade_changeset_recalls_rule_scoped_to_secondary_diff_file() {
+        // The fallback-loop replacement regression: a cross-cutting rule whose
+        // `file_patterns` carry both sides of a coupled change (schema globs +
+        // migrations dir) must be recalled in ONE changeset query even when
+        // the diff's primary file (src/api.ts) doesn't match — previously the
+        // single-file cascade on the primary file dropped it and a per-file
+        // fallback loop had to re-query.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("idx.db");
+        let pool = open_pool_at(&path).await.unwrap();
+        let mut coupled = rule_doc(
+            "schema-needs-migration",
+            "schema changes must ship a paired migration in the migrations directory",
+            None,
+            Some("acme/widgets"),
+        );
+        coupled.file_patterns = Some(r#"["db/schema/**", "migrations/**/*.sql"]"#.to_owned());
+        upsert_rule_chunks(&pool, &[coupled]).await.unwrap();
+
+        let filter = QueryFilter {
+            language: None,
+            repo_scope: Some("acme/widgets".to_owned()),
+        };
+        let diff_files = vec!["src/api.ts".to_owned(), "db/schema/users.sql".to_owned()];
+        let hits = retrieve_rules_with_confidence(
+            &pool,
+            "schema changes migration",
+            RetrievalOptions {
+                top_k: Some(5),
+                target_scope: Some(TargetScope::Changeset(&diff_files)),
+                filter: Some(&filter),
+                ann_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            hits.first().map(|hit| hit.skill_id.as_str()),
+            Some("schema-needs-migration"),
+            "changeset scope must recall a rule matched by a non-primary diff file"
+        );
+
+        // Same query scoped to ONLY the primary file must still drop it —
+        // the changeset variant widens scope, the single-file cascade stays
+        // strict (the hook hot path's misapply control).
+        let single_file_hits = retrieve_rules_with_confidence(
+            &pool,
+            "schema changes migration",
+            RetrievalOptions {
+                top_k: Some(5),
+                target_scope: Some(TargetScope::File("src/api.ts")),
+                filter: Some(&filter),
+                ann_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            single_file_hits.is_empty(),
+            "single-file cascade must not widen to other files' patterns"
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_cascade_changeset_drops_rule_when_no_diff_file_matches() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("idx.db");
+        let pool = open_pool_at(&path).await.unwrap();
+        let mut scoped = rule_doc(
+            "schema-needs-migration",
+            "schema changes must ship a paired migration in the migrations directory",
+            None,
+            Some("acme/widgets"),
+        );
+        scoped.file_patterns = Some(r#"["db/schema/**", "migrations/**/*.sql"]"#.to_owned());
+        upsert_rule_chunks(&pool, &[scoped]).await.unwrap();
+
+        let filter = QueryFilter {
+            language: None,
+            repo_scope: Some("acme/widgets".to_owned()),
+        };
+        let diff_files = vec!["src/api.ts".to_owned(), "docs/usage.md".to_owned()];
+        let hits = retrieve_rules_with_confidence(
+            &pool,
+            "schema changes migration",
+            RetrievalOptions {
+                top_k: Some(5),
+                target_scope: Some(TargetScope::Changeset(&diff_files)),
+                filter: Some(&filter),
+                ann_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            hits.is_empty(),
+            "a changeset touching none of the rule's globs must not recall it"
         );
     }
 

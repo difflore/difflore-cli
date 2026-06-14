@@ -15,34 +15,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::plan::Tier;
 use crate::theme::Theme;
-
-/// Plan tier kept local to the status bar view model.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum PlanTier {
-    Free,
-    Team,
-    TeamPlus,
-}
-
-impl PlanTier {
-    /// Plan-accent dot color.
-    pub const fn dot(self, t: &Theme) -> Color {
-        match self {
-            Self::Free => t.diff,
-            Self::Team => t.origin_cloud,
-            Self::TeamPlus => t.origin_team,
-        }
-    }
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Free => "Free",
-            Self::Team => "Team",
-            Self::TeamPlus => "Team Plus",
-        }
-    }
-}
 
 /// Drives the right-side hint. Carries the CTA-relevant payload so
 /// the status bar can format the variant without re-reading the full
@@ -65,7 +39,7 @@ pub enum EventStripState {
 /// from the full `PlanState` Rust mirror by `build_status_bar_view`.
 #[derive(Clone, Debug)]
 pub struct PlanStateView {
-    pub tier: PlanTier,
+    pub tier: Tier,
     pub plan_label: String,
     pub rule_count: u32,
     pub published_count: u32,
@@ -88,21 +62,19 @@ impl PlanStateView {
         // FixRunsLow on Free is nonsensical (Free has no hosted capacity); fall
         // back to the steady-state empty cell rather than panic.
         match (self.tier, &self.event_strip) {
-            (PlanTier::Free, EventStripState::FixRunsLow { used, quota }) => Some(format!(
+            (Tier::Free, EventStripState::FixRunsLow { used, quota }) => Some(format!(
                 "⚠ {used}/{quota} cloud embeds used  │  [u] upgrade · [b] BYOK"
             )),
-            (PlanTier::Free, EventStripState::CrossMachine) => {
+            (Tier::Free, EventStripState::CrossMachine) => {
                 Some("⚡ rules not synced  │  [s] sync · 14d trial".into())
             }
-            (PlanTier::Free, EventStripState::TeammateCaught { when_label, .. }) => Some(format!(
+            (Tier::Free, EventStripState::TeammateCaught { when_label, .. }) => Some(format!(
                 "⚡ teammate PR caught ({when_label})  │  [t] try Team · multiply impact"
             )),
-            (PlanTier::Team, EventStripState::FixRunsLow { used, quota }) => Some(format!(
+            (Tier::Team, EventStripState::FixRunsLow { used, quota }) => Some(format!(
                 "⚠ {used}/{quota} review-memory capacity used  │  [u] Team Plus · expand"
             )),
-            (PlanTier::Free, EventStripState::None) | (PlanTier::Team | PlanTier::TeamPlus, _) => {
-                None
-            }
+            (Tier::Free, EventStripState::None) | (Tier::Team | Tier::TeamPlus, _) => None,
         }
     }
 }
@@ -113,7 +85,7 @@ impl SmartStatusBar {
     /// Render the status bar into `area`. The caller supplies the
     /// full theme so we never have to re-resolve at draw time.
     pub fn render(frame: &mut Frame<'_>, area: Rect, theme: &Theme, view: &PlanStateView) {
-        let dot = Span::styled("● ", Style::default().fg(view.tier.dot(theme)));
+        let dot = Span::styled("● ", Style::default().fg(tier_dot(view.tier, theme)));
         let plan = Span::styled(
             view.tier.label(),
             Style::default()
@@ -156,6 +128,14 @@ impl SmartStatusBar {
     }
 }
 
+const fn tier_dot(tier: Tier, t: &Theme) -> Color {
+    match tier {
+        Tier::Free => t.diff,
+        Tier::Team => t.origin_cloud,
+        Tier::TeamPlus => t.origin_team,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,7 +145,7 @@ mod tests {
     /// which was only ever used by these tests.
     fn free_view() -> PlanStateView {
         PlanStateView {
-            tier: PlanTier::Free,
+            tier: Tier::Free,
             plan_label: "Free".into(),
             rule_count: 0,
             published_count: 0,
@@ -184,21 +164,21 @@ mod tests {
     #[test]
     fn team_steady_is_quiet() {
         let mut v = free_view();
-        v.tier = PlanTier::Team;
+        v.tier = Tier::Team;
         assert_eq!(v.right_side(), None);
     }
 
     #[test]
     fn team_plus_steady_is_quiet() {
         let mut v = free_view();
-        v.tier = PlanTier::TeamPlus;
+        v.tier = Tier::TeamPlus;
         assert_eq!(v.right_side(), None);
     }
 
     #[test]
     fn team_fix_runs_low_renders_capacity() {
         let mut v = free_view();
-        v.tier = PlanTier::Team;
+        v.tier = Tier::Team;
         v.event_strip = EventStripState::FixRunsLow {
             used: 240,
             quota: 300,

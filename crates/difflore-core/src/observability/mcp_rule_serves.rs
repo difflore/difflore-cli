@@ -1,9 +1,9 @@
 //! Local MCP rule-serve ledger.
 //!
-//! This records the small, low-sensitive facts needed to prove the open
-//! source runtime is doing useful work: which MCP rule tool served rules,
-//! whether it came up empty, the repo/file scope, and a hash of the query.
-//! It deliberately does not store the prompt, source code, or rule bodies.
+//! Records low-sensitivity facts proving the runtime does useful work: which
+//! MCP rule tool served rules, whether it came up empty, the repo/file scope,
+//! and a hash of the query. It does not store the prompt, source code, or rule
+//! bodies.
 
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;

@@ -2,15 +2,14 @@ use serde_json::{Value, json};
 use sqlx::SqlitePool;
 
 use super::super::{McpState, build_cost_meta, estimate_tokens};
-use super::util::{MCP_TEXT_ARG_CHAR_LIMIT, validate_mcp_text_arg};
+use super::validate::{MCP_TEXT_ARG_CHAR_LIMIT, validate_mcp_text_arg};
 
-// ── plan_pr (Layer 1 plan-time predictor) ──────────────────────────
+// plan_pr (Layer 1 plan-time predictor): given an issue/PR description,
+// predict likely file categories, median file count, and closest historical
+// PRs from the local review corpus.
 //
-// Given an issue/PR description, predict likely file categories, median
-// file count, and closest historical PRs from the local review corpus.
-//
-// Data source: local SQLite `review_items` rows from
-// `difflore import-reviews`, grouped by `(repo_full_name, pr_number)`.
+// Data source: local SQLite `review_items` rows from `difflore
+// import-reviews`, grouped by `(repo_full_name, pr_number)`.
 
 /// One historical PR record reconstructed from `review_items`.
 #[derive(Debug, Clone)]
@@ -112,7 +111,7 @@ pub(crate) fn categorise_path(path: &str) -> String {
 }
 
 /// Pull historical PRs out of local `SQLite`. Each row in `review_items`
-/// represents one PR's representative file (see `github_import.rs`).
+/// represents one PR's representative file (see `ingest/github`).
 /// We GROUP BY (`repo_full_name`, `pr_number`) so future schemas with
 /// many rows per PR still aggregate correctly.
 pub(crate) async fn load_pr_corpus(db: &SqlitePool) -> Vec<HistoricalPr> {
@@ -706,6 +705,11 @@ pub(crate) async fn tool_plan_pr(state: &McpState, args: &Value) -> Result<Value
         .map_or(5, |v| v.clamp(1, 20) as usize);
 
     let corpus = load_pr_corpus(&state.db).await;
+    // Warm the configured-GitLab-host cache before detecting remotes so a fresh
+    // MCP-server process that calls plan_pr before any recall can still resolve
+    // self-managed GitLab scopes; otherwise the corpus scoping falls empty.
+    // Mirrors hook.rs / search_rules.rs / remember_rule.rs.
+    crate::mcp_server::hook::refresh_configured_gitlab_hosts_for_remote_detection().await;
     let detected_repos = crate::mcp_server::hook::detect_git_remote_owner_repos();
 
     if corpus.is_empty() {
@@ -773,8 +777,7 @@ pub(crate) async fn tool_plan_pr(state: &McpState, args: &Value) -> Result<Value
         }));
     }
 
-    // Format prediction for the agent. Keep it dense — predict.py's
-    // human renderer is the reference shape.
+    // Format prediction for the agent. Keep it dense.
     let median = prediction
         .get("predicted_file_count_median")
         .and_then(Value::as_u64)

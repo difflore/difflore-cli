@@ -2,10 +2,10 @@ use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 use std::process::Command;
 
-use difflore_core::cloud::api_types::{RecordAcceptedEditRequest, RecordAcceptedEditResponse};
 use difflore_core::context::retrieval::detect_language_from_path;
+use difflore_core::contract::{RecordAcceptedEditRequest, RecordAcceptedEditResponse};
 use difflore_core::observability::fix_outcomes::FixOutcomeInput;
-use difflore_core::review::ReviewIssueRecord;
+use difflore_core::review_engine::ReviewIssueRecord;
 
 use crate::style::{self, sym};
 
@@ -88,35 +88,35 @@ fn print_accepted_edit_upload_warnings(summary: &AcceptedEditUploadSummary) {
     let pending_attribution = summary.queued.saturating_sub(summary.uploaded);
     if pending_attribution > 0 {
         eprintln!(
-            "{} {count} accepted edit evidence candidate(s) queued for later cloud upload; cloud-linked accepted-fix evidence status is unverified until cloud sync confirms team workspace and linked rule observations.",
+            "{} {count} accepted edit(s) queued for later cloud upload; run cloud sync to confirm team workspace and linked memory activity.",
             style::warn(sym::WARN),
             count = pending_attribution
         );
     }
     if summary.missing_rule_ids > 0 {
         eprintln!(
-            "{} {count} accepted edit evidence candidate(s) have no recalled rule id; they can be raw accepted-edit telemetry, but cannot count as Impact evidence.",
+            "{} {count} accepted edit(s) have no recalled memory id; preview recalled memories before applying fixes.",
             style::warn(sym::WARN),
             count = summary.missing_rule_ids
         );
     }
     if summary.missing_target_pr > 0 {
         eprintln!(
-            "{} {count} accepted edit evidence candidate(s) have no target PR number; run `difflore fix --pr <PR>` on a real PR before collecting cloud-linked accepted-fix evidence.",
+            "{} {count} accepted edit(s) have no target PR number; run `difflore fix --pr <PR>` on a real PR before uploading team review history.",
             style::warn(sym::WARN),
             count = summary.missing_target_pr
         );
     }
     if summary.missing_team > 0 {
         eprintln!(
-            "{} {count} accepted edit evidence item(s) uploaded, but no cloud team workspace was found; create or join a team before collecting Impact evidence.",
+            "{} {count} accepted edit(s) uploaded, but no cloud team workspace was found; create or join a team.",
             style::warn(sym::WARN),
             count = summary.missing_team
         );
     }
     if summary.missing_rule_observation > 0 {
         eprintln!(
-            "{} {count} accepted edit evidence item(s) uploaded without a linked rule observation; Impact evidence needs accepted fixes with recalled rule ids.",
+            "{} {count} accepted edit(s) uploaded without linked memory activity; preview recalled memories before applying fixes.",
             style::warn(sym::WARN),
             count = summary.missing_rule_observation
         );
@@ -226,17 +226,15 @@ pub(super) async fn record_fix_outcomes(
         failed_reason: None,
     }));
 
-    if let Err(e) = difflore_core::fix_outcomes::record_many(db, &rows).await {
+    if let Err(e) = difflore_core::observability::fix_outcomes::record_many(db, &rows).await {
         eprintln!(
             "{} could not record local fix outcomes: {e}",
             style::warn(sym::WARN)
         );
     }
 
-    // Accepted fixes reinforce by +0.05 and rejections by -0.1 through
-    // `update_confidence`, which owns clamping and `rule_events` writes.
-    // The activity event uses the returned before/after values; unknown
-    // rule ids are skipped rather than inventing a strength.
+    // Reinforce via `update_confidence`, which owns clamping and
+    // `rule_events` writes; unknown rule ids are skipped, not invented.
     for issue in &outcome.applied {
         let Some(rule_id) = issue.rule_id.as_deref().filter(|s| !s.trim().is_empty()) else {
             fix_debug!(
@@ -275,18 +273,12 @@ pub(super) async fn record_fix_outcomes(
 /// Apply a reinforcement signal to a local rule and emit its activity event.
 ///
 /// `signal` is exactly "accept" (+0.05) or "reject" (-0.1) — the only two
-/// values `difflore_core::skills::update_confidence` accepts. That fn owns
-/// the mutation: it reads the before value, clamps the delta into 0.0..=1.0,
-/// updates `skills.confidence_score`, and inserts a `rule_events` row. The
-/// returned before/after values feed the `RuleReinforced` event.
+/// values `difflore_core::skills::update_confidence` accepts; that fn owns
+/// the clamp into 0.0..=1.0, the `skills.confidence_score` update, and the
+/// `rule_events` row.
 ///
-/// On `Err` (the rule_id isn't a local skill — deleted, or a non-skill id
-/// with no `skills` row) we skip and `fix_debug!` rather than guess a
-/// strength; reinforcement telemetry must never invent state changes.
-///
-/// `before`/`after` are 0.0..=1.0 REALs, so the f64→f32 narrowing for the
-/// activity event is lossless in practice; the lint is allowed at fn scope
-/// rather than on a bare tail expression (which stable Rust rejects).
+/// On `Err` (the rule_id isn't a local skill) we skip and `fix_debug!`
+/// rather than invent a strength — telemetry must never fabricate state.
 #[allow(clippy::cast_possible_truncation)]
 async fn reinforce_rule(
     db: &difflore_core::SqlitePool,
@@ -295,14 +287,14 @@ async fn reinforce_rule(
     signal: &str,
     reason: &str,
 ) {
-    let input = difflore_core::models::UpdateConfidenceInput {
+    let input = difflore_core::domain::models::UpdateConfidenceInput {
         skill_id: rule_id.to_owned(),
         signal: signal.to_owned(),
     };
     match difflore_core::skills::update_confidence(db, input).await {
         Ok(change) => {
-            difflore_core::activity_stream::record(
-                difflore_core::activity_stream::ActivityPayload::RuleReinforced {
+            difflore_core::observability::activity_stream::record(
+                difflore_core::observability::activity_stream::ActivityPayload::RuleReinforced {
                     rule_id: rule_id.to_owned(),
                     rule_title: rule_title.to_owned(),
                     prev_strength: change.before as f32,
@@ -344,7 +336,7 @@ async fn record_accepted_edit_proofs(
             Ok(payload) => payload,
             Err(e) => {
                 eprintln!(
-                    "{} could not encode accepted edit evidence: {e}",
+                    "{} could not prepare accepted edit upload: {e}",
                     style::warn(sym::WARN)
                 );
                 continue;
@@ -357,7 +349,7 @@ async fn record_accepted_edit_proofs(
             Ok(row_id) => row_id,
             Err(e) => {
                 eprintln!(
-                    "{} could not queue accepted edit evidence: {e}",
+                    "{} could not queue accepted edit upload: {e}",
                     style::warn(sym::WARN)
                 );
                 return;
@@ -379,7 +371,7 @@ async fn record_accepted_edit_proofs(
                     );
                     if let Err(e) = queue.confirm(row_id).await {
                         eprintln!(
-                            "{} accepted edit evidence uploaded but local outbox cleanup failed: {e}",
+                            "{} accepted edit uploaded but local outbox cleanup failed: {e}",
                             style::warn(sym::WARN)
                         );
                     }
@@ -508,14 +500,19 @@ pub(super) fn print_apply_summary(outcome: &ApplyOutcome, skipped: u32, total: u
             if locs.len() == 1 {
                 println!("      {}  ({reason})", locs[0]);
             } else {
-                println!("      {} suggestions · {reason}", locs.len());
+                println!("      {} suggestions | {reason}", locs.len());
                 for loc in locs {
-                    println!("        · {loc}");
+                    println!("        {loc}");
                 }
             }
         }
     }
     if !outcome.applied.is_empty() {
+        println!(
+            "  +{} accepted edit{} recorded for local value tracking.",
+            outcome.applied.len(),
+            if outcome.applied.len() == 1 { "" } else { "s" },
+        );
         let mut seen = std::collections::BTreeSet::new();
         for issue in &outcome.applied {
             seen.insert(issue.rule_label());
@@ -525,8 +522,8 @@ pub(super) fn print_apply_summary(outcome: &ApplyOutcome, skipped: u32, total: u
         for label in &seen {
             println!("      {label}");
         }
-        println!("  → review what changed: {}", style::cmd("git diff"));
-        println!("  → undo: {}", style::cmd("git checkout -p"));
+        println!("  > review what changed: {}", style::cmd("git diff"));
+        println!("  > undo: {}", style::cmd("git checkout -p"));
     }
     println!();
     println!("next: {}", style::cmd("difflore status"));
@@ -636,7 +633,7 @@ pub(super) async fn apply_accepted_patches(
         } else {
             batched_patch_user_prompt(file_path, &file_content, issues)
         };
-        if let Some(path) = difflore_core::env::fix_dump_dir() {
+        if let Some(path) = difflore_core::infra::env::fix_dump_dir() {
             std::fs::write(format!("{path}/last_patch_prompt.txt"), &prompt).ok();
             std::fs::write(
                 format!("{path}/last_patch_system.txt"),
@@ -645,7 +642,7 @@ pub(super) async fn apply_accepted_patches(
             .ok();
         }
 
-        let raw = match difflore_core::review::complete_with_active_provider(
+        let raw = match difflore_core::review_engine::complete_with_active_provider(
             db,
             patch_system_prompt(),
             &prompt,
@@ -681,7 +678,7 @@ pub(super) async fn apply_accepted_patches(
                 break;
             }
         };
-        if let Some(path) = difflore_core::env::fix_dump_dir() {
+        if let Some(path) = difflore_core::infra::env::fix_dump_dir() {
             std::fs::write(format!("{path}/last_patch_raw.txt"), &raw).ok();
         }
 
@@ -700,7 +697,7 @@ pub(super) async fn apply_accepted_patches(
         };
 
         fix_debug!("generated patch:\n{diff}\n[fix-debug] end patch");
-        if let Some(path) = difflore_core::env::fix_dump_dir() {
+        if let Some(path) = difflore_core::infra::env::fix_dump_dir() {
             std::fs::write(format!("{path}/last_patch.diff"), &diff).ok();
         }
 
@@ -783,7 +780,7 @@ fn apply_diff_transactionally(
 
         let accepted_edit = match std::fs::read_to_string(abs_path) {
             Ok(after_content) => {
-                let diff_signature = difflore_core::cloud::api_types::accepted_edit_diff_signature(
+                let diff_signature = difflore_core::contract::accepted_edit_diff_signature(
                     before_content,
                     &after_content,
                 );
@@ -1019,7 +1016,7 @@ fn batched_patch_user_prompt(
             .unwrap_or("(no suggestion text)");
         write!(
             s,
-            "── Suggestion {} ──\nReview issue: {}\nSuggested change:\n{}\n\n",
+            "-- Suggestion {} --\nReview issue: {}\nSuggested change:\n{}\n\n",
             i + 1,
             issue.message,
             suggestion,
@@ -1347,17 +1344,18 @@ mod tests {
         assert_eq!(value["ruleIds"][1], "rule-2");
     }
 
-    /// A fully-migrated in-memory pool. `update_confidence` (and so
-    /// `reinforce_rule`) is built on the `query!` macro, which is validated
-    /// against the real schema, so the reinforcement tests need the actual
-    /// `skills` + `rule_events` tables rather than a hand-rolled subset.
+    /// A fully-migrated in-memory pool. `update_confidence` uses the
+    /// `query!` macro validated against the real schema, so these tests
+    /// need the actual `skills` + `rule_events` tables.
     async fn migrated_pool() -> sqlx::SqlitePool {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        difflore_core::db::run_migrations(&pool).await.unwrap();
+        difflore_core::infra::db::run_migrations(&pool)
+            .await
+            .unwrap();
         pool
     }
 
@@ -1376,7 +1374,6 @@ mod tests {
 
     #[tokio::test]
     async fn reinforce_rule_accept_bumps_confidence_and_writes_event() {
-        // Accepting a fix must bump confidence and write a rule_events row.
         let pool = migrated_pool().await;
         insert_active_skill(&pool, "rule-accept", 0.80).await;
 
@@ -1411,9 +1408,6 @@ mod tests {
 
     #[tokio::test]
     async fn record_fix_outcomes_reinforces_each_applied_rule() {
-        // End-to-end through the public entry point: an applied issue with
-        // a real local rule_id reinforces that rule (+0.05) and leaves a
-        // rule_events trail.
         let pool = migrated_pool().await;
         insert_active_skill(&pool, "rule-applied", 0.50).await;
 
@@ -1440,13 +1434,10 @@ mod tests {
 
     #[tokio::test]
     async fn reinforce_rule_skips_unknown_rule_without_error() {
-        // A rule_id that isn't a local skill (deleted / non-skill id) must
-        // be skipped silently: update_confidence returns NotFound, we
-        // fix_debug! it, and nothing is written or mutated. No panic, no
-        // invented strength, no stray rule_events row.
+        // A rule_id with no `skills` row must be skipped silently: no
+        // panic, no invented strength, no stray rule_events row.
         let pool = migrated_pool().await;
 
-        // Must not panic even though "ghost-rule" has no skills row.
         reinforce_rule(&pool, "ghost-rule", "Ghost", "accept", "fix_accepted").await;
 
         let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rule_events")

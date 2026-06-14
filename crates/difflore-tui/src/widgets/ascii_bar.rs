@@ -1,11 +1,9 @@
 //! Horizontal proportion bar for quota and capacity displays.
 //!
 //! Returns a UTF-8 string like `████████░░░░░░░░` whose filled portion
-//! equals `value / total` of `width` columns. `total == 0` and
-//! `width == 0` yield empty strings. The proportion is saturating:
-//! values above `total` clamp to `width` filled cells. The only caller
-//! is the `FixRunsLow` capacity bar, which has integer counts — the
-//! lossy `f32` variant had no callers and was removed.
+//! equals `value / total` of `width` columns. `total == 0` and `width == 0`
+//! yield empty strings. The proportion is saturating: values above `total`
+//! clamp to `width` filled cells.
 
 const FILL: char = '█';
 const EMPTY: char = '░';

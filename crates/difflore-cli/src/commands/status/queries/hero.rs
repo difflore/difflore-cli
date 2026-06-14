@@ -1,7 +1,6 @@
 //! "Local hero" evidence: the current-repo rule with the strongest combined
-//! signal (accepted edits + signed diff proofs + recall + MCP serves). Unlike
-//! the proven-rule drilldown this is strictly current-repo scoped and pulls in
-//! recall/MCP context. Feeds the `localHeroEvidence` envelope key.
+//! signal (accepted edits + signed diff proofs + recall + MCP serves).
+//! Strictly current-repo scoped. Feeds the `localHeroEvidence` envelope key.
 
 use super::proof_counters::{
     LOCAL_PROOF_WINDOW_DAYS, REVIEW_MINUTES_PER_ACCEPTED_PROOF, normalized_repo_aliases,
@@ -65,14 +64,14 @@ async fn fetch_local_hero_evidence(
 ) -> Option<LocalHeroEvidence> {
     for candidate in fetch_hero_candidate_rows(db, normalized_repos).await {
         let latest_fix = fetch_hero_accepted_fix(db, &candidate.rule_id).await;
-        let recall_events = difflore_core::rule_outcomes::recall_count_for(
+        let recall_events = difflore_core::observability::rule_outcomes::recall_count_for(
             db,
             &candidate.rule_id,
             LOCAL_PROOF_WINDOW_DAYS,
         )
         .await
         .unwrap_or(0);
-        let top_recall = difflore_core::rule_outcomes::latest_top3_recall_for(
+        let top_recall = difflore_core::observability::rule_outcomes::latest_top3_recall_for(
             db,
             &candidate.rule_id,
             LOCAL_PROOF_WINDOW_DAYS,
@@ -80,7 +79,7 @@ async fn fetch_local_hero_evidence(
         .await
         .ok()
         .flatten();
-        let mcp_summary = difflore_core::mcp_rule_serves::summary_for_rule(
+        let mcp_summary = difflore_core::observability::mcp_rule_serves::summary_for_rule(
             db,
             &candidate.rule_id,
             LOCAL_PROOF_WINDOW_DAYS,
@@ -227,24 +226,26 @@ mod tests {
         .await
         .expect("insert accepted fixes");
 
-        difflore_core::rule_outcomes::record_recalled_with_context(
+        difflore_core::observability::rule_outcomes::record_recalled_with_context(
             &pool,
-            &[difflore_core::rule_outcomes::RuleRecallInput {
-                rule_id: "repo-rule",
-                session_id: Some("session-repo"),
-                repo_full_name: Some("acme/widgets"),
-                file_path: Some("src/parser.rs"),
-                query_text: "structured parser",
-                rank: 1,
-                top_k: 3,
-                strict_file_match: true,
-            }],
+            &[
+                difflore_core::observability::rule_outcomes::RuleRecallInput {
+                    rule_id: "repo-rule",
+                    session_id: Some("session-repo"),
+                    repo_full_name: Some("acme/widgets"),
+                    file_path: Some("src/parser.rs"),
+                    query_text: "structured parser",
+                    rank: 1,
+                    top_k: 3,
+                    strict_file_match: true,
+                },
+            ],
         )
         .await
         .expect("record repo recall");
-        difflore_core::mcp_rule_serves::record(
+        difflore_core::observability::mcp_rule_serves::record(
             &pool,
-            &difflore_core::mcp_rule_serves::McpRuleServeInput {
+            &difflore_core::observability::mcp_rule_serves::McpRuleServeInput {
                 tool: "search_rules",
                 session_id: Some("session-repo"),
                 repo_full_name: Some("acme/widgets"),

@@ -1,10 +1,11 @@
-use difflore_core::models::RememberRuleInput;
-use difflore_core::reviews::{ReviewCommentRecord, ReviewItemWithComments};
+use difflore_core::domain::models::RememberRuleInput;
+use difflore_core::infra::git::RepoScope;
+use difflore_core::review_store::{ReviewCommentRecord, ReviewItemWithComments};
 use sqlx::SqlitePool;
 
-use crate::commands::review_text::strip_review_markdown_noise;
-use crate::commands::util::exit_err;
 use crate::style;
+use crate::support::review_text::strip_review_markdown_noise;
+use crate::support::util::exit_err;
 
 use super::ValidatedArgs;
 use super::scope::{
@@ -18,18 +19,13 @@ const LOCAL_CANDIDATE_RELATED_FILES_BODY_LIMIT: usize = 12;
 const FALLBACK_REVIEW_DIRECTIVE: &str =
     "capture the repeatable review judgement before accepting this candidate";
 
-// ── Correctness-aware capture confidence ────────────────────────────────────
-//
 // Each surviving high-signal comment is scored on [0.0, 1.0] from a handful
 // of features (directive strength, adoption proxy = resolved thread,
 // reaction approval, later-reply contradiction, bot authorship). The score
-// drives a 3-way route instead of the old "human directive → always active"
-// rule:
+// drives a 3-way route:
 //   * `>= HIGH` → promote to active immediately.
 //   * `[LOW, HIGH)` → leave as a `status='pending'` candidate for review.
 //   * `< LOW`  → drop (don't even draft a candidate).
-// Thresholds are conservative and named so they can be tuned without
-// hunting through the scoring body.
 
 /// At/above this, a captured review memory is auto-activated.
 pub(super) const CAPTURE_CONFIDENCE_HIGH: f32 = 0.62;
@@ -48,16 +44,10 @@ const CAPTURE_BONUS_RESOLVED: f32 = 0.20;
 /// Net-positive reactions (👍 outweighs 👎, or any approval with no
 /// pushback) nudge confidence up.
 const CAPTURE_BONUS_APPROVAL: f32 = 0.10;
-/// Net-negative reactions (👎 strictly outweighs 👍) are a community
-/// *disapproval* signal — the reviewers reacting to the comment voted it
-/// down. Unlike the bonus's mirror, this is a real correctness signal we
-/// must NOT let pass inert: a single down-react on an otherwise strong,
-/// resolved directive shouldn't sink it (the guard requires a *majority*,
-/// not a lone 👎), but a clear net-negative should withhold auto-activation.
-/// Sized so a resolved-but-disapproved directive drops from active into the
-/// pending band (0.50 + 0.20 − 0.15 = 0.55, ≥ LOW so it is reviewed, not
-/// silently dropped), while a bare disapproved directive with no adoption
-/// proxy falls below LOW (0.50 − 0.15 = 0.35) and is dropped as noise.
+/// Net-negative reactions (👎 strictly outweighs 👍) withhold auto-activation.
+/// Sized so a resolved-but-disapproved directive drops into the pending band
+/// (0.50 + 0.20 − 0.15 = 0.55, still ≥ LOW so it is reviewed) while a bare
+/// disapproved directive falls below LOW (0.50 − 0.15 = 0.35) and is dropped.
 const CAPTURE_PENALTY_DISAPPROVAL: f32 = 0.15;
 /// A later reply in the same thread retracting the suggestion ("actually
 /// no", "nvm", "disregard", …) is a strong negative — push below LOW so a
@@ -955,10 +945,9 @@ fn is_pr_author_response(item: &ReviewItemWithComments, comment: &ReviewCommentR
     pr_author.eq_ignore_ascii_case(comment_author)
 }
 
-/// Whether a comment author name looks like an automated reviewer/bot.
-/// This is NO LONGER a veto — `local_candidate_input` feeds it in as a
-/// small NEGATIVE confidence feature so a bot can still pass on strong,
-/// adopted content (e.g. a specific CodeRabbit directive that was applied).
+/// Whether a comment author name looks like an automated reviewer/bot. Used as
+/// a small negative confidence feature (not a veto), so a bot can still pass on
+/// strong, adopted content.
 fn is_bot_author(author: Option<&str>) -> bool {
     let Some(author) = author.map(str::trim).filter(|s| !s.is_empty()) else {
         return false;
@@ -976,7 +965,7 @@ fn is_bot_author(author: Option<&str>) -> bool {
 }
 
 /// Correctness/durability signal recovered from a comment's metadata JSON
-/// (written by `github_import`). Every field degrades to neutral when the
+/// (written by `ingest::github`). Every field degrades to neutral when the
 /// key is absent so pre-signal imports (and older API shapes) score the
 /// same as a comment that genuinely had no signal.
 #[derive(Debug, Default)]
@@ -1063,17 +1052,11 @@ fn capture_confidence(
     if signal.resolved {
         score += CAPTURE_BONUS_RESOLVED;
     }
-    // Approval / disapproval: keyed on the net thumbs balance among recorded
-    // reactions. Both branches guard on `reactions_total > 0` so a malformed
-    // signal with phantom thumbs but no actual reactions can mint neither.
-    //   * net-positive (👍 > 👎) → approval bonus.
-    //   * net-negative (👎 > 👍) → disapproval penalty. This is NOT a hard
-    //     veto: a single down-react on a strong, resolved directive must not
-    //     sink it, so we require a strict majority (a lone 👎 against a 👍, or
-    //     a tie, yields neither bonus nor penalty). A clear net-negative is a
-    //     real correctness signal, so it must lower confidence rather than
-    //     pass inert — otherwise a community-downvoted-but-resolved directive
-    //     would auto-activate identically to an unopposed one.
+    // Approval / disapproval keyed on the net thumbs balance. Both branches
+    // guard on `reactions_total > 0` so phantom thumbs with no actual reactions
+    // mint neither. A strict majority is required (a lone 👎 or a tie yields
+    // nothing), so a single down-react can't sink a strong resolved directive,
+    // but a clear net-negative still lowers confidence rather than pass inert.
     if signal.reactions_total > 0 {
         if signal.thumbs_up > signal.thumbs_down && signal.thumbs_up > 0 {
             score += CAPTURE_BONUS_APPROVAL;
@@ -1121,16 +1104,15 @@ pub(super) struct LocalCandidate {
 pub(super) fn local_candidate_input(
     item: &ReviewItemWithComments,
     comment: &ReviewCommentRecord,
-    source_repo: &str,
+    source_repo: &RepoScope,
 ) -> Option<LocalCandidate> {
+    let source_repo = source_repo.as_str();
     if is_pr_author_response(item, comment) {
         return None;
     }
-    // NOTE: bot authorship is no longer a blanket veto. It is folded into the
-    // capture-confidence score below as a small negative feature so a bot can
-    // still pass on strong, adopted content. The CONTENT noise pre-filters
-    // (coverage reports, AI summaries, acknowledgements, weak questions,
-    // praise) below still drop genuine noise regardless of source.
+    // Bot authorship is folded into the capture-confidence score below as a
+    // small negative feature rather than a veto. The CONTENT noise pre-filters
+    // below still drop genuine noise regardless of source.
     if is_platform_review_wrapper_comment(&comment.content) {
         return None;
     }
@@ -1201,26 +1183,41 @@ pub(super) fn local_candidate_input(
         .item
         .repo_full_name
         .as_deref()
-        .is_some_and(|repo| !repo.eq_ignore_ascii_case(source_repo));
+        .and_then(|repo| candidate_repo_scope_for_comparison(repo, source_repo))
+        .is_some_and(|repo| repo.as_str() != source_repo);
     let file_patterns = candidate_file_patterns(&scope_paths, widen_for_upstream);
     // Pre-persist secret barrier: the title and body carry reviewer-quoted
     // prose / code snippets that may contain a leaked credential. Scrub it
     // BEFORE the candidate is written to the local SQLite skills store (and
     // lazily embedded), mirroring the cloud's pre-persist `redactSecrets`.
     let input = RememberRuleInput {
-        title: difflore_core::privacy::redact_secrets(&candidate_title(&comment.content, &path)),
-        body: difflore_core::privacy::redact_secrets(&body),
+        title: difflore_core::observability::privacy::redact_secrets(&candidate_title(
+            &comment.content,
+            &path,
+        )),
+        body: difflore_core::observability::privacy::redact_secrets(&body),
         file_patterns,
         bad_code: None,
         good_code: None,
         severity: Some("medium".to_owned()),
         origin: Some("pr_review".to_owned()),
+        captured_by_client: Some("import-reviews".to_owned()),
     };
     Some(LocalCandidate {
         input,
         confidence,
         route,
     })
+}
+
+fn candidate_repo_scope_for_comparison(repo: &str, source_repo: &str) -> Option<RepoScope> {
+    if let Some((host, _)) = source_repo.split_once('/')
+        && host.contains('.')
+        && let Some(scope) = RepoScope::gitlab(host, repo)
+    {
+        return Some(scope);
+    }
+    RepoScope::canonical(repo)
 }
 
 fn candidate_file_patterns(
@@ -1257,8 +1254,9 @@ fn candidate_file_patterns(
 async fn attach_candidate_repo_scope(
     db: &SqlitePool,
     skill_id: &str,
-    repo: &str,
+    repo: &RepoScope,
 ) -> Result<(), sqlx::Error> {
+    let repo = repo.as_str();
     sqlx::query!(
         "UPDATE skills SET source_repo = ?1 WHERE id = ?2",
         repo,
@@ -1271,19 +1269,20 @@ async fn attach_candidate_repo_scope(
 
 pub(super) async fn run_local_candidates(
     db: &SqlitePool,
+    source: &str,
     repo: &str,
-    source_repo: &str,
+    source_repo: &RepoScope,
     max_candidates: usize,
     pr_numbers: &[i32],
     exclude_prs: &std::collections::HashSet<i32>,
 ) -> LocalCandidateProgress {
-    use difflore_core::reviews;
+    use difflore_core::review_store;
     use std::collections::HashSet;
 
-    let items = match reviews::list_by_source_with_comments(
+    let items = match review_store::list_by_source_with_comments(
         db,
-        reviews::ReviewSourceInput {
-            source: "github".into(),
+        review_store::ReviewSourceInput {
+            source: source.into(),
         },
     )
     .await
@@ -1347,7 +1346,7 @@ pub(super) async fn run_local_candidates(
                         progress.candidates_deduped += 1;
                     } else {
                         if let Err(e) =
-                            attach_candidate_repo_scope(db, &outcome.skill.id, repo).await
+                            attach_candidate_repo_scope(db, &outcome.skill.id, source_repo).await
                         {
                             exit_err(&format!("failed to attach local memory to repo: {e}"));
                         }
@@ -1410,33 +1409,30 @@ pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress
     println!();
     if progress.candidates_created == 0 && progress.candidates_deduped == 0 {
         println!(
-            "  {} No local memories created from the imported comments.",
+            "  {} No local rules created from the imported comments.",
             style::pewter(style::sym::BULLET),
         );
-        println!(
-            "  {} Try a larger import window, or use cloud extraction for deeper pattern mining: {}",
+        style::println_wrapped(&format!(
+            "  {} Try a larger import window, or upload reviews so DiffLore can find deeper team patterns.",
             style::pewter(style::sym::BULLET),
-            style::cmd("difflore import-reviews --upload"),
-        );
+        ));
+        println!("    {}", style::cmd("difflore import-reviews --upload"));
         return;
     }
 
     if progress.candidates_created == 0 {
         println!(
-            "  {} No new local review memories created; {} matching existing memor{} strengthened ({} skipped; budget {}).",
+            "  {} No new local review memories created.",
             style::emerald(style::sym::OK),
+        );
+        println!(
+            "  {} strengthened existing memories: {}",
+            style::pewter(style::sym::BULLET),
             progress.candidates_deduped,
-            if progress.candidates_deduped == 1 {
-                "y"
-            } else {
-                "ies"
-            },
-            progress.comments_skipped,
-            progress.budget,
         );
     } else {
         println!(
-            "  {} Created {} local review memor{} ({} active, {} pending review; {} deduped, {} skipped; budget {}).",
+            "  {} Created {} local review memor{}.",
             style::emerald(style::sym::OK),
             progress.candidates_created,
             if progress.candidates_created == 1 {
@@ -1444,36 +1440,76 @@ pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress
             } else {
                 "ies"
             },
+        );
+        println!(
+            "  +{} local memory write{} ({} active, {} draft{}, {} strengthened).",
+            progress.candidates_created,
+            if progress.candidates_created == 1 {
+                ""
+            } else {
+                "s"
+            },
             progress.candidates_activated,
             progress.candidates_pending,
+            if progress.candidates_pending == 1 {
+                ""
+            } else {
+                "s"
+            },
             progress.candidates_deduped,
-            progress.comments_skipped,
-            progress.budget,
+        );
+        println!(
+            "  {} active: {}",
+            style::pewter(style::sym::BULLET),
+            progress.candidates_activated,
+        );
+        println!(
+            "  {} pending review: {}",
+            style::pewter(style::sym::BULLET),
+            progress.candidates_pending,
+        );
+        println!(
+            "  {} deduped: {}",
+            style::pewter(style::sym::BULLET),
+            progress.candidates_deduped,
         );
     }
+    println!(
+        "  {} skipped comments: {}",
+        style::pewter(style::sym::BULLET),
+        progress.comments_skipped,
+    );
+    println!(
+        "  {} local budget: {}",
+        style::pewter(style::sym::BULLET),
+        progress.budget,
+    );
     if progress.candidates_pending > 0 {
         // Review held-back drafts with `difflore status`. Drafts auto-activate
         // after enough adoption signal; there is no manual per-id accept command.
         let (prefix, command, suffix) = pending_drafts_review_hint(progress.candidates_pending);
-        println!(
+        style::println_wrapped(&format!(
             "  {} {prefix}{}{suffix}",
             style::pewter(style::sym::BULLET),
             style::cmd(command),
-        );
+        ));
     }
     if progress.candidates_deduped > 0 {
-        println!(
+        style::println_wrapped(&format!(
             "  {} deduped means matching existing memories were strengthened instead of repeated.",
             style::pewter(style::sym::BULLET),
-        );
+        ));
     }
     if progress.capped {
-        println!(
-            "  {} hit the local memory budget — raise {} or import targeted PRs with {}.",
+        style::println_wrapped(&format!(
+            "  {} hit the local memory budget.",
             style::pewter(style::sym::BULLET),
+        ));
+        style::println_wrapped(&format!(
+            "    Raise {} or import targeted PRs with {}.",
             style::cmd("--max-prs <N>"),
             style::cmd("--pr <NUMBER>"),
-        );
+        ));
     }
     println!();
     println!(
@@ -1495,18 +1531,15 @@ pub(super) const fn local_candidate_next_step_commands() -> &'static [&'static s
 
 /// Pure copy for the "N medium-confidence drafts held for review" line that
 /// follows a local import. Returned as `(prefix, command, suffix)` so the
-/// caller can wrap the single command token in `style::cmd` while the verifiable
-/// wording stays string-testable.
-///
-/// The command MUST be one that actually exists. `difflore status` lists the
-/// held-back drafts under its "Pending memory drafts" section; the removed
-/// `difflore candidates {list,accept}` verbs now hard-error, so a regression
-/// test pins this helper against ever naming `difflore candidates` again.
+/// caller wraps the command token in `style::cmd` while the wording stays
+/// string-testable. The command must be one that exists: `difflore status`
+/// lists the drafts under "Pending memory drafts" (`difflore candidates` is
+/// gone); a regression test pins this against ever naming it again.
 pub(super) fn pending_drafts_review_hint(count: usize) -> (String, &'static str, &'static str) {
     let plural = if count == 1 { "" } else { "s" };
     (
         format!(
-            "{count} medium-confidence draft{plural} held for review — see them under \"Pending memory drafts\" in "
+            "{count} medium-confidence draft{plural} held for review; see \"Pending memory drafts\" in "
         ),
         "difflore status",
         ".",

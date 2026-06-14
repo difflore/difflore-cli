@@ -1,13 +1,12 @@
 use async_trait::async_trait;
 
-use crate::cloud::api_types::RecallPastVerdictsRequest;
 use crate::cloud::client::CloudClient;
 use crate::context::types::{PastVerdict, PastVerdictScope};
-use crate::errors::CoreError;
+use crate::contract::RecallPastVerdictsRequest;
+use crate::error::CoreError;
 
-/// Thin async seam so tests can substitute a fake cloud recall without
-/// actually hitting the network. Blanket-implemented for `CloudClient`
-/// below so real call sites keep using the concrete client directly.
+/// Async seam so tests can substitute a fake cloud recall without hitting the
+/// network. Implemented for `CloudClient` so real call sites use it directly.
 #[async_trait]
 pub trait PastVerdictRecaller: Send + Sync {
     async fn recall(&self, req: RecallPastVerdictsRequest) -> Result<Vec<PastVerdict>, CoreError>;
@@ -22,11 +21,9 @@ impl PastVerdictRecaller for CloudClient {
 
 /// Retrieve past verdicts for the current review chunk.
 ///
-/// A failing recall must never block a review -- any error from the
-/// underlying cloud client is logged and downgraded to an empty `Vec`.
-/// Gating (settings flag, plan permission, not-logged-in) is expected to
-/// be handled further up the stack; this function is the pure retrieval
-/// step.
+/// A failing recall must never block a review: errors are logged and
+/// downgraded to an empty `Vec`. Gating is handled upstack; this is the pure
+/// retrieval step.
 pub async fn retrieve_past_verdicts<R: PastVerdictRecaller + ?Sized>(
     cloud: &R,
     chunk_embedding: &[f32],
@@ -61,7 +58,9 @@ pub async fn retrieve_past_verdicts_with_team<R: PastVerdictRecaller + ?Sized>(
     match cloud.recall(req).await {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("[retrieve_past_verdicts] recall failed: {e:?}");
+            if crate::infra::env::debug_cloud() {
+                eprintln!("[retrieve_past_verdicts] recall failed: {e:?}");
+            }
             Vec::new()
         }
     }
@@ -69,10 +68,8 @@ pub async fn retrieve_past_verdicts_with_team<R: PastVerdictRecaller + ?Sized>(
 
 /// Merge multiple groups of past-verdict recalls into one ranked list.
 ///
-/// De-dupes by `extraction_id`. On collision the higher-similarity copy
-/// wins. Sorts descending by similarity and truncates to `limit`. Pure /
-/// sync so tests and batch callers can reuse the same ranking merge; runtime
-/// recall should stay scoped to one current repo/project.
+/// De-dupes by `extraction_id` (higher-similarity copy wins), sorts descending
+/// by similarity, and truncates to `limit`.
 pub fn merge_past_verdicts(
     groups: impl IntoIterator<Item = Vec<PastVerdict>>,
     limit: usize,
@@ -100,9 +97,9 @@ pub fn merge_past_verdicts(
     merged
 }
 
-/// Text-based recall variant. The server embeds the query itself, avoiding
-/// the client/server algorithm + dimensionality drift that plagued the
-/// `chunk_embedding` path when the client lacked a 1536-dim embedder.
+/// Text-based recall variant. The server embeds the query itself, avoiding the
+/// client/server algorithm and dimensionality drift that affects the
+/// `chunk_embedding` path when the client lacks a 1536-dim embedder.
 pub async fn retrieve_past_verdicts_by_text<R: PastVerdictRecaller + ?Sized>(
     cloud: &R,
     query_text: &str,
@@ -145,7 +142,9 @@ pub async fn retrieve_past_verdicts_by_text_with_team<R: PastVerdictRecaller + ?
     match cloud.recall(req).await {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("[retrieve_past_verdicts_by_text] recall failed: {e:?}");
+            if crate::infra::env::debug_cloud() {
+                eprintln!("[retrieve_past_verdicts_by_text] recall failed: {e:?}");
+            }
             Vec::new()
         }
     }

@@ -245,7 +245,7 @@ mod tests {
         // suppress retrieval, even with a fully-saturated empty window.
         // We mirror the wiring in `fetch_relevant_rules_for_hook` so the
         // unit test does not require spinning up SQLite / the full hook.
-        use crate::env::HookShortCircuitMode;
+        use crate::infra::env::HookShortCircuitMode;
 
         let cache = ShortCircuitCache::default();
         for _ in 0..10 {

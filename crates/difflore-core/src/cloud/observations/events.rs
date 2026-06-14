@@ -51,11 +51,10 @@ pub enum ObservationEvent {
         accepted: bool,
         occurred_at: DateTime<Utc>,
         // Outbox row ids of mcp_rule_served events that surfaced this rule
-        // shortly before the accepted edit for the same scope. Populated at
-        // enqueue time so the audited cross-link
-        // `acceptedOutcomesLinkedToMcpRuleServe` can fire even when
-        // session_id/file_path heuristics would otherwise miss it.
-        // Older outbox rows without this field deserialize as `Vec::new()`.
+        // shortly before the accepted edit for the same scope. Lets the
+        // `acceptedOutcomesLinkedToMcpRuleServe` cross-link fire even when
+        // session_id/file_path heuristics miss. Older rows deserialize as
+        // `Vec::new()`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         mcp_serve_event_ids: Vec<i64>,
     },

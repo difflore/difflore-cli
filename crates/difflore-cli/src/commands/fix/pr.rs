@@ -4,11 +4,11 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
-use difflore_core::models::{DiffContentRecord, GitDiffInput};
+use difflore_core::domain::models::{DiffContentRecord, GitDiffInput};
 use serde::Deserialize;
 
-use crate::commands::util::validate_owner_repo;
 use crate::style::{self, sym};
+use crate::support::util::validate_owner_repo;
 
 use super::fix_debug;
 
@@ -105,8 +105,7 @@ pub(super) async fn prepare_pr_fix(
     let preview_command_timeout = preview_command_timeout(options.preview);
     let mut meta = fetch_pr_metadata(&repo_root, &spec, preview_command_timeout)?;
     if let Some(base) = options.base_override {
-        // Reject option-looking base overrides before git can parse them as
-        // flags on the --no-checkout path.
+        // Reject option-looking base overrides before git parses them as flags.
         difflore_core::infra::git::reject_option_like_revision(base, "PR base override")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         meta.base_ref = base.to_owned();
@@ -183,7 +182,12 @@ pub(super) fn parse_pr_spec(
             .map(str::to_owned)
             .or_else(|| repo_from_remote(cwd, "upstream"))
             .or_else(|| {
-                difflore_core::git::detect_github_repo_full_names(&cwd.to_string_lossy())
+                // intentionally GitHub-only: `difflore fix --pr` is the GitHub
+                // pull-request flow (gh CLI, github.com PR URLs). GitLab MRs go
+                // through their own path, so the host-aware detector is wrong
+                // here — a self-managed GitLab remote must NOT be inferred as a
+                // `--pr` target.
+                difflore_core::infra::git::detect_github_repo_full_names(&cwd.to_string_lossy())
                     .into_iter()
                     .next()
             })
@@ -225,7 +229,9 @@ fn normalize_repo(repo: &str) -> anyhow::Result<String> {
 
 fn repo_from_remote(repo_root: &Path, remote: &str) -> Option<String> {
     let url = git_stdout(repo_root, &["remote", "get-url", remote], None).ok()?;
-    difflore_core::git::parse_github_remote_url(&url)
+    // intentionally GitHub-only: the `--pr` flow targets github.com PRs, so a
+    // non-GitHub remote here must resolve to None rather than a GitLab scope.
+    difflore_core::infra::git::parse_github_remote_url(&url)
 }
 
 fn head_repo_full_name(view: &GhPrView) -> Option<String> {
@@ -294,8 +300,8 @@ fn fetch_pr_metadata(
         format!("{head_url}.git")
     };
 
-    // GitHub-supplied refs/OIDs flow into git as revisions. Reject values
-    // git could misparse as options before any downstream call sees them.
+    // GitHub-supplied refs/OIDs flow into git as revisions; reject values git
+    // could misparse as options before any downstream call sees them.
     for (value, what) in [
         (&view.base_ref_name, "PR base ref"),
         (&view.base_ref_oid, "PR base SHA"),
@@ -538,7 +544,9 @@ fn prepared_from_meta(
     if !aliases.iter().any(|repo| repo == &meta.head_repo_full_name) {
         aliases.push(meta.head_repo_full_name.clone());
     }
-    for repo in difflore_core::git::detect_github_repo_full_names(&project_path) {
+    // intentionally GitHub-only: PR-fix attribution aliases are github.com
+    // repo scopes; GitLab MR scopes are never `--pr` aliases.
+    for repo in difflore_core::infra::git::detect_github_repo_full_names(&project_path) {
         if !aliases.iter().any(|existing| existing == &repo) {
             aliases.push(repo);
         }
@@ -566,7 +574,7 @@ async fn collect_pr_diff(
     repo_root: &Path,
     prepared: &PreparedPrFix,
 ) -> anyhow::Result<Vec<DiffContentRecord>> {
-    difflore_core::git::diff(GitDiffInput {
+    difflore_core::infra::git::diff(GitDiffInput {
         project_path: repo_root.to_string_lossy().to_string(),
         staged: None,
         ref1: Some(prepared.merge_base.clone()),
@@ -621,7 +629,9 @@ fn remote_for_repo(repo_root: &Path, repo_full_name: &str) -> anyhow::Result<Opt
         let Ok(url) = git_stdout(repo_root, &["remote", "get-url", remote], None) else {
             continue;
         };
-        let Some(remote_repo) = difflore_core::git::parse_github_remote_url(&url) else {
+        // intentionally GitHub-only: matching the PR's head/base repo against
+        // local remotes is a github.com operation in the `--pr` flow.
+        let Some(remote_repo) = difflore_core::infra::git::parse_github_remote_url(&url) else {
             continue;
         };
         if remote_repo == repo_full_name {

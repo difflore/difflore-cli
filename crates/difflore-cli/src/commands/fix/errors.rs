@@ -45,7 +45,7 @@ pub(super) fn format_fix_err(label: &str, raw: &str) -> String {
         );
     }
 
-    difflore_core::origins::format_api_error(label, raw)
+    difflore_core::domain::origins::format_api_error(label, raw)
 }
 
 #[cfg(test)]

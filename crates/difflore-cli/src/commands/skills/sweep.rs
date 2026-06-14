@@ -1,10 +1,8 @@
 //! `difflore skills sweep`.
 //!
 //! Thin wrapper around [`difflore_core::skills::sweep`] that prints the
-//! `SweepReport` (and optional `QuarantineReport`) as JSON so external
-//! tooling can pipe it into rtk or jq. Defaults to dry-run; the core
-//! sweep is idempotent within a single pass but writing 1800+ skills
-//! without preview would be ugly.
+//! `SweepReport` (and optional `QuarantineReport`) as JSON for piping into
+//! tools like jq. Defaults to dry-run.
 
 use difflore_core::SqlitePool;
 use difflore_core::skills::{
@@ -55,8 +53,8 @@ async fn run(db: &SqlitePool, args: SweepArgs) -> difflore_core::Result<()> {
     };
 
     let envelope = SweepCliReport { sweep, quarantine };
-    // serde_json::to_string_pretty cannot fail on this concrete shape;
-    // fall back to a debug-print only if it somehow does.
+    // Serialization cannot fail on this concrete shape, but report it rather
+    // than unwrap if it somehow does.
     match serde_json::to_string_pretty(&envelope) {
         Ok(s) => println!("{s}"),
         Err(e) => eprintln!("{} report serialise failed: {e}", style::warn(sym::WARN)),

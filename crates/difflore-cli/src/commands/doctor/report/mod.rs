@@ -1,6 +1,5 @@
-// `sw!` = "string writeln". `writeln!` on a `String` is infallible but
-// returns `fmt::Result`; this swallows the unused `Ok(())` without
-// scattering `let _ = writeln!(...)` noise across the file.
+// `writeln!` on a `String` is infallible but returns `fmt::Result`; this
+// macro swallows the unused `Ok(())` without scattering `let _` everywhere.
 macro_rules! sw {
     ($s:expr, $($arg:tt)*) => {{
         use std::fmt::Write as _;

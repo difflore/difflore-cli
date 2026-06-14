@@ -1,6 +1,6 @@
 use anyhow::{Context, bail};
 
-use difflore_core::models::{DiffContentRecord, GitDiffInput};
+use difflore_core::domain::models::{DiffContentRecord, GitDiffInput};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum DiffScope {
@@ -46,14 +46,14 @@ pub(super) fn parse_diff_scope(raw: Option<&str>) -> anyhow::Result<RequestedSco
 }
 
 // Auto: staged first, fall back to worktree if index is clean.
-// All: union of both, labelled Staged so the index-sync apply path stays engaged.
+// All: union of both, labelled Staged to keep the index-sync apply path engaged.
 pub(super) async fn collect_diff(
     path: &std::path::Path,
     requested: RequestedScope,
 ) -> anyhow::Result<(Vec<DiffContentRecord>, DiffScope)> {
     let proj = path.to_string_lossy().to_string();
     let staged = || async {
-        difflore_core::git::diff(GitDiffInput {
+        difflore_core::infra::git::diff(GitDiffInput {
             project_path: proj.clone(),
             staged: Some(true),
             ref1: None,
@@ -63,7 +63,7 @@ pub(super) async fn collect_diff(
         .context("Failed to get staged diff")
     };
     let worktree = || async {
-        difflore_core::git::diff(GitDiffInput {
+        difflore_core::infra::git::diff(GitDiffInput {
             project_path: proj.clone(),
             staged: Some(false),
             ref1: None,

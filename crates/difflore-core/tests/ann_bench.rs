@@ -1,13 +1,12 @@
 #![allow(clippy::unwrap_used)]
 #![allow(unsafe_code)]
-// Informal benchmark for the W3.4 ANN path. Not wired into `cargo bench`
-// (no criterion dep); run with:
+// Informal benchmark for the ANN path. Not wired into `cargo bench` (no
+// criterion dep); run with:
 //   cargo test -p difflore-core --release --test ann_bench -- --nocapture --ignored
 //
-// This file is `#[ignore = "manual benchmark; run with --ignored"]` by default so it doesn't weigh down the
-// regular test matrix. It prints timings for both the HNSW path and a
-// hand-rolled linear cosine scan on the same corpus so we can see the
-// speedup at 1K and 10K chunks.
+// Ignored by default so it doesn't weigh down the regular test matrix. Prints
+// timings for the HNSW path and a hand-rolled linear cosine scan on the same
+// corpus to show the speedup at 1K and 10K chunks.
 use difflore_core::context::ann::AnnIndex;
 use std::time::Instant;
 

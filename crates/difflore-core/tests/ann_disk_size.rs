@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used)]
 #![allow(unsafe_code)]
-// Measures on-disk size of the persisted HNSW graph for the 1K report.
+// Measures on-disk size of the persisted HNSW graph.
 
 use difflore_core::context::ann::{AnnIndex, ann_files_for_project};
 

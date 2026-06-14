@@ -2,9 +2,9 @@ use crate::context::DEFAULT_TOP_K_RULES;
 use crate::context::ann;
 use crate::context::embedding::cosine_similarity;
 use crate::context::index_db::{self, IndexedRuleChunk, QueryFilter};
-use crate::domain::glob_match::{GlobErrorPolicy, glob_match};
-use crate::errors::CoreError;
-use crate::review_trajectory::{TrajectoryBuilder, TrajectoryStep};
+use crate::domain::glob_match::{GlobErrorPolicy, glob_match, glob_match_changeset};
+use crate::error::CoreError;
+use crate::observability::trajectory::{TrajectoryBuilder, TrajectoryStep};
 use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -43,18 +43,70 @@ pub async fn retrieve_rules(
 /// the given target file path. Returns `true` if patterns are absent / empty
 /// (universal rule), or if any glob matches. Malformed JSON or an unbuildable
 /// glob set are treated as a match — never silently drop a rule because of a
-/// parse error (over-recall is correct for retrieval). Iter-9 (2026-04-18)
-/// port of cloud `patternAllows`; B8 (shared `glob_match`).
+/// parse error (over-recall is correct for retrieval).
 pub(super) fn pattern_allows(file_patterns_json: Option<&str>, target_file: &str) -> bool {
     glob_match(file_patterns_json, target_file, GlobErrorPolicy::OverRecall)
 }
 
-/// Retrieve rules with confidence weighting plus hybrid FTS / embedding retrieval.
+/// What the strict file-pattern cascade scopes retrieval to: a single file
+/// (the hook / MCP per-file paths — semantics identical to the historical
+/// `target_file` option) or a whole changeset (`recall --diff` / `fix`),
+/// where a rule is in scope when ANY changed path matches its patterns.
 ///
+/// The single-file hot path (`PostToolUse` hook) keeps using `File`; the
+/// changeset variant exists so diff-shaped callers stop collapsing a
+/// multi-file diff onto one "primary" file and missing rules scoped to the
+/// other changed files.
+#[derive(Debug, Clone, Copy)]
+pub enum TargetScope<'a> {
+    /// One file path, matched exactly like the historical `target_file`.
+    File(&'a str),
+    /// Every changed path in a diff; ANY-path match brings a rule in scope.
+    Changeset(&'a [String]),
+}
+
+impl TargetScope<'_> {
+    /// Decide whether a chunk's `file_patterns` blob is in scope, with the
+    /// retrieval-side over-recall error policy on both variants.
+    pub(crate) fn pattern_allows(&self, file_patterns_json: Option<&str>) -> bool {
+        match self {
+            Self::File(file) => pattern_allows(file_patterns_json, file),
+            Self::Changeset(paths) => {
+                glob_match_changeset(file_patterns_json, paths, GlobErrorPolicy::OverRecall)
+            }
+        }
+    }
+
+    /// Language hint for the SQL-side pre-filter. A single file uses its
+    /// extension (unchanged behaviour); a changeset only yields a language
+    /// when every recognised path agrees — a mixed-language diff must not
+    /// pre-drop rules tagged for the other language. Unrecognised
+    /// extensions are ignored (those rules carry NULL language anyway).
+    pub(crate) fn language_hint(&self) -> Option<String> {
+        match self {
+            Self::File(file) => super::detect_language_from_path(file),
+            Self::Changeset(paths) => {
+                let mut hint: Option<String> = None;
+                for language in paths
+                    .iter()
+                    .filter_map(|path| super::detect_language_from_path(path))
+                {
+                    match &hint {
+                        None => hint = Some(language),
+                        Some(existing) if *existing == language => {}
+                        Some(_) => return None,
+                    }
+                }
+                hint
+            }
+        }
+    }
+}
+
 /// Retrieval options for confidence weighting, scoping, ANN usage, and
-/// trajectory telemetry. The default path matches plain retrieval: default
-/// top-k, no confidence map, no target-file cascade, no SQL metadata filter,
-/// ANN enabled, and no trajectory capture.
+/// trajectory telemetry. The default matches plain retrieval: default top-k,
+/// no confidence map, no target-scope cascade, no SQL metadata filter, ANN
+/// enabled, no trajectory capture.
 pub struct RetrievalOptions<'a> {
     pub top_k: Option<usize>,
     pub confidence_map: Option<&'a HashMap<String, f64>>,
@@ -62,25 +114,24 @@ pub struct RetrievalOptions<'a> {
     /// know the engine-eligible rule set can pass it here so disabled rules
     /// do not consume top-k score budget.
     pub eligible_skill_ids: Option<&'a HashSet<String>>,
-    /// Iter-13 (2026-05-02). Per-skill age in days, used by the
-    /// category-keyed half-life decay in `effective_confidence`. When
-    /// `None` (or a chunk's `skill_id` is absent from the map) the
-    /// scoring site uses `age_days = 0.0` — identical to the
-    /// pre-plumbing behaviour, so no caller breaks if it doesn't pass
-    /// a map.
+    /// Per-skill age in days, used by the category-keyed half-life decay in
+    /// `effective_confidence`. When `None` (or a chunk's `skill_id` is absent
+    /// from the map) the scoring site uses `age_days = 0.0` — no decay.
     pub age_days_map: Option<&'a HashMap<String, f32>>,
-    pub target_file: Option<&'a str>,
+    /// Strict file-pattern cascade scope: a single target file or a whole
+    /// changeset. `None` disables the cascade (every chunk is eligible).
+    pub target_scope: Option<TargetScope<'a>>,
     pub filter: Option<&'a QueryFilter>,
     pub ann_enabled: bool,
     /// Optional provider-call budget for embedding the query. Latency-
     /// sensitive hook paths set this so a slow cloud embedder degrades to
     /// lexical retrieval instead of timing out the host agent's hook.
     pub embedding_timeout: Option<Duration>,
-    /// When true, a query embed that falls back to lexical because the base
-    /// budget timed out on a healthy cloud lane is retried once with a longer
-    /// cold-absorbing budget (see [`COLD_RETRY_EMBEDDING_TIMEOUT`]). Only the
-    /// human-waiting CLI `recall`/`search` path sets this; the latency-critical
-    /// hook/MCP paths leave it `false` so a cold provider never blocks the agent.
+    /// When true, a query embed that fell back to lexical on a base-budget
+    /// timeout is retried once with a longer cold-absorbing budget (see
+    /// [`COLD_RETRY_EMBEDDING_TIMEOUT`]). Only the human-waiting CLI
+    /// `recall`/`search` path sets this; latency-critical hook/MCP paths leave
+    /// it `false` so a cold provider never blocks the agent.
     pub cold_start_retry: bool,
     /// When true, suppresses broad weak matches entirely. This is useful
     /// for unsolicited hook injection where "no extra context" is often
@@ -98,7 +149,7 @@ impl Default for RetrievalOptions<'_> {
             confidence_map: None,
             eligible_skill_ids: None,
             age_days_map: None,
-            target_file: None,
+            target_scope: None,
             filter: None,
             ann_enabled: true,
             embedding_timeout: None,
@@ -114,10 +165,11 @@ impl Default for RetrievalOptions<'_> {
 /// `confidence_map` maps `skill_id` -> `confidence_score`. If None, all rules
 /// get default confidence 0.7.
 ///
-/// `target_file`: when present, applies **strict cascade** — chunks whose
-/// `file_patterns` don't match the target file are dropped before scoring.
-/// When the matched bucket is empty, returns no pattern-scoped rules rather
-/// than widening into rules explicitly tagged for other files.
+/// `target_scope`: when present, applies **strict cascade** — chunks whose
+/// `file_patterns` don't match the scope (a single file, or ANY path of a
+/// changeset) are dropped before scoring. When the matched bucket is empty,
+/// returns no pattern-scoped rules rather than widening into rules
+/// explicitly tagged for other files.
 ///
 /// `filter`: metadata pre-filter applied at SQL time (C2). Empty filter
 /// means "no scoping" — retrieval sees every chunk.
@@ -134,7 +186,7 @@ pub async fn retrieve_rules_with_confidence(
         confidence_map,
         eligible_skill_ids,
         age_days_map,
-        target_file,
+        target_scope,
         filter,
         ann_enabled,
         embedding_timeout,
@@ -156,18 +208,13 @@ pub async fn retrieve_rules_with_confidence(
 
     // Switch the RRF weighting when the actual query vector is only the
     // local lexical hash, or when a provider failure disabled the vector
-    // lane entirely.
-    //
-    // 2026-05-03 A/B verified the hybrid (local hash + FTS5 BM25) lifts
-    // self-recall@5 from 45% (FTS-only) to 85%, and @1 from 10% to 45%.
-    // The local hash isn't semantic but its bag-of-token overlap fills
-    // FTS5's strict-tokenizer gap. Worth keeping until cloud-managed
-    // embedding is configured.
+    // lane entirely. The hybrid (local hash + FTS5 BM25) outperforms FTS-only
+    // because the local hash's bag-of-token overlap fills FTS5's
+    // strict-tokenizer gap, even though the hash isn't semantic.
     let is_semantic = embedded_query.semantic;
 
-    // ── C2: SQL-level metadata pre-filter ──────────────────────────
-    // When the filter is empty this reduces to `SELECT *`, matching the
-    // pre-C2 behaviour and so zero-cost for unscoped callers.
+    // SQL-level metadata pre-filter. When the filter is empty this reduces to
+    // `SELECT *`, so it is zero-cost for unscoped callers.
     let unfiltered_count: u32 = if filter.is_empty() {
         0
     } else {
@@ -181,9 +228,8 @@ pub async fn retrieve_rules_with_confidence(
     let chunks = index_db::query_rule_chunks(index_pool, filter).await?;
     let after_count: u32 = u32::try_from(chunks.len()).unwrap_or(u32::MAX);
 
-    // ── C4: FTS5 keyword baseline ──────────────────────────────────
-    // Pull `k*4` raw hits so we have RRF material even after the
-    // pattern cascade trims some out.
+    // FTS5 keyword baseline. Pull `k*4` raw hits so we have RRF material even
+    // after the pattern cascade trims some out.
     let fts_limit = k.saturating_mul(4).min(200).max(k);
     let fts_hits = index_db::fts_search(index_pool, query, filter, fts_limit)
         .await
@@ -192,17 +238,18 @@ pub async fn retrieve_rules_with_confidence(
     let default_confidence = 0.7;
     let min_confidence = 0.2;
 
-    // Pre-partition by file-pattern match if target_file is set. This is the
-    // strict cascade: when ANY chunk matches the target, drop the rest.
-    let matched: Vec<&IndexedRuleChunk> = if let Some(tf) = target_file {
+    // Pre-partition by file-pattern match if a target scope is set. This is
+    // the strict cascade: when ANY chunk matches the scope (single file, or
+    // any path of a changeset), drop the rest.
+    let matched: Vec<&IndexedRuleChunk> = if let Some(scope) = target_scope {
         chunks
             .iter()
-            .filter(|c| pattern_allows(c.file_patterns.as_deref(), tf))
+            .filter(|c| scope.pattern_allows(c.file_patterns.as_deref()))
             .collect()
     } else {
         chunks.iter().collect()
     };
-    let active: &[&IndexedRuleChunk] = if target_file.is_some() && matched.is_empty() {
+    let active: &[&IndexedRuleChunk] = if target_scope.is_some() && matched.is_empty() {
         &[]
     } else {
         &matched
@@ -352,49 +399,22 @@ pub async fn retrieve_rules_with_confidence(
         });
     }
 
-    // Materialise the final scored list. `ScoredRuleChunk.score` is
-    // the fused RRF score multiplied by a *small* confidence multiplier
-    // — confidence acts as a tie-breaker rather than the primary
-    // ranking signal. The earlier `sqrt(confidence)` weight flipped
-    // the ordering on real workloads: a freshly captured (conf=0.6)
-    // conversation rule with a strong file-pattern + lexical match was
-    // demoted below cloud-extracted rules (conf=0.7) whose query
-    // overlap was 5-20% lower. Net result: the rule the user just
-    // taught DiffLore was the LAST rule injected for the very file it
-    // applies to. That breaks the slogan ("AI understands your preferences better and better") at
-    // exactly the moment users will check whether the slogan is true.
-    //
-    // The 0.9 + 0.1 * confidence multiplier keeps spread at 8%
-    // (conf=0.2 floor → 0.92; conf=1.0 → 1.0). RRF score gaps between
-    // adjacent ranks in our regime are 5-20%, so confidence can break
-    // a near-tie but cannot overturn a clear lexical/semantic winner.
-    // Strengthening (+0.05 confidence per accept) still earns +0.5%
-    // multiplier — enough to win against an equally-relevant peer at
-    // a lower confidence, which is what "the rule I've ratified twice
-    // outranks the rule captured once" should feel like.
+    // Final score = fused RRF score × a *small* confidence multiplier, so
+    // confidence breaks near-ties without overturning a clear lexical/
+    // semantic winner. The 0.9 + 0.1 * confidence form keeps spread at 8%
+    // (conf=0.2 → 0.92; conf=1.0 → 1.0), below the 5-20% RRF gaps between
+    // adjacent ranks. A stronger weight (e.g. `sqrt(confidence)`) wrongly
+    // demoted freshly-captured high-relevance rules below lower-overlap
+    // higher-confidence ones.
     let mut scored: Vec<ScoredRuleChunk> = fused
         .into_values()
         .map(|(score, chunk, confidence)| {
-            // Confidence tie-breaker (8% spread) + content-concreteness
-            // boost. Iter-12 (2026-04-25) added the concreteness factor
-            // because rule-impact-by-kind audit showed slogan rules
-            // ("Trust CI for workflow correctness", "Hold clean PRs for
-            // additional review") were misfiring across languages —
-            // they have no concrete code tokens to anchor relevance to.
-            // The concreteness signal counts backticked tokens + path-
-            // like fragments + version literals in the rule's content,
-            // saturated at 6 hits to avoid runaway when a rule body is
-            // mostly code. Net: a singleton rule citing
-            // `useQuery({...})` outranks a generic slogan with the
-            // same lexical match, fixing the Python −0.38 over-engineer
-            // regime we measured in iter 9.6.
-            // Iter-13 (2026-05-02). Borrow jcode's category-keyed half-life
-            // so an ancient style rule no longer outranks a freshly ratified
-            // correction on conf alone. Kind is inferred from chunk content
-            // (no `kind` column on rule_chunks); age_days comes from the
-            // optional per-call `age_days_map` (None ⇒ 0.0 ⇒ no decay,
-            // matching the original behaviour for callers that haven't
-            // wired the map yet).
+            // Confidence tie-breaker plus a content-concreteness boost: rules
+            // with no concrete code tokens (generic slogans) otherwise outrank
+            // specific rules on lexical match alone. `kind`/`age_days` feed a
+            // category-keyed half-life so an old style rule doesn't beat a
+            // freshly ratified correction on confidence alone; age_days_map ==
+            // None means age 0.0 (no decay).
             let kind = infer_rule_kind(&chunk.content);
             let age_days = age_days_map
                 .and_then(|m| m.get(&chunk.skill_id).copied())
@@ -418,37 +438,16 @@ pub async fn retrieve_rules_with_confidence(
             .then_with(|| a.skill_id.cmp(&b.skill_id))
     });
 
-    // Adaptive top-K + noise floor.
-    //
-    // Iter-12 hardens the "less is more" principle on top of iter-4's
-    // floors. The fastapi/Python regression (-0.38 ΔB-A in iter 9.6)
-    // traced to the agent receiving 5 weak rules on simple tasks (typo
-    // fix, parameter substitution) where claude's training already
-    // nailed the answer. Five weak rules induced over-engineering. The
-    // fix: when the top result's score itself is in the noise band,
-    // emit ZERO rules — let the agent trust its training.
-    //
-    // Adaptive zero-inject is **only safe for unsolicited
-    // injection** (PreToolUse:Read hook). Explicit user queries via
-    // Explicit canonical MCP rule-search calls must always
-    // return what's available — when a user types `search_rules
-    // intent=...`, returning empty would feel broken even if scores
-    // are weak. Callers opt in by setting `top_k=Some(5)` AND wanting
-    // adaptive behaviour explicitly via the iter-12 hook contract.
-    //
-    // The rule of thumb: if only the absolute floor would have kept
-    // ≥3 results in scope (i.e. there's a real "noise tail" worth
-    // pruning), apply adaptive. Tiny corpora with 1-2 candidates
-    // bypass adaptive — those results are fine to return as-is.
-    // Adaptive zero-inject only when we'd otherwise return many weak
-    // matches (the "5 weak rules" pathology). Small corpora and small
-    // result sets bypass — those are explicit user queries with
-    // limited candidates anyway.
+    // Adaptive top-K + noise floor. When the top score is itself in the noise
+    // band AND there are many results (the "5 weak rules" pathology that
+    // induces agent over-engineering), emit ZERO rules so the agent trusts its
+    // training. Only safe for unsolicited injection (PreToolUse:Read hook),
+    // which opts in via `adaptive_prune`; explicit user/MCP queries must always
+    // return what's available even when scores are weak. Small result sets
+    // bypass entirely.
     let adaptive_eligible = adaptive_prune && scored.len() >= 5;
     if let Some(top_score) = scored.first().map(|s| s.score) {
         if adaptive_eligible && top_score < ADAPTIVE_INJECT_THRESHOLD {
-            // Top match is itself weak AND we have many results — this
-            // is the "5 weak rules" pathology. Return empty.
             scored.clear();
         } else {
             prune_below_floors(&mut scored, top_score);
@@ -475,8 +474,8 @@ pub async fn retrieve_rules_with_confidence(
     // Memory-pipeline event: surfaces the ANN/embedding pass to the TUI
     // Activity tab so users can see retrieval running. Best-effort —
     // never blocks recall.
-    crate::activity_stream::record(
-        crate::activity_stream::ActivityPayload::RetrievalEmbedding {
+    crate::observability::activity_stream::record(
+        crate::observability::activity_stream::ActivityPayload::RetrievalEmbedding {
             hits: u32::try_from(scored.len()).unwrap_or(u32::MAX),
             took_ms: u64::try_from(retrieval_start.elapsed().as_millis()).unwrap_or(u64::MAX),
         },
@@ -500,43 +499,22 @@ fn prune_below_floors(scored: &mut Vec<ScoredRuleChunk>, top_score: f64) {
     scored.retain(|s| s.score > MIN_RELEVANCE_SCORE && s.score >= relative_floor);
 }
 
-/// Adaptive relevance gate for the EXPLICIT recall surfaces — the MCP
-/// `search_rules` tool and the CLI `recall` command. Mirrors the hook
-/// path's adaptive pruning so an agent never has to weigh five weak rules
-/// against an empty answer: irrelevant memory is worse than none.
+/// Relevance gate for the EXPLICIT recall surfaces (MCP `search_rules`, CLI
+/// `recall`). Runs on the FINAL, fully-reranked, sorted list — unlike the hook
+/// path's in-retrieval pruning — because these paths add high-value signals
+/// after fusion (exact-title-strict matches, the starter set, lexical-intent
+/// boosts). Like the hook, a low-relevance query collapses to ZERO results so
+/// the caller shows "no relevant memory" rather than filler.
 ///
-/// The hook path (`adaptive_prune == true` inside
-/// `retrieve_rules_with_confidence`) zero-injects on a weak top hit and
-/// drops the noise tail *before* any downstream reranking. The explicit
-/// paths can't do that in-retrieval because they still add high-value
-/// signals after fusion — exact-title-strict matches (score `2.0 + conf`),
-/// the cross-repo starter set, and the lexical-intent re-rank boost — so
-/// this gate runs on the FINAL, fully-reranked, sorted list instead. The
-/// net contract is the same as the hook's: a low-relevance query
-/// (wrong-file, no intent overlap — e.g. a Codecov rule surfacing in a
-/// wrong-file top-3) collapses to ZERO results so the caller emits its
-/// existing "no relevant memory" message rather than confident filler.
+/// Two gates, tuned never to suppress genuinely-strong matches:
+///   1. Absolute floor — top hit below [`EXPLICIT_RECALL_MIN_RELEVANCE`] means
+///      every result is noise: clear. A relevant top hit is boosted well above
+///      this; a cascade-only/no-overlap hit stays in the raw RRF band.
+///   2. Relative floor — drop tail below [`EXPLICIT_RECALL_RELATIVE_FLOOR`] of
+///      the top hit. Looser than the hook's [`RELATIVE_RELEVANCE_FLOOR`]:
+///      explicit queries keep more of a real result set.
 ///
-/// Two conservative gates, tuned so genuinely-strong matches are NEVER
-/// suppressed:
-///   1. Absolute floor — if even the top hit is below
-///      [`EXPLICIT_RECALL_MIN_RELEVANCE`], every result is noise: clear.
-///      After the lexical-intent re-rank a genuinely relevant top hit
-///      sits far above this floor (boosted into the 0.1+ range), while a
-///      cascade-only / no-overlap top hit stays in the raw RRF band
-///      (~0.001–0.005) and is correctly dropped.
-///   2. Relative floor — drop tail results below
-///      [`EXPLICIT_RECALL_RELATIVE_FLOOR`] of the (surviving) top hit, so
-///      a strong leader doesn't drag along far-weaker filler. Deliberately
-///      looser than the hook's [`RELATIVE_RELEVANCE_FLOOR`]: explicit
-///      queries should keep more of a real result set, only shedding the
-///      clearly-irrelevant tail.
-///
-/// Pure and in-place. The caller must pass a list already sorted
-/// descending by `score` (both explicit call sites do, via their final
-/// re-rank). Strong matches (including exact-title-strict and starter
-/// hits) clear both floors by a wide margin, so this never regresses a
-/// real recall.
+/// Pure / in-place; caller must pass a list already sorted descending by score.
 pub fn apply_explicit_recall_threshold(scored: &mut Vec<ScoredRuleChunk>) {
     let Some(top_score) = scored.first().map(|s| s.score) else {
         return;
@@ -553,28 +531,19 @@ pub fn apply_explicit_recall_threshold(scored: &mut Vec<ScoredRuleChunk>) {
 
 /// Intent-alignment gate for the EXPLICIT recall surfaces — applied BEFORE
 /// [`apply_explicit_recall_threshold`] on the final, fully-reranked list.
+/// Topically-adjacent rules can clear the relevance floors while addressing a
+/// different action/subject; this checks whether the rule's directive matches
+/// the query intent, not just its topic. Biased toward fewer/zero results.
 ///
-/// WHY: topically adjacent rules can clear relevance floors while addressing a
-/// different action or subject than the directive. This gate adds the missing
-/// axis: does the rule's directive match the query intent, not just its topic?
-///
-/// Behaviour, biased hard toward FEWER / zero (DiffLore's "stay silent
-/// unless it clearly applies" positioning):
-///   * An all-weak query (no salient terms after stop-word filtering) cannot
-///     establish intent for ANY rule → clear. Returning nothing is correct
-///     here: we have no signal to claim a match.
+///   * All-weak query (no salient terms after stop-word filtering) → clear:
+///     no signal to claim any match.
 ///   * A candidate is KEPT when it is either strongly scored (≥
-///     [`INTENT_ALIGNMENT_EXEMPT_SCORE`] — exact-title-strict / starter /
-///     strongly lexically-boosted hits, already intent-validated upstream)
-///     or its directive is intent-aligned per [`directive_intent_aligned`].
-///   * Every other candidate — the topically-adjacent middle band — is
-///     dropped.
+///     [`INTENT_ALIGNMENT_EXEMPT_SCORE`], already intent-validated upstream) or
+///     its directive is intent-aligned per [`directive_intent_aligned`].
+///   * The topically-adjacent middle band is dropped.
 ///
-/// Conservative by construction: the strong-score exemption guarantees no
-/// genuinely-strong match (and therefore no eval self-recall hit, where the
-/// query is the rule's own intent text and overlap is near-total) is ever
-/// suppressed. Pure / in-place; order is preserved (the caller has already
-/// sorted, and this only `retain`s).
+/// The strong-score exemption guarantees genuinely-strong matches (and eval
+/// self-recall hits) are never suppressed. Pure / in-place; order preserved.
 pub fn apply_intent_alignment_gate(scored: &mut Vec<ScoredRuleChunk>, intent: &str) {
     if scored.is_empty() {
         return;
@@ -625,8 +594,8 @@ async fn try_ann_rank<'a>(
     // get a valid hash — they just won't have a persisted graph to
     // reload, which is fine: `load_or_empty` returns an empty index and
     // we fall through to the linear scan.
-    let project_root = crate::db::current_project_root();
-    let project_hash = crate::db::project_hash_from_root(&project_root);
+    let project_root = crate::infra::db::current_project_root();
+    let project_hash = crate::infra::db::project_hash_from_root(&project_root);
 
     let ann_arc = ann::get_ann_for_project(&project_hash, query_emb.len())
         .await
@@ -1062,6 +1031,51 @@ mod tests {
             min_overlap >= 2,
             "a lone topical-anchor overlap must be insufficient"
         );
+    }
+
+    // -- TargetScope (single file vs changeset) --
+
+    #[test]
+    fn target_scope_changeset_matches_when_any_path_in_scope() {
+        let patterns = Some(r#"["db/schema/**", "migrations/**/*.sql"]"#);
+        let hit = vec!["src/api.ts".to_owned(), "db/schema/users.sql".to_owned()];
+        assert!(TargetScope::Changeset(&hit).pattern_allows(patterns));
+        let miss = vec!["src/api.ts".to_owned(), "README.md".to_owned()];
+        assert!(!TargetScope::Changeset(&miss).pattern_allows(patterns));
+        // File variant keeps the historical single-path behaviour.
+        assert!(TargetScope::File("db/schema/users.sql").pattern_allows(patterns));
+        assert!(!TargetScope::File("src/api.ts").pattern_allows(patterns));
+        // Universal rules match either scope.
+        assert!(TargetScope::Changeset(&miss).pattern_allows(None));
+        assert!(TargetScope::File("anything.txt").pattern_allows(None));
+    }
+
+    #[test]
+    fn target_scope_language_hint_requires_unanimous_changeset() {
+        // Single file: extension-derived, as before.
+        assert_eq!(
+            TargetScope::File("src/main.rs").language_hint().as_deref(),
+            Some("rust")
+        );
+        // Unanimous changeset (unrecognised extensions ignored).
+        let rust_only = vec![
+            "src/main.rs".to_owned(),
+            "src/lib.rs".to_owned(),
+            "README.md".to_owned(),
+        ];
+        assert_eq!(
+            TargetScope::Changeset(&rust_only)
+                .language_hint()
+                .as_deref(),
+            Some("rust")
+        );
+        // Mixed-language diff: no filter, so neither language's rules are
+        // pre-dropped at SQL time.
+        let mixed = vec!["src/main.rs".to_owned(), "web/app.ts".to_owned()];
+        assert_eq!(TargetScope::Changeset(&mixed).language_hint(), None);
+        // No recognised extension at all: no filter.
+        let none = vec!["README.md".to_owned()];
+        assert_eq!(TargetScope::Changeset(&none).language_hint(), None);
     }
 
     #[test]

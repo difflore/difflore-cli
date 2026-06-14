@@ -1,11 +1,11 @@
 //! Compare an agent's stated changes against the actual git diff.
 //!
-//! Catches the failure mode where an agent confidently summarises "I edited
-//! files X, Y, Z" but `git diff` shows it never wrote one or more of them.
+//! Catches the failure mode where an agent claims "I edited files X, Y, Z"
+//! but `git diff` shows it never wrote one or more of them.
 //!
-//! The function is pure and side-effect free: caller supplies the candidate
-//! claim text (an assistant message) and the actual changed-file set (from
-//! `git diff --name-only`). The caller decides where to surface the warning.
+//! Pure and side-effect free: caller supplies the claim text (an assistant
+//! message) and the actual changed-file set (from `git diff --name-only`),
+//! and decides where to surface the warning.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -31,12 +31,11 @@ pub struct Finding {
 }
 
 impl Finding {
-    /// One-line message suitable for a CLI footer or hook output.
+    /// One-line message for a CLI footer or hook output.
     ///
-    /// Returns the *unfiltered* internal view — every claimed/missing path,
-    /// including ones a non-engineer reader would find noisy (SQL migrations,
-    /// lockfiles, generated snapshots). Use [`Finding::summary_for_user`]
-    /// when surfacing to end users.
+    /// Returns the unfiltered internal view — every claimed/missing path,
+    /// including ones noisy for a non-engineer (SQL migrations, lockfiles,
+    /// generated snapshots). Use [`Finding::summary_for_user`] for end users.
     pub fn summary(&self) -> String {
         match self.severity {
             Severity::Hallucination => format!(
@@ -52,12 +51,11 @@ impl Finding {
         }
     }
 
-    /// User-facing one-liner for hooks / footers. Filters out files that
-    /// are noisy for a non-engineer reader (SQL migrations, lockfiles,
-    /// drizzle/`meta/*.json` snapshots, sqlx caches) and softens the wording
-    /// from accusatory ("claimed but missing") to descriptive. Returns
-    /// `None` when nothing meaningful remains after filtering — the caller
-    /// suppresses the warning entirely in that case.
+    /// User-facing one-liner for hooks / footers. Filters out files noisy for
+    /// a non-engineer (SQL migrations, lockfiles, drizzle/`meta/*.json`
+    /// snapshots, sqlx caches) and uses descriptive rather than accusatory
+    /// wording. Returns `None` when nothing meaningful remains after filtering,
+    /// in which case the caller suppresses the warning.
     pub fn summary_for_user(&self) -> Option<String> {
         let filtered_missing: Vec<&String> = self
             .missing_from_diff
@@ -92,12 +90,11 @@ impl Finding {
     }
 }
 
-/// True if `claim` names a file class that's noisy for a non-engineer
-/// reader. Generated artefacts, schema migrations, lockfiles, and offline
-/// query caches are real files but their absence-from-diff carries no
-/// signal a product user can act on. Filter them before user-facing
-/// surfaces; keep them in the internal `missing_from_diff` so engineering
-/// callers can still introspect.
+/// True if `claim` names a file class noisy for a non-engineer reader.
+/// Generated artefacts, migrations, lockfiles, and offline query caches are
+/// real files but their absence-from-diff carries no actionable signal for a
+/// product user. Filtered before user-facing surfaces; kept in the internal
+/// `missing_from_diff` for engineering callers.
 fn is_low_signal_for_user(claim: &str) -> bool {
     let lower = claim.to_ascii_lowercase();
     // Lockfiles and offline caches.
@@ -113,8 +110,7 @@ fn is_low_signal_for_user(claim: &str) -> bool {
     {
         return true;
     }
-    // SQL migrations — drizzle/sqlx/diesel all dump generated files into
-    // numbered subpaths users don't read.
+    // SQL migrations — generated files in numbered subpaths users don't read.
     if lower.ends_with(".sql") {
         return true;
     }
@@ -122,8 +118,7 @@ fn is_low_signal_for_user(claim: &str) -> bool {
     if lower.contains("/meta/") && lower.ends_with(".json") {
         return true;
     }
-    // sqlx offline query cache. Match both repo-root (`.sqlx/...`) and
-    // nested (`crates/foo/.sqlx/...`) layouts.
+    // sqlx offline query cache, at repo root or nested under a crate.
     if lower.starts_with(".sqlx/") || lower.contains("/.sqlx/") {
         return true;
     }
@@ -134,11 +129,10 @@ fn is_low_signal_for_user(claim: &str) -> bool {
     false
 }
 
-/// Run the comparison. `actual` should be the set returned by
-/// `git diff --name-only <base>` (or equivalent) — an empty set means the
-/// agent edited nothing. `expected_hint` is optional: if known (e.g. the PR
-/// body listed a `Files changed` table), unrecognised bare-filename mentions
-/// in `claim_text` are filtered against it to reduce false positives.
+/// Run the comparison. `actual` is the set from `git diff --name-only <base>`
+/// (or equivalent); an empty set means the agent edited nothing.
+/// `expected_hint`, when known (e.g. a PR's `Files changed` table), filters
+/// unrecognised bare-filename mentions in `claim_text` to reduce false positives.
 pub fn validate(
     claim_text: &str,
     actual: &[impl AsRef<Path>],
@@ -154,17 +148,14 @@ pub fn validate(
     let mut claimed: BTreeSet<String> = BTreeSet::new();
 
     for c in raw_claims {
-        // Out-of-tree claims (home/system absolute paths) can never appear
-        // in `git diff --name-only` because they're outside any repo. The
-        // validator's job is catching repo-edit hallucinations, not global
-        // config edits — silently skip.
+        // Out-of-tree claims (home/system absolute paths) can never appear in
+        // `git diff --name-only`; the validator only catches repo-edit
+        // hallucinations, not global config edits.
         if is_out_of_tree(&c) {
             continue;
         }
-        // Build artefacts (.exe, .dll, .so, …) get produced/copied by
-        // shell commands, never edited as source — they cannot appear in
-        // `git diff` content. Mentioning `difflore-hook.exe` while
-        // describing an install step is not a hallucinated edit, so skip.
+        // Build artefacts (.exe, .dll, .so, …) are produced/copied by shell
+        // commands, never edited as source, so they never appear in a diff.
         if is_binary_artifact(&c) {
             continue;
         }
@@ -172,9 +163,9 @@ pub fn validate(
             claimed.insert(c);
             continue;
         }
-        // Suffix match: model often refers to "view.go" when the canonical
-        // path is "pkg/cmd/run/view/view.go". Accept the longer form if the
-        // suffix uniquely matches an actual or expected entry.
+        // Suffix match: model often writes "view.go" for the canonical
+        // "pkg/cmd/run/view/view.go". Accept the longer form when the suffix
+        // matches an actual or expected entry.
         let mut matched = false;
         for ref_path in actual.iter().chain(expected.iter()) {
             if ref_path == &c || ref_path.ends_with(&format!("/{c}")) {
@@ -186,12 +177,10 @@ pub fn validate(
         if matched {
             continue;
         }
-        // Trust unmatched mentions when they look like a real filename
-        // (either contain a `/`, or have a recognised file extension and
-        // came from extract_claimed_paths' quoted/well-known passes —
-        // common nouns without quotes never reach this point). Real-
-        // world hallucinations frequently cite by basename in markdown
-        // bold (`**go.mod**`), so dropping all bare names misses them.
+        // Trust unmatched mentions that look like a real filename (contain a
+        // `/`, or have a recognised extension). Hallucinations often cite by
+        // basename in markdown bold (`**go.mod**`), so dropping all bare names
+        // would miss them.
         if c.contains('/') || looks_like_filename(&c) {
             claimed.insert(c);
         }
@@ -220,11 +209,10 @@ pub fn validate(
     })
 }
 
-/// True if `claim` looks like an absolute path that lives outside any
-/// possible working-tree — a home-directory dotfile, a system config, or
-/// a Windows drive-letter absolute. `git diff --name-only` only ever
-/// emits repo-relative paths, so out-of-tree claims can't be validated
-/// this way and would otherwise always be flagged as "missing from diff".
+/// True if `claim` is an absolute path outside any working-tree — a home
+/// dotfile, system config, or Windows drive-letter absolute. `git diff
+/// --name-only` only emits repo-relative paths, so these can't be validated
+/// and would otherwise always be flagged "missing from diff".
 fn is_out_of_tree(claim: &str) -> bool {
     if claim.starts_with("~/")
         || claim.starts_with("$HOME")
@@ -252,9 +240,9 @@ fn is_out_of_tree(claim: &str) -> bool {
         && (bytes[2] == b'/' || bytes[2] == b'\\')
 }
 
-/// True if `claim` ends in an extension that names a build artefact
-/// (compiled binary, shared library, lockable archive, debug symbol).
-/// These never appear in `git diff` as content edits — they're outputs.
+/// True if `claim` ends in a build-artefact extension (compiled binary,
+/// shared library, archive, debug symbol). These are outputs and never appear
+/// in `git diff` as content edits.
 fn is_binary_artifact(claim: &str) -> bool {
     let stripped = strip_quotes(claim).trim_end_matches(&[',', '.', ';', ':'][..]);
     let Some((_, ext)) = stripped.rsplit_once('.') else {
@@ -279,9 +267,9 @@ fn is_binary_artifact(claim: &str) -> bool {
     )
 }
 
-/// True if `s` has the shape of a filename: a name part, a `.`, then an
-/// extension of 1–6 ASCII alphanumerics. Used to gate which unmatched
-/// bare claims survive (vs. e.g. "config" or "test" which have no dot).
+/// True if `s` has the shape of a filename: a name part, a `.`, then a 1–6
+/// char ASCII-alphanumeric extension. Gates which unmatched bare claims
+/// survive (vs. e.g. "config" or "test", which have no dot).
 fn looks_like_filename(s: &str) -> bool {
     let Some((name, ext)) = s.rsplit_once('.') else {
         return false;
@@ -308,9 +296,8 @@ fn extract_claimed_paths(text: &str) -> Vec<String> {
 
     // Pass 1: explicit paths (contain `/`).
     for word in tokenise(text) {
-        // Shell-style `name='...'` / `name="..."` — peel off the lvalue
-        // so claims like `alias difflore='C:/.../foo.exe'` extract the
-        // path, not `difflore='C:/.../foo.exe`.
+        // Shell-style `name='...'` / `name="..."` — peel off the lvalue so
+        // `alias difflore='C:/.../foo.exe'` extracts the path, not the lvalue.
         let body = match word.find('=') {
             Some(eq) if matches!(word.as_bytes().get(eq + 1), Some(b'\'' | b'"')) => {
                 &word[eq + 1..]
@@ -322,20 +309,10 @@ fn extract_claimed_paths(text: &str) -> Vec<String> {
             out.push(strip_quotes(trimmed).to_owned());
         }
     }
-    // Pass 2: quoted bare filenames with a known extension.
-    //
-    // We require a *known file extension* here (not just any
-    // alphanumeric suffix) so quoted code field paths like
-    // `pack.rule_context.title` or `r.title` aren't mistaken for
-    // filenames. Without the whitelist `has_extension` is satisfied
-    // by any 1–6-char alphanumeric suffix, which made the Stop hook
-    // emit "agent claimed [pack.rule_context.title, r.title] but
-    // diff is missing [...]" on every PR description that quoted a
-    // Rust struct field. False-positive reduces user trust in the
-    // hook, so be conservative here.
-    // Pass 2 doesn't care which quote style the run was — every quoted
-    // span gets the same extension-whitelist treatment. Underscore the
-    // unused half of the destructure instead of binding then discarding.
+    // Pass 2: quoted bare filenames with a *known* extension. Requiring a
+    // whitelisted extension (not any 1–6-char alphanumeric suffix) keeps
+    // quoted dotted identifiers like `pack.rule_context.title` from being
+    // mistaken for filenames. Quote style is irrelevant.
     for (_delim, slice) in iter_quoted_runs(text) {
         for word in slice.split_whitespace() {
             if has_known_file_ext(word) && !word.contains('/') {
@@ -380,14 +357,10 @@ fn has_extension(word: &str) -> bool {
         && ext.chars().all(|c| c.is_ascii_alphanumeric()))
 }
 
-/// Like `has_extension` but only matches a known file extension.
-/// Used in Pass 2 (bare quoted filenames) where we need to be more
-/// conservative — there's no `/` to disambiguate a real path from a
-/// dotted identifier (`pack.rule_context.title`).
-///
-/// New extensions added here are cheap; the cost of a false negative
-/// (legit file mention skipped) is low because Pass 1 still catches
-/// any path with a `/` regardless of extension.
+/// Like `has_extension` but only matches a known file extension. Used in
+/// Pass 2 (bare quoted filenames), where there's no `/` to disambiguate a
+/// real path from a dotted identifier (`pack.rule_context.title`). A false
+/// negative is cheap: Pass 1 still catches any path with a `/`.
 fn has_known_file_ext(word: &str) -> bool {
     const KNOWN: &[&str] = &[
         // code

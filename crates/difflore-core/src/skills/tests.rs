@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use crate::models::*;
+    use crate::domain::models::*;
 
     #[test]
     fn decode_base64_table() {
@@ -164,11 +164,9 @@ body text";
         assert!(!r2.enabled);
     }
 
-    // ── remember_rule content-hash + 30s window dedup ──
-    //
-    // These tests exercise the dedup window in `remember()`: a content-hash
-    // storm inside the window collapses to a single soft-accept bump; outside
-    // the window, title/body dedup or a fresh insert still applies.
+    // remember_rule content-hash + 30s window dedup: a content-hash storm
+    // inside the window collapses to a single soft-accept bump; outside the
+    // window, title/body dedup or a fresh insert still applies.
 
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::str::FromStr;
@@ -177,7 +175,7 @@ body text";
 
     impl DedupTestEnv {
         async fn db() -> sqlx::SqlitePool {
-            let _home = crate::db::shared_test_home();
+            let _home = crate::infra::db::shared_test_home();
             let opts = SqliteConnectOptions::from_str("sqlite::memory:")
                 .unwrap()
                 .foreign_keys(true);
@@ -186,7 +184,7 @@ body text";
                 .connect_with(opts)
                 .await
                 .unwrap();
-            crate::db::run_migrations(&pool).await.unwrap();
+            crate::infra::db::run_migrations(&pool).await.unwrap();
             pool
         }
     }
@@ -290,6 +288,33 @@ body text";
             .await
             .unwrap();
         assert_eq!(ambiguous, vec!["acme/widgets".to_owned()]);
+
+        sqlx::query(
+            "INSERT INTO skills
+             (id, name, source, directory, version, description, source_repo, status)
+             VALUES (?1, ?1, 'cloud', '/tmp', '1.0.0', 'body', ?2, 'active')",
+        )
+        .bind("github-app-rule")
+        .bind("acme/app")
+        .execute(&db)
+        .await
+        .unwrap();
+        let gitlab =
+            expand_repo_scopes_with_source_aliases(&db, &["gitlab.com/acme/app".to_owned()])
+                .await
+                .unwrap();
+        assert_eq!(gitlab, vec!["gitlab.com/acme/app".to_owned()]);
+
+        let self_managed = expand_repo_scopes_with_source_aliases(
+            &db,
+            &["gitlab.corp.example/acme/app".to_owned()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            self_managed,
+            vec!["gitlab.corp.example/acme/app".to_owned()]
+        );
     }
 
     #[tokio::test]
@@ -518,6 +543,60 @@ body text";
     }
 
     #[tokio::test]
+    async fn apply_sync_result_canonicalizes_cloud_source_repo_before_writing() {
+        let db = DedupTestEnv::db().await;
+        let mut rule = synced_rule("cloud-source-repo-canonical");
+        rule.source_repo = Some("GitLab.Corp.Example:8443/Group/Project".to_owned());
+
+        apply_sync_result(
+            &db,
+            &crate::cloud::sync::SyncResult {
+                created: vec![rule],
+                updated: vec![],
+                deleted: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        let source_repo: String =
+            sqlx::query_scalar("SELECT source_repo FROM skills WHERE id = ?1")
+                .bind("cloud-source-repo-canonical")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        assert_eq!(source_repo, "gitlab.corp.example:8443/group/project");
+    }
+
+    #[tokio::test]
+    async fn apply_sync_result_rejects_noncanonical_cloud_source_repo() {
+        let db = DedupTestEnv::db().await;
+        let mut rule = synced_rule("cloud-source-repo-invalid");
+        rule.source_repo = Some("project".to_owned());
+
+        apply_sync_result(
+            &db,
+            &crate::cloud::sync::SyncResult {
+                created: vec![rule],
+                updated: vec![],
+                deleted: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        let source_repo: Option<String> =
+            sqlx::query_scalar("SELECT source_repo FROM skills WHERE id = ?1")
+                .bind("cloud-source-repo-invalid")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        assert_eq!(source_repo, None);
+    }
+
+    #[tokio::test]
     async fn search_meta_uses_canonical_source_repo_only() {
         let db = DedupTestEnv::db().await;
         sqlx::query(
@@ -555,7 +634,7 @@ body text";
             "repo_owner/repo_name must not be reconstructed as source_repo"
         );
 
-        let health = crate::db::corpus_health(&db).await.unwrap();
+        let health = crate::infra::db::corpus_health(&db).await.unwrap();
         assert!(
             health
                 .by_source_repo
@@ -639,6 +718,7 @@ body text";
             good_code: None,
             severity: None,
             origin: None,
+            captured_by_client: None,
         }
     }
 
@@ -652,6 +732,27 @@ body text";
         assert_ne!(base, remember_content_hash("**/*.ts", "Title", "Body"));
         assert_ne!(base, remember_content_hash("**/*.rs", "Other", "Body"));
         assert_ne!(base, remember_content_hash("**/*.rs", "Title", "Other"));
+    }
+
+    #[tokio::test]
+    async fn remember_persists_capture_client() {
+        let db = DedupTestEnv::db().await;
+        let mut input = remember_input(
+            "Caller provenance rule",
+            "Remember which client captured this rule.",
+            Some(vec!["**/*.rs"]),
+        );
+        input.captured_by_client = Some(" claude-code ".to_owned());
+
+        let remembered = remember(&db, input).await.unwrap();
+        let captured: Option<String> =
+            sqlx::query_scalar("SELECT captured_by_client FROM skills WHERE id = ?1")
+                .bind(&remembered.skill.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        assert_eq!(captured.as_deref(), Some("claude-code"));
     }
 
     #[tokio::test]
@@ -1085,7 +1186,7 @@ body text";
     #[tokio::test]
     async fn create_local_audits_engine_link_failure() {
         let db = DedupTestEnv::db().await;
-        let engine_dir = crate::skill_fs::get_engine_skills_dir("codex")
+        let engine_dir = fs::get_engine_skills_dir("codex")
             .expect("codex skill dir should resolve under shared test home");
         std::fs::create_dir_all(&engine_dir).unwrap();
         let blocking_entry = engine_dir.join("engine-link-audit-rule");
@@ -1141,10 +1242,7 @@ body text";
         .await
         .unwrap();
 
-        let skill_dir = crate::skill_fs::skills_base_dir()
-            .unwrap()
-            .join("local")
-            .join(&slug);
+        let skill_dir = fs::skills_base_dir().unwrap().join("local").join(&slug);
         let _ = std::fs::remove_dir_all(&skill_dir);
 
         let err = create_local(
@@ -1386,7 +1484,7 @@ body text";
         .await
         .unwrap();
 
-        let candidates = list_candidates(&db, Some("acme/widgets"), None)
+        let candidates = list_candidates(&db, Some("ACME/Widgets"), None)
             .await
             .unwrap();
         let ids: std::collections::HashSet<&str> = candidates
@@ -1399,10 +1497,17 @@ body text";
             "repo_owner/repo_name must not satisfy the canonical source_repo filter"
         );
         assert_eq!(
-            count_pending_candidates(&db, Some("acme/widgets"))
+            count_pending_candidates(&db, Some("ACME/Widgets"))
                 .await
                 .unwrap(),
             1
+        );
+        assert_eq!(
+            candidates
+                .iter()
+                .find(|candidate| candidate.id == "pending-canonical-repo")
+                .and_then(|candidate| candidate.source_repo.as_deref()),
+            Some("acme/widgets")
         );
     }
 
@@ -1583,7 +1688,7 @@ body text";
         // corpus_health (the doctor / rules-explain stats helper) must
         // also exclude pending — the dashboard's "growth" view leaked
         // candidates before this fix.
-        let h = crate::db::corpus_health(&db).await.unwrap();
+        let h = crate::infra::db::corpus_health(&db).await.unwrap();
         assert_eq!(h.total, 1, "corpus_health.total must exclude pending");
         let conv_corpus = h
             .by_origin

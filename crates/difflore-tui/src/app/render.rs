@@ -3,13 +3,15 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs, Wrap};
 
-use crate::layout::centered_rect_abs;
+use crate::modals::Modal;
+use crate::tabs::memory::filter::{cloud_memory_rule_count, raw_local_rule_count};
 use crate::tabs::{self, Tab};
 use crate::theme::{self, Theme};
 use crate::widgets::SmartStatusBar;
+use crate::widgets::center::{centered_rect_abs, centered_rect_pct};
 
-use super::build_status_bar_view;
-use super::{App, cloud_memory_rule_count, raw_local_rule_count};
+use super::App;
+use super::plan_state::build_status_bar_view;
 
 impl App {
     pub(super) fn draw(&mut self, frame: &mut ratatui::Frame<'_>) {
@@ -40,9 +42,20 @@ impl App {
         }
     }
 
+    /// Backdrop + centred panel chrome around the modal family; the modal
+    /// body itself renders through `modals::dispatch::render`.
+    #[allow(clippy::unused_self)] // reason: kept as method for symmetry with sibling draw_* methods
+    pub(super) fn draw_modal(&self, frame: &mut ratatui::Frame<'_>, area: Rect, modal: &Modal) {
+        let theme = Theme::current();
+        draw_backdrop(frame, area, &theme);
+        let panel = centered_rect_pct(60, 12, area);
+        frame.render_widget(Clear, panel);
+        crate::modals::dispatch::render(frame, panel, modal, &theme);
+    }
+
     fn draw_header(&self, frame: &mut ratatui::Frame<'_>, area: Rect, t: &Theme) {
-        // Value strip per launch brief; segments collapse from the right
-        // when the terminal is narrow.
+        // Value strip; segments collapse from the right when the terminal is
+        // narrow.
         let memory_count = cloud_memory_rule_count(&self.state.rules);
         let raw_count = raw_local_rule_count(&self.state.rules);
         let primary_count = if memory_count > 0 {
@@ -60,8 +73,7 @@ impl App {
         } else {
             "Cloud sync off".to_owned()
         };
-        // FixOutcomeSummary tracks `applied` (patch accepted + applied);
-        // brief calls this "accepted fixes".
+        // `applied` = patch accepted and applied; shown as "accepted fixes".
         let accepted_fixes = self
             .state
             .fix_outcome_summary
@@ -69,9 +81,9 @@ impl App {
             .map_or(0, |s| s.applied);
 
         let mut segments: Vec<String> = vec![
-            format!("{primary_count} memories"),
+            format!("{primary_count} rules"),
             format!(
-                "{}/{} agents wired for memory",
+                "{}/{} agents wired for rules",
                 wiring.agents_installed, wiring.agents_detected
             ),
             provider,
@@ -133,18 +145,18 @@ impl App {
 
     fn draw_body(&mut self, frame: &mut ratatui::Frame<'_>, area: Rect) {
         match self.active_tab {
-            Tab::Rules => {
+            Tab::Memory => {
                 let plan = self.state.plan_state.clone();
-                tabs::rules::render(
+                tabs::memory::render(
                     frame,
                     area,
-                    tabs::rules::RenderProps {
+                    tabs::memory::RenderProps {
                         rules: &self.state.rules,
                         list_state: &mut self.state.rules_list_state,
                         origin_filter: &self.state.rules_origin_filter,
                         search: &self.state.rules_search,
                         load_error: self.state.rules_load_error.as_deref(),
-                        scope: tabs::rules::RepoScope {
+                        scope: tabs::memory::RepoScope {
                             source_repos: &self.state.rules_source_repos,
                             current_repo: self.state.current_repo.as_deref(),
                             filter: self.state.rules_repo_filter,
@@ -155,21 +167,21 @@ impl App {
                     },
                 );
             }
-            Tab::Activity => {
-                let stats = tabs::activity::render(
+            Tab::Fixes => {
+                let stats = tabs::fixes::render(
                     frame,
                     area,
                     self.state.fix_outcome_summary.as_ref(),
                     &self.state.fix_outcome_daily,
                     self.state.fix_outcomes_load_error.as_deref(),
-                    self.state.activity_offset,
+                    self.state.fixes_offset,
                     &self.state.rules_source_repos,
                 );
-                self.state.activity_visible_rows = stats.visible_rows;
-                self.state.activity_rows_len = stats.rows_len;
+                self.state.fixes_visible_rows = stats.visible_rows;
+                self.state.fixes_rows_len = stats.rows_len;
             }
-            Tab::Team => tabs::team::render(frame, area, &self.state.project_root),
-            Tab::Settings => tabs::settings::render(
+            Tab::Cloud => tabs::cloud::render(frame, area, &self.state.project_root),
+            Tab::Setup => tabs::setup::render(
                 frame,
                 area,
                 &self.state.project_root,
@@ -198,11 +210,9 @@ impl App {
     }
 
     fn context_hint(&self) -> String {
-        // Page-specific actions first, then the always-on `? help · q quit
-        // · Tab next`.
         let always = "? help · q quit · Tab next";
         match self.active_tab {
-            Tab::Rules => {
+            Tab::Memory => {
                 if self.state.rules_search.is_editing() {
                     return "type to filter · Enter/Tab commit · Esc cancel · Backspace delete"
                         .to_owned();
@@ -210,13 +220,13 @@ impl App {
                 let body = "j/k row · h/l pane · / search · f view · r scope · e/p/s cloud";
                 format!("{body} · {always}")
             }
-            Tab::Activity => always.to_owned(),
-            Tab::Team => {
-                format!("c extracted rules \u{2197} · d memory dashboard \u{2197} · {always}")
+            Tab::Fixes => always.to_owned(),
+            Tab::Cloud => {
+                format!("c extracted rules \u{2197} · d rules dashboard \u{2197} · {always}")
             }
-            Tab::Settings => {
+            Tab::Setup => {
                 format!(
-                    "i install once · l cloud login · a provider · w memory dashboard \u{2197} · u upgrade \u{2197} · {always}"
+                    "i install once · l cloud login · a provider · w rules dashboard \u{2197} · u upgrade \u{2197} · {always}"
                 )
             }
         }
@@ -231,11 +241,11 @@ impl App {
 const HELP_TEXT: &str = "\
 TABS\n\
   1   Memory       2   Fixes           3   Cloud           4   Setup\n\
-  DiffLore feeds team review memory to Claude, Codex, Cursor, and local agents.\n\
+  DiffLore feeds source-backed codebase rules to Claude, Codex, Cursor, and local agents.\n\
 \n\
 NAVIGATION\n\
   Tab Shift-Tab   prev / next tab\n\
-  h l \u{2190} \u{2192}       focus pane within tab (Rules)\n\
+  h l \u{2190} \u{2192}       focus pane within tab (Memory)\n\
   j k             row down / up\n\
   g G             top / bottom\n\
   Esc             dismiss search / filter / selection\n\
@@ -246,9 +256,9 @@ MEMORY TAB\n\
   /               substring search (Esc clears, Enter commits)\n\
   f               cycle origin filter\n\
   r               cycle repo scope (this repo / all / global)\n\
-  e               edit selected memory in cloud\n\
-  p               publish selected memory in cloud\n\
-  s               view memory sources in cloud\n\
+  e               edit selected rule in cloud\n\
+  p               publish selected rule in cloud\n\
+  s               view rule sources in cloud\n\
 \n\
 FIXES TAB\n\
   Read-only event log of recalls, injections, reinforcements, and fix outcomes.\n\
@@ -256,20 +266,20 @@ FIXES TAB\n\
 \n\
 CLOUD TAB\n\
   c               review extracted rules in cloud\n\
-  d / o           open memory dashboard in browser\n\
+  d / o           open rules dashboard in browser\n\
 \n\
 SETUP TAB\n\
   i               install once / re-sync agents with `difflore init`\n\
   l               run `difflore cloud login` (then `difflore cloud sync`)\n\
   a               run `difflore providers setup` (interactive)\n\
-  w               open memory dashboard\n\
+  w               open rules dashboard\n\
   u               review pricing / upgrade\n\
 \n\
 Press ? or Esc to close.";
 
 /// Paint a solid scrim across the full frame so a centred panel reads as a
-/// modal. ratatui has no real alpha — `crust` is the darkest tone in the
-/// palette and visually mutes whatever was rendered underneath.
+/// modal. ratatui has no real alpha, so `crust` (the darkest palette tone)
+/// visually mutes whatever was rendered underneath.
 pub(super) fn draw_backdrop(frame: &mut ratatui::Frame<'_>, area: Rect, t: &Theme) {
     let scrim = Block::default().style(Style::default().bg(t.crust));
     frame.render_widget(scrim, area);

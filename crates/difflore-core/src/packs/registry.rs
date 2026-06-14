@@ -1,8 +1,7 @@
-//! Registry transport for rule packs (roadmap §6): fetch `index.json` and a
-//! pack's `pack.json` over HTTPS (with a short timeout + small redirect cap,
-//! mirroring `cloud/mod.rs`'s reqwest client) or from a `file://` path for
-//! tests / air-gapped install. No DiffLore Cloud dependency — install is a pure
-//! GET of public content.
+//! Registry transport for rule packs: fetch `index.json` and a pack's
+//! `pack.json` over HTTPS (short timeout + small redirect cap) or from a
+//! `file://` path for tests / air-gapped install. No DiffLore Cloud
+//! dependency — install is a pure GET of public content.
 
 use std::time::Duration;
 
@@ -57,10 +56,9 @@ impl std::fmt::Display for PackFetchError {
 
 impl std::error::Error for PackFetchError {}
 
-/// Whether the registry base points at a local `file://` path (tests /
-/// air-gapped install) rather than an HTTP(S) endpoint. The live fetch path
-/// (`get_bytes`) inlines this check via `strip_prefix("file://")`; this named
-/// predicate documents the contract and is exercised by the unit test below.
+/// Whether the registry base points at a local `file://` path rather than
+/// an HTTP(S) endpoint. The live fetch path inlines this check; this named
+/// predicate documents the contract.
 #[allow(dead_code)]
 fn is_file_registry(base: &str) -> bool {
     base.starts_with("file://")

@@ -2,9 +2,11 @@
 //!
 //! `ModalStack` keeps one current modal plus a priority-sorted queue.
 //! `try_show` is idempotent by modal kind, and `dismiss` advances to
-//! the next pending modal.
+//! the next pending modal. Key → action routing and render fan-out live
+//! in [`dispatch`]; each modal file owns its copy and keymap.
 
 pub mod cross_machine;
+pub(crate) mod dispatch;
 pub mod fix_runs_low;
 pub mod onboarding;
 pub mod teammate_caught;
@@ -61,10 +63,9 @@ impl ModalStack {
         Self::default()
     }
 
-    /// Enqueue a modal. If the same `kind` is already queued or
-    /// current, drop the incoming one (idempotent under repeat
-    /// triggers). The queue is then re-sorted by `priority` so the
-    /// highest-priority pending modal is popped first.
+    /// Enqueue a modal, dropping it if the same `kind` is already queued or
+    /// current (idempotent under repeat triggers). The queue is re-sorted by
+    /// `priority` so the highest-priority modal is popped first.
     pub fn try_show(&mut self, modal: Modal) {
         let k = modal.kind();
         if self.current.as_ref().map(Modal::kind) == Some(k)

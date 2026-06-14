@@ -1,13 +1,11 @@
 use async_trait::async_trait;
 
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 use super::{Embedder, embedding_http_client};
 
-/// OpenAI-compatible embedding provider.
-///
-/// Works with any backend that speaks the `OpenAI` `/embeddings` shape
-/// (`OpenAI`, Azure `OpenAI`, Together, `DeepInfra`, etc.).
+/// Embedding provider for any backend that speaks the `OpenAI` `/embeddings`
+/// shape (`OpenAI`, Azure `OpenAI`, Together, `DeepInfra`, etc.).
 pub struct OpenAICompatEmbedder {
     pub base_url: String,
     pub api_key: String,
@@ -60,12 +58,10 @@ fn provider_status_error(status: reqwest::StatusCode) -> CoreError {
 impl Embedder for OpenAICompatEmbedder {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, CoreError> {
         let url = self.endpoint();
-        // We deliberately do NOT send a `dimensions` parameter: many valid
-        // OpenAI-compatible models (e.g. text-embedding-ada-002) and strict
-        // local providers reject it, which would break configs whose `--dim`
-        // already matches the model's native size. Instead we validate the
-        // returned length below, so a mismatched `--dim` surfaces a clear error
-        // rather than silently storing wrong-length vectors.
+        // Deliberately no `dimensions` parameter: many valid OpenAI-compatible
+        // models (e.g. text-embedding-ada-002) and strict local providers reject
+        // it. Instead we validate the returned length below, so a mismatched
+        // `--dim` surfaces a clear error rather than wrong-length vectors.
         let body = serde_json::json!({
             "model": self.model,
             "input": text,
@@ -101,8 +97,7 @@ impl Embedder for OpenAICompatEmbedder {
             .collect::<Vec<f32>>();
 
         // Refuse a length that disagrees with the configured profile rather than
-        // storing mismatched-length vectors under a `byok:<host>:<model>:<dim>`
-        // profile. The actionable message points at the fix.
+        // storing mismatched-length vectors under a `byok:…` profile.
         if vec.len() != self.dim {
             return Err(CoreError::Internal(format!(
                 "embedding provider returned {} dimensions but {} are configured; \
@@ -124,8 +119,8 @@ impl Embedder for OpenAICompatEmbedder {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        // OpenAI-compatible APIs accept batched `input`, which keeps BYOK indexing
-        // inside the bounded recall/fix/MCP timeouts.
+        // Batched `input` keeps BYOK indexing inside the bounded recall/fix/MCP
+        // timeouts.
         let body = serde_json::json!({
             "model": self.model,
             "input": texts,

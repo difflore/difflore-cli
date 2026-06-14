@@ -10,7 +10,7 @@ mod queries;
 mod transform;
 
 use crate::cli::StatusLane;
-use crate::commands::util::{exit_err, init_db, project_path};
+use crate::support::util::{exit_err, init_db, project_path};
 
 use queries::{
     LocalAcceptedProof, LocalHeroEvidence, LocalMcpRuleServe, LocalRecallProof,
@@ -34,16 +34,104 @@ pub(crate) async fn handle_status(json: bool, lane: StatusLane) {
         let json_value = payload.to_json_envelope();
         println!(
             "{}",
-            crate::commands::util::json_compact_or(&json_value, "{}")
+            crate::support::util::json_compact_or(&json_value, "{}")
         );
         return;
     }
 
     payload.print_text();
+    if let Some(nudge) = crate::installer::agent_update_nudge() {
+        println!();
+        println!(
+            "  {} {}",
+            crate::style::emerald(crate::style::sym::TIP),
+            crate::style::pewter(&nudge),
+        );
+    }
 }
 
-/// Bundled output of the status pipeline. Carries everything
-/// `handle_status` needs for both JSON and text rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompactValueSummary {
+    pub(crate) window_days: i64,
+    pub(crate) accepted_edits: i64,
+    pub(crate) saved_review_minutes: i64,
+    pub(crate) recall_events: i64,
+    pub(crate) agent_serves: i64,
+}
+
+impl CompactValueSummary {
+    const fn from_parts(
+        accepted: &LocalAcceptedProof,
+        recall: &LocalRecallProof,
+        mcp_serves: &LocalMcpRuleServe,
+    ) -> Self {
+        Self {
+            window_days: accepted.window_days,
+            accepted_edits: accepted.accepted_proof_signatures + accepted.accepted_hook_outcomes,
+            saved_review_minutes: accepted.estimated_saved_review_minutes,
+            recall_events: recall.recall_events,
+            agent_serves: mcp_serves.calls.saturating_sub(mcp_serves.empty_calls),
+        }
+    }
+}
+
+pub(crate) async fn compact_value_summary_for_current_project(
+    db: &difflore_core::SqlitePool,
+) -> CompactValueSummary {
+    let project = project_path();
+    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
+    let detected_repo_remotes = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+        &project,
+        &configured_gitlab_hosts,
+    );
+    let repo_remotes =
+        difflore_core::skills::expand_repo_scopes_with_source_aliases(db, &detected_repo_remotes)
+            .await
+            .unwrap_or(detected_repo_remotes);
+
+    let local_proof = queries::local_accepted_proof(db, &repo_remotes).await;
+    let local_recall_proof = queries::local_recall_proof(db, &repo_remotes).await;
+    let local_mcp_serves = queries::local_mcp_rule_serves(db, &repo_remotes).await;
+
+    CompactValueSummary::from_parts(&local_proof, &local_recall_proof, &local_mcp_serves)
+}
+
+pub(crate) fn render_compact_value_summary(summary: &CompactValueSummary) -> String {
+    let mut parts = vec![
+        format!(
+            "~{} review-minute{} saved",
+            summary.saved_review_minutes,
+            transform::plural(summary.saved_review_minutes),
+        ),
+        format!(
+            "{} recall{}",
+            summary.recall_events,
+            transform::plural(summary.recall_events),
+        ),
+    ];
+    if summary.agent_serves > 0 {
+        parts.push(format!(
+            "{} ready for agent{}",
+            summary.agent_serves,
+            transform::plural(summary.agent_serves),
+        ));
+    }
+    if summary.accepted_edits > 0 {
+        parts.push(format!(
+            "{} accepted edit{}",
+            summary.accepted_edits,
+            transform::plural(summary.accepted_edits),
+        ));
+    }
+
+    format!(
+        "Value (last {}d): {}",
+        summary.window_days,
+        parts.join(" | ")
+    )
+}
+
+/// Bundled output of the status pipeline for both JSON and text rendering.
 #[derive(Debug)]
 struct StatusPayload {
     active_rules: i64,
@@ -142,7 +230,11 @@ async fn compute_status_payload(
         .await
         .unwrap_or_default();
 
-    let detected_repo_remotes = difflore_core::git::detect_github_repo_full_names(project);
+    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
+    let detected_repo_remotes = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+        project,
+        &configured_gitlab_hosts,
+    );
     let repo_remotes =
         difflore_core::skills::expand_repo_scopes_with_source_aliases(db, &detected_repo_remotes)
             .await
@@ -242,10 +334,8 @@ mod tests {
     use super::*;
 
     /// Point DIFFLORE_HOME at a process-unique tempdir so the per-project index
-    /// DB (opened via `get_pool_for_cwd`) is isolated per test process. Without
-    /// this, parallel nextest processes contend on a shared on-disk index DB,
-    /// which surfaced as a flaky "database is locked" on CI. Mirrors the
-    /// DIFFLORE_HOME isolation used by the runtime-context tests.
+    /// DB is isolated per test process. Without it, parallel nextest processes
+    /// contend on a shared on-disk index DB ("database is locked").
     fn ensure_test_home() {
         use std::sync::OnceLock;
         use tempfile::TempDir;
@@ -266,8 +356,6 @@ mod tests {
     async fn empty_pool_payload_has_zero_shape() {
         use sqlx::sqlite::SqlitePoolOptions;
 
-        // Isolate the per-project index DB so parallel CI processes don't
-        // contend on a shared on-disk DB (flaky "database is locked").
         ensure_test_home();
 
         let pool = SqlitePoolOptions::new()
@@ -275,7 +363,7 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect("open pool");
-        difflore_core::db::run_migrations(&pool)
+        difflore_core::infra::db::run_migrations(&pool)
             .await
             .expect("apply migrations");
 
@@ -395,7 +483,7 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect("open pool");
-        difflore_core::db::run_migrations(&pool)
+        difflore_core::infra::db::run_migrations(&pool)
             .await
             .expect("apply migrations");
 
@@ -408,7 +496,7 @@ mod tests {
         assert!(text.contains("Memory"), "missing Memory section: {text}");
         assert!(text.contains("Value"), "missing Value section: {text}");
         assert!(text.contains("next:"), "missing next action: {text}");
-        // With no GitHub origin, the humanized view surfaces a plain
+        // With no supported origin, the humanized view surfaces a plain
         // Repository section; release-gate details stay in JSON.
         assert!(
             text.contains("Repository"),

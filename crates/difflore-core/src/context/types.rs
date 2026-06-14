@@ -1,6 +1,6 @@
-//! Context engine record types, previously defined in the Tauri commands layer.
+//! Context engine record types.
 
-use crate::models::SkillRecord;
+use crate::domain::models::SkillRecord;
 
 /// A past review verdict recalled from the cloud review-memory store.
 ///
@@ -132,6 +132,13 @@ pub struct RuleMatchEvidenceRecord {
     /// impact endpoint. Best-effort remote enrichment; omitted when unavailable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_rate: Option<f64>,
+    /// Compact whyRanked explanation of this result's serve position
+    /// (`strict-hit; band 9/10; source manual`): strict file-pattern hit,
+    /// 10%-band relative score, and source priority — the same facts the
+    /// deterministic serve arbitration sorted on. Omitted when arbitration
+    /// metadata was unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<EvidenceRecord>,
 }

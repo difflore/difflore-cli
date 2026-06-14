@@ -1,18 +1,15 @@
-//! Embedding configuration commands — `difflore embeddings status/setup/disable`.
-//!
-//! Lets users inspect and change the active embedding backend without hand-
-//! editing `settings.json`. The three subcommands are:
+//! Embedding configuration commands - `difflore embeddings status/setup/disable`.
 //!
 //! * `status`  — show which embedder is active and whether semantic recall is on.
-//! * `setup`   — write BYOK (OpenAI-compatible) embedding credentials to settings.
+//! * `setup`   — write advanced BYOK (OpenAI-compatible) embedding credentials.
 //! * `disable` — revert to fast local keyword matching.
 
 use colored::Colorize;
 use difflore_core::context::embedding::{ActiveEmbedderKind, DEFAULT_OPENAI_EMBEDDING_DIM};
 
 use crate::commands::providers::resolve_secret_input;
-use crate::commands::util::exit_err;
 use crate::style;
+use crate::support::util::exit_err;
 
 const DEFAULT_PROVIDER_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_MODEL: &str = "text-embedding-3-small";
@@ -20,10 +17,8 @@ const DEFAULT_DIM: usize = DEFAULT_OPENAI_EMBEDDING_DIM;
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
-/// Extract the host portion from a URL string (scheme + authority only).
-/// Used to print a short, readable provider label in success messages.
+/// Extract the host portion from a URL, for a short provider label.
 fn provider_host_from_url(url: &str) -> String {
-    // Strip scheme, keep host (up to the first path separator or port suffix).
     let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
     let host = after_scheme.split('/').next().unwrap_or(after_scheme);
     if host.is_empty() {
@@ -66,7 +61,7 @@ pub(crate) async fn handle_status(json: bool) {
                 "vectorLaneAvailable": diag.vector_lane_available,
             })),
         });
-        println!("{}", crate::commands::util::json_or(&value, "{}"));
+        println!("{}", crate::support::util::json_or(&value, "{}"));
         return;
     }
 
@@ -77,7 +72,7 @@ pub(crate) async fn handle_status(json: bool) {
             println!(
                 "  {} {}",
                 style::pewter("embedder:"),
-                "cloud (DiffLore managed)".bold()
+                "cloud (DiffLore managed semantic)".bold()
             );
             println!("  {} {model}", style::pewter("model:   "));
             println!("  {} {dim}", style::pewter("dim:     "));
@@ -115,21 +110,21 @@ pub(crate) async fn handle_status(json: bool) {
             println!();
             println!(
                 "  {} {}",
-                style::pewter("semantic search:"),
-                "off · using fast keyword matching".bold()
+                style::pewter("semantic recall:"),
+                "local keyword fallback".bold()
             );
             println!();
             println!(
-                "  {} Recall still works; semantic search is optional.",
+                "  {} Recall still works, but match quality may be lower than semantic vectors.",
                 style::amber(style::sym::WARN)
             );
-            println!("    To improve match quality, choose one of:");
+            println!("    To improve match quality:");
             println!(
-                "      1. {}  (managed, no key required)",
+                "      Free semantic recall: {}  (managed, no key required)",
                 style::cmd("difflore cloud login")
             );
             println!(
-                "      2. {}  (bring your own OpenAI-compatible key)",
+                "      Advanced/BYOK:        {}  (bring your own OpenAI-compatible key)",
                 style::cmd("difflore embeddings setup")
             );
         }
@@ -184,9 +179,8 @@ fn print_cwd_embedding_diagnostics(diag: Option<&difflore_core::context::Embeddi
         );
         println!("    Recall still works through file patterns and keyword matching.");
         if matches!(reason, "dimension_mismatch" | "profile_mismatch") {
-            // Match doctor's recovery advice: the force-rebuild heals a
-            // same-count inconsistency that the freshness-gated `recall --diff`
-            // would skip; keep `recall --diff` as the lazy refresh option.
+            // Force-rebuild heals a same-count inconsistency that the
+            // freshness-gated `recall --diff` would skip.
             println!(
                 "    Rebuild this repo's semantic index: {} (or run {} to refresh lazily)",
                 style::cmd("difflore embeddings rebuild"),
@@ -233,9 +227,8 @@ pub(crate) async fn handle_setup(
         .unwrap_or_else(|| DEFAULT_MODEL.to_owned());
     let dim = dim.unwrap_or(DEFAULT_DIM);
 
-    // Keyless local providers (e.g. a self-hosted embedding server with no auth)
-    // are supported by the resolver, so `--no-key` skips key resolution entirely.
-    // Otherwise resolve the API key from flag / env var / piped stdin.
+    // `--no-key` supports keyless local providers; otherwise resolve
+    // the API key from flag / env var / piped stdin.
     let storage = if no_key {
         None
     } else {
@@ -245,15 +238,13 @@ pub(crate) async fn handle_setup(
             "Embedding provider API key",
             "difflore embeddings setup (use --no-key for a keyless local provider)",
         );
-        // Encrypt and store the key via the core keyring/AES-GCM layer.
         Some(
             difflore_core::context::embedding::store_embedding_key(&raw_key)
                 .unwrap_or_else(|e| exit_err(&format!("failed to encrypt embedding key: {e}"))),
         )
     };
 
-    // Load, patch, and save settings.
-    let mut settings = difflore_core::settings::get()
+    let mut settings = difflore_core::infra::settings::get()
         .await
         .unwrap_or_else(|e| exit_err(&format!("failed to load settings: {e}")));
 
@@ -263,7 +254,7 @@ pub(crate) async fn handle_setup(
     settings.context_engine.embedding_model = Some(model.clone());
     settings.context_engine.embedding_dim = Some(dim);
 
-    difflore_core::settings::update(settings)
+    difflore_core::infra::settings::update(settings)
         .await
         .unwrap_or_else(|e| exit_err(&format!("failed to save settings: {e}")));
 
@@ -296,19 +287,18 @@ pub(crate) async fn handle_setup(
 // ── disable ────────────────────────────────────────────────────────────────
 
 pub(crate) async fn handle_disable() {
-    let mut settings = difflore_core::settings::get()
+    let mut settings = difflore_core::infra::settings::get()
         .await
         .unwrap_or_else(|e| exit_err(&format!("failed to load settings: {e}")));
 
     settings.context_engine.semantic_embedding = false;
 
-    difflore_core::settings::update(settings)
+    difflore_core::infra::settings::update(settings)
         .await
         .unwrap_or_else(|e| exit_err(&format!("failed to save settings: {e}")));
 
-    // Report the embedder that is ACTUALLY active now. Disabling BYOK while
-    // logged into cloud falls back to cloud-managed semantic embeddings, not
-    // local SHA1 — claiming SHA1 would be wrong for that common case.
+    // Report the embedder actually active now: disabling BYOK while
+    // logged into cloud falls back to cloud-managed embeddings, not SHA1.
     let kind = difflore_core::context::embedding::probe_active_embedder().await;
     if let ActiveEmbedderKind::Cloud { .. } = kind {
         println!("{} BYOK embeddings disabled", style::ok(style::sym::OK));
@@ -323,29 +313,33 @@ pub(crate) async fn handle_disable() {
     } else {
         println!("{} Semantic search turned off", style::ok(style::sym::OK));
         println!();
-        println!("  Recall still works with fast local keyword matching.");
+        println!("  Recall still works with local keyword matching.");
         println!("  To re-enable:");
-        println!("    Managed:  {}", style::cmd("difflore cloud login"));
-        println!("    BYOK:     {}", style::cmd("difflore embeddings setup"));
+        println!("    Free managed:  {}", style::cmd("difflore cloud login"));
+        println!(
+            "    Advanced/BYOK: {}",
+            style::cmd("difflore embeddings setup")
+        );
     }
 }
 
 // ── rebuild ──────────────────────────────────────────────────────────────────
 
-/// `difflore embeddings rebuild` — force-rebuild the per-project semantic index
-/// for the current repo scope. Recovery path for a suspected-stale or
-/// inconsistent index: it re-embeds the in-scope corpus and prunes every
-/// out-of-scope / orphaned chunk, bypassing the freshness short-circuit that
-/// normal recall/serve rely on. Safe to run anytime — it is a clean rebuild
-/// even when the index is already correct.
+/// `difflore embeddings rebuild` — force-rebuild the current repo's
+/// per-project semantic index. Re-embeds the in-scope corpus and prunes
+/// out-of-scope/orphaned chunks, bypassing the freshness short-circuit
+/// that recall/serve use. Safe to run anytime.
 pub(crate) async fn handle_rebuild(json: bool) {
-    let db = crate::commands::util::init_db().await;
+    let db = crate::support::util::init_db().await;
 
-    // Detect repo scope exactly like recall / the hook (origin + upstream, with
-    // local fork->source alias expansion). The per-project index IS the scope
+    // Detect repo scope like recall / the hook (origin + upstream, with
+    // fork->source alias expansion). The per-project index is the scope
     // boundary, so an unscoped checkout has nothing to rebuild.
-    let detected =
-        difflore_core::git::detect_github_repo_full_names(&crate::commands::util::project_path());
+    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
+    let detected = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+        &crate::support::util::project_path(),
+        &configured_gitlab_hosts,
+    );
     let repo_scopes = difflore_core::skills::expand_repo_scopes_with_source_aliases(&db, &detected)
         .await
         .unwrap_or(detected);
@@ -354,14 +348,14 @@ pub(crate) async fn handle_rebuild(json: bool) {
         if json {
             println!(
                 "{}",
-                crate::commands::util::json_or(
+                crate::support::util::json_or(
                     &serde_json::json!({ "rebuilt": false, "reason": "no_repo_scope", "chunks": 0 }),
                     "{}",
                 )
             );
         } else {
             println!(
-                "{} No GitHub origin/upstream remote detected; the index is repo-scoped, so there is nothing to rebuild here.",
+                "{} No supported origin/upstream git remote detected; the index is repo-scoped, so there is nothing to rebuild here.",
                 style::warn(style::sym::WARN),
             );
             println!(
@@ -389,7 +383,7 @@ pub(crate) async fn handle_rebuild(json: bool) {
             if json {
                 println!(
                     "{}",
-                    crate::commands::util::json_or(
+                    crate::support::util::json_or(
                         &serde_json::json!({
                             "rebuilt": true,
                             "repoScopes": repo_scopes,
@@ -406,7 +400,7 @@ pub(crate) async fn handle_rebuild(json: bool) {
                     chunks,
                     if chunks == 1 { "" } else { "s" },
                 );
-                println!("  The next recall / MCP serve uses the fresh index.");
+                println!("  The next recall or agent run uses the fresh index.");
             }
         }
         Err(error) => exit_err(&format!("index rebuild failed: {error}")),
@@ -421,9 +415,7 @@ mod tests {
 
     #[test]
     fn default_dim_matches_core_constant() {
-        // Verify that our local DEFAULT_DIM alias stays in sync with the
-        // upstream constant. If the core value changes, this test fails fast
-        // and forces an intentional update here.
+        // Keep the local DEFAULT_DIM alias in sync with the core constant.
         assert_eq!(DEFAULT_DIM, DEFAULT_OPENAI_EMBEDDING_DIM);
     }
 

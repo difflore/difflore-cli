@@ -1,4 +1,7 @@
-use super::{AgentsCommands, Cli, CloudCommands, Commands, StatusLane, build_cli};
+use super::{
+    AgentsCommands, AuthCommands, Cli, CloudCommands, Commands, DraftsCommands, ExportFormatArg,
+    StatusLane, build_cli,
+};
 use clap::Parser;
 
 #[test]
@@ -27,11 +30,15 @@ fn public_help_keeps_curated_command_surface() {
         "  recall",
         "  fix",
         "  ask",
+        "  export",
+        "  drafts",
         "  cloud",
         "  agents",
+        "  update",
         "  providers",
         "  embeddings",
         "  doctor",
+        "  auth",
     ] {
         assert!(help.contains(visible), "{visible} should be visible");
     }
@@ -64,6 +71,66 @@ fn public_help_keeps_curated_command_surface() {
     ] {
         assert!(!help.contains(removed), "{removed} should not be visible");
     }
+}
+
+#[test]
+fn drafts_command_parses_review_and_batch_actions() {
+    let review = Cli::try_parse_from(["difflore", "drafts", "review", "--repo", "Acme/App"])
+        .expect("drafts review should parse");
+    assert!(matches!(
+        review.command,
+        Some(Commands::Drafts {
+            command: DraftsCommands::Review {
+                repo: Some(repo),
+                limit: None,
+            }
+        }) if repo == "Acme/App"
+    ));
+
+    let list = Cli::try_parse_from(["difflore", "drafts", "list", "--limit", "5", "--json"])
+        .expect("drafts list should parse");
+    assert!(matches!(
+        list.command,
+        Some(Commands::Drafts {
+            command: DraftsCommands::List {
+                repo: None,
+                limit: Some(5),
+                json: true,
+            }
+        })
+    ));
+
+    let approve_all = Cli::try_parse_from([
+        "difflore", "drafts", "approve", "--all", "--repo", "acme/app", "--yes", "--json",
+    ])
+    .expect("drafts approve --all should parse");
+    assert!(matches!(
+        approve_all.command,
+        Some(Commands::Drafts {
+            command: DraftsCommands::Approve {
+                id: None,
+                all: true,
+                repo: Some(repo),
+                yes: true,
+                json: true,
+            }
+        }) if repo == "acme/app"
+    ));
+
+    let reject_one = Cli::try_parse_from(["difflore", "drafts", "reject", "draft-1"])
+        .expect("drafts reject should parse");
+    assert!(matches!(
+        reject_one.command,
+        Some(Commands::Drafts {
+            command: DraftsCommands::Reject {
+                id: Some(id),
+                all: false,
+                repo: None,
+                yes: false,
+                json: false,
+            }
+        }) if id == "draft-1"
+    ));
 }
 
 #[test]
@@ -231,6 +298,16 @@ fn agents_command_parses_public_install_and_status_surface() {
             }
         })
     ));
+
+    let update_all = Cli::try_parse_from(["difflore", "update", "--dry-run", "--force"])
+        .expect("top-level update should parse");
+    assert!(matches!(
+        update_all.command,
+        Some(Commands::Update {
+            dry_run: true,
+            force: true
+        })
+    ));
 }
 
 #[test]
@@ -321,6 +398,59 @@ fn status_replaces_value_check_and_cloud_owns_sync() {
 }
 
 #[test]
+fn auth_gitlab_parses_default_host_check_and_remove_modes() {
+    let store = Cli::try_parse_from(["difflore", "auth", "gitlab"])
+        .expect("bare auth gitlab should parse (token arrives via stdin/env)");
+    assert!(matches!(
+        store.command,
+        Some(Commands::Auth {
+            command: AuthCommands::Gitlab { host, check: false, remove: false }
+        }) if host == "gitlab.com"
+    ));
+
+    let check = Cli::try_parse_from([
+        "difflore",
+        "auth",
+        "gitlab",
+        "--check",
+        "--host",
+        "gitlab.corp.example",
+    ])
+    .expect("auth gitlab --check --host should parse");
+    assert!(matches!(
+        check.command,
+        Some(Commands::Auth {
+            command: AuthCommands::Gitlab { host, check: true, remove: false }
+        }) if host == "gitlab.corp.example"
+    ));
+
+    let remove = Cli::try_parse_from(["difflore", "auth", "gitlab", "--remove"])
+        .expect("auth gitlab --remove should parse");
+    assert!(matches!(
+        remove.command,
+        Some(Commands::Auth {
+            command: AuthCommands::Gitlab {
+                check: false,
+                remove: true,
+                ..
+            }
+        })
+    ));
+
+    assert!(
+        Cli::try_parse_from(["difflore", "auth", "gitlab", "--check", "--remove"]).is_err(),
+        "--check and --remove are distinct modes and must conflict"
+    );
+
+    // No --token flag by design: tokens arrive via stdin or env so they never
+    // land in shell history.
+    assert!(
+        Cli::try_parse_from(["difflore", "auth", "gitlab", "--token", "glpat-x"]).is_err(),
+        "auth gitlab must not accept a --token flag"
+    );
+}
+
+#[test]
 fn removed_top_level_commands_do_not_parse() {
     for removed in [
         "plan",
@@ -367,6 +497,20 @@ fn hidden_mcp_server_transport_parses_but_stays_out_of_help() {
     assert!(Cli::try_parse_from(["difflore", "eval"]).is_ok());
     assert!(Cli::try_parse_from(["difflore", "trajectory", "review-id"]).is_ok());
     assert!(Cli::try_parse_from(["difflore", "skills", "sweep"]).is_ok());
+
+    // The internal warm hook daemon parses (the shim spawns it by this exact
+    // invocation) but stays out of help — the double-underscore name marks it
+    // internal and `hide = true` keeps it off the curated surface.
+    assert!(!help.contains("__hook-daemon"));
+    let daemon = Cli::try_parse_from(["difflore", "__hook-daemon", "--project-hash", "abc123"])
+        .expect("hidden hook daemon should parse for the shim spawn");
+    assert!(matches!(
+        daemon.command,
+        Some(Commands::HookDaemon { project_hash }) if project_hash == "abc123"
+    ));
+    // It requires the hash — a bare invocation must not silently serve the
+    // wrong (cwd-derived) project.
+    assert!(Cli::try_parse_from(["difflore", "__hook-daemon"]).is_err());
 }
 
 #[test]
@@ -445,10 +589,15 @@ fn import_reviews_help_promotes_cli_only_value_path() {
         .expect("import-reviews command should exist");
     let help = import_reviews.render_long_help().to_string();
 
-    assert!(help.contains("past GitHub PR review comments"));
+    assert!(help.contains("past GitHub PR or GitLab MR review comments"));
     assert!(help.contains("--dry-run"));
     assert!(help.contains("difflore recall --diff"));
     assert!(help.contains("--upload"));
+    // GitLab surface: provider flags exist and `--pr` explains its MR-IID
+    // meaning so the flag reuse is discoverable from --help alone.
+    assert!(help.contains("--provider"));
+    assert!(help.contains("--gitlab-host"));
+    assert!(help.contains("MR IID"));
     assert!(!help.contains("difflore candidates"));
     assert!(!help.contains("--local-candidates"));
     assert!(!help.contains("--max-candidates"));
@@ -464,6 +613,70 @@ fn import_reviews_rejects_candidate_budget_flag() {
         Cli::try_parse_from(["difflore", "import-reviews", "--local-candidates"]).is_err(),
         "--local-candidates should not parse"
     );
+}
+
+#[test]
+fn export_parses_formats_and_safety_flags() {
+    let cli = Cli::try_parse_from([
+        "difflore",
+        "export",
+        "--format",
+        "claude-md",
+        "--format",
+        "agents-md",
+        "--dry-run",
+        "--no-examples",
+        "--local-only",
+        "--json",
+    ])
+    .expect("export should parse repeated formats and flags");
+
+    match cli.command.expect("subcommand") {
+        Commands::Export(args) => {
+            assert_eq!(
+                args.format,
+                vec![ExportFormatArg::ClaudeMd, ExportFormatArg::AgentsMd]
+            );
+            assert!(args.dry_run);
+            assert!(args.no_examples);
+            assert!(args.local_only);
+            assert!(args.json);
+        }
+        _ => panic!("expected export command"),
+    }
+}
+
+#[test]
+fn export_defaults_to_all_formats_and_writing() {
+    let cli = Cli::try_parse_from(["difflore", "export"]).expect("bare export should parse");
+    match cli.command.expect("subcommand") {
+        Commands::Export(args) => {
+            assert_eq!(args.format, vec![ExportFormatArg::All]);
+            assert!(!args.dry_run);
+            assert!(!args.no_examples);
+            assert!(!args.local_only);
+            assert!(!args.json);
+        }
+        _ => panic!("expected export command"),
+    }
+}
+
+#[test]
+fn export_help_states_static_snapshot_and_side_effects() {
+    let mut command = build_cli();
+    let export = command
+        .find_subcommand_mut("export")
+        .expect("export command should exist");
+    let help = export.render_long_help().to_string();
+
+    // The export is honest about being a stale-able snapshot and points at
+    // the live path; the side-effect contract names the marker boundary.
+    assert!(help.contains("static snapshot"));
+    assert!(help.contains("goes stale"));
+    assert!(help.contains("difflore agents install"));
+    assert!(help.contains("BEGIN/END DIFFLORE RULES"));
+    assert!(help.contains("never commits"));
+    assert!(help.contains(".gitignore"));
 }
 
 #[test]
@@ -507,8 +720,7 @@ fn import_reviews_parses_exclude_prs_csv() {
 
     match cli.command.expect("subcommand") {
         Commands::ImportReviews(args) => {
-            // clap splits on commas; dedup happens later when the Vec is
-            // collected into a set during validation.
+            // clap splits on commas without deduping; dedup happens later during validation.
             assert_eq!(args.exclude_prs, vec![42, 1337, 42]);
         }
         _ => panic!("expected import-reviews command"),

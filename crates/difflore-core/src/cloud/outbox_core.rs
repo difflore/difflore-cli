@@ -130,8 +130,7 @@ mod tests {
         // Clamp holds beyond shift 5.
         assert_eq!(backoff_delay_ms(6), 1_920_000);
         assert_eq!(backoff_delay_ms(99), 1_920_000);
-        // Negative counts clamp to shift 0 (matches the old
-        // `clamp(0, 5)` then `try_from(..).unwrap_or(0)`).
+        // Negative counts clamp to shift 0.
         assert_eq!(backoff_delay_ms(-1), 60_000);
     }
 
@@ -141,7 +140,6 @@ mod tests {
         let long: String = "x".repeat(5000);
         let clipped = truncate(&long, 2048);
         assert_eq!(clipped.chars().count(), 2048);
-        // Identical to the inline `chars().take(n).collect()` form.
         let inline: String = long.chars().take(2048).collect();
         assert_eq!(clipped, inline);
     }

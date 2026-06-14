@@ -1,8 +1,8 @@
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::errors::CoreError;
-use crate::models::{AddExampleInput, RememberRuleInput, SkillRecord};
+use crate::domain::models::{AddExampleInput, RememberRuleInput, SkillRecord};
+use crate::error::CoreError;
 use crate::observability::privacy::{redact_secretish_tokens, strip_private_tagged_regions};
 
 use super::{SkillRow, add_example, count_captures_today};
@@ -10,25 +10,21 @@ use super::{SkillRow, add_example, count_captures_today};
 #[derive(Debug, Clone)]
 pub struct RememberOutcome {
     pub skill: SkillRecord,
-    /// True when the rule already existed and we treated this call as a
-    /// soft accept (+0.05 confidence) rather than inserting a duplicate
-    /// row. Set for both the content-hash window and title/body dedup paths.
+    /// The rule already existed and this call was a soft accept (+0.05
+    /// confidence) rather than a new row. Set for both the content-hash
+    /// window and title/body dedup paths.
     pub deduped: bool,
-    /// True only when `deduped` was driven by the content-hash +
-    /// 30-second window check (rapid-fire re-captures of identical
-    /// content). Distinguishes a rapid storm of identical calls from a
-    /// deliberate re-capture later in the same day. Always false when
+    /// `deduped` was driven by the content-hash + 30s window check
+    /// (rapid-fire re-captures of identical content), as opposed to a
+    /// deliberate re-capture later the same day. Always false when
     /// `deduped` is false.
     pub dedup_window_hit: bool,
-    /// Confidence after this call. Useful for surfacing "this rule is
-    /// now at 0.65 — two more re-captures and it's at manual parity".
     pub confidence_after: f64,
-    /// Conversation-channel captures today *after* this call landed
-    /// (counts both fresh inserts and dedup bumps; manual-channel
-    /// captures don't count). Surfaces past `REMEMBER_WARN_THRESHOLD`
-    /// so the agent can warn the user about a runaway capture rate;
-    /// past `REMEMBER_DAILY_LIMIT` the call would have been rejected
-    /// before this struct is built.
+    /// Conversation-channel captures today *after* this call (counts fresh
+    /// inserts and dedup bumps; manual captures don't count). Past
+    /// `REMEMBER_WARN_THRESHOLD` the agent should warn about a runaway
+    /// rate; past `REMEMBER_DAILY_LIMIT` the call is rejected before this
+    /// struct is built.
     pub captures_today: i64,
 }
 
@@ -38,9 +34,9 @@ pub struct RememberOutcome {
 /// rule.
 pub const REMEMBER_DEDUP_WINDOW_MS: i64 = 30_000;
 
-/// Confidence ceiling for conversation-channel rules. Agent-captured rules get
-/// a fidelity discount relative to manually curated local memory, and the cap
-/// prevents a looping agent from pushing one past manual rules in ranking.
+/// Confidence ceiling for conversation-channel rules. Caps agent-captured
+/// rules below manually curated memory so a looping agent can't push one
+/// past manual rules in ranking.
 pub const REMEMBER_CONVERSATION_CONFIDENCE_CAP: f64 = 0.70;
 pub const REMEMBER_BODY_CHAR_LIMIT: usize = 16 * 1024;
 pub const REMEMBER_EXAMPLE_CHAR_LIMIT: usize = 16 * 1024;
@@ -49,6 +45,19 @@ pub const REMEMBER_FILE_PATTERN_CHAR_LIMIT: usize = 256;
 
 fn sanitize_remember_text(input: &str) -> String {
     redact_secretish_tokens(&strip_private_tagged_regions(input))
+}
+
+fn normalize_capture_client(input: Option<&str>) -> Option<String> {
+    let value = input?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let normalized: String = value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .take(64)
+        .collect();
+    (!normalized.is_empty()).then_some(normalized)
 }
 
 fn canonical_file_patterns_csv(patterns: Option<&[String]>) -> String {
@@ -109,16 +118,9 @@ fn remember_bodies_semantically_match(incoming: &str, existing: &str) -> bool {
     union > 0 && (overlap as f64 / union as f64) >= 0.72
 }
 
-/// Compute the SHA-256 content hash used for the dedup window.
-/// Inputs:
-///   * `file_patterns_csv` — the canonical comma-joined pattern list
-///     (empty string when no patterns were supplied).
-///   * `title` — the user-supplied title, trimmed.
-///   * `body` — the user-supplied body, trimmed.
-///
-/// Returns `hex(sha256(patterns + "\n" + title + "\n" + body))`.
-/// The full digest is cheap and prevents an accidental 64-bit collision
-/// from strengthening an unrelated rule.
+/// SHA-256 content hash for the dedup window:
+/// `hex(sha256(patterns + "\n" + title + "\n" + body))`. The full digest
+/// avoids a 64-bit collision strengthening an unrelated rule.
 pub(crate) fn remember_content_hash(file_patterns_csv: &str, title: &str, body: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(file_patterns_csv.as_bytes());
@@ -134,17 +136,13 @@ pub(crate) fn remember_content_hash(file_patterns_csv: &str, title: &str, body: 
     hex
 }
 
-/// Soft warning threshold — at this count, MCP/CLI surfaces tell the
-/// user "you've captured a lot today, are you sure?" without blocking.
-/// Picked at 10 because the median user is unlikely to record more than
-/// a handful of rules in one session; ten is a strong signal of either
-/// an agent runaway or a deliberate batch import.
+/// Soft warning threshold: above this count surfaces warn without blocking.
+/// Ten is a strong signal of an agent runaway or a deliberate batch import.
 pub const REMEMBER_WARN_THRESHOLD: i64 = 10;
 
-/// Hard daily limit. At 50 captures in one day the most likely cause is
-/// an agent stuck in a loop calling `remember_rule` over and over —
-/// blocking protects the user's rule corpus from being polluted faster
-/// than they can audit it. Reset is per-calendar-day local time.
+/// Hard daily limit (per-calendar-day, local time). 50 captures in a day
+/// most likely means an agent is looping; blocking protects the corpus
+/// from being polluted faster than the user can audit it.
 pub const REMEMBER_DAILY_LIMIT: i64 = 50;
 
 async fn strengthen_existing_remember_rule(
@@ -226,11 +224,9 @@ async fn record_engine_link_failure(
     }
 }
 
-/// Lifecycle status for a row in the local `skills` table.
-///
-/// `Active` rows are served by MCP (`load_rules_from_db_*` filters); `Pending`
-/// rows are unreviewed local memory drafts that are promoted before they
-/// are served to agents.
+/// Lifecycle status for a row in the local `skills` table. `Active` rows
+/// are served by MCP; `Pending` rows are unreviewed drafts not served until
+/// promoted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleStatus {
     Active,
@@ -247,10 +243,9 @@ impl RuleStatus {
 }
 
 /// Insert a rule via `remember()` and downgrade it to `status='pending'`
-/// so MCP doesn't serve it. Used by import/extraction flows to land agent
-/// memory as drafts pending review. Idempotent: dedup paths in
-/// `remember()` may return an existing row; if that row was already
-/// `active` we leave it alone (the user already reviewed it).
+/// so MCP doesn't serve it. Used by import/extraction flows to land drafts
+/// pending review. Idempotent: a dedup hit on an already-`active` row is
+/// left alone (the user already reviewed it).
 pub async fn remember_as_candidate(
     db: &sqlx::SqlitePool,
     input: RememberRuleInput,
@@ -268,16 +263,11 @@ pub async fn remember_as_candidate(
     Ok(outcome)
 }
 
-/// Insert a rule as a `status='pending'` draft, seeding its
-/// `confidence_score` from a caller-computed value (e.g. the import gate's
-/// `capture_confidence`) instead of the flat conversation default.
-///
-/// Used by correctness-aware PR-review import: the gate has already scored
-/// each comment's durability (resolved thread, reactions, contradictions,
-/// bot-ness), so the draft should carry that score rather than a fixed
-/// 0.6. Routing (promote to active vs. leave pending vs. drop) stays the
-/// caller's responsibility — this only sets the seed confidence and the
-/// pending bit. Idempotent on the dedup path like `remember_as_candidate`.
+/// Insert a `status='pending'` draft, seeding `confidence_score` from a
+/// caller-computed value (e.g. the import gate's durability score) instead
+/// of the flat conversation default. This only sets the seed confidence and
+/// pending bit; routing stays the caller's responsibility. Idempotent on
+/// the dedup path like `remember_as_candidate`.
 pub async fn remember_as_candidate_with_confidence(
     db: &sqlx::SqlitePool,
     input: RememberRuleInput,
@@ -304,11 +294,9 @@ pub async fn remember(
 }
 
 /// Shared body for `remember` and `remember_as_candidate_with_confidence`.
-///
-/// `confidence_override` seeds the fresh-insert `confidence_score` when the
-/// caller has already scored the rule (import gate). `None` starts conversation
-/// rules at 0.6. Fresh inserts are clamped to the conversation ceiling; dedup
-/// bumps are unchanged.
+/// `confidence_override` seeds the fresh-insert `confidence_score`; `None`
+/// starts conversation rules at 0.6. Fresh inserts are clamped to the
+/// conversation ceiling; dedup bumps are unchanged.
 async fn remember_inner(
     db: &sqlx::SqlitePool,
     input: RememberRuleInput,
@@ -358,9 +346,8 @@ async fn remember_inner(
     let body_sanitized = sanitize_remember_text(input.body.trim());
     let body_trimmed = body_sanitized.trim();
 
-    // Path-traversal-safe slug. Same algorithm as create_local so the
-    // generated directory name is predictable and traversal can't escape
-    // the skills root.
+    // Path-traversal-safe slug (same algorithm as create_local) so the
+    // generated directory name can't escape the skills root.
     let slug: String = title_trimmed
         .to_lowercase()
         .chars()
@@ -388,14 +375,12 @@ async fn remember_inner(
         .origin
         .clone()
         .unwrap_or_else(|| "conversation".into());
+    let captured_by_client = normalize_capture_client(input.captured_by_client.as_deref());
 
-    // Hard rate limit, conversation-channel only. The CLI's `manual`
-    // path is exempt — a user typing rules at the terminal is never the
-    // failure mode we're protecting against; an agent in a tool-call
-    // loop is. Counts both fresh and dedup-bump captures because the
-    // signal we care about is "how many times did the agent invoke
-    // remember_rule today", regardless of dedup outcome. Today is
-    // calendar-day in the user's local timezone.
+    // Hard rate limit, conversation-channel only (the `manual` CLI path is
+    // exempt — a human typing rules isn't the failure mode; a looping agent
+    // is). Counts fresh and dedup-bump captures alike, since the signal is
+    // how many times the agent invoked remember_rule today.
     if origin == "conversation" {
         let captures_today = count_captures_today(db, &origin).await?;
         if captures_today >= REMEMBER_DAILY_LIMIT {
@@ -407,18 +392,16 @@ async fn remember_inner(
         }
     }
 
-    // Content-hash input: canonical comma-joined patterns + title + body.
-    // Patterns are trimmed/sorted/deduped before hashing so semantically
-    // identical glob sets do not fork duplicate conversation rules.
-    // Rules are cross-session by nature, so the hash intentionally does not
-    // include a session id.
+    // Content-hash input: canonical (trimmed/sorted/deduped) patterns +
+    // title + body, so semantically identical glob sets don't fork
+    // duplicate rules. No session id — rules are cross-session by nature.
     let file_patterns_csv = canonical_file_patterns_csv(input.file_patterns.as_deref());
     let content_hash = remember_content_hash(&file_patterns_csv, title_trimmed, body_trimmed);
     let now_ms: i64 = now_utc.timestamp_millis();
     let window_start_ms = now_ms - REMEMBER_DEDUP_WINDOW_MS;
 
-    // Cross-run exact-content dedup for non-conversation channels. Imports and
-    // extraction jobs are commonly re-run, so an identical (patterns, title,
+    // Cross-run exact-content dedup for non-conversation channels: imports
+    // and extraction jobs re-run often, so an identical (patterns, title,
     // body) hash collapses regardless of age.
     if origin != "conversation" {
         let existing_id: Option<String> = sqlx::query_scalar(
@@ -458,10 +441,9 @@ async fn remember_inner(
         }
     }
 
-    // Window-dedup guard: identical content captured within the last 30s
-    // collapses into one soft-accept bump. Older duplicate-content rows fall
-    // through to title/body dedup so deliberate re-captures can still
-    // strengthen the rule.
+    // Window-dedup guard: identical content within the last 30s collapses
+    // into one soft-accept bump. Older duplicates fall through to title/body
+    // dedup so deliberate re-captures can still strengthen the rule.
     let window_content_hash = content_hash.as_str();
     let window_hit_id: Option<String> = sqlx::query_scalar(
         "SELECT id FROM skills \
@@ -505,9 +487,8 @@ async fn remember_inner(
         });
     }
 
-    // Title/body dedup guard: outside the 30s hash window, a matching
-    // normalised title and similar body becomes a soft confidence signal rather
-    // than a duplicate row. The canonical body and patterns are left untouched.
+    // Title/body dedup guard: outside the 30s window, a matching normalised
+    // title and similar body becomes a soft confidence signal, not a new row.
     let id_prefix = format!("conv-{slug}-");
     let legacy_rows = sqlx::query_as::<_, (String, String, Option<String>)>(
         "SELECT id, description, file_patterns FROM skills \
@@ -550,9 +531,8 @@ async fn remember_inner(
         });
     }
 
-    // No collision — fall through to a fresh insert. Suffix keeps disk
-    // paths unique even if two unrelated captures slug to the same root
-    // (cross-team title collisions, etc.).
+    // No collision — fresh insert. The suffix keeps disk paths unique even
+    // if two unrelated captures slug to the same root.
     let id_suffix = Uuid::new_v4()
         .to_string()
         .chars()
@@ -566,9 +546,8 @@ async fn remember_inner(
         .map(serde_json::to_string)
         .transpose()?;
 
-    // Body assembled into Markdown so SKILL.md on disk reads naturally
-    // when the user opens it. Severity (if provided) becomes a metadata
-    // line; bad/good examples land in rule_examples below.
+    // Assemble SKILL.md so it reads naturally on disk. Severity (if given)
+    // becomes a metadata line; bad/good examples land in rule_examples below.
     let mut skill_md = String::new();
     skill_md.push_str("---\n");
     skill_md.push_str("type: review_standard\n");
@@ -582,12 +561,9 @@ async fn remember_inner(
     skill_md.push_str(body_trimmed);
     skill_md.push('\n');
 
-    // Persist to disk so local memory hand-edits round-trip.
-    // Path-confined to the skills/local/ root using the same
-    // canonicalisation guard as create_local.
-    let base_dir = crate::skill_fs::skills_base_dir()
-        .map_err(CoreError::Internal)?
-        .join("local");
+    // Persist to disk so hand-edits round-trip, path-confined to the
+    // skills/local/ root via the same canonicalisation guard as create_local.
+    let base_dir = crate::skills::fs::skills_base_dir()?.join("local");
     std::fs::create_dir_all(&base_dir)
         .map_err(|e| CoreError::Internal(format!("failed to create skills dir: {e}")))?;
     let canonical_base = base_dir
@@ -612,10 +588,9 @@ async fn remember_inner(
         .map_err(|e| CoreError::Internal(format!("failed to write SKILL.md: {e}")))?;
 
     let engines_json = serde_json::to_string(&["claude"])?;
-    // Tag set always includes the origin marker; we only also tag
-    // "conversation" when the origin differs (e.g. CLI's `manual` path)
-    // so users searching `tags=conversation` see the agent-mediated
-    // captures specifically.
+    // Tags always include the origin marker; "conversation" is added only
+    // when the origin differs (e.g. the `manual` path) so a
+    // `tags=conversation` search finds agent-mediated captures specifically.
     let tags_vec: Vec<String> = if origin == "conversation" {
         vec!["conversation".into()]
     } else {
@@ -623,9 +598,8 @@ async fn remember_inner(
     };
     let tags_json = serde_json::to_string(&tags_vec)?;
     let description = body_trimmed.to_owned();
-    // Conversation rules start at 0.6, below manual rules. A caller-provided
-    // confidence seed replaces that base but is still clamped to the
-    // conversation ceiling; negative scores floor at 0.0.
+    // Conversation rules start at 0.6 (below manual). A caller seed replaces
+    // that base but is still clamped to [0.0, conversation ceiling].
     let confidence: f64 =
         confidence_override.map_or(0.6, |c| c.clamp(0.0, REMEMBER_CONVERSATION_CONFIDENCE_CAP));
 
@@ -637,14 +611,15 @@ async fn remember_inner(
     let insert_file_patterns = file_patterns_json.as_deref();
     let insert_now = now.as_str();
     let insert_origin = origin.as_str();
+    let insert_captured_by_client = captured_by_client.as_deref();
     let insert_content_hash = content_hash.as_str();
     let insert_result = sqlx::query!(
         "INSERT INTO skills
          (id, name, source, directory, version, description, type, engines, tags,
           trigger, check_prompt, file_patterns, enabled_for_claude, confidence_score,
-          installed_at, updated_at, origin, content_hash, hash_created_at)
+          installed_at, updated_at, origin, captured_by_client, content_hash, hash_created_at)
          VALUES (?1, ?2, 'local', ?3, '1.0.0', ?4, 'review_standard', ?5, ?6,
-                 NULL, NULL, ?7, 1, ?8, ?9, ?9, ?10, ?11, ?12)",
+                 NULL, NULL, ?7, 1, ?8, ?9, ?9, ?10, ?11, ?12, ?13)",
         insert_id,
         title_trimmed,
         insert_directory,
@@ -655,6 +630,7 @@ async fn remember_inner(
         confidence,
         insert_now,
         insert_origin,
+        insert_captured_by_client,
         insert_content_hash,
         now_ms
     )
@@ -665,14 +641,14 @@ async fn remember_inner(
         return Err(e.into());
     }
 
-    // Keep claude engine link consistent with `enabled_for_claude=1`.
-    if let Err(e) = crate::skill_fs::sync_engine_link("local", &id, "claude", true) {
+    // Keep the claude engine link consistent with `enabled_for_claude=1`.
+    if let Err(e) = crate::skills::fs::sync_engine_link("local", &id, "claude", true) {
         eprintln!("warning: sync_engine_link failed for engine claude: {e}");
         record_engine_link_failure(db, &id, "claude", &e).await;
     }
 
-    // Optional bad/good example pair. Only insert when both sides are
-    // provided — a one-sided example tends to hurt few-shot quality.
+    // Insert the bad/good example only when both sides are present — a
+    // one-sided example tends to hurt few-shot quality.
     if let (Some(bad), Some(good)) = (input.bad_code.as_deref(), input.good_code.as_deref()) {
         let bad = sanitize_remember_text(bad);
         let good = sanitize_remember_text(good);

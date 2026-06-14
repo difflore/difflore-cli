@@ -5,25 +5,36 @@
 //! comparison. Footer keys: `[t]` enable Team / `[c]` just comment /
 //! `[esc]` dismiss.
 
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-use crate::layout::centered_rect_abs;
 use crate::theme::Theme;
+use crate::widgets::center::centered_rect_abs;
 
-/// View-model for the teammate-caught modal. `draw_modal` builds this
-/// via field literals; there is no preview-hunk input — the modal
-/// always renders the synthetic `- bad / + good` illustration, so the
-/// former `hunk: Vec<HunkLine>` field (always empty) and its enum were
-/// removed.
+use super::dispatch::ModalAction;
+
+/// View-model for the teammate-caught modal. There is no preview-hunk input —
+/// the modal always renders the synthetic `- bad / + good` illustration.
 #[derive(Clone, Debug)]
 pub struct TeammateCaughtState {
     pub rule: String,
     pub teammate: String,
     pub fired_at: String,
+}
+
+/// Keymap matching the footer: `[t]` enable Team, `[c]` just comment.
+pub(crate) const fn action_for_key(code: KeyCode) -> Option<ModalAction> {
+    match code {
+        KeyCode::Char('t') => Some(ModalAction::OpenCloud("pricing?from=tui&intent=team_trial")),
+        KeyCode::Char('c') => Some(ModalAction::Notice(
+            "Kept local comment flow. Open Cloud when you want team auto-comments.",
+        )),
+        _ => None,
+    }
 }
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &TeammateCaughtState, theme: &Theme) {
@@ -64,7 +75,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &TeammateCaughtState, th
         ])
         .split(inner);
 
-    // Hero.
     let hero = vec![
         Line::from(vec![
             Span::styled("Your local rule just caught ", strong),
@@ -81,8 +91,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &TeammateCaughtState, th
     ];
     frame.render_widget(Paragraph::new(hero).alignment(Alignment::Center), chunks[0]);
 
-    // Synthetic diff hunk illustration. There is no per-event hunk
-    // input — this placeholder is always what renders.
     let mut hunk_lines: Vec<Line<'_>> = vec![
         Line::styled("  - if (user.role === 'admin') {", danger),
         Line::styled("  + if (canAdmin(user)) {", accent),
@@ -94,7 +102,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &TeammateCaughtState, th
     ]));
     frame.render_widget(Paragraph::new(hunk_lines), chunks[1]);
 
-    // 2-column NOW vs WITH TEAM comparison.
     let cmp = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -115,7 +122,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &TeammateCaughtState, th
     frame.render_widget(Paragraph::new(now_col), cmp[0]);
     frame.render_widget(Paragraph::new(team_col), cmp[1]);
 
-    // Footer.
     let footer = Line::from(vec![
         Span::styled("[t]", accent.add_modifier(Modifier::BOLD)),
         Span::styled(" enable Team · 14d   ", muted),

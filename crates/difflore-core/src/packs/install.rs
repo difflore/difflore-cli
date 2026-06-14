@@ -1,20 +1,20 @@
 //! `install_pack` — write a fetched [`PackManifest`] into the local `skills`
-//! store (roadmap §5 step 6). Reuses the `remember.rs` INSERT-INTO-skills
-//! shape: a row + SKILL.md on disk + an optional `rule_examples` pair, all in
-//! one transaction. Every installed row carries `origin = 'pack'`, a synthetic
-//! `source_repo = "pack:<id>"`, the mandatory pack tags, and `confidence = 0.55`
-//! — the levers that confine pack rules to the suggestion-only cross-repo
-//! starter fallback (roadmap §4).
+//! store. Reuses the `remember.rs` INSERT-INTO-skills shape: a row + SKILL.md
+//! on disk + an optional `rule_examples` pair, all in one transaction. Every
+//! installed row carries `origin = 'pack'`, a synthetic
+//! `source_repo = "pack:<id>"`, the mandatory pack tags, and
+//! `confidence = 0.55` — the levers that confine pack rules to the
+//! suggestion-only cross-repo starter fallback.
 //!
-//! The rule **body** is rendered through item ⑥'s public renderer
-//! [`crate::context::rule_render::render_code_spec`] so an installed pack rule is
-//! byte-for-byte indistinguishable in body from a mined rule.
+//! The rule body is rendered through
+//! [`crate::context::rule_render::render_code_spec`] so an installed pack rule
+//! is byte-for-byte indistinguishable in body from a mined rule.
 
 use sqlx::SqlitePool;
 
 use crate::context::rule_render::{RuleRenderInput, render_code_spec};
 use crate::context::rule_source::RuleExample;
-use crate::errors::CoreError;
+use crate::error::CoreError;
 use crate::observability::privacy::{redact_secretish_tokens, strip_private_tagged_regions};
 use crate::packs::manifest::{PackManifest, PackRule};
 use crate::packs::{
@@ -26,9 +26,9 @@ use crate::packs::{
 /// with a mined rule's.
 const PACK_SKILL_SOURCE: &str = "pack";
 
-/// Defense-in-depth redaction (roadmap §5 step 4): even though packs are
-/// public, run their bodies/examples through the same redaction the ingest
-/// pipeline uses before they touch disk/DB.
+/// Defense-in-depth redaction: even though packs are public, run their
+/// bodies/examples through the same redaction the ingest pipeline uses before
+/// they touch disk/DB.
 fn sanitize(input: &str) -> String {
     redact_secretish_tokens(&strip_private_tagged_regions(input))
 }
@@ -102,8 +102,8 @@ fn effective_globs(rule: &PackRule, manifest: &PackManifest) -> Vec<String> {
     globs
 }
 
-/// Assemble the mandatory tag set for an installed pack rule (roadmap §4.1):
-/// `pack`, `pack:<id>@<version>`, `pack-rule:<ruleId>`, the language tag,
+/// Assemble the mandatory tag set for an installed pack rule: `pack`,
+/// `pack:<id>@<version>`, `pack-rule:<ruleId>`, the language tag,
 /// `severity:<level>` (when present), plus the rule's own declared tags.
 fn build_tags(rule: &PackRule, manifest: &PackManifest) -> Vec<String> {
     let mut tags: Vec<String> = Vec::new();
@@ -143,11 +143,10 @@ fn build_tags(rule: &PackRule, manifest: &PackManifest) -> Vec<String> {
     tags
 }
 
-/// Render the rule body via item ⑥'s canonical renderer. We construct a
-/// [`RuleRenderInput`] exactly as the MCP `get_rules` path does, so a pack rule
-/// renders identically to a mined rule. The single optional example (when both
-/// sides are present) is fed in so the renderer can emit its Validation matrix
-/// + Cases sections.
+/// Render the rule body via the canonical renderer, constructing a
+/// [`RuleRenderInput`] exactly as the MCP `get_rules` path does so a pack rule
+/// renders identically to a mined rule. The optional example feeds the
+/// renderer's Validation matrix + Cases sections.
 fn render_body(
     skill_id: &str,
     rule: &PackRule,
@@ -173,8 +172,8 @@ fn render_body(
         source_repo: Some(source_repo.as_str()),
         file_patterns: globs,
         description: &description,
-        // Packs carry no separate trigger/check_prompt column; the renderer
-        // omits those sections (progressive disclosure).
+        // Packs carry no trigger/check_prompt; the renderer omits those
+        // sections.
         trigger: None,
         check_prompt: None,
         examples: examples_slice,
@@ -228,9 +227,9 @@ fn build_skill_md(rule: &PackRule, tags: &[String], body: &str) -> String {
     md
 }
 
-/// One installed-rule summary, returned for `--dry-run` preview and the install
-/// confirmation. Carries exactly the fields roadmap §5 step 5 says a dry-run
-/// must print: id, globs, tags, origin, synthetic source_repo, confidence.
+/// One installed-rule summary, returned for `--dry-run` preview and the
+/// install confirmation: id, globs, tags, origin, synthetic source_repo,
+/// confidence.
 #[derive(Debug, Clone)]
 pub struct InstalledPackRule {
     pub skill_id: String,
@@ -262,12 +261,10 @@ pub struct InstallPackOutcome {
 
 /// Install (or dry-run preview) every rule in a fetched pack manifest.
 ///
-/// Idempotency / supersede (roadmap §5 step 6): a rule already present at this
-/// exact `pack:<id>@<version>` is left untouched; a rule present at a *different*
-/// version of the same pack is deleted and replaced (version supersede), keyed
-/// on its `pack-rule:<ruleId>` tag. All writes happen in one transaction; the
-/// store's `updated_at` is bumped so the cross-repo starter index rebuilds
-/// lazily on next recall.
+/// Idempotency / supersede: a rule already present at this exact
+/// `pack:<id>@<version>` is left untouched; a rule present at a *different*
+/// version of the same pack is deleted and replaced, keyed on its
+/// `pack-rule:<ruleId>` tag. All writes happen in one transaction.
 pub async fn install_pack(
     db: &SqlitePool,
     manifest: &PackManifest,
@@ -275,8 +272,8 @@ pub async fn install_pack(
 ) -> Result<InstallPackOutcome, CoreError> {
     let source_repo = pack_source_repo(&manifest.id);
 
-    // First pass: compute everything purely (no DB writes) so a dry-run is a
-    // faithful preview of the real install.
+    // Compute everything purely (no DB writes) so a dry-run is a faithful
+    // preview of the real install.
     struct Prepared {
         skill_id: String,
         pack_rule_id: String,
@@ -339,9 +336,7 @@ pub async fn install_pack(
     }
 
     // Resolve and confine the on-disk pack root once.
-    let base_dir = crate::skill_fs::skills_base_dir()
-        .map_err(CoreError::Internal)?
-        .join(PACK_SKILL_SOURCE);
+    let base_dir = crate::skills::fs::skills_base_dir()?.join(PACK_SKILL_SOURCE);
     std::fs::create_dir_all(&base_dir)
         .map_err(|e| CoreError::Internal(format!("failed to create pack skills dir: {e}")))?;
     let canonical_base = base_dir
@@ -386,9 +381,6 @@ pub async fn install_pack(
         .fetch_all(&mut *tx)
         .await?;
         for stale in &stale_ids {
-            // Runtime-checked queries (not the `sqlx::query!` macro) so the
-            // build does not need an offline `.sqlx` cache entry — matching the
-            // `query_scalar` lookups above.
             sqlx::query("DELETE FROM rule_examples WHERE skill_id = ?1")
                 .bind(stale)
                 .execute(&mut *tx)
@@ -435,11 +427,19 @@ pub async fn install_pack(
             Some(serde_json::to_string(&p.globs)?)
         };
 
-        // Reuse the `remember.rs:577` INSERT-INTO-skills shape, swapping
+        // Reuse the `remember.rs` INSERT-INTO-skills shape, swapping
         // source='pack', origin='pack', synthetic source_repo, and the 0.55
         // confidence floor. `enabled_for_claude = 1` mirrors the remember path.
-        // Runtime-checked `sqlx::query` (not the macro) so no offline `.sqlx`
-        // cache entry is required for this new statement.
+        //
+        // INTENTIONAL RepoScope exemption: `source_repo` here is the synthetic
+        // `pack:<id>` value (see `pack_source_repo`), NOT a git repo scope. It
+        // must NEVER be routed through `RepoScope::canonical` — the `pack:`
+        // prefix is the isolation key that keeps pack rules confined to the
+        // cross-repo starter fallback and unable to collide with any real
+        // `owner/repo` / `host/group/project` scope. Canonicalizing it would
+        // either reject the value (no valid host/owner) or, worse, strip the
+        // isolation prefix. This is the one `skills.source_repo` writer that is
+        // deliberately outside the RepoScope normalization gate.
         sqlx::query(
             "INSERT INTO skills
              (id, name, source, directory, version, description, type, engines, tags,
@@ -492,7 +492,7 @@ pub async fn install_pack(
     // otherwise-committed install.
     for p in &prepared {
         if let Err(e) =
-            crate::skill_fs::sync_engine_link(PACK_SKILL_SOURCE, &p.skill_id, "claude", true)
+            crate::skills::fs::sync_engine_link(PACK_SKILL_SOURCE, &p.skill_id, "claude", true)
         {
             eprintln!(
                 "warning: sync_engine_link failed for pack rule {}: {e}",
@@ -609,7 +609,7 @@ mod tests {
         let example = build_example(&skill_id, rule);
         let body = render_body(&skill_id, rule, &manifest, &globs, example.as_ref());
         // Header / Scope / Contract / Cases come from item ⑥'s renderer.
-        assert!(body.starts_with(&format!("## Rule {skill_id} —")));
+        assert!(body.starts_with(&format!("## Rule {skill_id} -")));
         assert!(body.contains("Scope: **/*.go"));
         assert!(body.contains("Confidence: 0.55"));
         assert!(body.contains("Origin: pack"));

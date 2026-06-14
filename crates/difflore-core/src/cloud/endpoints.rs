@@ -1,25 +1,18 @@
-//! Single source of truth for cloud-side URLs.
-//!
-//! Runtime cloud API calls and browser deep links route through this
-//! module. `DIFFLORE_CLOUD_URL` overrides the production API base.
-//!
-//! Display-only marketing labels stay outside this runtime URL table.
+//! Single source of truth for cloud-side URLs. Runtime cloud API calls and
+//! browser deep links route through this module; `DIFFLORE_CLOUD_URL`
+//! overrides the production API base.
 
-/// Cloud API base used when cloud URL overrides are unset.
-///
-/// Production host; override with `DIFFLORE_CLOUD_URL`.
+/// Production cloud API base, used when URL overrides are unset.
 pub const DEFAULT_API_BASE: &str = "https://difflore.dev/api";
 
-/// Canonical environment variable that overrides the default base. Honoured by
-/// every helper in this module.
-pub const ENV_CLOUD_URL: &str = crate::env::DIFFLORE_CLOUD_URL;
+/// Canonical environment variable that overrides the default base.
+pub const ENV_CLOUD_URL: &str = crate::infra::env::DIFFLORE_CLOUD_URL;
 
 /// Legacy spelling accepted as a compatibility fallback.
-pub const LEGACY_ENV_CLOUD_URL: &str = crate::env::DIFF_LORE_CLOUD_URL;
+pub const LEGACY_ENV_CLOUD_URL: &str = crate::infra::env::DIFF_LORE_CLOUD_URL;
 
-/// Read the configured API base, falling back to `DEFAULT_API_BASE`.
-/// Empty values are treated as unset so empty env vars do not silently break
-/// clients.
+/// Read the configured API base, falling back to `DEFAULT_API_BASE`. Empty
+/// values are treated as unset so an empty env var doesn't break clients.
 pub fn api_base() -> String {
     env_api_base(ENV_CLOUD_URL)
         .or_else(|| env_api_base(LEGACY_ENV_CLOUD_URL))
@@ -27,19 +20,18 @@ pub fn api_base() -> String {
 }
 
 fn env_api_base(name: &str) -> Option<String> {
-    crate::env::var(name)
+    crate::infra::env::var(name)
         .map(|v| v.trim().to_owned())
         .filter(|v| !v.is_empty())
 }
 
-/// Browser origin derived from the API base. A trailing `/api` is
-/// stripped so deep links target public web routes.
+/// Browser origin derived from the API base, with a trailing `/api` stripped
+/// so deep links target public web routes.
 pub fn web_origin() -> String {
     web_origin_from(&api_base())
 }
 
-/// Pure variant exposed for testing — derive a web origin from any
-/// API-base string.
+/// Pure variant of [`web_origin`] over any API-base string.
 pub fn web_origin_from(api_base: &str) -> String {
     let trimmed = api_base.trim_end_matches('/');
     trimmed
@@ -47,8 +39,8 @@ pub fn web_origin_from(api_base: &str) -> String {
         .map_or_else(|| trimmed.to_owned(), ToOwned::to_owned)
 }
 
-/// Scheme + authority (`scheme://host[:port]`) used to bind saved auth
-/// tokens to the origin that issued them.
+/// Scheme + authority (`scheme://host[:port]`) used to bind saved auth tokens
+/// to the origin that issued them.
 pub fn api_origin() -> String {
     origin_of(&api_base())
 }
@@ -58,8 +50,8 @@ pub fn default_api_origin() -> String {
     origin_of(DEFAULT_API_BASE)
 }
 
-/// `scheme://host[:port]` from any URL, dropping the path. Keeps the
-/// scheme so credentials never cross `http`/`https` boundaries.
+/// `scheme://host[:port]` from any URL, dropping the path. Keeps the scheme so
+/// credentials never cross `http`/`https` boundaries.
 pub fn origin_of(url: &str) -> String {
     let trimmed = url.trim();
     let Some((scheme, rest)) = trimmed.split_once("://") else {
@@ -75,13 +67,13 @@ pub fn origin_of(url: &str) -> String {
     )
 }
 
-/// Build a full URL to a web page on the cloud origin. `path` may
-/// include a leading `/`; both forms produce the same result.
+/// Build a full URL to a web page on the cloud origin. A leading `/` on
+/// `path` is optional.
 pub fn web_link(path: &str) -> String {
     web_link_from(&api_base(), path)
 }
 
-/// Pure variant exposed for testing.
+/// Pure variant of [`web_link`].
 pub fn web_link_from(api_base: &str, path: &str) -> String {
     let base = web_origin_from(api_base);
     let path = path.trim_start_matches('/');
@@ -107,36 +99,29 @@ pub fn pricing_url() -> String {
     web_link("pricing")
 }
 
-// ── GitHub repository ────────────────────────────────────────────────
-//
-// Central `owner/name` slug used by GitHub links and release metadata.
-
-/// `owner/name` slug for the project's canonical GitHub repository.
+/// `owner/name` slug for the project's canonical GitHub repository, used by
+/// GitHub links and release metadata.
 pub const GITHUB_REPO: &str = "difflore/difflore-cli";
 
-/// `https://github.com/<owner>/<name>`.
 pub fn github_repo_url() -> String {
     format!("https://github.com/{GITHUB_REPO}")
 }
 
-/// `…/issues` — used in bug-report footers and the 5xx error help
-/// pointer.
+/// Issues URL, used in bug-report footers and the 5xx error help pointer.
 pub fn github_issues_url() -> String {
     format!("https://github.com/{GITHUB_REPO}/issues")
 }
 
-/// `…/releases/tag/v{version}` — emitted by the upgrade checker so
-/// users can read release notes before pulling.
+/// Release-tag URL, emitted by the upgrade checker so users can read release
+/// notes before pulling.
 pub fn github_release_tag_url(version: &str) -> String {
     format!("https://github.com/{GITHUB_REPO}/releases/tag/v{version}")
 }
 
-// ── Device registration ──────────────────────────────────────────────
-
 use openapi_contract::api;
 
-use super::api_types::RegisterDeviceResult;
 use super::client::CloudClient;
+use crate::contract::RegisterDeviceResult;
 
 pub async fn register(
     client: &CloudClient,
@@ -162,7 +147,7 @@ pub const fn detect_platform() -> &'static str {
 
 pub fn detect_hostname() -> String {
     for key in ["COMPUTERNAME", "HOSTNAME", "HOST"] {
-        if let Some(name) = crate::env::var(key) {
+        if let Some(name) = crate::infra::env::var(key) {
             return name;
         }
     }

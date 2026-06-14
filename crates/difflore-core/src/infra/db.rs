@@ -6,14 +6,9 @@ use sha1::{Digest, Sha1};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 use std::path::{Path, PathBuf};
 
-/// Crate-wide singleton `TempDir` for the test process. Every test module
-/// (`mcp_server`, startup, db, …) gets the SAME `DIFFLORE_HOME` by going
-/// through this helper: it sets the env var exactly once and never
-/// clears it, so a test that reads the env concurrently can't fall back
-/// to the user's real `~/.difflore` and trash their data.
-///
-/// Gated by `#[cfg(test)]` so it never ships in release binaries; the
-/// production code path below reads `DIFFLORE_HOME` directly as usual.
+/// Crate-wide singleton `TempDir` giving every test module the same
+/// `DIFFLORE_HOME`. Sets the env var exactly once and never clears it, so
+/// a concurrent reader can't fall back to the user's real `~/.difflore`.
 #[cfg(test)]
 pub(crate) fn shared_test_home() -> &'static Path {
     use std::sync::OnceLock;
@@ -33,21 +28,17 @@ pub(crate) fn shared_test_home() -> &'static Path {
 }
 
 #[cfg_attr(test, allow(clippy::unnecessary_wraps))]
-pub(crate) fn difflore_dir() -> Result<PathBuf, String> {
+pub(crate) fn difflore_dir() -> crate::Result<PathBuf> {
     // `DIFFLORE_HOME` lets integration tests redirect the data dir to a
-    // tempdir without modifying $HOME / $USERPROFILE (which would race
-    // against any other thread reading them). Honoured first; falls back
-    // to the standard ~/.difflore in production.
-    if let Some(custom) = crate::env::difflore_home() {
+    // tempdir without modifying $HOME / $USERPROFILE. Honoured first; falls
+    // back to the standard ~/.difflore in production.
+    if let Some(custom) = crate::infra::env::difflore_home() {
         return Ok(PathBuf::from(custom));
     }
-    // In test binaries, never trust a missing `DIFFLORE_HOME` — some
-    // sibling test may have mid-flight `remove_var`'d it, and the last
-    // thing we want is for a concurrent `init_db()` to silently fall
-    // through to the developer's real `~/.difflore` and race `migrate!`
-    // against their actual data. Route to the crate-wide
-    // `shared_test_home()` instead, so every test ends up in the same
-    // tempdir regardless of whether anyone's holding ENV_LOCK.
+    // In test binaries, route to the crate-wide `shared_test_home()` rather
+    // than ~/.difflore: a missing `DIFFLORE_HOME` may mean a sibling test
+    // removed it mid-flight, and we must never race `migrate!` against the
+    // developer's real data.
     #[cfg(test)]
     {
         Ok(shared_test_home().to_path_buf())
@@ -58,23 +49,18 @@ pub(crate) fn difflore_dir() -> Result<PathBuf, String> {
         .join(".difflore"))
 }
 
-/// Path to the global data.db — stays global (cross-project features like
-/// `rules stats` rely on a single aggregate view). Only the per-project
-/// embedding index moves out of the global root.
-pub fn data_db_path() -> Result<PathBuf, String> {
+/// Path to the global data.db. Stays global because cross-project features
+/// (e.g. `rules stats`) rely on a single aggregate view; only the
+/// per-project embedding index lives outside the global root.
+pub fn data_db_path() -> crate::Result<PathBuf> {
     Ok(difflore_dir()?.join("data.db"))
 }
 
-/// Derive a stable hash for a project root. Uses SHA-1 of a purely
-/// lexical, slash-normalised path identity, hex, truncated to 12 chars
-/// (48 bits).
-/// It intentionally does not call `canonicalize()`: project identity must
-/// not change just because a directory was created/deleted, or because
-/// Windows returned an extended `\\?\` path on one call and a normal path
-/// on another. A pair of distinct roots collides with probability 2^-48;
-/// cumulative risk grows with the number of project roots under the usual
-/// birthday bound, so this is suitable for local DB partition names, not as
-/// a security boundary.
+/// Stable 12-hex-char (48-bit) SHA-1 of a lexical, slash-normalised path
+/// identity. Deliberately avoids `canonicalize()` so project identity does
+/// not shift when a directory is created/deleted or when Windows returns an
+/// extended `\\?\` path. Suitable for local DB partition names, not as a
+/// security boundary (48-bit collision space).
 pub fn project_hash_from_root(root: &Path) -> String {
     let as_str = stable_project_identity(root);
     let mut hasher = Sha1::new();
@@ -170,10 +156,8 @@ fn lexical_normalize_path(path: &str) -> String {
     }
 }
 
-/// Resolve the current project root: `git rev-parse --show-toplevel` in
-/// the current working directory, or the cwd itself if that fails (not a
-/// git repo, git not installed, etc.). Never panics; falls back to `.`
-/// when even `current_dir` errors.
+/// Current project root via `git rev-parse --show-toplevel`, falling back to
+/// the cwd (or `.` if even `current_dir` errors). Never panics.
 pub fn current_project_root() -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let output = std::process::Command::new("git")
@@ -192,8 +176,8 @@ pub fn current_project_root() -> PathBuf {
 }
 
 /// Base dir for per-project index DBs: `~/.difflore/projects/{hash}/`.
-/// Does not create the directory — callers that need the path on disk
-/// are responsible for `create_dir_all`.
+/// Does not create the directory; callers needing it on disk must
+/// `create_dir_all`.
 pub fn project_index_dir(project_hash: &str) -> PathBuf {
     let mut p = difflore_dir().unwrap_or_else(|_| PathBuf::from(".difflore"));
     p.push("projects");
@@ -201,52 +185,40 @@ pub fn project_index_dir(project_hash: &str) -> PathBuf {
     p
 }
 
-/// Process-wide async lock around `sqlx::migrate!`. Without this, two
-/// tokio runtimes concurrently calling the migrate runner (common in
-/// the test suite) would both try to acquire sqlx's
-/// `_sqlx_migrations` row lock and intermittently fail with
-/// `migration failed: while executing migrations: …`. The lock only
-/// covers the migration step, not the pool itself — the `SqlitePool` is
-/// `Clone` via internal `Arc`, so the cost of holding this lock is a
-/// few ms per unique call site.
+/// Process-wide async lock around `sqlx::migrate!`. Without it, two tokio
+/// runtimes concurrently running the migrate runner (common in tests) both
+/// contend on sqlx's `_sqlx_migrations` row lock and intermittently fail.
+/// Covers only the migration step; `SqlitePool` is `Clone` via internal
+/// `Arc`, so the cost is a few ms per unique call site.
 static MIGRATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Run every pending migration from `./migrations` against the given pool.
-///
-/// Centralised here so the `sqlx::migrate!` macro is expanded exactly once
-/// per crate and every migration path is guarded by `MIGRATION_LOCK`.
-pub async fn run_migrations(pool: &SqlitePool) -> Result<(), String> {
+/// Centralised so `sqlx::migrate!` expands once per crate and every path is
+/// guarded by `MIGRATION_LOCK`.
+pub async fn run_migrations(pool: &SqlitePool) -> crate::Result<()> {
     let _guard = MIGRATION_LOCK.lock().await;
-    // `sqlx::migrate!` embeds the migration files into the binary at
-    // compile time so `cargo install difflore-cli` doesn't need the
-    // user's `~/.cargo/registry/src/` to persist post-install. The
-    // earlier `Migrator::new(path)` form read migrations from disk
-    // at runtime via `env!("CARGO_MANIFEST_DIR")`, which broke if
-    // the user ever ran `cargo cache clean`.
-    sqlx::migrate!("./migrations")
+    // `sqlx::migrate!` embeds the migration files at compile time so
+    // `cargo install difflore-cli` doesn't need the registry source to
+    // persist post-install (the disk-reading `Migrator::new(path)` form
+    // broke after `cargo cache clean`).
+    Ok(sqlx::migrate!("./migrations")
         .run(pool)
         .await
-        .map_err(|e| format!("migration failed: {e}"))
+        .map_err(|e| format!("migration failed: {e}"))?)
 }
 
-/// Cache of opened `data.db` pools keyed by resolved path. Callers
-/// (MCP server, hooks, CLI subcommands, startup probe) all share the
-/// same pool per DB file instead of each opening an independent WAL
-/// connection and racing on migrations. Using `tokio::sync::Mutex`
-/// (rather than `std::sync::Mutex`) is important: the whole open +
-/// migrate pipeline is `await`-heavy, and we want the critical
-/// section held across those awaits so a second concurrent caller
-/// sees the finished pool on cache hit, not a half-initialised DB.
-/// `SqlitePool` is `Clone` (internal `Arc`) so cache hits are free.
+/// Cache of opened `data.db` pools keyed by resolved path, so all callers
+/// share one pool per DB file instead of racing on migrations. Must be a
+/// `tokio::sync::Mutex` (not `std`): the open+migrate pipeline is
+/// `await`-heavy and the critical section is held across those awaits so a
+/// second caller sees the finished pool, not a half-initialised DB.
 static POOL_CACHE: tokio::sync::Mutex<Option<std::collections::HashMap<PathBuf, SqlitePool>>> =
     tokio::sync::Mutex::const_new(None);
 
-/// Best-effort: restrict a path created under `~/.difflore` to the current user
-/// on Unix (dir → 0700, file → 0600). The local SQLite stores hold the cloud
-/// auth token (encrypted) and the user's imported review data; a 0600/0700
-/// posture keeps them off other users on a shared host. On Windows the per-user
-/// profile directory is already ACL-restricted to the owner, so this is a
-/// no-op. Failures are ignored — perms are hardening, not correctness.
+/// Best-effort restrict a `~/.difflore` path to the owner on Unix (dir →
+/// 0700, file → 0600), keeping the encrypted token and review data off other
+/// users on a shared host. No-op on Windows (profile dir is already
+/// ACL-restricted). Failures are ignored — this is hardening, not correctness.
 #[cfg(unix)]
 pub(crate) fn restrict_to_owner(path: &Path, is_dir: bool) {
     use std::os::unix::fs::PermissionsExt;
@@ -272,16 +244,16 @@ pub(crate) fn restrict_sqlite_files(db_path: &Path) {
 #[cfg(not(unix))]
 pub(crate) const fn restrict_sqlite_files(_db_path: &Path) {}
 
-pub async fn init_db() -> Result<SqlitePool, String> {
+pub async fn init_db() -> crate::Result<SqlitePool> {
     let dir = difflore_dir()?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create ~/.difflore: {e}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| crate::CoreError::Internal(format!("failed to create ~/.difflore: {e}")))?;
     restrict_to_owner(&dir, true);
     let db_path = dir.join("data.db");
 
-    // Hold the cache lock across the whole open+migrate flow so only
-    // one caller per DB path runs migrations. Concurrent callers wait
-    // here and get the finished pool on the second pass. `.await`
-    // inside the guard is fine — `tokio::sync::Mutex` supports it.
+    // Hold the cache lock across the whole open+migrate flow so only one
+    // caller per DB path runs migrations; concurrent callers wait and get the
+    // finished pool on the second pass.
     let mut guard = POOL_CACHE.lock().await;
     let cache = guard.get_or_insert_with(std::collections::HashMap::new);
 
@@ -301,26 +273,23 @@ pub async fn init_db() -> Result<SqlitePool, String> {
         .connect_with(opts)
         .await
         .map_err(|e| {
-            // A WAL database can't be opened on a read-only home (it must
-            // create/write the `-shm` / `-wal` sidecars), which surfaces as
-            // SQLITE_CANTOPEN. The common cause is a sandboxed MCP client
-            // (e.g. codex with a restrictive `--sandbox`) confining writes to
-            // the workspace. Turn the cryptic SQLite code into an actionable
-            // hint; opening such a database read-only is not currently
-            // supported (existing `-wal` defeats `immutable=1`).
+            // A WAL database can't open on a read-only home (it must write the
+            // `-shm`/`-wal` sidecars), surfacing as SQLITE_CANTOPEN — usually a
+            // sandboxed MCP client confining writes to the workspace. Turn the
+            // cryptic code into an actionable hint; read-only open isn't
+            // supported (an existing `-wal` defeats `immutable=1`).
             if is_readonly_home_open_error(&e) {
-                format!(
+                crate::CoreError::Internal(format!(
                     "failed to open data.db: {e}\n\
                      hint: ~/.difflore appears read-only. A sandboxed agent (e.g. codex with a \
                      restrictive --sandbox) blocks DiffLore's writes. Run DiffLore unsandboxed for \
                      that client, or set DIFFLORE_HOME to a writable path."
-                )
+                ))
             } else {
-                format!("failed to open data.db: {e}")
+                crate::CoreError::Internal(format!("failed to open data.db: {e}"))
             }
         })?;
 
-    // The DB + its WAL/SHM sidecars now exist; lock them to the owner (Unix).
     restrict_sqlite_files(&db_path);
 
     run_migrations(&pool).await?;
@@ -329,9 +298,9 @@ pub async fn init_db() -> Result<SqlitePool, String> {
     Ok(pool)
 }
 
-/// True when a SQLite open failure indicates a read-only data home — typically
-/// a sandboxed MCP client (codex etc.) that blocks the `-shm`/`-wal` writes a
-/// WAL database needs, surfacing as `SQLITE_CANTOPEN` / `SQLITE_READONLY`.
+/// True when a SQLite open failure indicates a read-only data home (a WAL
+/// database can't write its `-shm`/`-wal` sidecars), surfacing as
+/// `SQLITE_CANTOPEN` / `SQLITE_READONLY`.
 fn is_readonly_home_open_error(err: &sqlx::Error) -> bool {
     let s = err.to_string().to_ascii_lowercase();
     s.contains("code: 14") // SQLITE_CANTOPEN
@@ -341,49 +310,44 @@ fn is_readonly_home_open_error(err: &sqlx::Error) -> bool {
         || s.contains("read-only")
 }
 
-/// Count rows in the named tables. Used by `difflore doctor` to snapshot
-/// store size without leaking `SqlitePool` to the CLI crate. Tables that
-/// don't exist (e.g. on a fresh install before migrations) surface as
-/// `Err(message)` rather than aborting — the doctor report still wants
-/// to show a best-effort inventory.
-pub async fn table_counts(
-    pool: &SqlitePool,
-    tables: &[&str],
-) -> Vec<(String, Result<i64, String>)> {
+/// Count rows in the named tables for the `difflore doctor` inventory.
+/// Missing tables surface as `Err(message)` rather than aborting, so the
+/// report stays best-effort.
+pub async fn table_counts(pool: &SqlitePool, tables: &[&str]) -> Vec<(String, crate::Result<i64>)> {
     let mut out = Vec::with_capacity(tables.len());
     for t in tables {
-        let count: Result<i64, String> = match *t {
+        let count: crate::Result<i64> = match *t {
             "skills" => sqlx::query_scalar!(r#"SELECT COUNT(*) AS "n!: i64" FROM skills"#)
                 .fetch_one(pool)
                 .await
-                .map_err(|e| e.to_string()),
+                .map_err(crate::CoreError::Database),
             "review_items" => {
                 sqlx::query_scalar!(r#"SELECT COUNT(*) AS "n!: i64" FROM review_items"#)
                     .fetch_one(pool)
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(crate::CoreError::Database)
             }
             "review_comments" => {
                 sqlx::query_scalar!(r#"SELECT COUNT(*) AS "n!: i64" FROM review_comments"#)
                     .fetch_one(pool)
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(crate::CoreError::Database)
             }
             "providers" => sqlx::query_scalar!(r#"SELECT COUNT(*) AS "n!: i64" FROM providers"#)
                 .fetch_one(pool)
                 .await
-                .map_err(|e| e.to_string()),
+                .map_err(crate::CoreError::Database),
             "cloud_outbox" => {
                 sqlx::query_scalar!(r#"SELECT COUNT(*) AS "n!: i64" FROM cloud_outbox"#)
                     .fetch_one(pool)
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(crate::CoreError::Database)
             }
             "projects" => sqlx::query_scalar!(r#"SELECT COUNT(*) AS "n!: i64" FROM projects"#)
                 .fetch_one(pool)
                 .await
-                .map_err(|e| e.to_string()),
-            other => Err(format!("unknown table: {other}")),
+                .map_err(crate::CoreError::Database),
+            other => Err(format!("unknown table: {other}").into()),
         };
         out.push((t.to_string(), count));
     }
@@ -391,11 +355,10 @@ pub async fn table_counts(
 }
 
 /// Aggregate snapshot of the local skills (rules) corpus for
-/// `difflore doctor --report`. Reports total count, breakdown by
-/// `origin` and top `source_repo` partitions, and the count of skills
-/// with empty `file_patterns` (recall-killing signature). Empty
-/// `file_patterns` once tripped Eval-26 — keeping a permanent counter
-/// catches future cluster-pipeline regressions.
+/// `difflore doctor --report`: total count, breakdown by `origin` and top
+/// `source_repo`, and the count of skills with empty `file_patterns`
+/// (recall-killing signature; the counter catches cluster-pipeline
+/// regressions).
 #[derive(Debug, Default)]
 pub struct CorpusHealth {
     pub total: i64,
@@ -404,7 +367,7 @@ pub struct CorpusHealth {
     pub empty_file_patterns: i64,
 }
 
-pub async fn corpus_health(pool: &SqlitePool) -> Result<CorpusHealth, String> {
+pub async fn corpus_health(pool: &SqlitePool) -> crate::Result<CorpusHealth> {
     let total =
         sqlx::query_scalar!("SELECT COUNT(*) as \"n!: i64\" FROM skills WHERE status = 'active'")
             .fetch_one(pool)
@@ -423,9 +386,7 @@ pub async fn corpus_health(pool: &SqlitePool) -> Result<CorpusHealth, String> {
         .map(|r| (r.origin, r.n))
         .collect();
 
-    // `source_repo` is the single provenance column for current rule
-    // attribution. Retired `repo_owner` / `repo_name` fields are not
-    // interpreted as a source repo.
+    // `source_repo` is the single provenance column for rule attribution.
     let by_source_repo_rows = sqlx::query_as::<_, (Option<String>, i64)>(
         "WITH skill_repos AS ( \
              SELECT source_repo AS repo \
@@ -510,9 +471,8 @@ mod tests {
 
     #[test]
     fn project_hash_normalises_windows_separator_variants() {
-        // Same logical path on Windows vs POSIX must collapse to the same
-        // hash — we replace `\` with `/` before hashing, so both slash
-        // variants and identical strings via different APIs all match.
+        // `\` is normalised to `/` before hashing, so the same logical path
+        // collapses to the same hash across Windows and POSIX separators.
         let posix = project_hash_from_root(&PathBuf::from("C:/Users/alice/repo"));
         let forward = project_hash_from_root(Path::new("C:/Users/alice/repo"));
         let backward = project_hash_from_root(Path::new("C:\\Users\\alice\\repo"));
@@ -559,10 +519,8 @@ mod tests {
         );
     }
 
-    /// Safety net for `table_counts` — the only remaining non-macro SQL
-    /// site in this module (table name is interpolated, not bindable).
-    /// Verifies happy path returns the right count and a missing table
-    /// surfaces as `Err` instead of poisoning the rest of the inventory.
+    /// Verifies `table_counts` returns the right count on the happy path and
+    /// surfaces a missing table as `Err` without poisoning the inventory.
     #[tokio::test]
     async fn table_counts_returns_per_table_results() {
         use sqlx::sqlite::SqlitePoolOptions;
@@ -597,12 +555,8 @@ mod tests {
 
     #[test]
     fn project_index_dir_uses_difflore_home() {
-        // The shared test home sets `DIFFLORE_HOME` once per process.
-        // Asserting that `project_index_dir` starts under that path
-        // proves the env-var plumbing without us mutating the env at
-        // all — which is what used to race against mcp_server and
-        // startup tests running in parallel (they'd fall back to
-        // `~/.difflore` after another test called `remove_var`).
+        // Assert `project_index_dir` lives under the shared test home,
+        // proving the `DIFFLORE_HOME` plumbing without mutating the env.
         let home = shared_test_home();
         let dir = project_index_dir("abc123def456");
         assert!(

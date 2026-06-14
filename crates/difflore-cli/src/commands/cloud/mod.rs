@@ -1,4 +1,5 @@
 pub(crate) mod login;
+pub(crate) mod sync;
 
 mod auth;
 mod impact;
@@ -6,13 +7,13 @@ mod team;
 
 use crate::style;
 
-use crate::commands::util::{exit_code, exit_err};
+use crate::support::util::{exit_code, exit_err};
 use difflore_core::cloud::observations::{ActualCitationSummary, ObservationUploadIssue};
 
 use auth::DeviceRegistrationState;
 
-// Entry points whose implementations now live in the per-domain modules,
-// re-exported so the dispatch layer keeps calling `commands::cloud::handle_*`.
+// Re-exported from the per-domain modules so the dispatch layer keeps calling
+// `commands::cloud::handle_*`.
 pub(crate) use impact::handle_impact;
 pub(crate) use team::{handle_publish, handle_team, handle_unpublish};
 
@@ -36,7 +37,7 @@ pub(crate) async fn handle_status(json: bool) {
     if json {
         let payload =
             cloud_status_value(&status, agent_usage.as_ref(), device_registration.as_ref());
-        println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+        println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
         return;
     }
 
@@ -50,6 +51,7 @@ pub(crate) async fn handle_status(json: bool) {
             style::cmd("difflore cloud login")
         );
         println!("  Team impact and accepted-fix counts unlock after login.");
+        println!("  next: {}", style::cmd("difflore cloud login"));
         return;
     }
 
@@ -66,14 +68,16 @@ pub(crate) async fn handle_status(json: bool) {
     team::print_accepted_fix_proof_readiness(status.logged_in, status.team_name.as_deref());
     auth::print_device_registration_status(device_registration.as_ref());
     if let Some(line) = agent_usage_pending_upload_line(agent_usage.as_ref()) {
-        println!("  evidence  {}", style::pewter(&line));
+        println!("  activity  {}", style::pewter(&line));
     }
     println!();
-    // Plain "next:" label, command coloured separately.
     println!(
         "  {} next: {}",
         style::emerald(style::sym::TIP),
-        style::cmd("difflore cloud sync"),
+        style::cmd(team::team_workspace_next_command(
+            status.logged_in,
+            status.team_name.as_deref()
+        )),
     );
 }
 
@@ -200,19 +204,19 @@ const fn agent_usage_pending_upload_recovery(
     }
     Some(match summary.pending_upload_issue {
         Some(ObservationUploadIssue::MissingCloudScope) => {
-            "evidence is queued safely; refresh login once to upload: difflore cloud login"
+            "memory activity is pending; refresh login once to upload: difflore cloud login"
         }
         Some(ObservationUploadIssue::RateLimited) => {
-            "evidence uploads are rate-limited and will retry automatically"
+            "memory activity uploads are rate-limited and will retry automatically"
         }
         Some(ObservationUploadIssue::InvalidBatch) => {
-            "evidence uploads need the latest cloud observation schema"
+            "memory activity uploads need the latest cloud version"
         }
         Some(ObservationUploadIssue::ServerRejected) => {
-            "evidence uploads were rejected; run difflore doctor --report"
+            "memory activity uploads were rejected; run difflore doctor --report"
         }
         Some(ObservationUploadIssue::Unknown) | None => {
-            "evidence uploads are queued; run difflore doctor --report if they stay pending"
+            "memory activity uploads are pending; run difflore doctor --report if they stay pending"
         }
     })
 }
@@ -223,7 +227,7 @@ fn agent_usage_pending_upload_line(summary: Option<&ActualCitationSummary>) -> O
         return None;
     }
     let mut line = format!(
-        "{} evidence upload{} queued safely",
+        "{} memory activity upload{} pending",
         summary.pending_uploads,
         if summary.pending_uploads == 1 {
             ""
@@ -232,7 +236,7 @@ fn agent_usage_pending_upload_line(summary: Option<&ActualCitationSummary>) -> O
         },
     );
     if let Some(recovery) = agent_usage_pending_upload_recovery(summary) {
-        line.push_str(" · ");
+        line.push_str(" | ");
         line.push_str(recovery);
     }
     Some(line)
@@ -285,7 +289,7 @@ mod tests {
         assert_eq!(value["pendingUploadState"], "queued_needs_login_refresh");
         assert_eq!(
             value["pendingUploadAction"],
-            "evidence is queued safely; refresh login once to upload: difflore cloud login"
+            "memory activity is pending; refresh login once to upload: difflore cloud login"
         );
         assert_eq!(value["actualCitationRate"], 0.4);
     }
@@ -302,7 +306,7 @@ mod tests {
         assert_eq!(
             agent_usage_pending_upload_line(Some(&summary)).as_deref(),
             Some(
-                "2 evidence uploads queued safely · evidence is queued safely; refresh login once to upload: difflore cloud login"
+                "2 memory activity uploads pending | memory activity is pending; refresh login once to upload: difflore cloud login"
             )
         );
     }

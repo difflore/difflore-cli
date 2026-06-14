@@ -3,14 +3,14 @@
 //!
 //! This command scans every orphan row (`rule_id IS NULL OR rule_id=''`
 //! AND `rule_name != ''`), resolves a matching `skills.id` via
-//! [`difflore_core::fix_outcomes::resolve_rule_id_by_name`], and either
+//! [`difflore_core::observability::fix_outcomes::resolve_rule_id_by_name`], and either
 //! reports what it would do (default dry-run) or applies the UPDATEs in
 //! a single sqlx transaction.
 
 use std::time::Instant;
 
 use difflore_core::SqlitePool;
-use difflore_core::fix_outcomes::resolve_rule_id_by_name;
+use difflore_core::observability::fix_outcomes::resolve_rule_id_by_name;
 
 use crate::runtime::CommandContext;
 use crate::style::{self, sym};
@@ -230,9 +230,8 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        // 4 exact matches + 0 prefix hits (skill names are shorter than
-        // the variant rule_name) + 1 unmatched = 2 still orphan rows.
-        // Wait: 6 inputs - 4 resolved = 2 still orphan.
+        // 4 exact matches resolve; the suffix variant and the unmatched row
+        // stay orphan (skill names are shorter, so no prefix hit).
         assert_eq!(still_orphans, 2, "expected 4 of 6 rows to be resolved");
 
         let pin_id: Option<String> = sqlx::query_scalar(

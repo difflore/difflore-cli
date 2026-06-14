@@ -1,5 +1,6 @@
-use crate::models::{SkillRecord, SkillRepoRecord};
+use crate::domain::models::{SkillRecord, SkillRepoRecord};
 
+#[cfg(test)]
 #[allow(clippy::many_single_char_names)] // reason: base64 nibbles a/b/c/d are conventional
 pub(crate) fn decode_base64_lossy(input: &str) -> String {
     let cleaned: String = input.chars().filter(|c| !c.is_whitespace()).collect();
@@ -114,12 +115,17 @@ fn parse_engines_column(raw: &str) -> Vec<String> {
                 .filter(|engine| is_known_engine(engine))
                 .collect();
             if fallback.is_empty() {
-                eprintln!("[difflore] malformed skills.engines JSON ({e}); falling back to claude");
+                eprintln!("warning: DiffLore could not read skills.engines; using claude.");
+                if crate::infra::env::debug_telemetry() {
+                    eprintln!("[difflore] malformed skills.engines JSON: {e}");
+                }
                 vec!["claude".to_owned()]
             } else {
-                eprintln!(
-                    "[difflore] malformed skills.engines JSON ({e}); parsed legacy list syntax"
-                );
+                if crate::infra::env::debug_telemetry() {
+                    eprintln!(
+                        "[difflore] malformed skills.engines JSON ({e}); parsed legacy list syntax"
+                    );
+                }
                 fallback
             }
         }
@@ -153,6 +159,7 @@ impl From<SkillRepoRow> for SkillRepoRecord {
     }
 }
 
+#[cfg(test)]
 pub(crate) struct SkillFrontmatter {
     pub(crate) r#type: Option<String>,
     pub(crate) tags: Option<Vec<String>>,
@@ -180,6 +187,7 @@ pub(crate) fn parse_list_value(value: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn parse_skill_frontmatter(content: &str) -> SkillFrontmatter {
     let mut fm = SkillFrontmatter {
         r#type: None,

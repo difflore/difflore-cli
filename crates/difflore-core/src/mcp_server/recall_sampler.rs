@@ -8,9 +8,8 @@
 
 use rand::{Rng, RngExt};
 
-/// The caller-requested `top_k` value the sampler targets. Only serves
-/// using this exact value are eligible for a bump; everything else is
-/// passed through unchanged.
+/// The caller-requested `top_k` value the sampler targets. Only serves using
+/// this exact value are eligible for a bump; everything else passes through.
 pub(crate) const SAMPLER_TRIGGER_TOP_K: usize = 5;
 
 /// Bumped `top_k` written for sampled serves.

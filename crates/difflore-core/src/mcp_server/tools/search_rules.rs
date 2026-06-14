@@ -1,22 +1,26 @@
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::context::retrieval::ScoredRuleChunk;
 use crate::context::rule_source::RuleDocument;
 use crate::context::types::RuleMatchEvidenceRecord;
 use crate::context::{EmbeddingDiagnostics, gather_embedding_diagnostics_with_activity};
-use crate::review_trajectory::TrajectoryStep;
+use crate::observability::trajectory::TrajectoryStep;
 
 use super::super::{
     AVG_FULL_RULE_TOKENS, McpState, build_cost_meta, emit_trajectory_step, estimate_tokens,
     rule_hits_by_origin,
 };
-use super::util::{
-    MCP_EMBEDDING_TIMEOUT, MCP_TEXT_ARG_CHAR_LIMIT, build_empty_recall_retry_query,
-    build_match_evidence, disabled_response, drain_mcp_query_outbox, enqueue_mcp_query_outbox,
-    fetch_skills_by_ids, has_strict_file_patterns_match, parse_file_patterns,
-    rerank_scored_rule_chunks_for_mcp_by_strict_file_matches, rule_injection_disabled,
-    rule_preview, strict_file_match_ids_for_rules, validate_mcp_text_arg,
+use super::evidence::{
+    build_match_evidence, fetch_skills_by_ids, has_strict_file_patterns_match, parse_file_patterns,
+    rule_preview, strict_file_match_ids_for_rules,
+};
+use super::serve_stats::{
+    MCP_EMBEDDING_TIMEOUT, build_empty_recall_retry_query, drain_mcp_query_outbox,
+    enqueue_mcp_query_outbox, rerank_scored_rule_chunks_for_mcp_by_strict_file_matches,
+};
+use super::validate::{
+    MCP_TEXT_ARG_CHAR_LIMIT, disabled_response, rule_injection_disabled, validate_mcp_text_arg,
 };
 
 pub(crate) async fn tool_search_rules(
@@ -40,17 +44,16 @@ pub(crate) async fn tool_search_rules(
         .unwrap_or("mcp-server");
     validate_mcp_text_arg("file", file, MCP_TEXT_ARG_CHAR_LIMIT)?;
     validate_mcp_text_arg("intent", intent, MCP_TEXT_ARG_CHAR_LIMIT)?;
-    // Clamp `top_k` to the schema range; invalid over-asks still get a
-    // useful bounded response.
+    // Clamp `top_k` to the schema range so over-asks get a bounded response.
     let requested_top_k = args
         .get("top_k")
         .and_then(Value::as_u64)
         .map_or(5, |n| n.clamp(1, 50) as usize);
-    // Low-rate sampler: occasionally widen default serves from 5 to 8 so
-    // deeper ranks get measured. Explicit caller choices pass through.
+    // Low-rate sampler: occasionally widen default serves from 5 to 8 so deeper
+    // ranks get measured. Explicit caller choices pass through.
     let top_k = super::super::recall_sampler::maybe_bump_top_k(
         requested_top_k,
-        crate::env::deep_recall_sample_rate(),
+        crate::infra::env::deep_recall_sample_rate(),
     );
     let repo_scopes = repo_scopes_for_search_rules(&state.db, args).await?;
 
@@ -76,23 +79,24 @@ pub(crate) async fn tool_search_rules(
         {
             Ok(count) => count,
             Err(e) => {
-                eprintln!("[difflore-mcp] search_rules index freshness check failed: {e}");
+                if crate::infra::env::debug_telemetry() {
+                    eprintln!("[difflore-mcp] search_rules index freshness check failed: {e}");
+                }
                 0
             }
         }
     };
-    // Gathered once post-index so every `_meta` return site (empty +
-    // success) reports the same embedding-health snapshot without
-    // re-querying the index pool per branch.
+    // Gathered once post-index so every `_meta` return site reports the same
+    // embedding-health snapshot without re-querying the index pool per branch.
     let embedding_diag: EmbeddingDiagnostics =
         gather_embedding_diagnostics_with_activity(&index_pool).await;
 
     let target_file = if file == "unknown" { None } else { Some(file) };
     let ranking_inputs = crate::context::rule_source::load_rule_ranking_inputs(&state.db).await;
     let candidate_limit = top_k.saturating_mul(5).clamp(top_k, 50);
-    let mut scored = super::util::retrieve_rules_with_repo_scopes(
+    let mut scored = super::serve_stats::retrieve_rules_with_repo_scopes(
         &index_pool,
-        super::util::RetrieveRulesArgs {
+        super::serve_stats::RetrieveRulesArgs {
             query: &query,
             lexical_query: Some(intent),
             top_k: candidate_limit,
@@ -114,9 +118,9 @@ pub(crate) async fn tool_search_rules(
     {
         retrieval_attempts = 2;
         retry_kind = Some("deterministic_empty_retry");
-        let retry_scored = super::util::retrieve_rules_with_repo_scopes(
+        let retry_scored = super::serve_stats::retrieve_rules_with_repo_scopes(
             &index_pool,
-            super::util::RetrieveRulesArgs {
+            super::serve_stats::RetrieveRulesArgs {
                 query: &retry_query,
                 lexical_query: None,
                 top_k: candidate_limit,
@@ -138,6 +142,15 @@ pub(crate) async fn tool_search_rules(
         &mut scored,
         exact_title_strict_match_chunks(&rules, intent, target_file, &repo_scopes),
     );
+    // Batch-fetch skill metadata BEFORE the strict rerank (moved up from the
+    // evidence-building site) so the post-gate arbitration below can read
+    // origin/source facts without a second query. The id set is the full
+    // candidate window, so every survivor of the rerank + gates is covered;
+    // only the late cross-repo starter set needs a supplemental fetch.
+    let candidate_ids: Vec<String> = scored.iter().map(|s| s.skill_id.clone()).collect();
+    let mut meta_map = fetch_skills_by_ids(&state.db, &candidate_ids)
+        .await
+        .map_err(|e| (-32603, format!("Failed to fetch rule metadata: {e}")))?;
     let strict_skill_ids = strict_file_match_ids_for_rules(&rules, target_file);
     scored = rerank_scored_rule_chunks_for_mcp_by_strict_file_matches(
         scored,
@@ -146,23 +159,22 @@ pub(crate) async fn tool_search_rules(
         &strict_skill_ids,
     );
 
-    // Drop topically adjacent rules whose directive does not share the
-    // query intent. Strong exact/title/lexical hits remain exempt.
+    // Drop topically adjacent rules whose directive does not share the query
+    // intent. Strong exact/title/lexical hits remain exempt.
     crate::context::retrieval::apply_intent_alignment_gate(&mut scored, intent);
 
-    // Final relevance gate for explicit recall. Wrong-file or low-signal
-    // queries should return no rules rather than weak filler; strong
-    // matches clear this floor by a wide margin.
+    // Final relevance gate for explicit recall: wrong-file or low-signal queries
+    // return no rules rather than weak filler; strong matches clear it easily.
     crate::context::retrieval::apply_explicit_recall_threshold(&mut scored);
 
-    // Cold-start fallback: only repos with no scoped memory can receive
-    // strict-file cross-repo suggestions.
+    // Cold-start fallback: only repos with no scoped memory get strict-file
+    // cross-repo suggestions.
     let mut cross_repo_starter = false;
     if scored.is_empty()
         && rules_indexed == 0
         && let Some(tf) = target_file
     {
-        let cross = super::util::cross_repo_starter_scored(
+        let cross = super::serve_stats::cross_repo_starter_scored(
             &state.db,
             &query,
             tf,
@@ -178,8 +190,8 @@ pub(crate) async fn tool_search_rules(
     }
 
     if scored.is_empty() {
-        crate::injection_log::record("mcp_tool", 0, target_file);
-        // Track empty results without blocking the MCP response.
+        crate::observability::injection_log::record("mcp_tool", 0, target_file);
+        // Track empty results without blocking the response.
         {
             let file = file.to_owned();
             let intent = intent.to_owned();
@@ -188,7 +200,7 @@ pub(crate) async fn tool_search_rules(
             let db = state.db.clone();
             enqueue_mcp_query_outbox(
                 &state.db,
-                super::util::McpQueryOutboxEntry {
+                super::serve_stats::McpQueryOutboxEntry {
                     file: &file,
                     intent: &intent,
                     rules_injected: 0,
@@ -223,9 +235,9 @@ pub(crate) async fn tool_search_rules(
         let text = serde_json::to_string(&body)
             .unwrap_or_else(|_| "{\"results\":[],\"message\":\"No rules found.\"}".to_owned());
         let tokens_used = estimate_tokens(&text);
-        if let Err(e) = crate::mcp_rule_serves::record(
+        if let Err(e) = crate::observability::mcp_rule_serves::record(
             &state.db,
-            &crate::mcp_rule_serves::McpRuleServeInput {
+            &crate::observability::mcp_rule_serves::McpRuleServeInput {
                 tool: "search_rules",
                 session_id: Some(session_id),
                 repo_full_name: repo_scopes.first().map(String::as_str),
@@ -239,7 +251,9 @@ pub(crate) async fn tool_search_rules(
         )
         .await
         {
-            eprintln!("[difflore-mcp] search_rules serve record failed: {e}");
+            if crate::infra::env::debug_telemetry() {
+                eprintln!("[difflore-mcp] search_rules serve record failed: {e}");
+            }
         }
         {
             let cloud = state.cloud.clone();
@@ -248,7 +262,7 @@ pub(crate) async fn tool_search_rules(
                 session_id: session_id.to_owned(),
                 repo_full_name: repo_scopes.first().cloned(),
                 file_path: target_file.map(ToOwned::to_owned),
-                query_hash: crate::mcp_rule_serves::query_hash(&query),
+                query_hash: crate::observability::mcp_rule_serves::query_hash(&query),
                 rule_ids: Vec::new(),
                 top_k: i64::try_from(top_k).unwrap_or(i64::MAX),
                 was_empty: true,
@@ -261,7 +275,9 @@ pub(crate) async fn tool_search_rules(
                     crate::cloud::observations::enqueue_and_flush_default(served_event, &cloud)
                         .await
                 {
-                    eprintln!("[difflore-mcp] search_rules served event failed: {e}");
+                    if crate::infra::env::debug_telemetry() {
+                        eprintln!("[difflore-mcp] search_rules served event failed: {e}");
+                    }
                 }
             });
         }
@@ -287,23 +303,45 @@ pub(crate) async fn tool_search_rules(
         }));
     }
 
-    // Batch-fetch skill metadata so each index entry gets title/origin/
-    // file_patterns without N+1 queries. The pipeline already returned
-    // `content` with the generated "Rule Name: …" header — we could parse
-    // it but a single SELECT IN (...) is cheaper and always correct.
+    // Supplement metadata for candidates the early (pre-rerank) batch fetch
+    // could not know about — only the cross-repo starter set, retrieved after
+    // the gates, can introduce new ids here.
+    let missing_meta_ids: Vec<String> = scored
+        .iter()
+        .filter(|s| !meta_map.contains_key(&s.skill_id))
+        .map(|s| s.skill_id.clone())
+        .collect();
+    if !missing_meta_ids.is_empty() {
+        let extra = fetch_skills_by_ids(&state.db, &missing_meta_ids)
+            .await
+            .map_err(|e| (-32603, format!("Failed to fetch rule metadata: {e}")))?;
+        meta_map.extend(extra);
+    }
+
+    // Deterministic serve arbitration AFTER the double gate (intent alignment
+    // + explicit recall threshold): strict hit → 10% score band → source
+    // priority → confidence → skill_id. Reuses the metadata fetched above —
+    // no additional queries. `DIFFLORE_DISABLE_SOURCE_PRIORITY` rolls the
+    // re-sort back; the why facts remain available either way.
+    let origin_by_skill_id: HashMap<String, String> = meta_map
+        .iter()
+        .map(|(id, row)| (id.clone(), row.origin.clone()))
+        .collect();
+    let why_map = crate::context::retrieval::arbitrate_rule_order(
+        &mut scored,
+        &strict_skill_ids,
+        &origin_by_skill_id,
+        crate::infra::env::source_priority_disabled(),
+    );
+
     let skill_ids: Vec<String> = scored.iter().map(|s| s.skill_id.clone()).collect();
-    let meta_map_fut = fetch_skills_by_ids(&state.db, &skill_ids);
-    let trust_evidence_fut =
-        super::super::trust_proof::fetch_cloud_top_rule_trust_evidence(&state.cloud);
-    let (meta_map_result, trust_evidence) = tokio::join!(meta_map_fut, trust_evidence_fut);
-    let meta_map =
-        meta_map_result.map_err(|e| (-32603, format!("Failed to fetch rule metadata: {e}")))?;
+    let trust_evidence =
+        super::super::trust_proof::fetch_cloud_top_rule_trust_evidence(&state.cloud).await;
 
     let mut entries: Vec<RuleMatchEvidenceRecord> = Vec::with_capacity(scored.len());
     for s in &scored {
-        // Missing metadata is a soft skip: if a chunk is stale (skill row
-        // deleted but index not yet pruned) we'd rather drop it than
-        // return garbage. Keeps the result list trustworthy.
+        // Missing metadata is a soft skip: a stale chunk (skill row deleted but
+        // index not yet pruned) is dropped rather than returned as garbage.
         let Some(meta) = meta_map.get(&s.skill_id) else {
             continue;
         };
@@ -321,6 +359,9 @@ pub(crate) async fn tool_search_rules(
             source_repo: meta.source_repo.clone().filter(|r| !r.trim().is_empty()),
             cited_count: proof.map(|p| p.cited_count),
             trust_rate: proof.and_then(|p| p.trust_rate),
+            why: why_map
+                .get(&s.skill_id)
+                .map(crate::context::retrieval::RuleRankingWhy::compact),
             evidence,
         });
     }
@@ -329,9 +370,9 @@ pub(crate) async fn tool_search_rules(
         // Refine the message when cross-repo suggestions include pack rules.
         let has_pack = entries.iter().any(|e| e.origin == "pack");
         let message = if has_pack {
-            "No memory is scoped to THIS repo yet. These are starter-pack suggestions (and transferable rules from your other repos), matched to this file — treat them as suggestions, not this repo's own judgment. Run `difflore import-reviews` to capture this repo's memory."
+            "No rules are scoped to THIS repo yet. These are starter-pack suggestions (and transferable rules from your other repos), matched to this file. Treat them as suggestions, not this repo's own judgment. Run `difflore import-reviews` to capture this repo's rules."
         } else {
-            "No memory is scoped to THIS repo yet. These are transferable rules from your other repos, matched to this file — treat them as suggestions, not this repo's own judgment. Run `difflore import-reviews` to capture this repo's memory."
+            "No rules are scoped to THIS repo yet. These are transferable rules from your other repos, matched to this file. Treat them as suggestions, not this repo's own judgment. Run `difflore import-reviews` to capture this repo's rules."
         };
         json!({
             "results": entries,
@@ -357,9 +398,9 @@ pub(crate) async fn tool_search_rules(
             .filter(|entry| has_strict_file_patterns_match(&entry.file_patterns, target_file))
             .count() as i64
     });
-    if let Err(e) = crate::mcp_rule_serves::record(
+    if let Err(e) = crate::observability::mcp_rule_serves::record(
         &state.db,
-        &crate::mcp_rule_serves::McpRuleServeInput {
+        &crate::observability::mcp_rule_serves::McpRuleServeInput {
             tool: "search_rules",
             session_id: Some(session_id),
             repo_full_name: repo_scopes.first().map(String::as_str),
@@ -373,7 +414,9 @@ pub(crate) async fn tool_search_rules(
     )
     .await
     {
-        eprintln!("[difflore-mcp] search_rules serve record failed: {e}");
+        if crate::infra::env::debug_telemetry() {
+            eprintln!("[difflore-mcp] search_rules serve record failed: {e}");
+        }
     }
     {
         let cloud = state.cloud.clone();
@@ -382,7 +425,7 @@ pub(crate) async fn tool_search_rules(
             session_id: session_id.to_owned(),
             repo_full_name: repo_scopes.first().cloned(),
             file_path: target_file.map(ToOwned::to_owned),
-            query_hash: crate::mcp_rule_serves::query_hash(&query),
+            query_hash: crate::observability::mcp_rule_serves::query_hash(&query),
             rule_ids: serve_rule_ids.clone(),
             top_k: i64::try_from(top_k).unwrap_or(i64::MAX),
             was_empty: serve_rule_ids.is_empty(),
@@ -394,26 +437,32 @@ pub(crate) async fn tool_search_rules(
             if let Err(e) =
                 crate::cloud::observations::enqueue_and_flush_default(served_event, &cloud).await
             {
-                eprintln!("[difflore-mcp] search_rules served event failed: {e}");
+                if crate::infra::env::debug_telemetry() {
+                    eprintln!("[difflore-mcp] search_rules served event failed: {e}");
+                }
             }
         });
     }
-    crate::injection_log::record("mcp_tool", entries.len(), target_file);
+    crate::observability::injection_log::record("mcp_tool", entries.len(), target_file);
 
     // Memory-pipeline stream for the lightweight index hit.
     for e in &entries {
-        crate::activity_stream::record(crate::activity_stream::ActivityPayload::RuleRecalled {
-            rule_id: e.id.clone(),
-            rule_title: e.title.clone(),
-            score: e.similarity as f32,
-            took_ms: 0,
-        });
+        crate::observability::activity_stream::record(
+            crate::observability::activity_stream::ActivityPayload::RuleRecalled {
+                rule_id: e.id.clone(),
+                rule_title: e.title.clone(),
+                score: e.similarity as f32,
+                took_ms: 0,
+            },
+        );
     }
-    crate::activity_stream::record(crate::activity_stream::ActivityPayload::RuleInjected {
-        rule_count: u32::try_from(entries.len()).unwrap_or(u32::MAX),
-        prompt_chars: u32::try_from(text.chars().count()).unwrap_or(u32::MAX),
-        intent_summary: format!("{file} · {intent}"),
-    });
+    crate::observability::activity_stream::record(
+        crate::observability::activity_stream::ActivityPayload::RuleInjected {
+            rule_count: u32::try_from(entries.len()).unwrap_or(u32::MAX),
+            prompt_chars: u32::try_from(text.chars().count()).unwrap_or(u32::MAX),
+            intent_summary: format!("{file} | {intent}"),
+        },
+    );
     // Estimate savings against fetching each full rule body.
     let tokens_if_full = Some(AVG_FULL_RULE_TOKENS * entries.len());
 
@@ -444,7 +493,7 @@ pub(crate) async fn tool_search_rules(
         };
         enqueue_mcp_query_outbox(
             &state.db,
-            super::util::McpQueryOutboxEntry {
+            super::serve_stats::McpQueryOutboxEntry {
                 file: &file,
                 intent: &intent,
                 rules_injected,
@@ -460,7 +509,9 @@ pub(crate) async fn tool_search_rules(
             if let Err(e) =
                 crate::cloud::observations::enqueue_and_flush_default(fired_event, &cloud).await
             {
-                eprintln!("[difflore-mcp] search_rules fired event failed: {e}");
+                if crate::infra::env::debug_telemetry() {
+                    eprintln!("[difflore-mcp] search_rules fired event failed: {e}");
+                }
             }
             let _ = drain_mcp_query_outbox(&db, &cloud, 8).await;
         });
@@ -496,15 +547,20 @@ async fn repo_scopes_for_search_rules(
         .filter(|value| !value.is_empty())
     {
         validate_mcp_text_arg("repo_full_name", raw, MCP_TEXT_ARG_CHAR_LIMIT)?;
-        let Some(repo) = crate::git::normalize_github_repo_full_name(raw) else {
+        let configured_gitlab_hosts = crate::ingest::gitlab::auth::configured_hosts().await;
+        let Some(repo) = crate::infra::git::normalize_repo_scope_with_gitlab_hosts(
+            raw,
+            &configured_gitlab_hosts,
+        ) else {
             return Err((
                 -32602,
-                "Invalid repo_full_name; expected GitHub owner/repo or GitHub remote URL"
+                "Invalid repo_full_name; expected GitHub owner/repo, GitLab host/namespace/project, or a supported git remote URL"
                     .to_owned(),
             ));
         };
         vec![repo]
     } else {
+        crate::mcp_server::hook::refresh_configured_gitlab_hosts_for_remote_detection().await;
         crate::mcp_server::hook::detect_git_remote_owner_repos()
     };
 
@@ -570,8 +626,8 @@ fn exact_title_strict_match_chunks(
         .map(|rule| ScoredRuleChunk {
             skill_id: rule.skill_id.clone(),
             content: rule.content.clone(),
-            // Exact title + strict file scope is stronger than fuzzy vector
-            // recall, especially during embedding fallback/rate limits.
+            // Exact title + strict file scope outranks fuzzy vector recall,
+            // especially during embedding fallback/rate limits.
             score: 2.0 + rule.confidence,
             confidence: rule.confidence,
         })

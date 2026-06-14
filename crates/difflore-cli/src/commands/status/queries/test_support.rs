@@ -1,10 +1,8 @@
 //! Shared in-memory SQLite fixtures for the `queries` submodule unit tests.
 //!
-//! These pools mirror just enough of the production schema for the status
-//! query domains. They are intentionally minimal hand-rolled tables (not the
-//! real migrations) so each domain's tests can seed exactly the rows they
-//! exercise. Every test gets its own fresh `sqlite::memory:` pool, so there is
-//! no cross-test state to leak.
+//! Tables are minimal hand-rolled subsets of the production schema (not the
+//! real migrations) so each test seeds only the rows it exercises. Every test
+//! gets its own fresh `sqlite::memory:` pool, so no state leaks across tests.
 
 pub(super) struct ProvenRuleSeed<'a> {
     pub(super) id: &'a str,

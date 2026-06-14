@@ -1,5 +1,5 @@
-use crate::errors::CoreError;
-use crate::models::{CreateLocalSkillInput, SkillRecord};
+use crate::domain::models::{CreateLocalSkillInput, SkillRecord};
+use crate::error::CoreError;
 use uuid::Uuid;
 
 use super::SkillRow;
@@ -68,15 +68,12 @@ pub async fn create_local(
     let skill_type = input.r#type.unwrap_or_else(|| "skill".into());
     let description = input.description.unwrap_or_default();
 
-    let base_dir = crate::skill_fs::skills_base_dir()
-        .map_err(CoreError::Internal)?
-        .join("local");
+    let base_dir = crate::skills::fs::skills_base_dir()?.join("local");
     let skill_dir = base_dir.join(&slug);
 
-    // Ensure base_dir exists BEFORE canonicalize so both sides end up with
-    // the same prefix form (on Windows, `canonicalize()` returns `\\?\C:\...`
-    // when the dir exists, but falls back to the relative form when it
-    // doesn't — the asymmetry caused `starts_with` to spuriously fail).
+    // Create base_dir BEFORE canonicalize so both sides share a prefix form.
+    // On Windows `canonicalize()` returns `\\?\C:\...` only when the dir
+    // exists, and that asymmetry makes `starts_with` spuriously fail.
     std::fs::create_dir_all(&base_dir)
         .map_err(|e| CoreError::Internal(format!("failed to create skills base directory: {e}")))?;
 
@@ -113,11 +110,9 @@ pub async fn create_local(
         skill_md.push_str(&format!("\n{content}\n"));
     }
 
-    // Friendly duplicate check BEFORE writing SKILL.md / hitting SQLite's
-    // UNIQUE constraint. Skills are keyed by `id = local-<slug>`, so two
-    // rules with the same sanitized name collide on `skills.id`. Raw sqlx
-    // errors ("UNIQUE constraint failed: skills.id (code: 1555)") confuse
-    // end users — give them the actionable version.
+    // Friendly duplicate check before writing SKILL.md / hitting the UNIQUE
+    // constraint. Skills are keyed by `id = local-<slug>`, so same-name rules
+    // collide on `skills.id`; the raw sqlx error confuses end users.
     let existing_id = sqlx::query_scalar!("SELECT id FROM skills WHERE id = ?1", id)
         .fetch_optional(db)
         .await?;
@@ -164,7 +159,7 @@ pub async fn create_local(
     }
 
     for engine_name in &engines {
-        if let Err(e) = crate::skill_fs::sync_engine_link("local", &slug, engine_name, true) {
+        if let Err(e) = crate::skills::fs::sync_engine_link("local", &slug, engine_name, true) {
             eprintln!("warning: sync_engine_link failed for engine {engine_name}: {e}");
             record_engine_link_failure(db, &id, engine_name, &e).await;
         }

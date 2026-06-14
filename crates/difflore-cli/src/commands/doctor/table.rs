@@ -1,8 +1,6 @@
-//! Doctor table renderer.
-//!
-//! Aligned-column status surface — replaces the prose markdown for
-//! the default `difflore doctor` invocation. The richer markdown
-//! report stays behind `--report` for bug-report paste-ins.
+//! Doctor table renderer: the aligned-column status surface for the default
+//! `difflore doctor` invocation (the richer markdown report stays behind
+//! `--report`).
 //!
 //! Rows are grouped into three sections:
 //!
@@ -10,14 +8,13 @@
 //!   Blocks core value       — recall cannot run (DB / corpus broken)
 //!   Optional improvements   — provider, MCP wiring, daemon, git hooks
 //!
-//! Empty sections are omitted. The footer collapses to a single
-//! `next:` action line pointing at the highest-priority blocker (or,
-//! if all-green, at `difflore recall --diff`).
+//! Empty sections are omitted. The footer collapses to a single `next:`
+//! action line pointing at the highest-priority blocker (or, if all-green,
+//! at `difflore recall --diff`).
 //!
-//! This module is pure presentation: it consumes the precomputed
-//! [`probes::Findings`] struct and never touches a live data source, so
-//! every shaper below can be exercised against a hand-built findings
-//! value without mocking core.
+//! Pure presentation: consumes a precomputed [`probes::Findings`] and never
+//! touches a live data source, so shapers can be tested against a hand-built
+//! findings value.
 
 use colored::Colorize;
 
@@ -26,10 +23,11 @@ use super::probes::{
     self, CloudProbe, DaemonProbe, EmbedderProbe, Findings, GitHookState, ProjectDbProbe,
     ProviderProbe,
 };
-use crate::mcp_install;
+use crate::installer;
 use crate::style;
+use difflore_core::infra::crypto::{KeyseedStatus, MasterKeyStorageStatus};
 
-const RULE: &str = "─────────────────────────────────────────";
+const RULE: &str = "-----------------------------------------";
 const LABEL_W: usize = 17;
 
 /// Visual marker for a row — orthogonal to `Severity`. A `Ready` row
@@ -42,8 +40,7 @@ enum Status {
     Err,
 }
 
-/// Section a row belongs to. Drives both grouping in the human
-/// renderer and the `severity` field on the JSON-style row.
+/// Section a row belongs to; drives grouping in the renderer.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Severity {
     Blocker,
@@ -66,13 +63,11 @@ struct Row {
     status: Status,
     label: &'static str,
     value: String,
-    /// Optional follow-up `▸` lines rendered indented under the row.
-    /// For blockers, the first hint should lead with the consequence
-    /// ("agents can't fix without a provider — run `difflore providers setup`").
+    /// Follow-up lines rendered indented under the row. For blockers, the
+    /// first hint should lead with the consequence.
     hints: Vec<String>,
-    /// Single repair command suggested as the `next:` action when this
-    /// row is the highest-priority blocker. None for rows that have
-    /// no actionable repair (already-green rows, Optional notices).
+    /// Repair command suggested as the `next:` action when this row is the
+    /// highest-priority blocker. `None` when there's no actionable repair.
     repair: Option<String>,
 }
 
@@ -94,12 +89,12 @@ pub(crate) async fn render_table(ctx: &crate::runtime::CommandContext) -> String
     render_findings(&findings)
 }
 
-/// Shape a fully-probed [`Findings`] into the doctor surface string.
-/// Split from `render_table` so tests can feed a hand-built findings
-/// value without any live data source.
+/// Shape a fully-probed [`Findings`] into the doctor surface string. Split
+/// from `render_table` so tests can feed a hand-built findings value.
 fn render_findings(findings: &Findings) -> String {
     let rows = vec![
         binary_row(&findings.binary_version),
+        secrets_row(&findings.master_key_storage),
         project_db_row(&findings.project_db),
         mcp_row(&findings.mcp),
         provider_row(&findings.provider),
@@ -108,9 +103,8 @@ fn render_findings(findings: &Findings) -> String {
         git_hooks_row(&findings.git_hooks),
         daemon_row(&findings.daemon),
     ];
-    // "What we've learned" preview — `render` collapses to an empty
-    // string when the snapshot is empty (fresh install / no ready
-    // repo memory), so the doctor surface is unchanged in that case.
+    // "What we've learned" preview — renders to "" when the snapshot is empty
+    // (fresh install / no ready repo memory).
     let snapshot_block = memory_snapshot::render(&findings.memory_snapshot);
     render_rows(&rows, &snapshot_block)
 }
@@ -118,6 +112,125 @@ fn render_findings(findings: &Findings) -> String {
 fn binary_row(version: &str) -> Row {
     // Always Ready: if the binary couldn't run, we wouldn't be here.
     Row::ready_ok("binary", format!("v{version}"))
+}
+
+fn secrets_row(status: &MasterKeyStorageStatus) -> Row {
+    match status {
+        MasterKeyStorageStatus::EnvOverride => Row::ready_ok(
+            "secrets",
+            "DIFFLORE_MASTER_KEY override (32-byte hex)".to_owned(),
+        ),
+        MasterKeyStorageStatus::KeyringReady => {
+            Row::ready_ok("secrets", "OS keyring master key".to_owned())
+        }
+        MasterKeyStorageStatus::KeyringWillCreate => Row::ready_ok(
+            "secrets",
+            "OS keyring available | master key will be created on first secret".to_owned(),
+        ),
+        MasterKeyStorageStatus::KeyringInvalid(error) => Row {
+            severity: Severity::Optional,
+            status: Status::Err,
+            label: "secrets",
+            value: "OS keyring entry invalid".to_owned(),
+            hints: vec![
+                format!("stored master key is not a valid 32-byte hex key: {error}"),
+                "re-authenticate cloud/provider credentials after repairing the keyring entry"
+                    .to_owned(),
+            ],
+            repair: None,
+        },
+        MasterKeyStorageStatus::LocalFallback {
+            keyring_error,
+            keyseed,
+        } => local_fallback_secrets_row(keyring_error, keyseed),
+        MasterKeyStorageStatus::CiRequiresExplicitKey { keyring_error } => Row {
+            severity: Severity::Optional,
+            status: Status::Err,
+            label: "secrets",
+            value: "OS keyring unavailable on CI".to_owned(),
+            hints: vec![
+                format!("keyring error: {}", short_detail(keyring_error)),
+                "set DIFFLORE_MASTER_KEY=<64-char-hex> for CI/headless secret storage".to_owned(),
+            ],
+            repair: None,
+        },
+    }
+}
+
+fn local_fallback_secrets_row(keyring_error: &str, keyseed: &KeyseedStatus) -> Row {
+    let (status, value) = match keyseed {
+        KeyseedStatus::Present {
+            permissions_ok: Some(true),
+            ..
+        } => (
+            Status::Warn,
+            "local fallback | keyseed present (0600)".to_owned(),
+        ),
+        KeyseedStatus::Present {
+            permissions_ok: Some(false),
+            ..
+        } => (
+            Status::Warn,
+            "local fallback | keyseed present (permissions need repair)".to_owned(),
+        ),
+        KeyseedStatus::Present { .. } => {
+            (Status::Warn, "local fallback | keyseed present".to_owned())
+        }
+        KeyseedStatus::Missing { .. } => (
+            Status::Warn,
+            "local fallback | keyseed will be created on first secret".to_owned(),
+        ),
+        KeyseedStatus::Invalid { .. } => {
+            (Status::Err, "local fallback | keyseed invalid".to_owned())
+        }
+        KeyseedStatus::Unreadable { .. } => (
+            Status::Err,
+            "local fallback | keyseed unreadable".to_owned(),
+        ),
+        KeyseedStatus::Unavailable { .. } => (
+            Status::Err,
+            "local fallback | keyseed unavailable".to_owned(),
+        ),
+    };
+    let mut hints = vec![
+        format!("OS keyring unavailable: {}", short_detail(keyring_error)),
+        "fallback secrets are derived from a persisted 32-byte random keyseed".to_owned(),
+    ];
+    hints.extend(keyseed_hints(keyseed));
+    Row {
+        severity: Severity::Optional,
+        status,
+        label: "secrets",
+        value,
+        hints,
+        repair: None,
+    }
+}
+
+fn keyseed_hints(status: &KeyseedStatus) -> Vec<String> {
+    match status {
+        KeyseedStatus::Present { path, .. } => vec![format!("keyseed: {}", path.display())],
+        KeyseedStatus::Missing { path } => {
+            vec![format!("will create {} with mode 0600", path.display())]
+        }
+        KeyseedStatus::Invalid { path, error, .. }
+        | KeyseedStatus::Unreadable { path, error, .. } => {
+            vec![format!("{}: {}", path.display(), short_detail(error))]
+        }
+        KeyseedStatus::Unavailable { error } => vec![short_detail(error)],
+    }
+}
+
+fn short_detail(detail: &str) -> String {
+    const MAX: usize = 140;
+    let first = detail.lines().next().unwrap_or(detail).trim();
+    let mut chars = first.chars();
+    let truncated: String = chars.by_ref().take(MAX).collect();
+    if chars.next().is_none() {
+        first.to_owned()
+    } else {
+        format!("{truncated}...")
+    }
 }
 
 fn project_db_row(probe: &ProjectDbProbe) -> Row {
@@ -143,7 +256,7 @@ fn project_db_row(probe: &ProjectDbProbe) -> Row {
             label: "project db",
             value: "no memory indexed".to_owned(),
             hints: vec![
-                "recall returns nothing without memory: seed the corpus first".to_owned(),
+                "recall returns nothing without memory: import review history first".to_owned(),
                 "difflore status   (shows the shortest local path for this repo)".to_owned(),
                 "difflore import-reviews --max-prs 50".to_owned(),
             ],
@@ -197,16 +310,16 @@ fn project_db_row(probe: &ProjectDbProbe) -> Row {
 
     let (value, import_cmd) = match repo_full_name {
         Some(repo) => (
-            format!("0 memories for {repo} · {total_rules} on this machine"),
+            format!("0 memories for {repo} | {total_rules} on this machine"),
             format!("difflore import-reviews --repo {repo}"),
         ),
         None => (
-            format!("{total_rules} memories on this machine · no GitHub repo detected"),
+            format!("{total_rules} memories on this machine | no supported repo remote detected"),
             "difflore status".to_owned(),
         ),
     };
     let mut hints = vec![
-        "no current-repo memory is ready; doctor will not show unrelated repo proof here"
+        "no current-repo memory is ready; doctor will not show unrelated repo activity here"
             .to_owned(),
         "difflore status   (shows the repo-scoped value path)".to_owned(),
     ];
@@ -232,17 +345,17 @@ fn project_db_row(probe: &ProjectDbProbe) -> Row {
     }
 }
 
-fn mcp_row(snapshot: &mcp_install::McpStatusSnapshot) -> Row {
+fn mcp_row(snapshot: &installer::McpStatusSnapshot) -> Row {
     let installed: Vec<&str> = snapshot
         .clients
         .iter()
-        .filter(|c| matches!(c.state, mcp_install::InstallState::Installed))
+        .filter(|c| matches!(c.state, installer::InstallState::Installed))
         .map(|c| c.name)
         .collect();
     let conflicting_clients: Vec<&str> = snapshot
         .clients
         .iter()
-        .filter(|c| matches!(c.state, mcp_install::InstallState::Conflict))
+        .filter(|c| matches!(c.state, installer::InstallState::Conflict))
         .map(|c| c.name)
         .collect();
     let conflicts = conflicting_clients.len();
@@ -253,27 +366,27 @@ fn mcp_row(snapshot: &mcp_install::McpStatusSnapshot) -> Row {
             c.detected
                 && matches!(
                     c.state,
-                    mcp_install::InstallState::NotInstalled | mcp_install::InstallState::Unknown
+                    installer::InstallState::NotInstalled | installer::InstallState::Unknown
                 )
         })
         .map(|c| c.name.to_owned())
         .collect();
     let record_state = snapshot.canonical_record.state;
-    let record_ok = matches!(record_state, mcp_install::CanonicalRecordState::Present);
+    let record_ok = matches!(record_state, installer::CanonicalRecordState::Present);
     let diagnosis_hints = mcp_diagnosis_hints(snapshot.diagnosis.as_ref(), &installed);
     let runtime_state = snapshot.runtime_probe.as_ref().map(|probe| probe.state);
     if matches!(
         runtime_state,
-        Some(mcp_install::RuntimeProbeState::Failed | mcp_install::RuntimeProbeState::Timeout)
+        Some(installer::RuntimeProbeState::Failed | installer::RuntimeProbeState::Timeout)
     ) {
         let runtime_label = match runtime_state {
-            Some(mcp_install::RuntimeProbeState::Failed) => "runtime failed",
-            Some(mcp_install::RuntimeProbeState::Timeout) => "runtime timeout",
+            Some(installer::RuntimeProbeState::Failed) => "runtime failed",
+            Some(installer::RuntimeProbeState::Timeout) => "runtime timeout",
             _ => "runtime unavailable",
         };
         return Row {
             severity: Severity::Blocker,
-            status: if matches!(runtime_state, Some(mcp_install::RuntimeProbeState::Timeout)) {
+            status: if matches!(runtime_state, Some(installer::RuntimeProbeState::Timeout)) {
                 Status::Warn
             } else {
                 Status::Err
@@ -298,7 +411,7 @@ fn mcp_row(snapshot: &mcp_install::McpStatusSnapshot) -> Row {
         // gate), the agent path is still working for those clients —
         // demote to Optional/Warn so the header doesn't tell the user
         // their core value is blocked when it isn't.
-        let runtime_healthy = matches!(runtime_state, Some(mcp_install::RuntimeProbeState::Ok),);
+        let runtime_healthy = matches!(runtime_state, Some(installer::RuntimeProbeState::Ok),);
         let some_clients_ok = !installed.is_empty();
         let (severity, status) = if runtime_healthy && some_clients_ok {
             (Severity::Blocker, Status::Warn)
@@ -334,7 +447,7 @@ fn mcp_row(snapshot: &mcp_install::McpStatusSnapshot) -> Row {
                 format!("0 installed · {} detected", drift.len())
             },
             hints: vec![
-                "agents can recall team memory once wired; CLI commands work either way".to_owned(),
+                "agents can request team rules once wired; CLI commands work either way".to_owned(),
                 "difflore init".to_owned(),
             ]
             .into_iter()
@@ -396,7 +509,7 @@ fn format_mcp_conflict_value(installed: &[&str], conflicting_clients: &[&str]) -
 }
 
 fn mcp_diagnosis_hints(
-    diagnosis: Option<&mcp_install::McpStatusDiagnosis>,
+    diagnosis: Option<&installer::McpStatusDiagnosis>,
     installed: &[&str],
 ) -> Vec<String> {
     let Some(diagnosis) = diagnosis else {
@@ -426,14 +539,12 @@ fn mcp_diagnosis_hints(
     hints
 }
 
-const fn mcp_canonical_record_state_label(
-    state: mcp_install::CanonicalRecordState,
-) -> &'static str {
+const fn mcp_canonical_record_state_label(state: installer::CanonicalRecordState) -> &'static str {
     match state {
-        mcp_install::CanonicalRecordState::Missing => "missing",
-        mcp_install::CanonicalRecordState::Present => "present",
-        mcp_install::CanonicalRecordState::Stale => "stale",
-        mcp_install::CanonicalRecordState::Conflict => "conflict",
+        installer::CanonicalRecordState::Missing => "missing",
+        installer::CanonicalRecordState::Present => "present",
+        installer::CanonicalRecordState::Stale => "stale",
+        installer::CanonicalRecordState::Conflict => "conflict",
     }
 }
 
@@ -493,22 +604,20 @@ fn cloud_row(probe: &CloudProbe) -> Row {
     match probe {
         CloudProbe::LoggedIn { plan, team_name } => {
             let suffix = match team_name.as_deref() {
-                Some(team) => format!(" · team: {team}"),
+                Some(team) => format!(" | team: {team}"),
                 None => String::new(),
             };
-            // Embedding-aware plan line. Free shows that managed embedding
-            // has a plan cap, but avoids printing an exact number here
-            // because the default doctor row has no fresh cap/usage cache.
-            // Cap hits themselves are surfaced by the embedder row and
-            // doctor report from activity_stream telemetry.
+            // Free notes the managed-embedding cap but prints no exact number
+            // (the default doctor row has no fresh cap/usage cache; cap hits
+            // are surfaced by the embedder row from telemetry).
             let embedding_suffix = if plan.eq_ignore_ascii_case("free") {
-                " · managed embedding cap · upgrade or embeddings setup"
+                " | managed embedding cap | upgrade or embeddings setup"
             } else {
-                " · unlimited embedding"
+                " | unlimited embedding"
             };
             Row::ready_ok(
                 "cloud",
-                format!("logged in · plan: {plan}{suffix}{embedding_suffix}"),
+                format!("logged in | plan: {plan}{suffix}{embedding_suffix}"),
             )
         }
         CloudProbe::NotLoggedIn => Row {
@@ -517,7 +626,7 @@ fn cloud_row(probe: &CloudProbe) -> Row {
             label: "cloud",
             value: "not logged in".to_owned(),
             hints: vec![
-                "log in to enable team sync, dashboard, and cloud extractions".to_owned(),
+                "log in to enable team sync, dashboard, and uploaded review analysis".to_owned(),
                 "difflore cloud login".to_owned(),
             ],
             repair: None,
@@ -565,18 +674,22 @@ impl RecentEmbeddingDegradation {
 }
 
 fn recent_embedding_degradation(
-    events: &[difflore_core::activity_stream::ActivityEvent],
+    events: &[difflore_core::observability::activity_stream::ActivityEvent],
 ) -> RecentEmbeddingDegradation {
     let mut summary = RecentEmbeddingDegradation::default();
     for event in events {
         match &event.payload {
-            difflore_core::activity_stream::ActivityPayload::EmbeddingFallback { reason } => {
+            difflore_core::observability::activity_stream::ActivityPayload::EmbeddingFallback {
+                reason,
+            } => {
                 summary.fallback_count += 1;
                 if summary.latest_reason.is_none() {
                     summary.latest_reason = Some(reason.clone());
                 }
             }
-            difflore_core::activity_stream::ActivityPayload::EmbedCapReached { .. } => {
+            difflore_core::observability::activity_stream::ActivityPayload::EmbedCapReached {
+                ..
+            } => {
                 summary.cap_count += 1;
             }
             _ => {}
@@ -597,7 +710,7 @@ fn embedder_row_from_kind(
                     severity: Severity::Optional,
                     status: Status::Warn,
                     label: "embedder",
-                    value: "cloud-managed · semantic search configured · recent keyword fallback"
+                    value: "cloud-managed | semantic search configured | recent keyword fallback"
                         .to_owned(),
                     hints: vec![
                         format!("recent embedding degradation: {}", recent.summary()),
@@ -610,7 +723,7 @@ fn embedder_row_from_kind(
                     repair: None,
                 };
             }
-            Row::ready_ok("embedder", "cloud-managed · semantic search".to_owned())
+            Row::ready_ok("embedder", "cloud-managed | semantic search".to_owned())
         }
         ActiveEmbedderKind::Byok { provider_host, .. } => {
             let host = provider_host.clone();
@@ -620,7 +733,7 @@ fn embedder_row_from_kind(
                     status: Status::Warn,
                     label: "embedder",
                     value: format!(
-                        "BYOK · {host} · semantic search configured · recent keyword fallback"
+                        "BYOK | {host} | semantic search configured | recent keyword fallback"
                     ),
                     hints: vec![
                         format!("recent embedding degradation: {}", recent.summary()),
@@ -632,18 +745,18 @@ fn embedder_row_from_kind(
                     repair: None,
                 };
             }
-            Row::ready_ok("embedder", format!("BYOK · {host} · semantic search"))
+            Row::ready_ok("embedder", format!("BYOK | {host} | semantic search"))
         }
         ActiveEmbedderKind::Sha1 => Row {
             severity: Severity::Optional,
             status: Status::Warn,
             label: "embedder",
-            value: "semantic search: off · using fast keyword matching".to_owned(),
+            value: "semantic recall: local keyword fallback".to_owned(),
             hints: vec![
-                "recall still works; semantic search is optional".to_owned(),
-                "difflore cloud login".to_owned(),
-                "or bring your own embedding provider".to_owned(),
-                "difflore embeddings setup".to_owned(),
+                "recall still works, but match quality may be lower than semantic vectors"
+                    .to_owned(),
+                "free semantic recall: difflore cloud login".to_owned(),
+                "advanced/BYOK: difflore embeddings setup".to_owned(),
             ],
             repair: None,
         },
@@ -668,9 +781,9 @@ fn embedder_row_from_diagnostics(
         _ => "index is out of date",
     };
     let value = if diag.vector_lane_available {
-        format!("semantic index needs attention · {display_reason}")
+        format!("semantic index needs attention | {display_reason}")
     } else {
-        format!("semantic index is paused · {display_reason}")
+        format!("semantic index is paused | {display_reason}")
     };
     let repair_hint = match reason {
         "provider_fallback" => {
@@ -799,7 +912,6 @@ fn render_rows(rows: &[Row], snapshot_block: &str) -> String {
             continue;
         }
         if wrote_any_section {
-            // Blank line between sections so the headings breathe.
             out.push('\n');
         }
         wrote_any_section = true;
@@ -813,17 +925,13 @@ fn render_rows(rows: &[Row], snapshot_block: &str) -> String {
             render_row_into(&mut out, row);
         }
     }
-    // "What we've learned" preview — skipped entirely when the corpus
-    // is empty (helper returns ""), so the doctor surface for a fresh
-    // install is unchanged.
     if !snapshot_block.is_empty() {
         out.push_str(snapshot_block);
     }
     out.push_str(&format!("{}\n", style::pewter(RULE)));
 
-    // Footer: section-style `Next` per the redesign brief. The single
-    // line under it is the highest-priority blocker's repair command,
-    // or the canonical "now what?" command when nothing's blocking.
+    // Footer: the highest-priority blocker's repair command, or the canonical
+    // "now what?" command when nothing's blocking.
     let next_blocker = rows
         .iter()
         .find(|r| r.severity == Severity::Blocker && r.repair.is_some());
@@ -867,11 +975,13 @@ fn render_row_into(out: &mut String, row: &Row) {
 mod tests {
     use super::{
         Severity, Status, embedder_row_from_diagnostics, embedder_row_from_kind,
-        recent_embedding_degradation,
+        recent_embedding_degradation, secrets_row,
     };
-    use difflore_core::activity_stream::{ActivityEvent, ActivityPayload};
     use difflore_core::context::EmbeddingDiagnostics;
     use difflore_core::context::embedding::ActiveEmbedderKind;
+    use difflore_core::infra::crypto::{KeyseedStatus, MasterKeyStorageStatus};
+    use difflore_core::observability::activity_stream::{ActivityEvent, ActivityPayload};
+    use std::path::PathBuf;
 
     fn assert_ready_ok(row: &super::Row, label: &'static str) {
         assert_eq!(row.label, label);
@@ -885,6 +995,66 @@ mod tests {
 
     fn no_recent() -> super::RecentEmbeddingDegradation {
         super::RecentEmbeddingDegradation::default()
+    }
+
+    #[test]
+    fn secrets_row_reports_keyring_ready() {
+        let row = secrets_row(&MasterKeyStorageStatus::KeyringReady);
+        assert_ready_ok(&row, "secrets");
+        assert!(row.value.contains("OS keyring"), "value: {}", row.value);
+    }
+
+    #[test]
+    fn secrets_row_warns_for_local_fallback_with_keyseed() {
+        let row = secrets_row(&MasterKeyStorageStatus::LocalFallback {
+            keyring_error: "secret service unavailable".to_owned(),
+            keyseed: KeyseedStatus::Present {
+                path: PathBuf::from("/tmp/difflore/keyseed"),
+                permissions_ok: Some(true),
+            },
+        });
+
+        assert_eq!(row.label, "secrets");
+        assert!(matches!(row.severity, Severity::Optional));
+        assert!(matches!(row.status, Status::Warn));
+        assert!(
+            row.value.contains("keyseed present"),
+            "value: {}",
+            row.value
+        );
+        assert!(
+            row.hints.iter().any(|hint| hint.contains("32-byte random")),
+            "hints: {:?}",
+            row.hints
+        );
+        assert!(
+            row.hints
+                .iter()
+                .any(|hint| hint.contains("/tmp/difflore/keyseed")),
+            "hints: {:?}",
+            row.hints
+        );
+    }
+
+    #[test]
+    fn secrets_row_errors_for_invalid_local_keyseed() {
+        let row = secrets_row(&MasterKeyStorageStatus::LocalFallback {
+            keyring_error: "secret service unavailable".to_owned(),
+            keyseed: KeyseedStatus::Invalid {
+                path: PathBuf::from("/tmp/difflore/keyseed"),
+                error: "expected 64 lowercase hex characters".to_owned(),
+                permissions_ok: Some(true),
+            },
+        });
+
+        assert_eq!(row.label, "secrets");
+        assert!(matches!(row.severity, Severity::Optional));
+        assert!(matches!(row.status, Status::Err));
+        assert!(
+            row.value.contains("keyseed invalid"),
+            "value: {}",
+            row.value
+        );
     }
 
     #[test]
@@ -941,7 +1111,7 @@ mod tests {
         let row = embedder_row_from_kind(&kind, &no_recent());
         assert_ready_ok(&row, "embedder");
         assert!(
-            row.value.starts_with("BYOK · api.openai.com"),
+            row.value.starts_with("BYOK | api.openai.com"),
             "value: {}",
             row.value
         );
@@ -962,7 +1132,7 @@ mod tests {
         assert!(matches!(row.status, Status::Warn));
         assert!(
             row.value
-                .contains("BYOK · embed.example.com · semantic search configured"),
+                .contains("BYOK | embed.example.com | semantic search configured"),
             "value: {}",
             row.value
         );
@@ -1011,10 +1181,9 @@ mod tests {
 
     #[test]
     fn embedder_row_surfaces_force_rebuild_for_profile_mismatch() {
-        // A profile/dimension mismatch is exactly the case the force-rebuild
-        // command recovers: the lazy `recall --diff` refresh is freshness-gated
-        // and can skip a same-count inconsistency, so doctor must point users at
-        // `difflore embeddings rebuild` here.
+        // A profile/dimension mismatch needs force-rebuild: the lazy
+        // `recall --diff` refresh is freshness-gated and can skip a same-count
+        // inconsistency, so doctor must point at `difflore embeddings rebuild`.
         let row = embedder_row_from_diagnostics(&EmbeddingDiagnostics {
             active_profile: "cloud:text-embedding-3-small:1536".to_owned(),
             index_profile: Some("sha1:local:128".to_owned()),
@@ -1056,7 +1225,7 @@ mod tests {
         };
         let row = embedder_row_from_kind(&kind, &no_recent());
         assert!(
-            row.value.contains("BYOK · embed.example.com"),
+            row.value.contains("BYOK | embed.example.com"),
             "value: {}",
             row.value
         );
@@ -1070,12 +1239,12 @@ mod tests {
         assert!(matches!(row.severity, Severity::Optional));
         assert!(matches!(row.status, Status::Warn));
         assert!(
-            row.value.contains("semantic search: off"),
+            row.value.contains("local keyword fallback"),
             "value: {}",
             row.value
         );
         assert!(
-            row.hints.iter().any(|h| h.contains("semantic search")),
+            row.hints.iter().any(|h| h.contains("match quality")),
             "hints: {:?}",
             row.hints
         );

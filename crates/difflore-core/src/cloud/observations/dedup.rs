@@ -14,10 +14,10 @@ pub fn event_content_hash(event: &ObservationEvent) -> String {
     out
 }
 
-/// Decide whether an observed `file_path` is in scope for a rule whose
-/// `file_patterns_json` is a JSON glob array. Absent / empty / `[]`
-/// patterns are universal. Malformed JSON or an unbuildable glob set
-/// drop the rule: attribution must not credit an unproven match.
+/// Whether `file_path` is in scope for a rule whose `file_patterns_json`
+/// is a JSON glob array. Absent/empty/`[]` patterns are universal.
+/// Malformed JSON or an unbuildable glob set drops the rule, so
+/// attribution never credits an unproven match.
 pub(super) fn file_patterns_match(file_patterns_json: Option<&str>, file_path: &str) -> bool {
     glob_match(file_patterns_json, file_path, GlobErrorPolicy::Drop)
 }

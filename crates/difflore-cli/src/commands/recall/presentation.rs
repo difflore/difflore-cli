@@ -1,10 +1,8 @@
 //! Recall presentation: `--json` payload construction, human/markdown
 //! rendering, and diagnostic formatting.
 //!
-//! This is the "how do we show it" half of `difflore recall`. The data these
-//! functions render is gathered by the sibling `retrieval` module; the shared
-//! result types and orchestration live in the parent `mod.rs`. These functions
-//! must keep `recall --json` and the text output byte-identical.
+//! The "how do we show it" half of `difflore recall`; data is gathered by the
+//! sibling `retrieval` module, shared types and orchestration live in `mod.rs`.
 
 use difflore_core::context::types::PastVerdictScope;
 
@@ -12,7 +10,7 @@ use crate::style::{self, sym};
 
 use super::{
     CloudRecallResult, DiagnosticStep, LocalRecallResult, LocalRuleHit, RecallDiagnostics,
-    recall_subject, source_label, strict_file_pattern_match, truncate_one_line,
+    recall_subject, source_label, strict_pattern_match_any_file, truncate_one_line,
 };
 
 pub(super) fn render_cross_repo_starter_human(hits: &[LocalRuleHit], file: &str) {
@@ -40,8 +38,6 @@ pub(super) fn render_cross_repo_starter_human(hits: &[LocalRuleHit], file: &str)
             style::title(&hit.title),
             style::emerald(&format!("\u{21aa} from {source}")),
         );
-        // Show the same bad→fix snippets here so a cold-start repo's starter
-        // suggestions read as concretely as in-scope recall.
         render_hit_examples(hit, "     ");
     }
     println!();
@@ -73,13 +69,13 @@ pub(super) fn cross_repo_starter_json(hits: &[LocalRuleHit]) -> serde_json::Valu
 
 pub(super) fn local_rules_json(
     local: &LocalRecallResult,
-    queried_file: Option<&str>,
+    scope_files: &[String],
 ) -> serde_json::Value {
     serde_json::json!({
         "rulesIndexed": local.rules_indexed,
         "repoFullName": local.repo_full_name,
         "fileScopeFallback": local.file_scope_fallback,
-        "results": local.matches.iter().map(|hit| local_rule_hit_json(hit, queried_file)).collect::<Vec<_>>(),
+        "results": local.matches.iter().map(|hit| local_rule_hit_json(hit, scope_files)).collect::<Vec<_>>(),
     })
 }
 
@@ -89,10 +85,11 @@ pub(super) fn local_rules_json(
 /// (bad/good/description straight from `rule_examples`), and the
 /// `check`/`trigger` fields. Before this, an agent consuming recall could only
 /// see headlines with the bodies NULL; now it sees the actual team memory.
-pub(super) fn local_rule_hit_json(
-    hit: &LocalRuleHit,
-    queried_file: Option<&str>,
-) -> serde_json::Value {
+///
+/// `scope_files` is the strict-match scope (the queried file, or every
+/// changed file for `--diff`); `strictFileMatch` is true when the rule's
+/// patterns cover ANY of them — the same semantics retrieval scoped by.
+pub(super) fn local_rule_hit_json(hit: &LocalRuleHit, scope_files: &[String]) -> serde_json::Value {
     let mut value = serde_json::json!({
         "skillId": hit.id,
         "title": hit.title,
@@ -104,7 +101,7 @@ pub(super) fn local_rule_hit_json(
         "preview": hit.preview,
         "bad": hit.bad,
         "fix": hit.fix,
-        "strictFileMatch": strict_file_pattern_match(&hit.file_patterns, queried_file),
+        "strictFileMatch": strict_pattern_match_any_file(&hit.file_patterns, scope_files),
     });
     if let Some(rendered) = hit.body.as_ref()
         && let Some(object) = value.as_object_mut()
@@ -178,24 +175,24 @@ pub(super) fn render_zero_match_compact_human(diagnostics: &RecallDiagnostics) {
         .iter()
         .any(|cause| cause.code == "local_corpus_empty");
     let message = if repo_scope_missing {
-        "No review memory matched because this checkout has no GitHub origin/upstream remote."
+        "No team rules matched because this checkout has no supported origin/upstream git remote."
     } else if local_corpus_empty {
-        "No review memory matched because this repo has no local rules yet."
+        "No team rules matched because this repo has no local rules yet."
     } else {
-        "No review memory matched this query or file scope."
+        "No team rules matched this query or file scope."
     };
     println!("  {} {message}", style::danger(sym::ERR));
 
     let next = if repo_scope_missing {
         DiagnosticStep {
             command: Some("git remote -v".to_owned()),
-            message: "add or check a GitHub remote so DiffLore can scope memory to this repo"
+            message: "add or check a supported git remote so DiffLore can scope rules to this repo"
                 .to_owned(),
         }
     } else if local_corpus_empty {
         DiagnosticStep {
             command: Some("difflore import-reviews --max-prs 50".to_owned()),
-            message: "seed local review memory from recent PR reviews".to_owned(),
+            message: "seed local team rules from recent PR reviews".to_owned(),
         }
     } else {
         diagnostics
@@ -205,7 +202,7 @@ pub(super) fn render_zero_match_compact_human(diagnostics: &RecallDiagnostics) {
             .cloned()
             .unwrap_or(DiagnosticStep {
                 command: Some("difflore status".to_owned()),
-                message: "inspect memory readiness".to_owned(),
+                message: "inspect rule readiness".to_owned(),
             })
     };
     println!(
@@ -219,12 +216,13 @@ pub(super) fn render_local_recall_human(
     local: &LocalRecallResult,
     intent: &str,
     file: Option<&str>,
+    scope_files: &[String],
     verbose: bool,
 ) {
     if local.matches.is_empty() {
         let subject = recall_subject(intent);
         println!(
-            "  {} No local memories matched for {subject}.",
+            "  {} No local rules matched for {subject}.",
             style::danger(sym::ERR),
         );
         if let Some(file) = file {
@@ -238,7 +236,7 @@ pub(super) fn render_local_recall_human(
             // No repo scope -> empty by design, not an empty corpus. Steer to the
             // remote rather than import-reviews (which can't help without a scope).
             println!(
-                "  {} Local recall needs a GitHub remote for repo-scoped memory: {}",
+                "  {} Local recall needs a supported git remote for repo-scoped rules: {}",
                 style::pewter(sym::TIP),
                 style::cmd("git remote -v"),
             );
@@ -250,7 +248,7 @@ pub(super) fn render_local_recall_human(
             );
         } else {
             println!(
-                "  {} Local corpus has {} rule{} for this repo; try a broader query or inspect status: {}",
+                "  {} Local memory has {} rule{} for this repo; try a broader query or inspect status: {}",
                 style::pewter(sym::TIP),
                 local.rules_indexed,
                 if local.rules_indexed == 1 { "" } else { "s" },
@@ -263,7 +261,7 @@ pub(super) fn render_local_recall_human(
     println!(
         "{}",
         style::ok(&format!(
-            "Top {} local memories for {} · file={} repo={}",
+            "Top {} local rules for {} | file={} repo={}",
             local.matches.len(),
             recall_subject(intent),
             file.unwrap_or("(none)"),
@@ -279,7 +277,7 @@ pub(super) fn render_local_recall_human(
             style::emerald(&format!("rank={:.2}", hit.rank_score)),
             style::pewter(&format!("raw={:.3}", hit.raw_score)),
         );
-        if strict_file_pattern_match(&hit.file_patterns, file) {
+        if strict_pattern_match_any_file(&hit.file_patterns, scope_files) {
             println!(
                 "       {} strict file match via {}",
                 style::pewter("why:"),
@@ -291,8 +289,8 @@ pub(super) fn render_local_recall_human(
             .as_deref()
             .filter(|repo| !repo.trim().is_empty())
             .map_or_else(
-                || "review evidence".to_owned(),
-                |repo| format!("\u{2190} learned from {repo}"),
+                || "review history".to_owned(),
+                |repo| format!("learned from {repo}"),
             );
         println!("       {} {}", style::pewter("source:"), source);
         // The bad→fix pair is the felt value: it makes real recall as sharp as
@@ -312,7 +310,7 @@ pub(super) fn render_local_recall_human(
     println!(
         "  {}",
         style::pewter(
-            "local SQLite rules/index only; Cloud review memory is appended separately when available"
+            "local SQLite rules/index only; Cloud PR review rules are appended separately when available"
         ),
     );
 }
@@ -348,7 +346,7 @@ pub(super) fn render_cloud_recall_human(
 ) {
     if !recall.logged_in {
         println!(
-            "  {} Cloud review memory skipped: not logged in. Local recall above works offline; login only appends imported PR review memory: {}",
+            "  {} Cloud PR review rules skipped: not logged in. Local recall above works offline; login only appends imported PR review rules: {}",
             style::pewter(sym::BULLET),
             style::cmd("difflore cloud login"),
         );
@@ -356,7 +354,7 @@ pub(super) fn render_cloud_recall_human(
     }
     let Some(repo) = recall.repo_full_name.as_deref() else {
         println!(
-            "  {} Cloud review memory skipped: no GitHub repo remote detected. Local recall above is still usable.",
+            "  {} Cloud PR review rules skipped: no supported repo remote detected. Local recall above is still usable.",
             style::pewter(sym::BULLET),
         );
         return;
@@ -364,11 +362,11 @@ pub(super) fn render_cloud_recall_human(
     if recall.verdicts.is_empty() {
         let subject = recall_subject(intent);
         println!(
-            "  {} No cloud review memories matched for {subject}.",
+            "  {} No cloud PR review rules matched for {subject}.",
             style::danger(sym::ERR),
         );
         println!(
-            "  {} repo: {} · scope: {}",
+            "  {} repo: {} | scope: {}",
             style::pewter(sym::BULLET),
             style::pewter(repo),
             recall.scope,
@@ -381,7 +379,7 @@ pub(super) fn render_cloud_recall_human(
             );
         }
         let seed_hint = if recall.scope == PastVerdictScope::Team.as_str() {
-            "Import PR reviews or sync team review memory to seed Cloud team recall"
+            "Import PR reviews or sync source-backed team rules to seed Cloud recall"
         } else {
             "Import PR reviews to seed Cloud Free personal recall"
         };
@@ -397,7 +395,7 @@ pub(super) fn render_cloud_recall_human(
     println!(
         "{}",
         style::ok(&format!(
-            "Top {} cloud review memories for {} · file={} repo={} scope={}",
+            "Top {} cloud review memories for {} | file={} repo={} scope={}",
             recall.verdicts.len(),
             recall_subject(intent),
             file.unwrap_or("(none)"),

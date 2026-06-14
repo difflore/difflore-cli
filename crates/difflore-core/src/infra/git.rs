@@ -2,12 +2,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::errors::CoreError;
-use crate::models::{
-    DiffContentRecord, DiffHunkRecord, GitBranchRecord, GitBranchesInput, GitCheckoutPRInput,
-    GitCommitInput, GitCreatePRInput, GitDiffInput, GitFileStatusRecord, GitPRResult, GitPushInput,
-    GitStatusInput, GitStatusRecord,
+use crate::domain::models::{
+    DiffContentRecord, DiffHunkRecord, GitBranchRecord, GitBranchesInput, GitCommitInput,
+    GitDiffInput, GitFileStatusRecord, GitStatusInput, GitStatusRecord,
 };
+use crate::error::CoreError;
 
 fn run_git(project_path: &str, args: &[&str]) -> crate::Result<String> {
     let output = std::process::Command::new("git")
@@ -291,12 +290,11 @@ pub async fn branches(input: GitBranchesInput) -> crate::Result<Vec<GitBranchRec
     Ok(rows)
 }
 
-/// CLI2-2: reject a revision/ref that git could misparse as an OPTION (argument
-/// injection). Values are already passed as argv (so there is no SHELL
-/// injection), but git still parses a leading-`-` arg as a flag, so a cloud- or
-/// PR-supplied ref like `--upload-pack=…` could smuggle a dangerous git flag.
-/// Legitimate git revisions never begin with `-` and never contain control
-/// characters, so refusing those is safe and closes the vector.
+/// Reject a revision/ref that git could misparse as an OPTION (argument
+/// injection). Values are passed as argv (no shell injection), but git parses a
+/// leading-`-` arg as a flag, so a cloud-/PR-supplied ref like `--upload-pack=…`
+/// could smuggle a dangerous git flag. Legitimate revisions never begin with
+/// `-` and never contain control characters, so refusing those closes the vector.
 pub fn reject_option_like_revision(value: &str, what: &str) -> crate::Result<()> {
     if value.starts_with('-') {
         return Err(CoreError::Validation(format!(
@@ -316,8 +314,8 @@ pub async fn diff(input: GitDiffInput) -> crate::Result<Vec<DiffContentRecord>> 
     if input.staged.unwrap_or(false) {
         args.push("--cached".into());
     }
-    // CLI2-2: validate the user/cloud-supplied revisions before handing them to
-    // git so an option-looking ref can't be parsed as a flag.
+    // Validate the user/cloud-supplied revisions before handing them to git so
+    // an option-looking ref can't be parsed as a flag.
     if let Some(ref a) = input.ref1 {
         reject_option_like_revision(a, "diff revision")?;
         args.push(a.clone());
@@ -369,76 +367,6 @@ pub async fn commit(input: GitCommitInput) -> crate::Result<()> {
     Ok(())
 }
 
-/// NOTE: git:changed events are driven by frontend mutation invalidation
-/// (useGitPush onSettled), not emitted from the backend.
-pub async fn push(input: GitPushInput) -> crate::Result<()> {
-    run_git(&input.project_path, &["push"])?;
-    Ok(())
-}
-
-pub async fn create_pr(input: GitCreatePRInput) -> crate::Result<GitPRResult> {
-    which::which("gh")
-        .map_err(|_| CoreError::Internal("GitHub CLI (gh) is not installed".into()))?;
-
-    let mut args = vec![
-        "pr".to_owned(),
-        "create".to_owned(),
-        "--title".to_owned(),
-        input.title,
-    ];
-    if let Some(body) = input.body {
-        args.push("--body".to_owned());
-        args.push(body);
-    }
-    if let Some(base) = input.base {
-        args.push("--base".to_owned());
-        args.push(base);
-    }
-
-    let output = std::process::Command::new("gh")
-        .args(&args)
-        .current_dir(&input.project_path)
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(CoreError::Internal(format!("gh error: {stderr}")));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let url = if stdout.starts_with("http") {
-        Some(stdout)
-    } else {
-        stdout
-            .lines()
-            .find(|l| l.starts_with("http"))
-            .map(ToOwned::to_owned)
-    };
-
-    Ok(GitPRResult { url })
-}
-
-pub async fn checkout_pr(input: GitCheckoutPRInput) -> crate::Result<()> {
-    which::which("gh")
-        .map_err(|_| CoreError::Internal("GitHub CLI (gh) is not installed".into()))?;
-
-    let pr_number = input
-        .pr_number
-        .ok_or_else(|| CoreError::Internal("pr_number is required".into()))?;
-
-    let output = std::process::Command::new("gh")
-        .args(["pr", "checkout", &pr_number.to_string()])
-        .current_dir(&input.project_path)
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(CoreError::Internal(format!("gh error: {stderr}")));
-    }
-
-    Ok(())
-}
-
 /// Parse a GitHub remote URL into `owner/repo`.
 ///
 /// Accepts HTTPS and SSH forms:
@@ -467,6 +395,221 @@ pub fn parse_github_remote_url(url: &str) -> Option<String> {
     }
 }
 
+fn normalize_repo_scope_segments(
+    value: &str,
+    min_segments: usize,
+    max_segments: Option<usize>,
+) -> Option<String> {
+    let value = value.trim().trim_end_matches('/').trim_end_matches(".git");
+    let parts: Vec<&str> = value.split('/').map(str::trim).collect();
+    if parts.len() < min_segments || max_segments.is_some_and(|max| parts.len() > max) {
+        return None;
+    }
+    if parts.iter().any(|part| {
+        part.is_empty()
+            || *part == "."
+            || *part == ".."
+            || !part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+    }) {
+        return None;
+    }
+    Some(parts.join("/").to_ascii_lowercase())
+}
+
+fn hosted_remote_parts(url: &str) -> Option<(&str, &str)> {
+    let url = url.trim().trim_end_matches('/');
+    if let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    {
+        let (host, path) = rest.split_once('/')?;
+        return Some((host, path));
+    }
+    if let Some(rest) = url.strip_prefix("ssh://git@") {
+        let (host, path) = rest.split_once('/')?;
+        return Some((host, path));
+    }
+    if let Some(rest) = url.strip_prefix("git@") {
+        let (host, path) = rest.split_once(':')?;
+        return Some((host, path));
+    }
+    None
+}
+
+fn gitlab_host_allowed(host: &str, configured_gitlab_hosts: &[String]) -> bool {
+    let Ok(host) = crate::ingest::gitlab::auth::normalize_gitlab_host(host) else {
+        return false;
+    };
+    host == crate::ingest::gitlab::auth::DEFAULT_GITLAB_HOST
+        || configured_gitlab_hosts.iter().any(|configured| {
+            crate::ingest::gitlab::auth::normalize_gitlab_host(configured)
+                .is_ok_and(|configured| configured == host)
+        })
+}
+
+/// Canonicalize a GitLab repo namespace with the host dimension preserved.
+///
+/// GitHub keeps the legacy `owner/repo` scope. GitLab must not: `gitlab.com`
+/// and self-managed instances can share the same namespace path, so their
+/// canonical key is `host/group/project`.
+pub fn canonical_gitlab_repo_scope(host: &str, repo_path: &str) -> Option<String> {
+    let host = crate::ingest::gitlab::auth::normalize_gitlab_host(host).ok()?;
+
+    let repo_path = repo_path
+        .trim()
+        .trim_end_matches('/')
+        .trim_end_matches(".git");
+    if let Some((first, rest)) = repo_path.split_once('/')
+        && first.contains('.')
+    {
+        let embedded_host = crate::ingest::gitlab::auth::normalize_gitlab_host(first).ok()?;
+        if embedded_host != host {
+            return None;
+        }
+        let path = normalize_repo_scope_segments(rest, 2, None)?;
+        if path.split('/').any(|segment| segment == "-") {
+            return None;
+        }
+        return Some(format!("{host}/{path}"));
+    }
+
+    let normalized = normalize_repo_scope_segments(repo_path, 2, None)?;
+    if normalized.split('/').any(|segment| segment == "-") {
+        return None;
+    }
+    Some(format!("{host}/{normalized}"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RepoScope(String);
+
+impl RepoScope {
+    pub fn github(repo_full_name: &str) -> Option<Self> {
+        normalize_repo_scope_segments(repo_full_name, 2, Some(2)).map(Self)
+    }
+
+    pub fn gitlab(host: &str, repo_path: &str) -> Option<Self> {
+        canonical_gitlab_repo_scope(host, repo_path).map(Self)
+    }
+
+    pub fn canonical(value: &str) -> Option<Self> {
+        normalize_canonical_repo_scope(value).map(Self)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Display for RepoScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl AsRef<str> for RepoScope {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+pub fn canonical_source_repo(
+    provider: crate::ingest::provider::ReviewProvider,
+    provider_host: Option<&str>,
+    repo_full_name: &str,
+) -> Option<RepoScope> {
+    match provider {
+        crate::ingest::provider::ReviewProvider::Github => RepoScope::github(repo_full_name),
+        crate::ingest::provider::ReviewProvider::Gitlab => {
+            RepoScope::gitlab(provider_host?, repo_full_name)
+        }
+    }
+}
+
+/// Parse a supported hosted git remote URL into DiffLore's repo scope.
+///
+/// GitHub remotes keep the historical two-segment `owner/repo` contract.
+/// GitLab remotes preserve the host dimension (`host/group/project`) so rules
+/// from GitHub, gitlab.com, and self-managed GitLab instances cannot collide.
+#[deprecated(note = "use parse_repo_remote_url_with_gitlab_hosts; pass configured GitLab hosts")]
+pub fn parse_repo_remote_url(url: &str) -> Option<String> {
+    parse_repo_remote_url_with_gitlab_hosts(url, &[])
+}
+
+pub fn parse_repo_remote_url_with_gitlab_hosts(
+    url: &str,
+    configured_gitlab_hosts: &[String],
+) -> Option<String> {
+    if let Some(repo) = parse_github_remote_url(url) {
+        return Some(repo);
+    }
+    let (host, path) = hosted_remote_parts(url)?;
+    if host.eq_ignore_ascii_case("github.com") {
+        return None;
+    }
+    if !gitlab_host_allowed(host, configured_gitlab_hosts) {
+        return None;
+    }
+    canonical_gitlab_repo_scope(host, path)
+}
+
+/// Normalize a provider-neutral repo scope string or supported git remote URL.
+#[deprecated(note = "use normalize_repo_scope_with_gitlab_hosts; pass configured GitLab hosts")]
+pub fn normalize_repo_scope(value: &str) -> Option<String> {
+    normalize_repo_scope_with_gitlab_hosts(value, &[])
+}
+
+pub fn normalize_repo_scope_with_gitlab_hosts(
+    value: &str,
+    configured_gitlab_hosts: &[String],
+) -> Option<String> {
+    if let Some(repo) = parse_repo_remote_url_with_gitlab_hosts(value, configured_gitlab_hosts) {
+        return Some(repo);
+    }
+    let value = value.trim().trim_end_matches('/').trim_end_matches(".git");
+    if let Some(repo) = normalize_repo_scope_segments(value, 2, Some(2)) {
+        return Some(repo);
+    }
+    let (host, path) = value.split_once('/')?;
+    let host = crate::ingest::gitlab::auth::normalize_gitlab_host(host).ok()?;
+    if !host.contains('.') || !gitlab_host_allowed(&host, configured_gitlab_hosts) {
+        return None;
+    }
+    canonical_gitlab_repo_scope(&host, path)
+}
+
+/// Normalize a repo-scope key that already came from DiffLore storage or a
+/// prior trusted detection step.
+///
+/// This intentionally differs from [`normalize_repo_scope`]: it accepts
+/// host-prefixed canonical GitLab keys for self-managed instances without
+/// consulting the auth DB. We only use it after the host dimension has already
+/// been materialized, never to guess a provider from an arbitrary remote URL.
+pub fn normalize_canonical_repo_scope(value: &str) -> Option<String> {
+    let value = value.trim().trim_end_matches('/').trim_end_matches(".git");
+    if let Some(normalized) = normalize_repo_scope_segments(value, 2, Some(2)) {
+        let (owner, _) = normalized.split_once('/')?;
+        return (!owner.contains('.')).then_some(normalized);
+    }
+
+    let (host, path) = value.split_once('/')?;
+    let host = crate::ingest::gitlab::auth::normalize_gitlab_host(host).ok()?;
+    if !host.contains('.') || host == "github.com" {
+        return None;
+    }
+    let path = normalize_repo_scope_segments(path, 2, None)?;
+    if path.split('/').any(|segment| segment == "-") {
+        return None;
+    }
+    Some(format!("{host}/{path}"))
+}
+
 /// Normalize a GitHub `owner/repo` string or supported GitHub remote URL.
 ///
 /// Runtime memory scoping accepts explicit MCP `repo_full_name` values as
@@ -477,22 +620,40 @@ pub fn normalize_github_repo_full_name(value: &str) -> Option<String> {
     if let Some(repo) = parse_github_remote_url(value) {
         return Some(repo);
     }
-    let value = value.trim().trim_end_matches('/').trim_end_matches(".git");
-    let mut parts = value.split('/');
-    let owner = parts.next()?.trim();
-    let repo = parts.next()?.trim();
-    if owner.is_empty() || repo.is_empty() || parts.next().is_some() {
-        return None;
-    }
-    Some(format!("{owner}/{repo}").to_ascii_lowercase())
+    normalize_repo_scope_segments(value, 2, Some(2))
 }
 
-/// Best-effort `owner/repo` detection from local Git remotes.
+/// Best-effort repo-scope detection from local Git remotes.
 ///
 /// Returns remotes in priority order, currently `origin` first (the repo
 /// users can safely push/write outcomes to), then `upstream` as legacy
 /// provenance metadata. Runtime rule recall uses the primary repo only;
 /// upstream is not a cross-project widening signal.
+#[deprecated(note = "use detect_repo_full_names_with_gitlab_hosts; pass configured GitLab hosts")]
+pub fn detect_repo_full_names(project_path: &str) -> Vec<String> {
+    detect_repo_full_names_with_gitlab_hosts(project_path, &[])
+}
+
+pub fn detect_repo_full_names_with_gitlab_hosts(
+    project_path: &str,
+    configured_gitlab_hosts: &[String],
+) -> Vec<String> {
+    let mut repos = Vec::new();
+    for remote in ["origin", "upstream"] {
+        let Ok(url) = run_git(project_path, &["remote", "get-url", remote]) else {
+            continue;
+        };
+        let Some(repo) = parse_repo_remote_url_with_gitlab_hosts(&url, configured_gitlab_hosts)
+        else {
+            continue;
+        };
+        if !repos.iter().any(|existing| existing == &repo) {
+            repos.push(repo);
+        }
+    }
+    repos
+}
+
 pub fn detect_github_repo_full_names(project_path: &str) -> Vec<String> {
     let mut repos = Vec::new();
     for remote in ["origin", "upstream"] {
@@ -509,7 +670,15 @@ pub fn detect_github_repo_full_names(project_path: &str) -> Vec<String> {
     repos
 }
 
-/// Best-effort primary `owner/repo` detection from `git remote get-url origin`.
+/// Best-effort primary repo-scope detection from local Git remotes.
+#[deprecated(note = "use detect_repo_full_names_with_gitlab_hosts; pass configured GitLab hosts")]
+pub fn detect_repo_full_name(project_path: &str) -> Option<String> {
+    detect_repo_full_names_with_gitlab_hosts(project_path, &[])
+        .into_iter()
+        .next()
+}
+
+/// Best-effort primary GitHub `owner/repo` detection from local Git remotes.
 ///
 /// Returns `None` when not inside a git repo, when the `origin` remote is
 /// missing, or when the remote URL doesn't parse as a GitHub URL. Accepts
@@ -517,9 +686,8 @@ pub fn detect_github_repo_full_names(project_path: &str) -> Vec<String> {
 ///   `https://github.com/owner/repo(.git)?`
 ///   `git@github.com:owner/repo(.git)?`
 ///
-/// Used by `run_review` to scope past-verdict recall to THIS repo's rules
-/// (slogan: "understands your repo better"). Non-fatal — callers return no repo-scoped
-/// recall when detection fails.
+/// Used by `run_review` to scope past-verdict recall to THIS repo's rules.
+/// Non-fatal — callers return no repo-scoped recall when detection fails.
 pub fn detect_github_repo_full_name(project_path: &str) -> Option<String> {
     detect_github_repo_full_names(project_path)
         .into_iter()
@@ -552,9 +720,9 @@ mod detect_tests {
 
     #[test]
     fn reject_option_like_revision_blocks_argument_injection() {
-        // CLI2-2: option-looking revisions are refused (a real ref never starts
-        // with '-' and never carries control characters), so a cloud-/PR-supplied
-        // ref can't smuggle a git flag like `--upload-pack=…`.
+        // Option-looking revisions are refused (a real ref never starts with '-'
+        // and never carries control characters), so a cloud-/PR-supplied ref
+        // can't smuggle a git flag like `--upload-pack=…`.
         assert!(reject_option_like_revision("--upload-pack=evil", "ref").is_err());
         assert!(reject_option_like_revision("-foo", "ref").is_err());
         assert!(reject_option_like_revision("--output=/tmp/x", "ref").is_err());
@@ -579,6 +747,60 @@ mod detect_tests {
     }
 
     #[test]
+    fn parses_provider_neutral_remote_scopes() {
+        assert_eq!(
+            parse_repo_remote_url_with_gitlab_hosts("https://github.com/vitejs/vite.git", &[])
+                .as_deref(),
+            Some("vitejs/vite")
+        );
+        assert_eq!(
+            parse_repo_remote_url_with_gitlab_hosts(
+                "https://gitlab.com/group/sub/project.git",
+                &[]
+            )
+            .as_deref(),
+            Some("gitlab.com/group/sub/project")
+        );
+        assert_eq!(
+            parse_repo_remote_url_with_gitlab_hosts("git@gitlab.com:Group/Sub/Project.git", &[])
+                .as_deref(),
+            Some("gitlab.com/group/sub/project")
+        );
+        assert_eq!(
+            parse_repo_remote_url_with_gitlab_hosts(
+                "ssh://git@gitlab.corp.example/platform/api.git",
+                &[]
+            )
+            .as_deref(),
+            None
+        );
+        assert_eq!(
+            parse_repo_remote_url_with_gitlab_hosts(
+                "ssh://git@gitlab.corp.example:8443/platform/api.git",
+                &["gitlab.corp.example:8443".to_owned()]
+            )
+            .as_deref(),
+            Some("gitlab.corp.example:8443/platform/api")
+        );
+        assert_eq!(
+            parse_repo_remote_url_with_gitlab_hosts("https://bitbucket.org/acme/app.git", &[]),
+            None
+        );
+        assert_eq!(
+            parse_repo_remote_url_with_gitlab_hosts("https://github.com/owner/repo/extra.git", &[]),
+            None
+        );
+        assert_eq!(
+            parse_repo_remote_url_with_gitlab_hosts("https://example.com/owner", &[]),
+            None
+        );
+        assert_eq!(
+            parse_repo_remote_url_with_gitlab_hosts("https://example.com/owner/../repo", &[]),
+            None
+        );
+    }
+
+    #[test]
     fn normalizes_explicit_github_repo_full_names() {
         assert_eq!(
             normalize_github_repo_full_name("TanStack/router").as_deref(),
@@ -592,6 +814,111 @@ mod detect_tests {
         assert_eq!(
             normalize_github_repo_full_name("https://gitlab.com/a/b"),
             None
+        );
+    }
+
+    #[test]
+    fn normalizes_provider_neutral_repo_scopes() {
+        assert_eq!(
+            normalize_repo_scope_with_gitlab_hosts("GitLab.com/Group/Sub/Project", &[]).as_deref(),
+            Some("gitlab.com/group/sub/project")
+        );
+        assert_eq!(
+            normalize_repo_scope_with_gitlab_hosts("https://gitlab.com/Group/Sub/Project.git", &[])
+                .as_deref(),
+            Some("gitlab.com/group/sub/project")
+        );
+        assert_eq!(
+            normalize_repo_scope_with_gitlab_hosts(
+                "gitlab.corp.example:8443/Group/Sub/Project",
+                &["gitlab.corp.example:8443".to_owned()]
+            )
+            .as_deref(),
+            Some("gitlab.corp.example:8443/group/sub/project")
+        );
+        assert_eq!(
+            normalize_repo_scope_with_gitlab_hosts("Group/Sub/Project", &[]).as_deref(),
+            None
+        );
+        assert_eq!(
+            normalize_repo_scope_with_gitlab_hosts("github.com/owner/repo", &[]).as_deref(),
+            None
+        );
+        assert_eq!(
+            normalize_repo_scope_with_gitlab_hosts(
+                "https://gitlab.com/acme/app/-/merge_requests/1",
+                &[]
+            )
+            .as_deref(),
+            None
+        );
+        assert_eq!(
+            normalize_repo_scope_with_gitlab_hosts("owner", &[]).as_deref(),
+            None
+        );
+        assert_eq!(
+            normalize_repo_scope_with_gitlab_hosts("owner/../repo", &[]).as_deref(),
+            None
+        );
+    }
+
+    #[test]
+    fn normalizes_persisted_canonical_repo_scope_keys() {
+        assert_eq!(
+            normalize_canonical_repo_scope("Owner/Repo").as_deref(),
+            Some("owner/repo")
+        );
+        assert_eq!(
+            normalize_canonical_repo_scope("gitlab.corp.example:8443/Group/Sub/Project").as_deref(),
+            Some("gitlab.corp.example:8443/group/sub/project")
+        );
+        assert_eq!(
+            normalize_canonical_repo_scope("gitlab.com/Group/Project").as_deref(),
+            Some("gitlab.com/group/project")
+        );
+        assert_eq!(
+            normalize_canonical_repo_scope("github.com/owner/repo").as_deref(),
+            None
+        );
+        assert_eq!(
+            normalize_canonical_repo_scope("group/sub/project").as_deref(),
+            None
+        );
+        assert_eq!(
+            normalize_canonical_repo_scope("gitlab.com/acme/app/-/merge_requests/1").as_deref(),
+            None
+        );
+    }
+
+    #[test]
+    fn repo_scope_newtype_canonicalizes_provider_source_repos() {
+        assert_eq!(
+            canonical_source_repo(
+                crate::ingest::provider::ReviewProvider::Github,
+                None,
+                "Owner/Repo"
+            )
+            .as_ref()
+            .map(RepoScope::as_str),
+            Some("owner/repo")
+        );
+        assert_eq!(
+            canonical_source_repo(
+                crate::ingest::provider::ReviewProvider::Gitlab,
+                Some("GitLab.Corp.Example:8443"),
+                "Group/Sub/Project"
+            )
+            .as_ref()
+            .map(RepoScope::as_str),
+            Some("gitlab.corp.example:8443/group/sub/project")
+        );
+        assert!(
+            canonical_source_repo(
+                crate::ingest::provider::ReviewProvider::Gitlab,
+                None,
+                "Group/Sub/Project"
+            )
+            .is_none()
         );
     }
 

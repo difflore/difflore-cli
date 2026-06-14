@@ -24,23 +24,22 @@ use std::time::Duration;
 
 use crate::cloud::client::CloudClient;
 use crate::cloud::outbox::{DEFAULT_STALE_SECONDS, OutboxQueue, drain_outbox};
-use crate::db::init_db;
-use crate::paths;
+use crate::infra::db::init_db;
+use crate::infra::paths;
 
-/// Path of the PID file used by the internal daemon helpers.
-pub fn pid_path() -> Result<PathBuf, String> {
+pub fn pid_path() -> crate::Result<PathBuf> {
     Ok(paths::data_home()?.join("daemon.pid"))
 }
 
-/// Report the daemon liveness state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonStatus {
-    /// A PID file exists and the process is still alive.
-    Running { pid: i32 },
-    /// A PID file exists but no process by that PID responds to
-    /// `kill(pid, 0)`. The file is effectively orphaned.
-    Stale { pid: i32 },
-    /// No PID file found.
+    Running {
+        pid: i32,
+    },
+    /// PID file exists but no process by that PID responds to `kill(pid, 0)`.
+    Stale {
+        pid: i32,
+    },
     NotRunning,
 }
 
@@ -54,7 +53,6 @@ impl DaemonStatus {
     }
 }
 
-/// Probe the PID file + live process without mutating anything.
 pub fn status() -> DaemonStatus {
     let Ok(path) = pid_path() else {
         return DaemonStatus::NotRunning;
@@ -74,11 +72,11 @@ fn read_pid(path: &std::path::Path) -> Option<i32> {
     raw.trim().parse::<i32>().ok()
 }
 
-fn write_pid(path: &std::path::Path, pid: i32) -> Result<(), String> {
+fn write_pid(path: &std::path::Path, pid: i32) -> crate::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create parent: {e}"))?;
     }
-    fs::write(path, pid.to_string()).map_err(|e| format!("write pid: {e}"))
+    fs::write(path, pid.to_string()).map_err(|e| format!("write pid: {e}").into())
 }
 
 fn remove_pid_file(path: &std::path::Path) {
@@ -87,9 +85,8 @@ fn remove_pid_file(path: &std::path::Path) {
 }
 
 #[cfg(unix)]
-/// Signal 0 delivers nothing but still validates the target exists and
-/// we have permission to signal it. Covers SIGTERM check without
-/// actually killing anything. Safe on macOS and Linux.
+/// Signal 0 delivers nothing but still validates the target exists and we
+/// have permission to signal it — a liveness probe that kills nothing.
 fn is_process_alive(pid: i32) -> bool {
     // SAFETY: libc::kill with signal 0 is a classic liveness probe —
     // returns 0 on success, -1 + errno=ESRCH if the PID is gone.
@@ -167,7 +164,7 @@ fn send_kill(pid: i32) -> std::io::Result<()> {
 /// `grace_secs` for the process to exit, then escalates to SIGKILL.
 /// Removes a stale PID file regardless of which path exits. Returns
 /// what actually happened so the CLI can phrase the UX correctly.
-pub async fn stop(grace_secs: u64) -> Result<StopOutcome, String> {
+pub async fn stop(grace_secs: u64) -> crate::Result<StopOutcome> {
     let path = pid_path()?;
     let Some(pid) = read_pid(&path) else {
         return Ok(StopOutcome::NotRunning);
@@ -199,7 +196,6 @@ pub async fn stop(grace_secs: u64) -> Result<StopOutcome, String> {
     Ok(StopOutcome::Killed { pid })
 }
 
-/// What `stop` actually did — useful for UX messages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StopOutcome {
     NotRunning,
@@ -214,7 +210,7 @@ pub enum StopOutcome {
 ///
 /// Safe to call at most once per process: writes its own PID file on
 /// entry and errors out if one already belongs to a live process.
-pub async fn run(tick_interval_secs: u64, batch_size: usize) -> Result<(), String> {
+pub async fn run(tick_interval_secs: u64, batch_size: usize) -> crate::Result<()> {
     let path = pid_path()?;
 
     // Refuse to start a second daemon against the same DIFFLORE_HOME —
@@ -223,7 +219,8 @@ pub async fn run(tick_interval_secs: u64, batch_size: usize) -> Result<(), Strin
         DaemonStatus::Running { pid } => {
             return Err(format!(
                 "another daemon is already running (pid {pid}); stop that process before starting another"
-            ));
+            )
+            .into());
         }
         DaemonStatus::Stale { .. } | DaemonStatus::NotRunning => {}
     }
@@ -259,7 +256,9 @@ pub async fn run(tick_interval_secs: u64, batch_size: usize) -> Result<(), Strin
                 // retry + circuit-breaker state, so logging them here
                 // would be noisy.
                 if let Err(e) = drain_outbox(&queue, &client, batch_size).await {
-                    eprintln!("[difflore.daemon] drain error: {e}");
+                    if crate::infra::env::debug_cloud() {
+                        eprintln!("[difflore.daemon] drain error: {e}");
+                    }
                 }
             }
         }
@@ -270,9 +269,6 @@ pub async fn run(tick_interval_secs: u64, batch_size: usize) -> Result<(), Strin
 }
 
 /// Future that resolves on the first SIGTERM or SIGINT.
-///
-/// Kept separate so `run` stays readable; also makes it testable
-/// through a feature flag if we ever need a synthetic shutdown.
 async fn shutdown_signal_future() {
     #[cfg(unix)]
     {
@@ -327,7 +323,7 @@ mod tests {
     #[test]
     fn status_reports_not_running_when_pid_file_missing() {
         let _g = TEST_SERIAL.blocking_lock();
-        let _ = crate::db::shared_test_home();
+        let _ = crate::infra::db::shared_test_home();
         let path = pid_path().expect("pid path");
         let _ = fs::remove_file(&path);
         assert_eq!(status(), DaemonStatus::NotRunning);
@@ -336,7 +332,7 @@ mod tests {
     #[test]
     fn status_detects_stale_pid_file() {
         let _g = TEST_SERIAL.blocking_lock();
-        let _ = crate::db::shared_test_home();
+        let _ = crate::infra::db::shared_test_home();
         let path = pid_path().expect("pid path");
         let dead_pid = spawn_dead_pid();
         fs::write(&path, dead_pid.to_string()).unwrap();
@@ -356,7 +352,7 @@ mod tests {
     #[tokio::test]
     async fn stop_is_noop_when_not_running() {
         let _g = TEST_SERIAL.lock().await;
-        let _ = crate::db::shared_test_home();
+        let _ = crate::infra::db::shared_test_home();
         let path = pid_path().unwrap();
         let _ = fs::remove_file(&path);
         let outcome = stop(1).await.unwrap();
@@ -366,7 +362,7 @@ mod tests {
     #[tokio::test]
     async fn stop_cleans_stale_pid_file_without_signalling() {
         let _g = TEST_SERIAL.lock().await;
-        let _ = crate::db::shared_test_home();
+        let _ = crate::infra::db::shared_test_home();
         let path = pid_path().unwrap();
         let dead_pid = spawn_dead_pid();
         fs::write(&path, dead_pid.to_string()).unwrap();

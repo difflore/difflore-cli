@@ -19,15 +19,13 @@ use super::outcome::SkipReason;
 /// shell. Lets test scripts opt out without needing a `--no-*` flag.
 pub const SKIP_ENV_VAR: &str = "DIFFLORE_SKIP_POST_INSTALL_SCAN";
 
-/// CI env vars we treat as "not a real user terminal" regardless of tty
-/// state. The list is intentionally short — every entry is an absolute
-/// boolean ("we're in CI"), not a hint. Buildkite/Drone/Travis follow
-/// the same `CI=true` convention so the first check catches them too.
+/// CI env vars we treat as "not a real user terminal" regardless of tty state.
+/// Buildkite/Drone/Travis follow the `CI=true` convention, so the first entry
+/// catches them too.
 const CI_ENV_VARS: &[&str] = &["CI", "GITHUB_ACTIONS", "GITLAB_CI"];
 
-/// Inputs to [`run_guards_with`]. The production [`run_guards`] entry
-/// point fills these from real env + tty checks; tests provide
-/// deterministic fixtures.
+/// Inputs to [`run_guards_with`]. [`run_guards`] fills these from real env +
+/// tty checks; tests provide deterministic fixtures.
 #[derive(Debug, Clone, Copy)]
 pub struct GuardSignals {
     pub stdin_is_tty: bool,
@@ -39,10 +37,8 @@ pub struct GuardSignals {
     pub explicit_skip: bool,
 }
 
-/// Pure decision: do any of the guards trip? Returns the first failing
-/// reason in priority order so the caller can act on it. Priority order
-/// mirrors "blame for the skip" — explicit user skip first, then
-/// "you're in CI", then objective preconditions.
+/// Pure decision: returns the first failing reason in priority order — explicit
+/// user skip first, then CI, then objective preconditions.
 pub const fn run_guards_with(
     signals: GuardSignals,
     non_interactive: bool,
@@ -95,9 +91,8 @@ fn detect_explicit_skip() -> bool {
     }
 }
 
-/// True iff any common CI env var is set to a truthy value. We don't
-/// just check "present" because a vendor that sets `CI=` (empty) should
-/// not trigger; the convention is `CI=true`.
+/// True iff any common CI env var is set to a truthy value. Presence alone
+/// isn't enough: a vendor that sets `CI=` (empty) must not trigger.
 fn detect_ci() -> bool {
     CI_ENV_VARS
         .iter()
@@ -108,9 +103,8 @@ fn is_truthy(v: &str) -> bool {
     matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
 }
 
-/// Cheap "are we in a git repo?" probe. We can't rely on a `.git` dir
-/// because git worktrees use a `.git` *file*. Shelling out to
-/// `git rev-parse` is the canonical answer.
+/// Probe for a git repo via `git rev-parse`. A `.git` dir check is unreliable
+/// because git worktrees use a `.git` file.
 fn is_git_repo(cwd: &Path) -> bool {
     let Ok(output) = Command::new("git")
         .args(["rev-parse", "--is-inside-work-tree"])
@@ -119,16 +113,14 @@ fn is_git_repo(cwd: &Path) -> bool {
     else {
         return false;
     };
-    output.status.success()
-        && String::from_utf8_lossy(&output.stdout).trim() == "true"
+    output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true"
 }
 
-/// True iff `git remote get-url origin` succeeds and the result parses
-/// as a GitHub `owner/repo` slug. We delegate parsing to core so we
-/// stay in sync with `difflore import-reviews`'s own resolution.
+/// True iff the origin remote parses as a GitHub `owner/repo` slug. Parsing is
+/// delegated to core to stay in sync with `difflore import-reviews`.
 fn has_github_remote(cwd: &Path) -> bool {
     let path = cwd.to_string_lossy().into_owned();
-    difflore_core::github_import::detect_repo_from_remote(&path).is_ok()
+    difflore_core::ingest::github::detect_repo_from_remote(&path).is_ok()
 }
 
 #[cfg(test)]
@@ -154,9 +146,7 @@ mod tests {
 
     #[test]
     fn explicit_skip_short_circuits_everything() {
-        // Set every other failure mode too — explicit_skip still wins so
-        // a user who exported the env var never sees the prompt even on
-        // an otherwise-pristine machine.
+        // With every other failure mode set, explicit_skip still wins.
         let mut s = base_signals();
         s.explicit_skip = true;
         s.in_ci = true;
@@ -185,18 +175,12 @@ mod tests {
         // Or stdin is piped.
         let mut s = base_signals();
         s.stdin_is_tty = false;
-        assert_eq!(
-            run_guards_with(s, false),
-            Err(SkipReason::NonInteractive)
-        );
+        assert_eq!(run_guards_with(s, false), Err(SkipReason::NonInteractive));
 
         // Or stdout is piped.
         let mut s = base_signals();
         s.stdout_is_tty = false;
-        assert_eq!(
-            run_guards_with(s, false),
-            Err(SkipReason::NonInteractive)
-        );
+        assert_eq!(run_guards_with(s, false), Err(SkipReason::NonInteractive));
     }
 
     #[test]

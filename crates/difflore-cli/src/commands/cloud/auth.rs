@@ -38,7 +38,9 @@ struct CloudGithubLoginResponse {
 }
 
 fn device_registration_state_path() -> Result<PathBuf, String> {
-    Ok(difflore_core::paths::data_home()?.join(DEVICE_REGISTRATION_FILE))
+    Ok(difflore_core::infra::paths::data_home()
+        .map_err(|e| e.to_string())?
+        .join(DEVICE_REGISTRATION_FILE))
 }
 
 pub(super) fn load_device_registration_state() -> Option<DeviceRegistrationState> {
@@ -144,7 +146,7 @@ pub(super) async fn try_login_dispatch_with_github(
     }
 
     let has_flag = token_flag.as_ref().is_some_and(|s| !s.trim().is_empty());
-    let has_env = difflore_core::env::var(difflore_core::env::DIFFLORE_CLOUD_TOKEN)
+    let has_env = difflore_core::infra::env::var(difflore_core::infra::env::DIFFLORE_CLOUD_TOKEN)
         .is_some_and(|v| !v.trim().is_empty());
     let stdin_piped = !std::io::stdin().is_terminal();
     let stdout_tty = std::io::stdout().is_terminal();
@@ -370,7 +372,7 @@ async fn try_handle_login_with_refresh(
         return Err(
             "Token rejected by cloud (auth probe failed).\n\n  \
              Mint a fresh one by re-running `difflore cloud login` (browser flow).\n  \
-             If the cloud is unreachable, retry later — local CLI features keep working offline.\n  \
+             If the cloud is unreachable, retry later - local CLI features keep working offline.\n  \
              Your previous login (if any) was preserved."
                 .to_owned(),
         );
@@ -448,31 +450,28 @@ async fn try_handle_login_with_refresh(
     if let Some(line) =
         super::agent_usage_pending_upload_line(super::load_agent_usage_summary().await.as_ref())
     {
-        println!("  Proof uploads: {}", style::pewter(&line));
+        println!("  Activity uploads: {}", style::pewter(&line));
     }
 
     println!();
-    // Onboarding bridge. The original close hard-coded `difflore cloud sync`,
-    // which is the right next step only for users joining an existing
-    // team. A first-device-on-a-fresh-team user has nothing to sync —
-    // they need to *create* rules first via import-reviews. Surface both
-    // paths with one line each so the user picks based on their context
-    // without bouncing back to `difflore init` to figure it out.
+    // Surface both onboarding paths: `cloud sync` for users joining an
+    // existing team, `import-reviews` for a first device on a fresh team
+    // that has nothing to sync yet.
     println!("  {} What's next:", style::emerald(style::sym::TIP));
     println!(
         "    {}                {}",
         style::cmd("difflore cloud sync"),
-        style::pewter("# joining a team — pull existing rules"),
+        style::pewter("joining a team - pull existing memories"),
     );
     println!(
         "    {}      {}",
         style::cmd("difflore import-reviews --upload"),
-        style::pewter("# first device — turn PR review history into rules"),
+        style::pewter("first device - turn PR review history into memories"),
     );
     println!(
         "    {}                {}",
         style::cmd("difflore init --check"),
-        style::pewter("# see your full readiness state"),
+        style::pewter("see your full readiness state"),
     );
     Ok(())
 }
@@ -524,7 +523,7 @@ impl BrowserLoginSignals {
 }
 
 fn env_nonempty(key: &str) -> bool {
-    difflore_core::env::var(key).is_some_and(|value| !value.trim().is_empty())
+    difflore_core::infra::env::var(key).is_some_and(|value| !value.trim().is_empty())
 }
 
 const fn browser_login_blocker(

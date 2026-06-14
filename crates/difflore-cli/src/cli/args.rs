@@ -105,22 +105,41 @@ pub(crate) struct SyncCliArgs {
     pub(crate) json: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ImportProviderArg {
+    /// Import PR review history via the GitHub CLI (`gh`).
+    Github,
+    /// Import MR discussions via the GitLab REST API (PAT from `difflore auth gitlab`).
+    Gitlab,
+}
+
 #[derive(Args)]
 pub(crate) struct ImportReviewsCliArgs {
-    /// GitHub repository (owner/repo). Auto-detected from git remote if omitted.
+    /// Repository: GitHub `owner/repo` or GitLab project path
+    /// (`group/project`, subgroups allowed). Auto-detected from git remote if omitted.
     #[arg(long)]
     pub(crate) repo: Option<String>,
 
     /// Pull review history from an upstream repo (e.g. `cli/cli`) and attach
-    /// the imported memory to the local repo. Useful when working from a fork.
+    /// the imported memory to the local repo. Useful when working from a fork. GitHub only.
     #[arg(long, value_name = "OWNER/REPO")]
     pub(crate) from_upstream: Option<String>,
 
-    /// Maximum number of PRs to import.
+    /// Review provider. Auto-detected from the git remote (github.com,
+    /// gitlab.com, or a host stored via `difflore auth gitlab --host`).
+    #[arg(long, value_enum, value_name = "PROVIDER")]
+    pub(crate) provider: Option<ImportProviderArg>,
+
+    /// Self-managed GitLab host (e.g. gitlab.corp.example). Implies `--provider gitlab`.
+    #[arg(long, value_name = "HOST")]
+    pub(crate) gitlab_host: Option<String>,
+
+    /// Maximum number of PRs (GitLab: MRs) to import.
     #[arg(long, default_value_t = 50)]
     pub(crate) max_prs: usize,
 
-    /// Import one specific PR number regardless of merged/open state. Repeat for multiple PRs.
+    /// Import one specific PR number (GitLab: MR IID, the `!N` number) regardless
+    /// of merged/open state. Repeat for multiple PRs.
     #[arg(long = "pr", value_name = "NUMBER")]
     pub(crate) pr_numbers: Vec<i32>,
 
@@ -157,6 +176,44 @@ pub(crate) struct InitCliArgs {
     /// Readiness preview only — never wires agents or runs provider setup.
     #[arg(long)]
     pub(crate) check: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ExportFormatArg {
+    /// `AGENTS.md` at the repo root (cross-agent convention; no engine filter).
+    AgentsMd,
+    /// `CLAUDE.md` at the repo root (only rules enabled for the claude engine).
+    ClaudeMd,
+    /// Both emitters.
+    All,
+}
+
+#[derive(Args)]
+pub(crate) struct ExportCliArgs {
+    /// Target format(s): `agents-md`, `claude-md`, or `all`. Repeatable.
+    #[arg(long, value_enum, value_name = "FORMAT", default_values_t = [ExportFormatArg::All])]
+    pub(crate) format: Vec<ExportFormatArg>,
+
+    /// Print the export plan (create/update/unchanged/skipped) without writing.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+
+    /// Output as JSON.
+    #[arg(long)]
+    pub(crate) json: bool,
+
+    /// Skip Bad/Good example blocks to keep the export small.
+    #[arg(long)]
+    pub(crate) no_examples: bool,
+
+    /// Export local rules only; exclude team/cloud-synced rules.
+    #[arg(long)]
+    pub(crate) local_only: bool,
+
+    /// Cap the export to the first N rules of the deterministic order
+    /// (name, then id). Unlimited when omitted.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+    pub(crate) max_rules: Option<u64>,
 }
 
 #[derive(Args)]

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use std::time::Duration;
 
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 use super::{
     DEFAULT_OPENAI_EMBEDDING_DIM, EMBEDDING_RETRY_DELAYS_MS, Embedder, embedding_http_client,
@@ -9,15 +9,12 @@ use super::{
 };
 
 /// Cloud-managed embedder. POSTs `{ texts: [..] }` to the cloud API's
-/// `/api/embeddings` endpoint, authenticating with the user's existing
-/// CLI session token (same `cloud-auth.db` row that powers
-/// `cloud::client::CloudClient`).
+/// `/api/embeddings` endpoint, authenticating with the user's CLI session token
+/// (the same `cloud-auth.db` row as `cloud::client::CloudClient`).
 ///
-/// This is the happy path for the OSS Free tier — users don't have to
-/// manage an OpenAI key locally; the cloud forwards to its own configured
-/// embedding provider. Failures (network / 401 / 5xx) bubble up as
-/// `CoreError::Internal` so the caller can fall back to local SHA1 after
-/// retry rather than surfacing a hard error.
+/// The Free-tier path: the cloud forwards to its own embedding provider, so
+/// users need no local OpenAI key. Failures (network / 401 / 5xx) bubble up as
+/// `CoreError::Internal` so the caller can fall back to local SHA1 after retry.
 pub struct CloudEmbedder {
     base_url: String,
     token: String,
@@ -145,11 +142,9 @@ impl Embedder for CloudEmbedder {
         }
         if !status.is_success() {
             let body_text = resp.text().await.unwrap_or_default();
-            // 409 with `embed_cap_reached` is the Free-tier rule cap. We
-            // surface it as a typed error so the caller can fall back to
-            // lexical retrieval for this single embed call AND record an
-            // activity event for doctor — `Internal(...)` would lose both
-            // signals.
+            // 409 `embed_cap_reached` is the Free-tier rule cap. Surfaced as a
+            // typed error (not `Internal`) so the caller can fall back to
+            // lexical retrieval for this call and record a doctor activity event.
             if status.as_u16() == 409
                 && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body_text)
                 && parsed.get("code").and_then(|c| c.as_str()) == Some("embed_cap_reached")
@@ -168,8 +163,11 @@ impl Embedder for CloudEmbedder {
                         .unwrap_or(0),
                 )
                 .unwrap_or(u32::MAX);
-                crate::activity_stream::record(
-                    crate::activity_stream::ActivityPayload::EmbedCapReached { cap, used },
+                crate::observability::activity_stream::record(
+                    crate::observability::activity_stream::ActivityPayload::EmbedCapReached {
+                        cap,
+                        used,
+                    },
                 );
                 return Err(CoreError::EmbedCapReached { cap, used });
             }

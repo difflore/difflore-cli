@@ -2,17 +2,12 @@
 #![allow(unsafe_code)]
 //! End-to-end gate test for `DIFFLORE_CAPTURE=false`.
 //!
-//! Lives in its own integration-test binary on purpose: setting an
-//! env var inside a unit test would race with sibling tests in the
-//! same lib-test binary (the existing `cloud::outbox::tests` block
-//! parallel-runs and calls `enqueue` without guarding env state).
-//! Cargo gives every `tests/*.rs` file a dedicated process, and this
-//! file holds exactly one test, so the env mutation cannot leak.
+//! In its own integration-test binary so the env mutation can't race
+//! sibling tests: Cargo gives each `tests/*.rs` a dedicated process, and
+//! this file holds exactly one test.
 //!
-//! Verifies the gate the privacy notice promises: when the env var is
-//! set to the literal `"false"`, `OutboxQueue::enqueue` is a no-op —
-//! no row enters `cloud_outbox`, so the drain pass has nothing to
-//! upload.
+//! Verifies that with the env var set to `"false"`, `OutboxQueue::enqueue`
+//! is a no-op and no row enters `cloud_outbox`.
 
 use difflore_core::cloud::capture::DIFFLORE_CAPTURE_ENV;
 use difflore_core::cloud::outbox::{OutboxQueue, kind};

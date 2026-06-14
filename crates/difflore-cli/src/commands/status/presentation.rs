@@ -1,11 +1,9 @@
 //! Text-mode renderer for `status`. `render_text` builds the full human view
-//! as a `String`; `super::StatusPayload::print_text` is the only place that
-//! prints it.
+//! as a `String`; `super::StatusPayload::print_text` is the only printer.
 //!
-//! This view is for a person deciding what to do next. The release-gate and
-//! evidence vocabulary -- lane classification, production-evidence flags,
-//! per-outcome proof attribution, MCP token accounting -- lives in the
-//! `--json` envelope, not here. Keep this surface plain and value-first.
+//! This view is for a person deciding what to do next. Release-gate vocabulary
+//! (lane classification, readiness flags, per-outcome linkage, MCP token
+//! accounting) lives in the `--json` envelope, not here.
 
 use std::fmt::Write as _;
 
@@ -17,7 +15,7 @@ use super::queries::{
 use super::transform::{CandidatePreview, LaneStatusSummary, NextAction, RepoScopeStatus, plural};
 
 /// One rule that already earned accepted edits -- the most concrete "it works"
-/// signal to show, in plain language and without proof-attribution internals.
+/// signal to show in plain language.
 fn format_top_rule(rule: &ProvenRuleDrilldown) -> String {
     let mut line = format!(
         "{}: {} accepted edit{}",
@@ -42,7 +40,7 @@ fn format_local_hero_evidence(hero: &LocalHeroEvidence) -> Vec<String> {
     } else {
         " (best on this machine)"
     };
-    let mut lines = vec![format!("best local proof{scope_note}: {}", hero.title)];
+    let mut lines = vec![format!("best local memory{scope_note}: {}", hero.title)];
 
     let mut trail = Vec::new();
     if let Some(source) = hero
@@ -69,7 +67,7 @@ fn format_local_hero_evidence(hero: &LocalHeroEvidence) -> Vec<String> {
         .filter(|file| !file.is_empty())
     {
         if let Some(target) = target.as_mut() {
-            let _ = write!(target, " · {file}");
+            let _ = write!(target, " | {file}");
         } else {
             target = Some(format!("used on {file}"));
         }
@@ -83,7 +81,7 @@ fn format_local_hero_evidence(hero: &LocalHeroEvidence) -> Vec<String> {
 
     let real_agent_serves = hero.agent_serves.max(0);
     let mut metrics = format!(
-        "{} accepted edit{} · {} signed diff{} · {} recall{} · {} agent serve{} · ~{} review-minute{} saved",
+        "{} accepted edit{} | {} signed diff{} | {} recall{} | {} ready for agent{} | ~{} review-minute{} saved",
         hero.accepted_edits,
         plural(hero.accepted_edits),
         hero.signed_diff_proofs,
@@ -98,13 +96,17 @@ fn format_local_hero_evidence(hero: &LocalHeroEvidence) -> Vec<String> {
     if hero.strict_agent_serves > 0 {
         let _ = write!(
             metrics,
-            " · {} strict serve{}",
+            " | {} file-matched deliver{}",
             hero.strict_agent_serves,
-            plural(hero.strict_agent_serves)
+            if hero.strict_agent_serves == 1 {
+                "y"
+            } else {
+                "ies"
+            }
         );
     }
     if let Some(rank) = hero.best_recall_rank.filter(|rank| *rank > 0) {
-        let _ = write!(metrics, " · best recall rank #{rank}");
+        let _ = write!(metrics, " | best matched memory #{rank}");
     }
     lines.push(metrics);
 
@@ -138,40 +140,45 @@ fn format_scoped_recall(scope: &RepoScopeStatus) -> String {
     }
 }
 
-fn format_embedding_status(diag: &difflore_core::context::EmbeddingDiagnostics) -> Option<String> {
+fn format_embedding_status(
+    diag: &difflore_core::context::EmbeddingDiagnostics,
+) -> Option<Vec<String>> {
     if diag.degraded {
         let detail = if diag.vector_lane_available {
             "semantic vectors degraded; recall still uses vectors plus file/keyword matching"
         } else {
             "semantic vectors paused; recall still works with file-pattern + keyword matching"
         };
-        return Some(format!(
-            "{detail} · run `difflore embeddings status` or `difflore doctor --report`"
-        ));
+        return Some(vec![
+            detail.to_owned(),
+            format!("check: {}", style::cmd("difflore embeddings status")),
+            format!("diagnose: {}", style::cmd("difflore doctor --report")),
+        ]);
     }
-    // No semantic provider configured at all: the active embedder is the local
-    // SHA1 lexical hash. This is healthy (a SHA1 index matches a SHA1 embedder,
-    // so `degraded == false` and the lane is "available"), but recall is keyword-
-    // only — say so, exactly like `difflore embeddings status` does. Without this
-    // the top-level `status` was SILENT about semantic being off while the
-    // dedicated surface reported "off", an inconsistency a user would hit by
-    // running one command and not the other. Keyed on the active profile (the
-    // same `sha1:` signal `probe_active_embedder` uses) so it fires whether or
-    // not the per-repo index has been built yet.
+    // No semantic provider: the active embedder is the local SHA1 lexical hash.
+    // This is healthy (`degraded == false`, lane available) but recall is
+    // keyword-only, so say so to stay consistent with `difflore embeddings
+    // status`. Keyed on the `sha1:` active profile so it fires whether or not
+    // the per-repo index has been built yet.
     if diag.active_profile.starts_with("sha1:") {
-        return Some(
-            "semantic recall: off · using keyword matching (enable with `difflore embeddings setup` or `difflore cloud login`)".to_owned(),
-        );
+        return Some(vec![
+            "semantic recall: local keyword fallback".to_owned(),
+            format!(
+                "free semantic recall: {}",
+                style::cmd("difflore cloud login")
+            ),
+            format!("advanced/BYOK: {}", style::cmd("difflore embeddings setup")),
+        ]);
     }
     if !diag.vector_lane_available {
-        return Some("semantic recall: off · using keyword fallback".to_owned());
+        return Some(vec!["semantic recall: local keyword fallback".to_owned()]);
     }
     None
 }
 
 /// Plain-English readiness for the selected lane(s). Honors `--lane`
-/// (`all` | `local-beta` | `production-ga`). The full lane classification --
-/// production-evidence flags, release influence, scores -- stays in `--json`.
+/// (`all` | `local-beta` | `production-ga`); the full classification stays in
+/// `--json`.
 #[cfg(test)]
 fn format_readiness(selected_lane: &str, lane_status: &LaneStatusSummary) -> Vec<String> {
     let show_beta = matches!(selected_lane, "all" | "local-beta");
@@ -180,9 +187,9 @@ fn format_readiness(selected_lane: &str, lane_status: &LaneStatusSummary) -> Vec
     if show_beta {
         lines.push(
             if lane_status.local_beta.ready {
-                "beta: ready · local review-memory signal (non-production)"
+                "beta: ready | local review memory is working"
             } else {
-                "beta: not yet · no usable local review-memory signal"
+                "beta: not yet | no usable local review memory yet"
             }
             .to_owned(),
         );
@@ -191,7 +198,7 @@ fn format_readiness(selected_lane: &str, lane_status: &LaneStatusSummary) -> Vec
         lines.push(if lane_status.production_ga.ready {
             "GA: ready".to_owned()
         } else {
-            "GA: not yet · awaiting production release evidence".to_owned()
+            "GA: not yet | awaiting production release readiness".to_owned()
         });
     }
     lines
@@ -223,13 +230,13 @@ pub(super) fn render_text(
         let _ = writeln!(out, "{}", style::ok("Repository"));
         let _ = writeln!(
             out,
-            "  {} no GitHub origin/upstream remote detected",
+            "  {} no supported origin/upstream git remote detected",
             style::warn(sym::WARN)
         );
         let _ = writeln!(out);
     }
 
-    // --- Memory & recall: what a new user needs to understand first. ---
+    // Memory & recall: what a new user needs to understand first.
     let _ = writeln!(out, "{}", style::ok("Memory"));
     let _ = writeln!(
         out,
@@ -249,10 +256,16 @@ pub(super) fn render_text(
     }
     let _ = writeln!(out, "  {bullet} recall: {}", format_scoped_recall(scope));
     if let Some(vectors) = format_embedding_status(embedding) {
-        let _ = writeln!(out, "  {bullet} {vectors}");
+        for (index, line) in vectors.iter().enumerate() {
+            if index == 0 {
+                let _ = writeln!(out, "  {bullet} {line}");
+            } else {
+                let _ = writeln!(out, "    {line}");
+            }
+        }
     }
 
-    // --- Value: concrete, human ROI. Proof attribution stays in --json. ---
+    // Value: concrete, human ROI. Link details stay in --json.
     let _ = writeln!(out);
     let _ = writeln!(
         out,
@@ -261,23 +274,20 @@ pub(super) fn render_text(
     );
     let accepted = local_proof.accepted_proof_signatures + local_proof.accepted_hook_outcomes;
     if accepted > 0 {
-        // Distinguish the proven closed loop (edit accepted after a recalled
-        // memory) from raw accepted edits, so the saved-minutes figure is not
-        // read as fully recall-attributable when it is not.
+        // Distinguish the captured closed loop (edit accepted after a recalled
+        // memory) from raw accepted edits, so saved-minutes isn't read as fully
+        // recall-attributable. Phrase the caveat as the *captured loop* so it
+        // doesn't contradict the `best local memory` line below, which
+        // attributes edits to a rule by file + source overlap.
         let traced = local_proof.accepted_outcomes_linked_to_prior_recall;
-        // Strict closed-loop count: an edit whose accepted proof carries the
-        // prior recall that produced it. Phrase the caveat as the *captured
-        // loop* (not "traced to a recalled memory") so it does not read as a
-        // contradiction of the `best local proof` line below, which legitimately
-        // attributes accepted edits to a recalled rule by file + source overlap.
         let traced_note = if traced > 0 {
-            format!(" · {traced} via a captured recall→edit loop")
+            format!(" | {traced} via captured recall-to-edit loop")
         } else {
-            " · closed recall→edit loop not captured yet".to_owned()
+            " | recall-to-edit loop not captured yet".to_owned()
         };
         let _ = writeln!(
             out,
-            "  {bullet} {accepted} edit{} accepted · ~{} review-minute{} saved{traced_note}",
+            "  {bullet} {accepted} edit{} accepted | ~{} review-minute{} saved{traced_note}",
             plural(accepted),
             local_proof.estimated_saved_review_minutes,
             plural(local_proof.estimated_saved_review_minutes),
@@ -297,7 +307,7 @@ pub(super) fn render_text(
     if local_recall_proof.recall_events > 0 || agent_serves > 0 {
         let _ = writeln!(
             out,
-            "  {bullet} {} recall{} · {} agent serve{}",
+            "  {bullet} {} recall{} | {} ready for agent{}",
             local_recall_proof.recall_events,
             plural(local_recall_proof.recall_events),
             agent_serves,
@@ -317,7 +327,7 @@ pub(super) fn render_text(
         }
     }
 
-    // --- Pending drafts to review (actionable). ---
+    // Pending drafts to review (actionable).
     if !top_candidates.is_empty() {
         let _ = writeln!(out);
         let _ = writeln!(
@@ -352,7 +362,7 @@ pub(super) fn render_text(
             if proof_bits.is_empty() {
                 proof_bits.push(format!("origin: {}", candidate.origin));
             }
-            let _ = writeln!(out, "     {}", style::pewter(&proof_bits.join("  ·  ")));
+            let _ = writeln!(out, "     {}", style::pewter(&proof_bits.join("  |  ")));
             if !candidate.preview.is_empty() {
                 let _ = writeln!(out, "     {}", candidate.preview);
             }
@@ -360,7 +370,7 @@ pub(super) fn render_text(
         }
     }
 
-    // --- Next step. ---
+    // Next step.
     let _ = writeln!(out);
     let missing_repo_scope = scope.repo_full_name.is_none();
     let next_command = if missing_repo_scope {
@@ -369,19 +379,17 @@ pub(super) fn render_text(
         &next.command
     };
     let next_reason = if missing_repo_scope {
-        "add or verify a GitHub origin/upstream remote before repo-scoped recall"
+        "add or verify a supported origin/upstream git remote before repo-scoped recall"
     } else {
         &next.reason
     };
     let _ = writeln!(out, "next: {}", style::cmd(next_command));
     let _ = writeln!(out, "  {}", style::pewter(next_reason));
-    // `proof_path` leads with `next_command`; `next:` above already
-    // shows it. Render only what comes *after* the immediate action so
-    // the sequence doesn't restate its own first step.
+    // `proof_path` leads with `next_command`, already shown by `next:` above;
+    // render only what comes after so the sequence doesn't restate its first
+    // step.
     let path_commands = if missing_repo_scope {
-        std::iter::once("git remote -v")
-            .chain(proof_path.iter().map(String::as_str))
-            .collect::<Vec<_>>()
+        proof_path.iter().map(String::as_str).collect::<Vec<_>>()
     } else {
         proof_path
             .iter()
@@ -396,7 +404,7 @@ pub(super) fn render_text(
         }
     }
 
-    out
+    style::wrap_human_text(&out)
 }
 
 fn top_candidates_heading(
@@ -428,7 +436,7 @@ fn top_candidates_scope_note(
             "current repo {repo} has 0 pending memory drafts; these are not counted as ready for this repo"
         )),
         ("all", None, _) => Some(
-            "no GitHub origin/upstream remote detected; add one for repo-scoped memory guidance"
+            "no supported origin/upstream git remote detected; add one for repo-scoped memory guidance"
                 .to_owned(),
         ),
         _ => None,
@@ -477,7 +485,7 @@ mod tests {
             out,
             "Return 413 for large request bodies: 2 accepted edits from gin-gonic/gin"
         );
-        // No proof-attribution internals leak into the human line.
+        // No linkage internals leak into the human line.
         assert!(!out.contains("memory-use proof"));
         assert!(!out.contains("hook outcome"));
     }
@@ -514,12 +522,12 @@ mod tests {
 
         let lines = format_local_hero_evidence(&hero);
         let out = lines.join("\n");
-        assert!(out.contains("best local proof (best on this machine)"));
+        assert!(out.contains("best local memory (best on this machine)"));
         assert!(out.contains("learned from tanstack/router"));
         assert!(out.contains("used on difflore-fixtures/router#4"));
         assert!(out.contains("5 accepted edits"));
         assert!(out.contains("5 signed diffs"));
-        assert!(out.contains("6 strict serves"));
+        assert!(out.contains("6 file-matched deliveries"));
         assert!(out.contains("not current-repo readiness"));
         assert!(!out.contains("accepted edit proof"));
         assert!(!out.contains("memory-use proof"));
@@ -594,11 +602,13 @@ mod tests {
         assert!(
             format_embedding_status(&degraded)
                 .expect("degraded status")
+                .join("\n")
                 .contains("semantic vectors degraded")
         );
         assert!(
             format_embedding_status(&unavailable)
                 .expect("unavailable status")
+                .join("\n")
                 .contains("semantic vectors paused")
         );
     }
@@ -609,7 +619,7 @@ mod tests {
         // is "healthy" (SHA1 active matches a SHA1 corpus, so not degraded and the
         // vector lane is available), but recall is keyword-only. `status` must say
         // so — silence here is the inconsistency with `embeddings status` (which
-        // reports "semantic search: off") that this branch closes.
+        // reports the same local keyword fallback path) that this branch closes.
         let sha1_healthy = EmbeddingDiagnostics {
             active_profile: "sha1:local:128".to_owned(),
             index_profile: Some("sha1:local:128".to_owned()),
@@ -619,13 +629,15 @@ mod tests {
             vector_lane_available: true,
         };
         let line = format_embedding_status(&sha1_healthy)
-            .expect("SHA1 baseline must surface a keyword-only status line");
+            .expect("SHA1 baseline must surface a keyword-only status line")
+            .join("\n");
         assert!(
-            line.contains("semantic recall: off"),
-            "must report semantic off: {line}"
+            line.contains("semantic recall: local keyword fallback"),
+            "must report local keyword fallback: {line}"
         );
         assert!(
-            line.contains("difflore embeddings setup") && line.contains("difflore cloud login"),
+            line.contains("free semantic recall: difflore cloud login")
+                && line.contains("advanced/BYOK: difflore embeddings setup"),
             "must name the enablement paths: {line}"
         );
 
@@ -718,7 +730,7 @@ mod tests {
         };
         let next = NextAction {
             command: "difflore import-reviews".to_owned(),
-            reason: "seed local memories from past PR reviews".to_owned(),
+            reason: "seed local rules from past PR reviews".to_owned(),
         };
         let embedding = EmbeddingDiagnostics {
             active_profile: "sha1:local:128".to_owned(),
@@ -754,7 +766,7 @@ mod tests {
         let out = render_with_proof(&proof_with(0, 0, 0));
 
         // New user is guided toward the first concrete next step. With no
-        // GitHub origin detected (`repo_scope(None)`), the genuine first step
+        // supported origin detected (`repo_scope(None)`), the genuine first step
         // is to wire up a remote so repo-scoped recall can work at all.
         assert!(out.contains("no accepted edits yet"), "{out}");
         assert!(out.contains("next: "), "{out}");
@@ -768,6 +780,67 @@ mod tests {
     }
 
     #[test]
+    fn render_text_does_not_repeat_missing_repo_next_in_then_path() {
+        let empty_proof = proof_with(0, 0, 0);
+        let empty_recall = LocalRecallProof {
+            window_days: 30,
+            recall_events: 0,
+            recalled_rules: 0,
+        };
+        let empty_serves = LocalMcpRuleServe {
+            window_days: 30,
+            calls: 0,
+            empty_calls: 0,
+            rules_served: 0,
+            strict_matches: 0,
+            estimated_tokens: 0,
+        };
+        let lane_status = LaneStatusSummary {
+            selected_lane: "all".to_owned(),
+            local_beta: lane_readiness("local-beta", false),
+            production_ga: lane_readiness("production-ga", false),
+        };
+        let next = NextAction {
+            command: "difflore import-reviews".to_owned(),
+            reason: "seed local memories from past PR reviews".to_owned(),
+        };
+        let embedding = EmbeddingDiagnostics {
+            active_profile: "sha1:local:128".to_owned(),
+            index_profile: None,
+            profile_match: true,
+            degraded: false,
+            degraded_reason: None,
+            vector_lane_available: true,
+        };
+        let proof_path = vec![
+            "difflore import-reviews".to_owned(),
+            "difflore recall --diff".to_owned(),
+        ];
+        let out = render_text(
+            0,
+            0,
+            0,
+            &repo_scope(None),
+            &empty_proof,
+            &empty_recall,
+            &empty_serves,
+            None,
+            None,
+            "none",
+            &[],
+            &next,
+            &proof_path,
+            "all",
+            &lane_status,
+            &embedding,
+        );
+
+        assert_eq!(out.matches("git remote -v").count(), 1, "{out}");
+        assert!(out.contains("then:"), "{out}");
+        assert!(out.contains("difflore import-reviews"), "{out}");
+    }
+
+    #[test]
     fn value_line_qualifies_recall_traced_edits() {
         // Captured closed loop: surface the proven count alongside the
         // saved-minutes heuristic so it is not over-read as value.
@@ -775,7 +848,7 @@ mod tests {
         assert!(traced.contains("8 edits accepted"), "{traced}");
         assert!(traced.contains("~32 review-minutes saved"), "{traced}");
         assert!(
-            traced.contains("3 via a captured recall→edit loop"),
+            traced.contains("3 via captured recall-to-edit loop"),
             "{traced}"
         );
 
@@ -784,7 +857,7 @@ mod tests {
         let untraced = render_with_proof(&proof_with(5, 0, 20));
         assert!(untraced.contains("5 edits accepted"), "{untraced}");
         assert!(
-            untraced.contains("closed recall→edit loop not captured yet"),
+            untraced.contains("recall-to-edit loop not captured yet"),
             "{untraced}"
         );
     }
@@ -803,7 +876,7 @@ mod tests {
         };
         let next = NextAction {
             command: "difflore import-reviews".to_owned(),
-            reason: "seed local memories from past PR reviews".to_owned(),
+            reason: "seed local rules from past PR reviews".to_owned(),
         };
         let embedding = EmbeddingDiagnostics {
             active_profile: "sha1:local:128".to_owned(),
@@ -835,7 +908,7 @@ mod tests {
             )
         };
 
-        // All lookups empty -> nothing was served -> no inflated serve line.
+        // All lookups empty -> nothing was delivered -> no inflated agent line.
         let all_empty = LocalMcpRuleServe {
             window_days: 30,
             calls: 5,
@@ -845,12 +918,12 @@ mod tests {
             estimated_tokens: 0,
         };
         assert!(
-            !render(&all_empty).contains("agent serve"),
-            "empty MCP lookups must not be reported as serves: {}",
+            !render(&all_empty).contains("ready for agent"),
+            "empty MCP lookups must not be reported as agent-ready: {}",
             render(&all_empty)
         );
 
-        // Five calls, two empty -> three real serves.
+        // Five calls, two empty -> three real agent deliveries.
         let mixed = LocalMcpRuleServe {
             window_days: 30,
             calls: 5,
@@ -860,7 +933,7 @@ mod tests {
             estimated_tokens: 100,
         };
         assert!(
-            render(&mixed).contains("3 agent serves"),
+            render(&mixed).contains("3 ready for agents"),
             "{}",
             render(&mixed)
         );

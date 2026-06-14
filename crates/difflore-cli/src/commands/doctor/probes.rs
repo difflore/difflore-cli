@@ -1,33 +1,27 @@
 //! Doctor data-probing for the default table view.
 //!
-//! Every call into `difflore_core::*` / `crate::mcp_install` / the
-//! `CommandContext` that the default `difflore doctor` table needs is
-//! collected here, decoded into the plain [`Findings`] struct, and
-//! handed to the renderer in `table.rs`. The split keeps the renderer
-//! free of any live data source so it can be exercised against a
-//! hand-built `Findings` value without mocking core.
-//!
-//! Nothing in this module renders: it returns decoded scalars, options
-//! and small plain enums only. The severity / status / hint strings —
-//! i.e. how those findings are presented — live entirely in `table.rs`.
+//! Collects every `difflore_core` / `installer` / `CommandContext` call the
+//! default `difflore doctor` table needs and decodes it into the plain
+//! [`Findings`] struct for `table.rs` to render. Returns only decoded scalars,
+//! options and small enums — severity / status / hint strings live in
+//! `table.rs`.
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use super::memory_snapshot::{self, MemorySnapshot};
-use crate::mcp_install;
+use crate::installer;
 
 /// Everything the readiness table needs, already fetched and decoded.
-/// Construct one with [`gather`]; the renderer (`table.rs`) turns it
-/// into rows without touching any data source.
+/// Construct one with [`gather`].
 pub(crate) struct Findings {
     pub(crate) binary_version: String,
+    pub(crate) master_key_storage: difflore_core::infra::crypto::MasterKeyStorageStatus,
     pub(crate) project_db: ProjectDbProbe,
-    /// Pre-loaded "what the AI has learned" snapshot. Defaulted (and so
-    /// rendered as the empty string) whenever the current repo has no
-    /// ready memory, so no load is issued in that case.
+    /// Pre-loaded "what the AI has learned" snapshot. Defaults (rendering to
+    /// "") when the current repo has no ready memory, so no load is issued.
     pub(crate) memory_snapshot: MemorySnapshot,
-    pub(crate) mcp: mcp_install::McpStatusSnapshot,
+    pub(crate) mcp: installer::McpStatusSnapshot,
     pub(crate) provider: ProviderProbe,
     pub(crate) cloud: CloudProbe,
     pub(crate) embedder: EmbedderProbe,
@@ -52,7 +46,6 @@ pub(crate) enum ProviderProbe {
     DbUnavailable,
     /// Provider config was unreadable; carries the error text.
     Error(String),
-    /// No providers configured at all.
     NoneConfigured,
     /// Providers exist; the resolved active provider's name.
     Active(String),
@@ -69,12 +62,11 @@ pub(crate) enum CloudProbe {
     },
 }
 
-/// Raw embedder inputs. The `table.rs` shapers (`embedder_row_from_kind`
-/// / `embedder_row_from_diagnostics`) decode the activity tail and pick
-/// the final row, so this carries only fetched values.
+/// Raw embedder inputs; the `table.rs` shapers decode the activity tail and
+/// pick the final row.
 pub(crate) struct EmbedderProbe {
     pub(crate) kind: difflore_core::context::embedding::ActiveEmbedderKind,
-    pub(crate) activity_tail: Vec<difflore_core::activity_stream::ActivityEvent>,
+    pub(crate) activity_tail: Vec<difflore_core::observability::activity_stream::ActivityEvent>,
     /// `None` when the per-project index DB could not be opened.
     pub(crate) diagnostics: Option<difflore_core::context::EmbeddingDiagnostics>,
 }
@@ -104,20 +96,19 @@ pub(crate) enum GitHookState {
 /// fully decoded [`Findings`]. The single entry point for `table.rs`.
 pub(crate) async fn gather(ctx: &crate::runtime::CommandContext) -> Findings {
     let pool = Some(&ctx.db);
-    // Keep probe side effects in display order; daemon stale-pid cleanup
-    // should happen near the row that reports it.
+    // Probe side effects run in display order (e.g. daemon stale-pid cleanup
+    // near the row that reports it).
     let project_db = probe_project_db(pool, &ctx.project).await;
     let binary_version = env!("CARGO_PKG_VERSION").to_owned();
-    let mcp = mcp_install::collect_status_snapshot_with_runtime_probe();
+    let master_key_storage = difflore_core::infra::crypto::probe_master_key_storage();
+    let mcp = installer::collect_status_snapshot_with_runtime_probe();
     let provider = probe_provider(pool).await;
     let cloud = probe_cloud(ctx).await;
     let embedder = probe_embedder().await;
     let git_hooks = probe_git_hook_state();
     let daemon = probe_daemon();
-    // Snapshot of "what the AI has actually learned". Loaded best-effort
-    // — `ctx.db` always exists, but the corpus may be empty, so the load
-    // is only issued when the current repo has ready memory; otherwise
-    // we hand the renderer a default snapshot (which renders to "").
+    // Load the "what the AI has learned" snapshot only when the repo has
+    // ready memory; otherwise hand the renderer a default (renders to "").
     let memory_snapshot = if project_db.repo_memory_ready {
         memory_snapshot::load_for_repo(&ctx.db, &project_db.repo_aliases).await
     } else {
@@ -125,6 +116,7 @@ pub(crate) async fn gather(ctx: &crate::runtime::CommandContext) -> Findings {
     };
     Findings {
         binary_version,
+        master_key_storage,
         project_db: project_db.probe,
         memory_snapshot,
         mcp,
@@ -136,9 +128,8 @@ pub(crate) async fn gather(ctx: &crate::runtime::CommandContext) -> Findings {
     }
 }
 
-/// Internal carrier so the snapshot load (a probe concern) can be gated
-/// on repo readiness without leaking `repo_memory_ready` / `repo_aliases`
-/// into the renderer.
+/// Carrier so the snapshot load can be gated on repo readiness without
+/// leaking `repo_memory_ready` / `repo_aliases` into the renderer.
 struct ProjectDbResult {
     probe: ProjectDbProbe,
     repo_memory_ready: bool,
@@ -168,7 +159,7 @@ async fn probe_project_db(
         Ok(s) => s.total,
         Err(_) => 0,
     };
-    let counts = difflore_core::db::table_counts(pool, &["review_items"]).await;
+    let counts = difflore_core::infra::db::table_counts(pool, &["review_items"]).await;
     let mut prs_imported: i64 = 0;
     for (_, result) in counts {
         if let Ok(n) = result {
@@ -192,8 +183,11 @@ async fn probe_project_db(
         };
     }
 
-    let detected_repo_remotes =
-        difflore_core::git::detect_github_repo_full_names(&project.to_string_lossy());
+    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
+    let detected_repo_remotes = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+        &project.to_string_lossy(),
+        &configured_gitlab_hosts,
+    );
     let repo_remotes =
         difflore_core::skills::expand_repo_scopes_with_source_aliases(pool, &detected_repo_remotes)
             .await
@@ -230,7 +224,7 @@ async fn probe_project_db(
 }
 
 fn count_rules_for_repo(
-    rules: &[difflore_core::models::SkillRecord],
+    rules: &[difflore_core::domain::models::SkillRecord],
     source_repos: &HashMap<String, Option<String>>,
     repo: Option<&str>,
 ) -> i64 {
@@ -259,7 +253,7 @@ async fn probe_provider(pool: Option<&difflore_core::SqlitePool>) -> ProviderPro
     let Some(pool) = pool else {
         return ProviderProbe::DbUnavailable;
     };
-    match difflore_core::providers::list(pool).await {
+    match difflore_core::infra::providers::list(pool).await {
         Ok(providers) if providers.is_empty() => ProviderProbe::NoneConfigured,
         Ok(providers) => {
             let active = providers
@@ -288,17 +282,14 @@ async fn probe_cloud(ctx: &crate::runtime::CommandContext) -> CloudProbe {
     }
 }
 
-/// Embedder readiness probe. Delegates to `probe_active_embedder` (single
-/// source of truth) so doctor always agrees with the runtime resolver.
-/// Doesn't run a live embed call so it stays cheap and never imports network
-/// failures into `doctor` output. The local keyword fallback is deterministic
-/// and offline, but less semantic than cloud-managed or BYOK embeddings.
-/// It also consults the cheap per-project embedding profile
-/// diagnostic so the default table does not show green over a dead vector
-/// lane. `doctor --report` owns the measured self-recall number.
+/// Embedder readiness probe. Delegates to `probe_active_embedder` so doctor
+/// agrees with the runtime resolver, and consults the per-project embedding
+/// profile diagnostic so the table doesn't show green over a dead vector lane.
+/// Runs no live embed call, so it stays cheap and imports no network failures
+/// (`doctor --report` owns the measured self-recall number).
 async fn probe_embedder() -> EmbedderProbe {
     let kind = difflore_core::context::embedding::probe_active_embedder().await;
-    let activity_tail = difflore_core::activity_stream::tail(200);
+    let activity_tail = difflore_core::observability::activity_stream::tail(200);
     let diagnostics = match difflore_core::context::index_db::get_pool_for_cwd().await {
         Ok(index_pool) => Some(
             difflore_core::context::gather_embedding_diagnostics_with_activity(&index_pool).await,
@@ -317,28 +308,26 @@ fn probe_daemon() -> DaemonProbe {
     // there's nothing for the user to debug, so we clean it on read
     // and report "off" with an informational status instead of a
     // permanent Warn that just trains users to ignore Optional hints.
-    let mut daemon_status = difflore_core::daemon::status();
-    if let difflore_core::daemon::DaemonStatus::Stale { .. } = daemon_status
-        && let Ok(pid_path) = difflore_core::daemon::pid_path()
+    let mut daemon_status = difflore_core::infra::daemon::status();
+    if let difflore_core::infra::daemon::DaemonStatus::Stale { .. } = daemon_status
+        && let Ok(pid_path) = difflore_core::infra::daemon::pid_path()
         && std::fs::remove_file(&pid_path).is_ok()
     {
-        daemon_status = difflore_core::daemon::DaemonStatus::NotRunning;
+        daemon_status = difflore_core::infra::daemon::DaemonStatus::NotRunning;
     }
     match daemon_status {
-        difflore_core::daemon::DaemonStatus::Running { .. } => DaemonProbe::Running,
+        difflore_core::infra::daemon::DaemonStatus::Running { .. } => DaemonProbe::Running,
         // Only reached when the cleanup attempt failed (locked file etc.).
-        difflore_core::daemon::DaemonStatus::Stale { .. } => DaemonProbe::StaleCleanupFailed,
-        difflore_core::daemon::DaemonStatus::NotRunning => DaemonProbe::NotRunning,
+        difflore_core::infra::daemon::DaemonStatus::Stale { .. } => DaemonProbe::StaleCleanupFailed,
+        difflore_core::infra::daemon::DaemonStatus::NotRunning => DaemonProbe::NotRunning,
     }
 }
 
 fn probe_git_hook_state() -> GitHookState {
-    let cwd = difflore_core::paths::current_project_root();
-    // Resolve the git dir via `git rev-parse --git-dir` so worktrees
-    // (where `.git` is a *file* pointing at `<main>/.git/worktrees/<name>`)
-    // see the right hooks/ location. A naive `cwd.join(".git/hooks")`
-    // hits a file-as-directory dead end and reports "no hook" even when
-    // A prior hook installer may have put one there.
+    let cwd = difflore_core::infra::paths::current_project_root();
+    // Resolve the git dir via `git rev-parse --git-dir` so worktrees (where
+    // `.git` is a file, not a dir) find the right hooks/ location. A naive
+    // `cwd.join(".git/hooks")` would dead-end and report "no hook".
     let output = std::process::Command::new("git")
         .args(["rev-parse", "--git-dir"])
         .current_dir(&cwd)

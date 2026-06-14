@@ -76,10 +76,8 @@ pub fn base_confidence_for(id: &str) -> Option<f64> {
     origin(id).map(|o| o.base_confidence)
 }
 
-/// Recommended display priority: evidence-bearing origins
-/// (`pr_review`, `extracted`) sort first, everything else after.
-/// Used by `rules list --view recommended` and any other
-/// "high-value first" surface.
+/// Recommended display priority: evidence-bearing origins (`pr_review`,
+/// `extracted`) sort first, everything else after.
 pub fn sort_order(origin: &str) -> u8 {
     match origin {
         "pr_review" | "extracted" => 0,
@@ -87,9 +85,8 @@ pub fn sort_order(origin: &str) -> u8 {
     }
 }
 
-/// Distribution-histogram ordering for the rule mix UI in the TUI:
-/// frequency / value mixed, finer-grained than `sort_order`. Stable
-/// ordering across releases is the contract — callers rely on this for
+/// Distribution-histogram ordering for the TUI rule-mix chart, finer-grained
+/// than `sort_order`. Must stay stable across releases: callers rely on it for
 /// chart layout.
 pub fn distribution_sort_key(origin: &str) -> u8 {
     match origin {
@@ -114,15 +111,10 @@ pub fn group_by_origin<'a, R: crate::domain::rule_view::RuleView>(
     out
 }
 
-/// Generic HTTP / network / timeout error classifier shared by
-/// domain-specific formatters (`cli::format_cloud_err`,
-/// `cli::format_github_import_err`). Returns a user-facing message;
-/// keeps the raw error in the output on the unrecognised path so triage
-/// info isn't lost.
-///
-/// Domain-specific framings (cloud BYOK guidance, GitHub auth hints)
-/// belong in the cli wrappers — this layer must not bake product
-/// language for a specific surface.
+/// Generic HTTP / network / timeout error classifier shared by domain-specific
+/// formatters. Returns a user-facing message and retains the raw error on the
+/// unrecognised path so triage info isn't lost. Domain-specific framings (cloud
+/// BYOK guidance, GitHub auth hints) belong in the cli wrappers, not here.
 pub fn format_api_error(label: &str, raw: &str) -> String {
     let lower = raw.to_ascii_lowercase();
     if raw.contains("API error 401") || raw.contains("status\":401") {
@@ -174,9 +166,7 @@ mod tests {
 
     #[test]
     fn all_origins_have_valid_fields() {
-        // Iterate ORIGINS directly so adding a new entry is auto-covered;
-        // a hand-maintained list silently skipped new origins until a
-        // reviewer noticed and updated the test.
+        // Iterate ORIGINS directly so a new entry is auto-covered.
         assert!(!ORIGINS.is_empty(), "ORIGINS taxonomy is empty");
         for def in ORIGINS {
             assert!(!def.id.is_empty(), "origin id is empty");
@@ -193,8 +183,8 @@ mod tests {
                 def.id,
                 def.base_confidence
             );
-            // Round-trip the public lookups so the helpers stay aligned
-            // with the table.
+            // Round-trip the public lookups so the helpers stay aligned with
+            // the table.
             assert_eq!(origin(def.id).map(|o| o.label), Some(def.label));
             assert_eq!(color_hex_for(def.id), Some(def.color_hex));
             assert_eq!(label_for(def.id), Some(def.label));

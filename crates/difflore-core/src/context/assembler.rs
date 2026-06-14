@@ -4,9 +4,8 @@ use super::types::PastVerdict;
 
 pub const RULE_TOKEN_BUDGET: usize = 1500;
 
-/// Per-call token budget for assembled rule context. Defaults to the
-/// compile-time constant in `super::config`, but callers (e.g. the
-/// orchestrator) may override based on per-project settings.
+/// Per-call token budget for assembled rule context. Defaults to a compile-time
+/// constant; callers may override based on per-project settings.
 #[derive(Debug, Clone, Copy)]
 pub struct TokenBudgets {
     pub rule: usize,

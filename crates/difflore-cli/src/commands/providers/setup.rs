@@ -1,16 +1,9 @@
 //! Interactive provider picker.
 //!
-//! Local review providers are agent CLIs the user already has logged in
-//! on their machine — Claude Code, Codex, Gemini, OpenCode. We don't
-//! prompt for API keys: cloud-side review uses cloud-managed keys, and
-//! the local CLI exists to reuse the user's existing agent auth, not to
-//! be another place where keys live.
-//!
-//! Detection (driven by `gate4agent`):
-//!   • Claude Code CLI    (`claude`   on PATH)
-//!   • Codex CLI          (`codex`    on PATH)
-//!   • Gemini CLI         (`gemini`   on PATH)
-//!   • `OpenCode` CLI     (`opencode` on PATH)
+//! Providers are local agent CLIs (Claude Code, Codex, Gemini, OpenCode)
+//! detected on PATH via `gate4agent`. We never prompt for API keys: the
+//! local CLI reuses the user's existing agent auth rather than storing
+//! keys of its own.
 
 use crate::style;
 use std::collections::HashMap;
@@ -19,12 +12,11 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use colored::Colorize;
 use gate4agent::CliTool;
 
-use difflore_core::models::{ProviderAddInput, ProviderSetActiveInput};
+use difflore_core::domain::models::{ProviderAddInput, ProviderSetActiveInput};
 
 /// Default model per tool. Empty string means "let the CLI pick its own
-/// default" — the right move for tools whose CLI defaults already track
-/// the latest available model (Codex, `OpenCode`). For Claude we pin a
-/// sensible Sonnet alias to match the rest of difflore's review path.
+/// default", used for tools whose CLI default already tracks the latest
+/// model (Codex, `OpenCode`).
 const fn default_model_for(tool: CliTool) -> &'static str {
     match tool {
         CliTool::ClaudeCode => "claude-sonnet-4-6",
@@ -118,7 +110,7 @@ pub async fn run_setup(db: &difflore_core::SqlitePool) -> SetupOutcome {
         .position(|(_, present)| *present)
         .map(|i| i + 1);
     let Some(default) = default else {
-        crate::commands::util::exit_err(
+        crate::support::util::exit_err(
             "no agent CLI detected on PATH. Install one of `claude`, `codex`, `gemini`, or `opencode`, then re-run setup.",
         );
     };
@@ -133,14 +125,14 @@ pub async fn run_setup(db: &difflore_core::SqlitePool) -> SetupOutcome {
     let parsed: usize = if let Ok(n) = choice.parse() {
         n
     } else {
-        crate::commands::util::exit_err(&format!(
+        crate::support::util::exit_err(&format!(
             "{choice:?} is not a valid choice. Expected 1..={}.",
             ALL_AGENT_TOOLS.len()
         ));
     };
 
     if !(1..=ALL_AGENT_TOOLS.len()).contains(&parsed) {
-        crate::commands::util::exit_err(&format!(
+        crate::support::util::exit_err(&format!(
             "{parsed} is out of range. Expected 1..={}.",
             ALL_AGENT_TOOLS.len()
         ));
@@ -148,7 +140,7 @@ pub async fn run_setup(db: &difflore_core::SqlitePool) -> SetupOutcome {
 
     let (tool, present) = detected[parsed - 1];
     if !present {
-        crate::commands::util::exit_err(&format!(
+        crate::support::util::exit_err(&format!(
             "{tool} CLI not detected. Install `{}` first.",
             binary_for(tool)
         ));
@@ -177,7 +169,7 @@ async fn setup_agent_cli(db: &difflore_core::SqlitePool, tool: CliTool) {
     save_provider(
         db,
         provider_name_for(tool),
-        difflore_core::review::agent_cli_sentinel(tool),
+        difflore_core::review_engine::agent_cli_sentinel(tool),
         mapping,
         summary,
     )
@@ -211,7 +203,7 @@ async fn save_provider(
     model_mapping: HashMap<String, String>,
     human_summary: String,
 ) {
-    let added = match difflore_core::providers::add(
+    let added = match difflore_core::infra::providers::add(
         db,
         ProviderAddInput {
             name: name.to_owned(),
@@ -223,7 +215,7 @@ async fn save_provider(
     {
         Ok(p) => p,
         Err(e) => {
-            crate::commands::util::exit_err(&format!(
+            crate::support::util::exit_err(&format!(
                 "failed to save provider: {e}\n  Run {} to inspect local DB / migration state.\n  Local data lives at {} — back up before any recovery action.",
                 style::cmd("difflore doctor"),
                 style::pewter("~/.difflore/data.db")
@@ -231,7 +223,7 @@ async fn save_provider(
         }
     };
 
-    if let Err(e) = difflore_core::providers::set_active(
+    if let Err(e) = difflore_core::infra::providers::set_active(
         db,
         ProviderSetActiveInput {
             id: added.id.clone(),

@@ -3,24 +3,22 @@ use sqlx::SqlitePool;
 
 use crate::cloud::client::CloudClient;
 use crate::context::index_db;
-use crate::errors::CoreError;
-use crate::review_trajectory::TrajectoryStep;
+use crate::error::CoreError;
+use crate::observability::trajectory::TrajectoryStep;
 use crate::skills;
 
 use super::schemas::{
-    REMEMBER_RULE_GUIDE_MD, RULE_DIFF_SKILL_MD, RULE_GAP_SKILL_MD, RULE_JOURNEY_SKILL_MD,
-    RULE_SEARCH_SKILL_MD, RULE_WHY_FIRED_SKILL_MD, SMART_EXPLORE_SKILL_MD, resource_templates_list,
-    resources_list, tools_list,
+    DIFFLORE_ONBOARD_SKILL_MD, KNOWLEDGE_AGENT_SKILL_MD, REMEMBER_RULE_GUIDE_MD,
+    RULE_DIFF_SKILL_MD, RULE_GAP_SKILL_MD, RULE_JOURNEY_SKILL_MD, RULE_SEARCH_SKILL_MD,
+    RULE_WHY_FIRED_SKILL_MD, SESSION_RECAP_SKILL_MD, SMART_EXPLORE_SKILL_MD,
+    resource_templates_list, resources_list, tools_list,
 };
 
 pub(super) const PROTOCOL_VERSION: &str = "2024-11-05";
 pub(super) const SERVER_NAME: &str = "difflore";
-/// Reported back to MCP clients in the `serverInfo.version` field.
-/// Sourced from `CARGO_PKG_VERSION` so MCP clients see the crate version
-/// instead of a hardcoded value that can drift.
+/// Reported to MCP clients in `serverInfo.version`. Sourced from
+/// `CARGO_PKG_VERSION` so it can't drift from the crate version.
 pub(super) const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-// ── JSON-RPC helpers ───────────────────────────────────────────────
 
 #[allow(clippy::needless_pass_by_value)] // reason: json! macro consumes the Value into the new object
 pub(super) fn jsonrpc_result(id: Value, result: Value) -> Value {
@@ -35,8 +33,6 @@ pub(crate) fn jsonrpc_error(id: Value, code: i64, message: &str) -> Value {
         "error": { "code": code, "message": message }
     })
 }
-
-// ── Tool / resource definitions ────────────────────────────────────
 
 pub(crate) const fn estimate_tokens(text: &str) -> usize {
     text.len() / 4
@@ -65,7 +61,7 @@ pub(crate) fn build_cost_meta(tokens_used: usize, tokens_if_full: Option<usize>)
 /// Fire-and-forget structured log of a trajectory step. Debug telemetry
 /// prints JSON when `DIFFLORE_DEBUG_TELEMETRY=1`.
 pub(crate) fn emit_trajectory_step(step: &TrajectoryStep) {
-    if crate::env::debug_telemetry()
+    if crate::infra::env::debug_telemetry()
         && let Ok(json) = serde_json::to_string(step)
     {
         eprintln!("[difflore.trajectory] {json}");
@@ -73,10 +69,9 @@ pub(crate) fn emit_trajectory_step(step: &TrajectoryStep) {
 }
 
 /// Look up the `origin` column for each `skill_id` and aggregate into
-/// `TrajectoryStep::RuleHitByOrigin`. Unknown / missing origins are
-/// silently dropped. Uses a single `SELECT ... WHERE id IN (?, ?, ...)`
-/// built with bind parameters so the query stays injection-safe even if
-/// a `skill_id` happens to contain SQL-looking text.
+/// `TrajectoryStep::RuleHitByOrigin`. Unknown / missing origins are silently
+/// dropped. IDs are passed as a single bound JSON parameter so the query stays
+/// injection-safe even if a `skill_id` contains SQL-looking text.
 pub(crate) async fn rule_hits_by_origin(db: &SqlitePool, skill_ids: &[String]) -> TrajectoryStep {
     let mut manual = 0u32;
     let mut conversation = 0u32;
@@ -115,8 +110,6 @@ pub(crate) async fn rule_hits_by_origin(db: &SqlitePool, skill_ids: &[String]) -
         cloud,
     }
 }
-
-// ── Handler dispatch ───────────────────────────────────────────────
 
 pub(crate) struct McpState {
     pub(crate) db: SqlitePool,
@@ -199,7 +192,17 @@ pub(super) async fn handle_resources_read(
 
     match uri {
         "difflore://rules/active" => {
-            let md = skills::export_rules_markdown(&state.db)
+            // Scoped to the current project's git remotes. This is a
+            // deliberate narrowing fix: the resource used to export the whole
+            // machine corpus, leaking every project's rules to whichever
+            // agent read it (project-scope invariant violation).
+            let root = crate::infra::db::current_project_root();
+            let configured_gitlab_hosts = crate::ingest::gitlab::auth::configured_hosts().await;
+            let repo_scopes = crate::infra::git::detect_repo_full_names_with_gitlab_hosts(
+                &root.to_string_lossy(),
+                &configured_gitlab_hosts,
+            );
+            let md = skills::export_rules_markdown(&state.db, &repo_scopes)
                 .await
                 .unwrap_or_else(|e| format!("Error loading rules: {e}"));
             Ok(json!({
@@ -259,6 +262,27 @@ pub(super) async fn handle_resources_read(
                 "text": SMART_EXPLORE_SKILL_MD,
             }]
         })),
+        "difflore://skills/knowledge-agent" => Ok(json!({
+            "contents": [{
+                "uri": uri,
+                "mimeType": "text/markdown",
+                "text": KNOWLEDGE_AGENT_SKILL_MD,
+            }]
+        })),
+        "difflore://skills/session-recap" => Ok(json!({
+            "contents": [{
+                "uri": uri,
+                "mimeType": "text/markdown",
+                "text": SESSION_RECAP_SKILL_MD,
+            }]
+        })),
+        "difflore://skills/difflore-onboard" => Ok(json!({
+            "contents": [{
+                "uri": uri,
+                "mimeType": "text/markdown",
+                "text": DIFFLORE_ONBOARD_SKILL_MD,
+            }]
+        })),
         _ => {
             if let Some(id) = parse_verdict_uri(uri) {
                 let json_body = build_verdict_resource(state, &id).await;
@@ -305,10 +329,9 @@ pub(crate) fn parse_signature_uri(uri: &str) -> Option<String> {
     Some(hash.to_owned())
 }
 
-/// Build the JSON body for `difflore://verdicts/{id}`. Full verdict JSON is
-/// not cached locally yet, so the resource returns a stable pointer plus an
-/// explicit action. Keep the text product-facing: MCP clients surface this
-/// directly to users and agents.
+/// Build the JSON body for `difflore://verdicts/{id}`. Full verdict JSON isn't
+/// cached locally yet, so the resource returns a stable pointer plus an
+/// explicit action. Text is product-facing: MCP clients surface it directly.
 pub(super) async fn build_verdict_resource(state: &McpState, id: &str) -> Value {
     let cloud_dashboard = state.cloud.base_url().trim_end_matches("/api").to_owned();
     let deep_link = format!("{cloud_dashboard}/verdicts/{id}");
@@ -328,7 +351,6 @@ pub(super) async fn build_verdict_resource(state: &McpState, id: &str) -> Value 
     })
 }
 
-/// Build the JSON body for `difflore://signatures/{hash}`.
 pub(super) fn build_signature_resource(state: &McpState, hash: &str) -> Value {
     let cloud_dashboard = state.cloud.base_url().trim_end_matches("/api").to_owned();
     let deep_link = format!("{cloud_dashboard}/signatures/{hash}");

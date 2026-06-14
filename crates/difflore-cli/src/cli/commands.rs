@@ -1,13 +1,14 @@
 use clap::{Parser, Subcommand};
 
 use super::args::{
-    FixCliArgs, ImportReviewsCliArgs, InitCliArgs, RecallCliArgs, StatusLane, SyncCliArgs,
+    ExportCliArgs, FixCliArgs, ImportReviewsCliArgs, InitCliArgs, RecallCliArgs, StatusLane,
+    SyncCliArgs,
 };
 
 #[derive(Parser)]
 #[command(name = "difflore")]
 #[command(bin_name = "difflore")]
-#[command(about = "AI review memory for local coding agents")]
+#[command(about = "Source-backed team rules for local coding agents")]
 #[command(next_line_help = true)]
 #[command(
     long_about = "DiffLore turns your team's past PR review judgment into memory \
@@ -49,18 +50,20 @@ Nothing leaves your laptop and nothing is written to disk."
         lane: StatusLane,
     },
 
-    /// Import past GitHub PR review comments as review memory evidence.
+    /// Import past PR/MR review comments (GitHub, GitLab) as source-backed rule evidence.
     #[command(
         next_line_help = false,
-        long_about = "Import past GitHub PR review comments into local review memory. \
-Use `--dry-run` to preview first, then run `difflore recall --diff` to see what agents will remember."
+        long_about = "Import past GitHub PR or GitLab MR review comments into local source-backed rules. \
+The provider is auto-detected from the git remote; self-managed GitLab needs `--provider gitlab --gitlab-host <HOST>` once \
+(or a PAT stored via `difflore auth gitlab --host <HOST>`, which makes detection automatic). \
+Use `--dry-run` to preview first, then run `difflore recall --diff` to see which rules agents will receive."
     )]
     ImportReviews(ImportReviewsCliArgs),
 
-    /// Preview which team memories an agent would see for an intent or current diff.
+    /// Preview which team rules an agent would see for an intent or current diff.
     Recall(RecallCliArgs),
 
-    /// Suggest local patches using remembered team review judgment.
+    /// Suggest local patches using source-backed team review judgment.
     #[command(
         next_line_help = false,
         long_about = "Suggest safe local patches for the current diff or a GitHub PR. \
@@ -69,7 +72,25 @@ DiffLore never commits, pushes, opens PRs, or posts GitHub comments."
     )]
     Fix(FixCliArgs),
 
-    /// Ask the team's review memory a natural-language question.
+    /// Export this repo's team rules into static agent context files (AGENTS.md / CLAUDE.md).
+    #[command(
+        next_line_help = false,
+        long_about = "Write the rules agents would recall in this repo into a marker-delimited \
+section of AGENTS.md and/or CLAUDE.md at the repo root.\n\
+\n\
+The export is a static snapshot: it goes stale as your team's rules evolve and it cannot \
+match rules to the file being edited. Prefer `difflore agents install` (MCP + hooks) for \
+live, diff-aware injection; use export for agents or teammates that only read static \
+context files.\n\
+\n\
+Side effects: writes only the listed files in the current repo's working tree, and only \
+between the BEGIN/END DIFFLORE RULES markers — content outside the markers is never \
+touched. DiffLore never commits, pushes, or edits .gitignore. Commit the exported files \
+to share them, or gitignore them yourself."
+    )]
+    Export(ExportCliArgs),
+
+    /// Ask the team's source-backed rules a natural-language question.
     Ask {
         /// The question to ask.
         query: String,
@@ -83,10 +104,22 @@ DiffLore never commits, pushes, opens PRs, or posts GitHub comments."
         json: bool,
     },
 
+    /// Review, approve, or reject local memory drafts.
+    Drafts {
+        #[command(subcommand)]
+        command: DraftsCommands,
+    },
+
     /// Manage cloud login, sync, and team impact.
     Cloud {
         #[command(subcommand)]
         command: CloudCommands,
+    },
+
+    /// Store VCS provider credentials used for review import.
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommands,
     },
 
     /// Browse and install shareable starter rule packs.
@@ -99,6 +132,22 @@ DiffLore never commits, pushes, opens PRs, or posts GitHub comments."
     Agents {
         #[command(subcommand)]
         command: AgentsCommands,
+    },
+
+    /// Refresh the binary guidance, agent blocks, hook shim config, and doctor checks.
+    #[command(
+        long_about = "One update pass for DiffLore ergonomics. Prints the binary update command for \
+your install channel when it can detect one, safely re-renders unchanged agent config/hook blocks \
+with `agents update`, then runs `doctor` so stale shims and runtime drift are visible."
+    )]
+    Update {
+        /// Preview agent block changes without touching disk; skips doctor.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Overwrite agent blocks that were locally edited since DiffLore wrote them.
+        #[arg(long)]
+        force: bool,
     },
 
     /// Choose the local AI backend DiffLore uses for fixes.
@@ -177,6 +226,14 @@ Pass `--json` for the raw document."
     /// Internal MCP stdio transport used by installed agents.
     #[command(name = "mcp-server", hide = true)]
     McpServer,
+
+    /// Internal warm hook-forward daemon for one project (spawned by the shim).
+    #[command(name = "__hook-daemon", hide = true)]
+    HookDaemon {
+        /// Stable per-project hash selecting the index pool this daemon serves.
+        #[arg(long, value_name = "HASH")]
+        project_hash: String,
+    },
 
     /// Local skill-store maintenance utilities.
     #[command(hide = true)]
@@ -298,6 +355,122 @@ pub(crate) enum PacksCommands {
 }
 
 #[derive(Subcommand)]
+pub(crate) enum DraftsCommands {
+    /// List pending memory drafts.
+    List {
+        /// Filter drafts to a GitHub OWNER/REPO.
+        #[arg(long, value_name = "OWNER/REPO")]
+        repo: Option<String>,
+
+        /// Maximum drafts to show.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show one draft with full rule text and source evidence.
+    Show {
+        /// Pending draft id.
+        id: String,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Review pending drafts interactively.
+    Review {
+        /// Filter drafts to a GitHub OWNER/REPO.
+        #[arg(long, value_name = "OWNER/REPO")]
+        repo: Option<String>,
+
+        /// Maximum drafts to review.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+    },
+
+    /// Approve a draft and activate it as local memory.
+    Approve {
+        /// Pending draft id. Omit when using --all.
+        id: Option<String>,
+
+        /// Approve every matching draft.
+        #[arg(long)]
+        all: bool,
+
+        /// Filter --all to a GitHub OWNER/REPO.
+        #[arg(long, value_name = "OWNER/REPO")]
+        repo: Option<String>,
+
+        /// Skip the confirmation prompt for --all.
+        #[arg(long)]
+        yes: bool,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Reject a draft and remove it from the local queue.
+    Reject {
+        /// Pending draft id. Omit when using --all.
+        id: Option<String>,
+
+        /// Reject every matching draft.
+        #[arg(long)]
+        all: bool,
+
+        /// Filter --all to a GitHub OWNER/REPO.
+        #[arg(long, value_name = "OWNER/REPO")]
+        repo: Option<String>,
+
+        /// Skip the confirmation prompt for --all.
+        #[arg(long)]
+        yes: bool,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum AuthCommands {
+    /// Store or verify a GitLab personal access token (needs `read_api` scope).
+    #[command(next_line_help = false, long_about = concat!(
+        "Store a GitLab personal access token for review import. The token is\n",
+        "encrypted at rest with the same mechanism as the cloud login token.\n",
+        "\n",
+        "Pipe the token via stdin so it never lands in shell history:\n",
+        "\n",
+        "  echo \"<TOKEN>\" | difflore auth gitlab\n",
+        "  echo \"<TOKEN>\" | difflore auth gitlab --host gitlab.corp.example\n",
+        "\n",
+        "At import time the token is resolved in this order:\n",
+        "DIFFLORE_GITLAB_TOKEN env, GITLAB_TOKEN env, then stored token.\n",
+        "\n",
+        "Use `--check` to verify the resolved token against the host's\n",
+        "/api/v4/user endpoint, and `--remove` to delete the stored token.",
+    ))]
+    Gitlab {
+        /// GitLab host (self-managed instances supported, e.g. gitlab.corp.example).
+        #[arg(long, value_name = "HOST", default_value = difflore_core::ingest::gitlab::auth::DEFAULT_GITLAB_HOST)]
+        host: String,
+
+        /// Verify the resolved token against GET https://<HOST>/api/v4/user instead of storing.
+        #[arg(long, conflicts_with = "remove")]
+        check: bool,
+
+        /// Remove the stored token for this host.
+        #[arg(long)]
+        remove: bool,
+    },
+}
+
+#[derive(Subcommand)]
 pub(crate) enum CloudCommands {
     /// Show current cloud login, plan, and team info.
     Status {
@@ -333,7 +506,7 @@ pub(crate) enum CloudCommands {
         github: bool,
     },
 
-    /// Sync governed team review memory with cloud.
+    /// Sync governed source-backed team rules with cloud.
     Sync(SyncCliArgs),
 
     /// Show the current team workspace and its readiness checks.

@@ -1,49 +1,46 @@
-// Top-level tab set for the TUI.
+// Top-level tab set for the TUI, named in the product vocabulary
+// (Memory / Fixes / Cloud / Setup); rule/skill stay domain-layer words.
 //
-// The TUI is a fast read-only inspector and conversion bridge. Cloud
-// is the editorial surface for edits, publishing, and extraction review,
-// so editorial actions here open difflore.dev deep links.
+// The TUI is a read-only inspector and conversion bridge; editorial actions
+// (edits, publishing, extraction review) open difflore.dev deep links.
 //
-//   1. Rules     — browse the rule corpus; deep-link to cloud for edits
-//   2. Activity  — review activity, fire heatmaps, and daily impact
-//   3. Team      — collaboration awareness and cloud onboarding
-//   4. Settings  — config, diagnostics, and setup guidance
+//   1. Memory — browse the memory corpus; deep-link to cloud for edits
+//   2. Fixes  — review activity, fire heatmaps, and daily impact
+//   3. Cloud  — collaboration awareness and cloud onboarding
+//   4. Setup  — config, diagnostics, and setup guidance
 
-pub mod activity;
-pub mod rules;
-pub mod settings;
-pub mod team;
+pub mod cloud;
+pub mod fixes;
+pub mod memory;
+pub mod setup;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Tab {
     #[default]
-    Rules,
-    Activity,
-    Team,
-    Settings,
+    Memory,
+    Fixes,
+    Cloud,
+    Setup,
 }
 
 impl Tab {
-    pub(crate) const ALL: [Self; 4] = [Self::Rules, Self::Activity, Self::Team, Self::Settings];
+    pub(crate) const ALL: [Self; 4] = [Self::Memory, Self::Fixes, Self::Cloud, Self::Setup];
 
     pub(crate) const fn title(self) -> &'static str {
-        // Display labels per launch brief: Memory / Fixes / Cloud / Setup.
-        // Rust enum variants stay (Rules/Activity/Team/Settings) to keep
-        // the existing module layout and avoid touching call sites.
         match self {
-            Self::Rules => "Memory",
-            Self::Activity => "Fixes",
-            Self::Team => "Cloud",
-            Self::Settings => "Setup",
+            Self::Memory => "Memory",
+            Self::Fixes => "Fixes",
+            Self::Cloud => "Cloud",
+            Self::Setup => "Setup",
         }
     }
 
     pub(crate) const fn index(self) -> usize {
         match self {
-            Self::Rules => 0,
-            Self::Activity => 1,
-            Self::Team => 2,
-            Self::Settings => 3,
+            Self::Memory => 0,
+            Self::Fixes => 1,
+            Self::Cloud => 2,
+            Self::Setup => 3,
         }
     }
 
@@ -59,10 +56,10 @@ impl Tab {
     /// Map a single keyboard digit (`1`..=`4`) to a tab.
     pub(crate) const fn from_digit(d: u8) -> Option<Self> {
         match d {
-            1 => Some(Self::Rules),
-            2 => Some(Self::Activity),
-            3 => Some(Self::Team),
-            4 => Some(Self::Settings),
+            1 => Some(Self::Memory),
+            2 => Some(Self::Fixes),
+            3 => Some(Self::Cloud),
+            4 => Some(Self::Setup),
             _ => None,
         }
     }
@@ -83,8 +80,8 @@ mod tests {
 
     #[test]
     fn next_prev_wrap() {
-        assert_eq!(Tab::Rules.prev(), Tab::Settings);
-        assert_eq!(Tab::Settings.next(), Tab::Rules);
+        assert_eq!(Tab::Memory.prev(), Tab::Setup);
+        assert_eq!(Tab::Setup.next(), Tab::Memory);
     }
 
     #[test]

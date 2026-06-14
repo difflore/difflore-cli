@@ -1,17 +1,14 @@
 //! "What the AI has learned" preview for `difflore doctor`.
 //!
-//! Renders a compact section under the readiness table showing total
-//! rule count, top source repositories by rule count, and the most
-//! recently learned rules. Mirrors the trust-building surface that
-//! `difflore init` shows on first run — `doctor` is the natural place
-//! to re-confirm the corpus when the user is troubleshooting.
+//! Renders a compact section under the readiness table showing total rule
+//! count, top source repositories, and the most recently learned rules.
 //!
-//! Both DB queries are best-effort: any error returns an empty result
-//! and the section silently shrinks or disappears entirely. We never
-//! turn a render-time DB hiccup into a user-visible failure here.
+//! All DB queries are best-effort: any error returns an empty result and the
+//! section silently shrinks, never surfacing a render-time DB hiccup as a
+//! user-visible failure.
 
-use crate::commands::util::format_recall_edit_proof_breakdown;
 use crate::style;
+use crate::support::util::format_recall_edit_proof_breakdown;
 use difflore_core::cloud::observations::ObservationUploadIssue;
 use std::collections::{BTreeMap, HashMap};
 
@@ -87,8 +84,8 @@ pub(crate) struct MemorySnapshot {
     pub(crate) agent_citation: Option<AgentCitationProof>,
 }
 
-/// Load the snapshot from the live project DB. Best-effort: any DB
-/// error collapses to defaults so the doctor table still renders.
+/// Load the snapshot from the live project DB. Any DB error collapses to
+/// defaults so the doctor table still renders.
 #[cfg(test)]
 pub(crate) async fn load(pool: &difflore_core::SqlitePool) -> MemorySnapshot {
     let total_rules = sqlx::query_scalar!(
@@ -112,10 +109,9 @@ pub(crate) async fn load(pool: &difflore_core::SqlitePool) -> MemorySnapshot {
     }
 }
 
-/// Load the memory snapshot for the current repo / unique upstream alias.
-/// Unlike the global loader used in tests, this does not fall back to other
-/// repos: doctor should not show unrelated proof after it has established a
-/// current repo scope.
+/// Load the memory snapshot scoped to the current repo / upstream aliases.
+/// Unlike [`load`], this never falls back to other repos, so doctor shows no
+/// unrelated proof once a repo scope is established.
 pub(crate) async fn load_for_repo(
     pool: &difflore_core::SqlitePool,
     repo_aliases: &[String],
@@ -226,8 +222,11 @@ async fn fetch_recent_for(
 
 #[cfg(test)]
 fn current_repo_aliases() -> Vec<String> {
-    let root = difflore_core::db::current_project_root();
-    difflore_core::git::detect_github_repo_full_names(&root.to_string_lossy())
+    let root = difflore_core::infra::db::current_project_root();
+    difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+        &root.to_string_lossy(),
+        &[],
+    )
 }
 
 #[cfg(test)]
@@ -260,9 +259,9 @@ async fn fetch_proven_scoped(
     if normalized_repo_aliases.is_empty() {
         return Vec::new();
     }
-    // Hook/agent outcomes currently do not carry a canonical target repo.
-    // In a repo-scoped doctor snapshot, fail closed and show only signed local
-    // fix proof from rules whose source_repo matches this repo/upstream alias.
+    // Hook/agent outcomes carry no canonical target repo, so a repo-scoped
+    // snapshot fails closed and shows only signed local fix proof from rules
+    // whose source_repo matches this repo/upstream alias.
     let hook_summaries = Vec::new();
     fetch_proven_with_hook_summaries(pool, Some(normalized_repo_aliases), &hook_summaries).await
 }
@@ -555,18 +554,18 @@ fn agent_citation_recovery_line(proof: &AgentCitationProof) -> Option<String> {
     let message = match proof.pending_upload_issue {
         Some(ObservationUploadIssue::MissingCloudScope) => format!(
             "{} {}",
-            style::pewter("proof queued safely; refresh login once:"),
+            style::pewter("activity queued safely; refresh login once:"),
             style::cmd("difflore cloud login")
         ),
         Some(ObservationUploadIssue::RateLimited) => {
             style::pewter("cloud rate limit hit; uploads will retry automatically").to_string()
         }
         Some(ObservationUploadIssue::InvalidBatch) => {
-            style::pewter("cloud observation schema rejected these proof uploads").to_string()
+            style::pewter("cloud rejected these activity uploads").to_string()
         }
         Some(ObservationUploadIssue::ServerRejected) => format!(
             "{} {}",
-            style::pewter("inspect proof upload rejection:"),
+            style::pewter("inspect activity upload rejection:"),
             style::cmd("difflore doctor --report")
         ),
         Some(ObservationUploadIssue::Unknown) | None => format!(
@@ -578,24 +577,20 @@ fn agent_citation_recovery_line(proof: &AgentCitationProof) -> Option<String> {
     Some(message)
 }
 
-/// Render the snapshot. Returns an empty string when the corpus is
-/// empty so the caller can append unconditionally without producing a
-/// hollow heading.
+/// Render the snapshot, returning an empty string for an empty corpus so the
+/// caller can append unconditionally without a hollow heading.
 pub(crate) fn render(snapshot: &MemorySnapshot) -> String {
     if snapshot.total_rules == 0 {
         return String::new();
     }
-    // Match the readiness rhythm: 10-char label column, two-space
-    // indent. We deliberately do NOT re-use the doctor table's 17-char
-    // width — the snapshot is denser and the shorter column matches the
-    // `init` block that establishes the convention for memory rows.
+    // 10-char label column to match the denser `init` memory block, not the
+    // doctor table's 17-char width.
     const LABEL_W: usize = 10;
     let mut out = String::new();
     out.push('\n');
     out.push_str(&format!("  {}\n", style::pewter("Memory snapshot")));
 
-    // Top repos line. Show up to 3 inline, collapse the remainder into
-    // `+N more` so dense projects don't blow out the column width.
+    // Up to 3 repos inline; collapse the rest into `+N more`.
     let repos_line = if snapshot.top_repos.is_empty() {
         style::pewter(&format!(
             "{} rule{} · no source_repo set",
@@ -615,9 +610,8 @@ pub(crate) fn render(snapshot: &MemorySnapshot) -> String {
         if extra > 0 {
             line.push_str(&format!("  +{extra} more"));
         }
-        // Repo names are identifiers/values, not runnable commands; render
-        // as a plain value so they match the other doctor row values
-        // (binary version, memory counts) instead of the blue command color.
+        // Repo names are values, not commands; render plain to match other
+        // doctor row values rather than the blue command color.
         line
     };
     out.push_str(&format!(
@@ -627,8 +621,7 @@ pub(crate) fn render(snapshot: &MemorySnapshot) -> String {
         width = LABEL_W,
     ));
 
-    // Recent rules: 3 lines each prefixed with `·`, suffixed with the
-    // origin repo (same `← from <repo>` framing as `init`).
+    // Recent rules: each prefixed with `·`, suffixed with the origin repo.
     if !snapshot.recent.is_empty() {
         for (i, rule) in snapshot.recent.iter().enumerate() {
             let label = if i == 0 { "newest" } else { "" };
@@ -714,7 +707,7 @@ fn accepted_proof_label(rule: &ProvenRule) -> String {
     ));
     if rule.accepted_hook_outcomes_linked_to_prior_recall > 0 {
         detail.push(format!(
-            "{} linked to prior rule-use proof{}",
+            "{} linked to prior memory recall{}",
             rule.accepted_hook_outcomes_linked_to_prior_recall,
             format_recall_edit_proof_breakdown(
                 rule.accepted_hook_outcomes_linked_to_rule_recall,
@@ -725,7 +718,7 @@ fn accepted_proof_label(rule: &ProvenRule) -> String {
     }
 
     format!(
-        "{} accepted proof{} ({})",
+        "{} accepted outcome{} ({})",
         rule.accepted_count,
         if rule.accepted_count == 1 { "" } else { "s" },
         detail.join(" + ")
@@ -1040,9 +1033,9 @@ mod tests {
             proven,
             ..MemorySnapshot::default()
         });
-        assert!(rendered.contains("2 accepted proofs"));
+        assert!(rendered.contains("2 accepted outcomes"));
         assert!(rendered.contains("2 agent/hook outcomes"));
-        assert!(rendered.contains("1 linked to prior rule-use proof (1 MCP serve)"));
+        assert!(rendered.contains("1 linked to prior memory recall (1 agent recall)"));
         assert!(!rendered.contains("difflore rules explain"));
     }
 
@@ -1065,7 +1058,7 @@ mod tests {
         assert!(rendered.contains("1 actual citation"));
         assert!(rendered.contains("3 memory fires in 7d"));
         assert!(rendered.contains("1 pending upload"));
-        assert!(rendered.contains("proof queued safely"));
+        assert!(rendered.contains("activity queued safely"));
         assert!(rendered.contains("refresh login once"));
         assert!(rendered.contains("difflore cloud login"));
     }

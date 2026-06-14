@@ -5,33 +5,22 @@ description: Search the local DiffLore rule library before editing code, reviewi
 
 # Rule Search
 
-Use this skill when the user is editing code, reviewing a diff, or asking about
-repo conventions.
-
-## Workflow
-
-1. Call `search_rules` with the current intent and file path.
-2. If a result is borderline or disputed, inspect `rule_timeline` for context.
-3. Fetch full bodies with `get_rules` only for the 1-3 rules that actually
-   apply.
+Find the rules that apply before you edit or review.
 
 ```text
 search_rules(intent="async executor boundary", file="src/worker.rs", top_k=5)
-rule_timeline(rule_id="conv-a1f9c", depth_before=5, depth_after=5)
-get_rules(ids=["conv-a1f9c"], file="src/worker.rs")
+get_rules(ids=["conv-a1f9c"], file="src/worker.rs")   # only the 1-3 that apply
 ```
 
-Skip `rule_timeline` when the top hit is clearly relevant. Use it when the user
-asks why a rule exists, when confidence is low, or when a rule may be stale.
+Add `rule_timeline(rule_id="<id>", depth_before=5, depth_after=5)` only when a
+hit is borderline, disputed, or maybe stale.
 
 ## Avoid
 
-- Do not fetch full rule bodies before searching.
-- Do not use very large `top_k` values unless the user asks for a broad audit.
-- Do not re-query for every tool call; agent transports may already cache hits.
+- Don't fetch full bodies before searching.
+- Don't use large `top_k` unless the user asked for a broad audit.
+- Don't re-query every tool call — transports may cache hits.
 
 ## Related
 
-- `remember_rule`: save a new rule.
-- `rule-gap`: find missing rules.
-- `rule-why-fired`: explain a specific match.
+`remember-rule-guide` — save a rule · `rule-gap` — find missing rules · `rule-why-fired` — explain a match.

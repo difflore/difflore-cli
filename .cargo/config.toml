@@ -6,11 +6,29 @@
 # when you've touched doc examples.
 t = "nextest run --workspace --all-targets"
 
+[build]
+# rustc 1.96.0 on Windows (MSVC) ICEs during *incremental* codegen for this
+# workspace — STATUS_STACK_BUFFER_OVERRUN (0xC0000409) inside
+# `incr_result_hashing` while linking difflore-core/difflore-cli. Full,
+# non-incremental builds compile cleanly, so disable incremental until a fixed
+# toolchain ships. Incremental only speeds up local rebuilds; CI runs fresh, so
+# this costs nothing there.
+incremental = false
+
 [env]
 # Use the sqlx offline cache (./.sqlx) so `cargo check` / `cargo build` do not
 # require a live SQLite database at compile time. Developers can still point
 # DATABASE_URL at a real DB and run `cargo sqlx prepare` to regenerate cache.
 SQLX_OFFLINE = "true"
+
+# The OpenAPI spec moved from the difflore-core crate root to
+# contracts/openapi-spec.json. `openapi_contract::generate_types!` takes the
+# path as an argument, but the companion `api!` macro hard-codes a lookup of
+# "openapi-spec.json" relative to CARGO_MANIFEST_DIR (walking up parent
+# dirs); this env var is the only way to redirect it. The relative path is
+# joined to each compiling crate's manifest dir — only difflore-core invokes
+# these macros, so it resolves to crates/difflore-core/contracts/.
+OPENAPI_SPEC_PATH = "contracts/openapi-spec.json"
 
 # Windows main-thread default stack is 1 MB — too small for `difflore dist
 # verify` and similar paths that recurse over the include_str!-bound skill

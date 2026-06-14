@@ -6,14 +6,17 @@
 //! copy, and CLI command in a highlighted box. Footer: `[Enter]` do
 //! step / `[s]` skip / step N of 5.
 
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-use crate::layout::centered_rect_abs;
 use crate::theme::Theme;
+use crate::widgets::center::centered_rect_abs;
+
+use super::dispatch::ModalAction;
 
 /// 5-step onboarding wizard. Steps are 1-indexed; `current = 6`
 /// means the wizard is complete and `App` should dismiss the modal.
@@ -30,6 +33,26 @@ impl OnboardingState {
     }
 }
 
+/// Keymap matching the footer: `[Enter]` do step, `[s]` skip.
+pub(crate) const fn action_for_key(step: u8, code: KeyCode) -> Option<ModalAction> {
+    match code {
+        KeyCode::Enter => Some(enter_action(step)),
+        KeyCode::Char('s') => Some(ModalAction::Notice("Onboarding skipped for this launch.")),
+        _ => None,
+    }
+}
+
+const fn enter_action(step: u8) -> ModalAction {
+    match step {
+        1 => ModalAction::Exit(crate::TuiExit::RunInit),
+        2 => ModalAction::Exit(crate::TuiExit::RunProvidersAdd),
+        3 => ModalAction::Exit(crate::TuiExit::RunCloudLogin),
+        4 => ModalAction::Notice("Run `difflore recall --diff` after closing the TUI."),
+        5 => ModalAction::Notice("Run `difflore fix --preview` after closing the TUI."),
+        _ => ModalAction::Dismiss,
+    }
+}
+
 struct StepCopy {
     title: &'static str,
     body: &'static str,
@@ -39,27 +62,27 @@ struct StepCopy {
 const STEPS: [StepCopy; 5] = [
     StepCopy {
         title: "Wire agents",
-        body: "Connect this repo so Claude, Codex, Cursor, and friends can recall team review memory before editing.",
+        body: "Connect this repo so Claude, Codex, Cursor, and friends receive source-backed rules before editing.",
         command: "difflore agents install",
     },
     StepCopy {
         title: "Pick provider",
-        body: "Choose the model used when DiffLore turns remembered review judgment into patch suggestions.",
+        body: "Choose the model used when DiffLore turns prior review decisions into patch suggestions.",
         command: "difflore providers setup",
     },
     StepCopy {
         title: "Import reviews",
-        body: "Sign in to cloud, then teach DiffLore from past PR comments so repeat review feedback becomes reusable team memory.",
+        body: "Sign in to cloud, then import past PR comments so repeated codebase decisions become reusable team rules.",
         command: "difflore cloud login && difflore import-reviews --max-prs 50 --upload",
     },
     StepCopy {
         title: "Preview recall",
-        body: "Check the exact memories your local agents would receive for the current diff.",
+        body: "Check the exact rules your local agents would receive for the current diff.",
         command: "difflore recall --diff",
     },
     StepCopy {
         title: "First fix",
-        body: "Preview patches from team memory. Nothing changes until you choose to apply them.",
+        body: "Preview patches from source-backed team rules. Nothing changes until you choose to apply them.",
         command: "difflore fix --preview",
     },
 ];
@@ -121,7 +144,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &OnboardingState, theme:
         let n = u8::try_from(i + 1).unwrap_or(5);
         match n.cmp(&cur) {
             std::cmp::Ordering::Less => {
-                // Done — strikethrough pewter, leading ✓.
                 rail.push(Line::from(vec![
                     Span::styled(" ✓ ", accent),
                     Span::styled(
@@ -131,14 +153,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &OnboardingState, theme:
                 ]));
             }
             std::cmp::Ordering::Equal => {
-                // Current — emerald, leading ▶.
                 rail.push(Line::from(vec![
                     Span::styled(" ▶ ", accent.add_modifier(Modifier::BOLD)),
                     Span::styled((*label).to_owned(), strong),
                 ]));
             }
             std::cmp::Ordering::Greater => {
-                // Pending — subtle dot.
                 rail.push(Line::from(vec![
                     Span::styled(" · ", muted),
                     Span::styled((*label).to_owned(), muted),

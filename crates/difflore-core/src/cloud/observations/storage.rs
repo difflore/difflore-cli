@@ -18,18 +18,12 @@ const OUTBOX_DB_NAME: &str = "observations_outbox.db";
 const MAX_QUEUE_ROWS: i64 = 10_000;
 pub(super) const MAX_FLUSH_BATCH: i64 = 64;
 
-// Outbox primitives shared with `cloud::outbox` live in
-// `crate::cloud::outbox_core`. Re-exported here under the same
-// `pub(super)` names so `sync.rs` and this module's tests keep
-// importing them via `super::storage::{...}` unchanged. The shared
-// retry/abandon bound (`MAX_RETRY_COUNT`) is consumed via
-// `outbox_core::decide_retry` directly, so it is not re-exported here.
+// Re-exported under `pub(super)` so `sync.rs` and this module's tests import
+// them via `super::storage::{...}`.
 pub(super) use crate::cloud::outbox_core::{now_unix_ms, truncate};
 
 /// One decoded *accepted* `fix_outcome` row, the unit the three
-/// accepted-outcome aggregators fold over. Mirrors the
-/// `ObservationEvent::FixOutcome` fields the callers destructured
-/// inline before the shared fold was extracted.
+/// accepted-outcome aggregators fold over.
 struct AcceptedOutcome {
     rule_id: String,
     session_id: String,
@@ -38,10 +32,9 @@ struct AcceptedOutcome {
     mcp_serve_event_ids: Vec<i64>,
 }
 
-/// Per-caller error-message context for [`ObservationEmitter::
-/// fold_accepted_outcomes`]. Each aggregator emitted slightly
-/// different SQL/IO error strings; threading them through here keeps
-/// those messages byte-identical after the extraction.
+/// Per-caller SQL/IO error-message strings for
+/// [`ObservationEmitter::fold_accepted_outcomes`], so each aggregator keeps its
+/// own distinct error text.
 struct AcceptedOutcomeCtx {
     select_err: &'static str,
     read_err: &'static str,
@@ -57,12 +50,12 @@ impl ObservationEmitter {
         &self.pool
     }
 
-    pub async fn open_default() -> Result<Self, String> {
-        let path = crate::paths::data_home()?.join(OUTBOX_DB_NAME);
+    pub async fn open_default() -> crate::Result<Self> {
+        let path = crate::infra::paths::data_home()?.join(OUTBOX_DB_NAME);
         Self::open_at(&path).await
     }
 
-    pub async fn open_at(path: &Path) -> Result<Self, String> {
+    pub async fn open_at(path: &Path) -> crate::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
@@ -81,7 +74,7 @@ impl ObservationEmitter {
         Ok(Self { pool })
     }
 
-    pub async fn enqueue(&self, event: &ObservationEvent) -> Result<i64, String> {
+    pub async fn enqueue(&self, event: &ObservationEvent) -> crate::Result<i64> {
         if !crate::cloud::capture::capture_enabled() {
             return Ok(0);
         }
@@ -119,7 +112,7 @@ impl ObservationEmitter {
         session_id: &str,
         file_path: &str,
         within_ms: i64,
-    ) -> Result<Vec<String>, String> {
+    ) -> crate::Result<Vec<String>> {
         let cutoff = now_unix_ms() - within_ms.max(1);
         let rows = sqlx::query(
             "SELECT payload_json FROM observation_events \
@@ -196,7 +189,7 @@ impl ObservationEmitter {
         session_id: &str,
         file_path: &str,
         within_ms: i64,
-    ) -> Result<Option<String>, String> {
+    ) -> crate::Result<Option<String>> {
         Ok(self
             .matching_recent_rule_ids(app_db, session_id, file_path, within_ms)
             .await?
@@ -219,7 +212,7 @@ impl ObservationEmitter {
         file_path: Option<&str>,
         accepted_at_ms: i64,
         window_ms: i64,
-    ) -> Result<Vec<i64>, String> {
+    ) -> crate::Result<Vec<i64>> {
         let rule_id = rule_id.trim();
         if rule_id.is_empty() {
             return Ok(Vec::new());
@@ -279,7 +272,7 @@ impl ObservationEmitter {
     pub async fn latest_rule_fire_for_session(
         &self,
         session_id: &str,
-    ) -> Result<Option<RuleFireSnapshot>, String> {
+    ) -> crate::Result<Option<RuleFireSnapshot>> {
         let row = sqlx::query(
             "SELECT payload_json FROM observation_events \
              WHERE event_type = 'rule_fired' \
@@ -309,10 +302,7 @@ impl ObservationEmitter {
         }))
     }
 
-    pub async fn cited_edits_for_session(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<CitedEdit>, String> {
+    pub async fn cited_edits_for_session(&self, session_id: &str) -> crate::Result<Vec<CitedEdit>> {
         let rows = sqlx::query(
             "SELECT DISTINCT rule_id, file_path FROM observation_events \
              WHERE event_type = 'rule_cited_in_edit' AND session_id = ?1 \
@@ -337,7 +327,7 @@ impl ObservationEmitter {
             .collect())
     }
 
-    pub async fn has_fix_outcome(&self, session_id: &str, rule_id: &str) -> Result<bool, String> {
+    pub async fn has_fix_outcome(&self, session_id: &str, rule_id: &str) -> crate::Result<bool> {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM observation_events \
              WHERE event_type = 'fix_outcome' AND session_id = ?1 AND rule_id = ?2",
@@ -350,9 +340,7 @@ impl ObservationEmitter {
         Ok(count > 0)
     }
 
-    /// Window start for an `N`-day accepted-outcome lookback, in unix
-    /// ms. Extracted verbatim from the three aggregators below so they
-    /// can never drift on the boundary arithmetic.
+    /// Window start for an `N`-day accepted-outcome lookback, in unix ms.
     fn accepted_outcomes_since_ms(days: i64) -> i64 {
         Utc::now()
             .checked_sub_signed(chrono::Duration::days(days.max(1)))
@@ -360,29 +348,20 @@ impl ObservationEmitter {
             .timestamp_millis()
     }
 
-    /// Load every *accepted* `fix_outcome` row whose `occurred_at_ms`
-    /// is within the last `days` days, decoded into its component
-    /// fields.
+    /// Load every *accepted* `fix_outcome` row within the last `days` days,
+    /// decoded into its component fields.
     ///
-    /// This folds the SELECT + per-row `payload_json` read + JSON
-    /// decode + `FixOutcome { accepted: true }` filter that
-    /// `accepted_fix_outcome_count`,
-    /// `accepted_recall_link_summary` and
-    /// `accepted_fix_outcome_rule_summaries` each used to open-code
-    /// identically. It deliberately does **not** apply the
-    /// `rule_id.trim()` / empty-skip or the `prior_rule_use_links`
-    /// cross-link: those differ per caller (the count path skips links
-    /// entirely; the recall summary links on the raw `rule_id`; the
-    /// rule summary trims first), so each caller keeps its own loop
-    /// over the decoded outcomes. Non-`FixOutcome` / rejected rows are
-    /// skipped exactly as before. `ctx` is woven into the two SQL/IO
-    /// error messages so they stay byte-identical to the pre-refactor
-    /// strings the callers emitted.
+    /// Does the shared SELECT + `payload_json` decode + `accepted: true`
+    /// filter, skipping non-`FixOutcome` / rejected rows. It deliberately does
+    /// NOT apply the `rule_id.trim()` / empty-skip or the `prior_rule_use_links`
+    /// cross-link — those differ per caller, so each caller loops over the
+    /// decoded outcomes itself. `ctx` supplies the per-caller SQL/IO error
+    /// strings.
     async fn fold_accepted_outcomes(
         &self,
         days: i64,
         ctx: &AcceptedOutcomeCtx,
-    ) -> Result<Vec<AcceptedOutcome>, String> {
+    ) -> crate::Result<Vec<AcceptedOutcome>> {
         let since_ms = Self::accepted_outcomes_since_ms(days);
         let rows = sqlx::query(
             "SELECT payload_json FROM observation_events \
@@ -420,10 +399,9 @@ impl ObservationEmitter {
         Ok(out)
     }
 
-    pub async fn accepted_fix_outcome_count(&self, days: i64) -> Result<i64, String> {
-        // The count path historically never computed prior-recall
-        // links, so folding here keeps the exact same single-SELECT
-        // query profile.
+    pub async fn accepted_fix_outcome_count(&self, days: i64) -> crate::Result<i64> {
+        // The count path never computes prior-recall links, keeping a single
+        // SELECT.
         let outcomes = self
             .fold_accepted_outcomes(
                 days,
@@ -440,7 +418,7 @@ impl ObservationEmitter {
         &self,
         days: i64,
         lookback_days: i64,
-    ) -> Result<AcceptedRecallLinkSummary, String> {
+    ) -> crate::Result<AcceptedRecallLinkSummary> {
         let lookback_ms = chrono::Duration::days(lookback_days.max(1))
             .num_milliseconds()
             .max(1);
@@ -466,12 +444,10 @@ impl ObservationEmitter {
                     lookback_ms,
                 )
                 .await?;
-            // Accepted-edit hook records the MCP serve event ids inline
-            // when a recent serve in the same scope surfaced this rule.
-            // This closes the cross-link in cases where session_id and
-            // file_path heuristics miss (e.g. serve recorded from the
-            // hook with `session_id="hook"`, accepted edit recorded with
-            // the agent session id).
+            // Inline serve-event ids close the cross-link when the session_id
+            // and file_path heuristics miss (e.g. serve recorded from the hook
+            // with `session_id="hook"`, accepted edit with the agent session
+            // id).
             if !outcome.mcp_serve_event_ids.is_empty() {
                 links.mcp_rule_serve = true;
             }
@@ -496,7 +472,7 @@ impl ObservationEmitter {
         &self,
         days: i64,
         lookback_days: i64,
-    ) -> Result<Vec<AcceptedFixOutcomeRuleSummary>, String> {
+    ) -> crate::Result<Vec<AcceptedFixOutcomeRuleSummary>> {
         let lookback_ms = chrono::Duration::days(lookback_days.max(1))
             .num_milliseconds()
             .max(1);
@@ -582,7 +558,7 @@ impl ObservationEmitter {
         file_path: Option<&str>,
         accepted_at_ms: i64,
         lookback_ms: i64,
-    ) -> Result<PriorRuleUseLinks, String> {
+    ) -> crate::Result<PriorRuleUseLinks> {
         if rule_id.trim().is_empty() {
             return Ok(PriorRuleUseLinks::default());
         }
@@ -628,18 +604,20 @@ impl ObservationEmitter {
         Ok(links)
     }
 
-    pub async fn pending_upload_count(&self) -> Result<i64, String> {
-        sqlx::query_scalar("SELECT COUNT(*) FROM observation_events WHERE status = 'pending'")
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| format!("count pending observation uploads: {e}"))
+    pub async fn pending_upload_count(&self) -> crate::Result<i64> {
+        Ok(
+            sqlx::query_scalar("SELECT COUNT(*) FROM observation_events WHERE status = 'pending'")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| format!("count pending observation uploads: {e}"))?,
+        )
     }
 
     pub async fn has_rule_actual_citation(
         &self,
         session_id: &str,
         rule_id: &str,
-    ) -> Result<bool, String> {
+    ) -> crate::Result<bool> {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM observation_events \
              WHERE event_type = 'rule_actually_cited' AND session_id = ?1 AND rule_id = ?2",
@@ -655,7 +633,7 @@ impl ObservationEmitter {
     pub async fn actual_citation_summary_since(
         &self,
         since_ms: i64,
-    ) -> Result<ActualCitationSummary, String> {
+    ) -> crate::Result<ActualCitationSummary> {
         let actual_citations: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM observation_events \
              WHERE event_type = 'rule_actually_cited' AND occurred_at_ms >= ?1",
@@ -713,7 +691,7 @@ impl ObservationEmitter {
     pub async fn accepted_fix_proof_sources(
         &self,
         rule_ids: &[String],
-    ) -> Result<HashMap<String, String>, String> {
+    ) -> crate::Result<HashMap<String, String>> {
         let mut out = HashMap::new();
         if rule_ids.is_empty() {
             return Ok(out);
@@ -764,7 +742,7 @@ impl ObservationEmitter {
         Ok(out)
     }
 
-    pub(super) async fn cap_queue(&self) -> Result<(), String> {
+    pub(super) async fn cap_queue(&self) -> crate::Result<()> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM observation_events")
             .fetch_one(&self.pool)
             .await
@@ -808,14 +786,14 @@ impl ObservationEmitter {
 
 pub async fn accepted_fix_proof_sources_default(
     rule_ids: &[String],
-) -> Result<HashMap<String, String>, String> {
+) -> crate::Result<HashMap<String, String>> {
     ObservationEmitter::open_default()
         .await?
         .accepted_fix_proof_sources(rule_ids)
         .await
 }
 
-pub async fn actual_citation_summary_default(days: i64) -> Result<ActualCitationSummary, String> {
+pub async fn actual_citation_summary_default(days: i64) -> crate::Result<ActualCitationSummary> {
     let since_ms = now_unix_ms().saturating_sub(days.max(1).saturating_mul(86_400_000));
     ObservationEmitter::open_default()
         .await?
@@ -864,7 +842,7 @@ fn proof_source_rank(source: &str) -> u8 {
 pub async fn enqueue_and_flush_default(
     event: ObservationEvent,
     client: &crate::cloud::client::CloudClient,
-) -> Result<(usize, usize), String> {
+) -> crate::Result<(usize, usize)> {
     if !crate::cloud::capture::capture_enabled() {
         return Ok((0, 0));
     }
@@ -873,7 +851,7 @@ pub async fn enqueue_and_flush_default(
     emitter.flush_to_cloud(client).await
 }
 
-pub async fn enqueue_default(event: ObservationEvent) -> Result<i64, String> {
+pub async fn enqueue_default(event: ObservationEvent) -> crate::Result<i64> {
     if !crate::cloud::capture::capture_enabled() {
         return Ok(0);
     }
@@ -881,7 +859,7 @@ pub async fn enqueue_default(event: ObservationEvent) -> Result<i64, String> {
     emitter.enqueue(&event).await
 }
 
-async fn migrate(pool: &SqlitePool) -> Result<(), String> {
+async fn migrate(pool: &SqlitePool) -> crate::Result<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS observation_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

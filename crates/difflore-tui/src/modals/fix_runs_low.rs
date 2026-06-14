@@ -4,24 +4,32 @@
 //! `ascii_bar_counts` progress bar, usage display, and pitch. Footer
 //! keys: `[u]` upgrade Team Plus / `[b]` BYOK / `[esc]` dismiss.
 
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-use crate::layout::centered_rect_abs;
 use crate::theme::Theme;
 use crate::widgets::ascii_bar::ascii_bar_counts;
+use crate::widgets::center::centered_rect_abs;
 
-/// View-model for the capacity-low modal. `draw_modal` only ever
-/// supplies `used` / `quota`; the former optional `projection` and
-/// `cycle_remaining` fields were always `None`, so they and their
-/// render branches were removed.
+use super::dispatch::ModalAction;
+
 #[derive(Clone, Debug)]
 pub struct FixRunsLowState {
     pub used: u32,
     pub quota: u32,
+}
+
+/// Keymap matching the footer: `[u]` upgrade Team Plus, `[b]` BYOK.
+pub(crate) const fn action_for_key(code: KeyCode) -> Option<ModalAction> {
+    match code {
+        KeyCode::Char('u') => Some(ModalAction::OpenCloud("pricing?from=tui&intent=upgrade")),
+        KeyCode::Char('b') => Some(ModalAction::Exit(crate::TuiExit::RunProvidersAdd)),
+        _ => None,
+    }
 }
 
 impl FixRunsLowState {
@@ -73,14 +81,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &FixRunsLowState, theme:
         ])
         .split(inner);
 
-    // Progress bar (30 cells per spec).
     let bar = ascii_bar_counts(state.used, state.quota, 30);
     frame.render_widget(
         Paragraph::new(Line::styled(bar, accent)).alignment(Alignment::Center),
         chunks[0],
     );
 
-    // Percentage caption.
     let pct = state.percent();
     frame.render_widget(
         Paragraph::new(Line::styled(format!("{pct}% of monthly capacity"), muted))
@@ -88,7 +94,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &FixRunsLowState, theme:
         chunks[1],
     );
 
-    // Usage line.
     let usage_spans = vec![
         Span::styled(state.used.to_string(), strong),
         Span::styled(" / ", muted),
@@ -100,11 +105,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &FixRunsLowState, theme:
         chunks[3],
     );
 
-    // chunks[4] is the (now always-blank) line that used to hold the
-    // optional projection. The slot is kept so the bar/usage/pitch
-    // spacing is unchanged; there is no projection input anymore.
+    // chunks[4] is a blank spacer slot; kept so the bar/usage/pitch
+    // spacing stays fixed.
 
-    // Pitch.
     let pitch = vec![
         Line::styled(
             "Team Plus: larger shared memory + Reviewer Context.",
@@ -117,7 +120,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &FixRunsLowState, theme:
         chunks[6],
     );
 
-    // Footer.
     let footer = Line::from(vec![
         Span::styled("[u]", accent.add_modifier(Modifier::BOLD)),
         Span::styled(" upgrade Team Plus · 14d   ", muted),

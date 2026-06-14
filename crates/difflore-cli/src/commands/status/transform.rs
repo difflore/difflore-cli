@@ -271,7 +271,7 @@ pub(super) fn local_value_loop_status(
         (
             "auditable_value_loop_ready",
             format!(
-                "{} from {}#{} traveled through top-{} recall, MCP serve, and accepted edit proof (~{} review minute{} saved locally)",
+                "{} from {}#{} matched memory #{} and became an accepted edit (~{} review minute{} saved locally)",
                 evidence.accepted_rule.title,
                 evidence.imported_review.source_repo,
                 evidence.imported_review.pr_number,
@@ -281,7 +281,7 @@ pub(super) fn local_value_loop_status(
             ),
         )
     } else if accepted_edit_proof_ready {
-        let recall_breakdown = crate::commands::util::format_recall_edit_proof_breakdown(
+        let recall_breakdown = crate::support::util::format_recall_edit_proof_breakdown(
             accepted.accepted_outcomes_linked_to_rule_recall,
             accepted.accepted_outcomes_linked_to_mcp_rule_serve,
             accepted.accepted_outcomes_linked_to_edit_attribution,
@@ -289,7 +289,7 @@ pub(super) fn local_value_loop_status(
         (
             "accepted_edit_proof_ready",
             format!(
-                "{} accepted edit proof{} ({} after prior memory-use proof{} within {}d, ~{} review minute{} saved locally)",
+                "{} accepted edit{} ({} after prior memory use{} within {}d, ~{} review minute{} saved locally)",
                 accepted_total,
                 plural(accepted_total),
                 accepted.accepted_outcomes_linked_to_prior_recall,
@@ -308,7 +308,7 @@ pub(super) fn local_value_loop_status(
         (
             "local_recall_seen",
             format!(
-                "{} local recall event{} recorded; run impact to inspect cited rules, then accept a matching agent edit to close proof",
+                "{} local recall event{} recorded; preview fixes, then accept a matching agent edit",
                 recall.recall_events,
                 plural(recall.recall_events),
             ),
@@ -317,7 +317,7 @@ pub(super) fn local_value_loop_status(
         (
             "accepted_edit_seen",
             format!(
-                "{} accepted edit proof{} recorded for this repo, but 0 followed prior memory-use proof within {}d; run recall/MCP before accepting edits to close the value loop",
+                "{} accepted edit{} recorded for this repo, but 0 followed memory use within {}d; preview recalled memories before accepting edits",
                 accepted_total,
                 plural(accepted_total),
                 accepted.recall_lookback_days,
@@ -326,25 +326,25 @@ pub(super) fn local_value_loop_status(
     } else if repo_scoped_rules_ready {
         (
             "repo_rules_ready",
-            "repo-scoped rules exist; run recall to prove they match this diff".to_owned(),
+            "repo-scoped memories exist; preview them against this diff".to_owned(),
         )
     } else if repo_candidates_ready {
         (
             "repo_candidates_pending",
             format!(
-                "{pending_candidates_for_repo} review-memory candidate{} drafted for this repo; accept one to enable recall",
+                "{pending_candidates_for_repo} rule candidate{} drafted for this repo; accept one to enable recall",
                 plural(pending_candidates_for_repo),
             ),
         )
     } else if scope.review_source_repo_full_name.is_some() {
         (
             "fork_memory_missing",
-            "attach upstream review memory to this fork, then test recall".to_owned(),
+            "attach upstream review rules to this fork, then test recall".to_owned(),
         )
     } else {
         (
             "repo_memory_missing",
-            "import this repo's review memory before testing recall".to_owned(),
+            "import this repo's review rules before testing recall".to_owned(),
         )
     };
 
@@ -364,15 +364,15 @@ pub(super) fn local_value_loop_status(
 pub(super) fn mcp_agent_recall_buyer_evidence(serves: &LocalMcpRuleServe) -> String {
     if serves.strict_matches > 0 {
         return format!(
-            "{} file-scoped MCP rule match{} served to agents; run impact to inspect proof, then accept a matching agent edit",
+            "{} file-scoped memory match{} ready for agents; preview fixes, then accept a matching agent edit",
             serves.strict_matches,
             if serves.strict_matches == 1 { "" } else { "es" },
         );
     }
     format!(
-        "{} MCP rule{} served to agents; run impact to inspect proof, then accept a matching agent edit",
+        "{} memor{} ready for agents; preview fixes, then accept a matching agent edit",
         serves.rules_served,
-        plural(serves.rules_served),
+        if serves.rules_served == 1 { "y" } else { "ies" },
     )
 }
 
@@ -413,12 +413,12 @@ fn local_beta_lane_readiness(
     };
     let summary = if ready {
         format!(
-            "Local/design-partner beta lane has usable review-memory signal: {}. This remains non-production evidence.",
+            "Local/design-partner beta lane has usable rule-recall signal: {}. This does not count toward production GA.",
             value_loop.buyer_evidence
         )
     } else {
         format!(
-            "Local/design-partner beta lane is not yet proof-ready: {}.",
+            "Local/design-partner beta lane is not ready yet: {}.",
             value_loop.buyer_evidence
         )
     };
@@ -432,9 +432,9 @@ fn local_beta_lane_readiness(
         release_ready_influence: "none".to_owned(),
         production_score_delta: 0,
         required_evidence: vec![
-            "repo-scoped review memory imported from PR reviews".to_owned(),
-            "local recall or MCP serve that matches the current repo/file".to_owned(),
-            "accepted edit proof after prior memory use for stronger beta proof".to_owned(),
+            "repo-scoped review rules imported from PR reviews".to_owned(),
+            "local recall or agent delivery that matches the current repo/file".to_owned(),
+            "accepted edit after prior rule use for stronger beta readiness".to_owned(),
         ],
     }
 }
@@ -444,24 +444,24 @@ fn production_ga_lane_readiness() -> LaneReadiness {
         name: "production-ga".to_owned(),
         status: "blocked_external_release_gates_required".to_owned(),
         ready: false,
-        summary: "Local `difflore status` cannot approve production GA; GA requires production-classified release artifacts from difflore-cloud.".to_owned(),
+        summary: "Local `difflore status` cannot approve production GA; GA requires production-ready release artifacts from DiffLore Cloud.".to_owned(),
         next_command: "difflore doctor --report".to_owned(),
         counts_as_production_evidence: false,
         release_ready_influence: "none".to_owned(),
         production_score_delta: 0,
         required_evidence: vec![
-            "30 counted production accepted difflore fix proofs".to_owned(),
+            "30 counted production accepted difflore fix edits".to_owned(),
             "3 real production tenants".to_owned(),
-            "10 counted production proofs per tenant".to_owned(),
+            "10 counted production accepted edits per tenant".to_owned(),
             "6 current third-party confirmations".to_owned(),
-            "release_gate_runner hard gates all pass in the same evidence window".to_owned(),
+            "release gates pass in the same readiness window".to_owned(),
             "Claude second-layer audit returns APPROVE_10=true on that same bundle".to_owned(),
         ],
     }
 }
 
 pub(super) fn count_rules_for_repo(
-    rules: &[difflore_core::models::SkillRecord],
+    rules: &[difflore_core::domain::models::SkillRecord],
     source_repos: &HashMap<String, Option<String>>,
     repo: Option<&str>,
 ) -> i64 {
@@ -482,7 +482,7 @@ pub(super) fn count_rules_for_repo(
 }
 
 fn rule_repo_scope(
-    rule: &difflore_core::models::SkillRecord,
+    rule: &difflore_core::domain::models::SkillRecord,
     source_repos: &HashMap<String, Option<String>>,
 ) -> Option<String> {
     source_repos
@@ -524,7 +524,7 @@ pub(super) fn repo_scope_status(
         scoped_active_rules,
         review_source_active_rules,
     ) {
-        (None, _, _, _) => "no GitHub origin/upstream remote was detected".to_owned(),
+        (None, _, _, _) => "no supported origin/upstream git remote was detected".to_owned(),
         (Some(_repo), Some(source_repo), 0, source_count) if source_count > 0 => format!(
             "{source_count} upstream active memor{} from {source_repo} are available to this fork",
             if source_count == 1 { "y" } else { "ies" }
@@ -563,57 +563,47 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
         if !cloud_logged_in {
             return NextAction {
                 command: "difflore cloud login".to_owned(),
-                reason: "log in before turning local accepted proof into a cloud value summary"
-                    .to_owned(),
+                reason: "log in before uploading local accepted edits".to_owned(),
             };
         }
         return NextAction {
             command: "difflore cloud team --json".to_owned(),
-            reason: "verify cloud session and team before turning local accepted proof into a value summary"
-                .to_owned(),
+            reason: "confirm your team workspace before uploading accepted edits".to_owned(),
         };
     }
 
     if active_rules == 0 && pending_candidates_for_repo > 0 {
         return NextAction {
-            command: suggested_import_or_default(scope),
-            reason: "refresh imported review memory into active local memories".to_owned(),
+            command: draft_review_command(scope),
+            reason: "review pending drafts into active local rules".to_owned(),
         };
     }
 
     if scope.scoped_recall_ready {
         if local_recall_proof.recall_events > 0 || local_mcp_serves.strict_matches > 0 {
-            if !cloud_logged_in {
-                return NextAction {
-                    command: "difflore cloud login".to_owned(),
-                    reason: "log in before cloud impact can summarize recalled rules".to_owned(),
-                };
-            }
             return NextAction {
-                command: "difflore cloud team --json".to_owned(),
-                reason:
-                    "verify cloud session and team before cloud impact summarizes recalled rules"
-                        .to_owned(),
+                command: "difflore fix --preview".to_owned(),
+                reason: "turn recalled memories into accepted edits".to_owned(),
             };
         }
         return NextAction {
             command: "difflore recall --diff".to_owned(),
-            reason: "preview the memories agents would see on this change".to_owned(),
+            reason: "preview the rules agents would see on this change".to_owned(),
         };
     }
 
     if active_rules > 0 && scope.repo_full_name.is_none() {
         return NextAction {
             command: "difflore recall \"review this change\"".to_owned(),
-            reason: "preview local memories; add a GitHub origin remote for repo-scoped recall"
+            reason: "preview local rules; add a supported origin remote for repo-scoped recall"
                 .to_owned(),
         };
     }
 
     if pending_candidates_for_repo > 0 {
         return NextAction {
-            command: suggested_import_or_default(scope),
-            reason: "refresh pending drafts into active local memory before testing recall"
+            command: draft_review_command(scope),
+            reason: "review pending drafts into active local rules before testing recall"
                 .to_owned(),
         };
     }
@@ -625,73 +615,80 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
                 .clone()
                 .unwrap_or_else(|| "difflore import-reviews".to_owned()),
             reason: if scope.review_source_repo_full_name.is_some() {
-                "create local memories from upstream PR reviews and attach them to this fork"
+                "create local rules from upstream PR reviews and attach them to this fork"
                     .to_owned()
             } else {
-                "create local review memories without Cloud".to_owned()
+                "create local review rules without Cloud".to_owned()
             },
         };
     }
 
     if pending_candidates > 0 && scope.repo_full_name.is_none() {
         return NextAction {
-            command: "difflore import-reviews".to_owned(),
-            reason:
-                "create active local memories; add a GitHub origin remote for repo-scoped guidance"
-                    .to_owned(),
+            command: "difflore drafts review".to_owned(),
+            reason: "review pending drafts; add a supported origin remote for repo-scoped guidance"
+                .to_owned(),
         };
     }
 
     NextAction {
         command: "difflore import-reviews".to_owned(),
-        reason: "seed local memories from past PR reviews".to_owned(),
+        reason: "seed local rules from past PR reviews".to_owned(),
     }
 }
 
-fn suggested_import_or_default(scope: &RepoScopeStatus) -> String {
-    scope
-        .suggested_import_command
-        .clone()
-        .unwrap_or_else(|| "difflore import-reviews".to_owned())
+fn draft_review_command(scope: &RepoScopeStatus) -> String {
+    scope.repo_full_name.as_ref().map_or_else(
+        || "difflore drafts review".to_owned(),
+        |repo| format!("difflore drafts review --repo {repo}"),
+    )
 }
 
 pub(super) fn proof_path_commands(next: &NextAction, cloud_logged_in: bool) -> Vec<String> {
+    const CLOUD_LOGIN_COMMAND: &str = "difflore cloud login";
     const CLOUD_PROOF_READINESS_COMMAND: &str = "difflore cloud team --json";
     const CLOUD_IMPACT_COMMAND: &str = "difflore cloud impact";
 
-    let command = next.command.as_str();
-    let mut path = if command == CLOUD_IMPACT_COMMAND {
+    fn cloud_proof_path(cloud_logged_in: bool, include_impact: bool) -> Vec<String> {
         if cloud_logged_in {
-            vec![CLOUD_PROOF_READINESS_COMMAND.to_owned(), command.to_owned()]
+            let mut path = vec![CLOUD_PROOF_READINESS_COMMAND.to_owned()];
+            if include_impact {
+                path.push(CLOUD_IMPACT_COMMAND.to_owned());
+            }
+            path
         } else {
-            vec![CLOUD_PROOF_READINESS_COMMAND.to_owned()]
-        }
-    } else if command == CLOUD_PROOF_READINESS_COMMAND {
-        if cloud_logged_in {
             vec![
+                CLOUD_LOGIN_COMMAND.to_owned(),
                 CLOUD_PROOF_READINESS_COMMAND.to_owned(),
-                CLOUD_IMPACT_COMMAND.to_owned(),
             ]
-        } else {
-            vec![CLOUD_PROOF_READINESS_COMMAND.to_owned()]
         }
+    }
+
+    let command = next.command.as_str();
+    let mut path = if matches!(
+        command,
+        CLOUD_IMPACT_COMMAND | CLOUD_PROOF_READINESS_COMMAND
+    ) {
+        cloud_proof_path(cloud_logged_in, true)
+    } else if command == CLOUD_LOGIN_COMMAND {
+        cloud_proof_path(cloud_logged_in, false)
     } else {
         vec![command.to_owned()]
     };
 
-    if command == CLOUD_IMPACT_COMMAND || command == CLOUD_PROOF_READINESS_COMMAND {
+    if command == CLOUD_IMPACT_COMMAND
+        || command == CLOUD_PROOF_READINESS_COMMAND
+        || command == CLOUD_LOGIN_COMMAND
+    {
         return path;
     }
 
-    if command.starts_with("difflore import-reviews") {
+    if command.starts_with("difflore import-reviews") || command.starts_with("difflore drafts ") {
         path.push("difflore recall --diff".to_owned());
         path.push("difflore fix --preview".to_owned());
     }
 
-    path.push(CLOUD_PROOF_READINESS_COMMAND.to_owned());
-    if cloud_logged_in {
-        path.push(CLOUD_IMPACT_COMMAND.to_owned());
-    }
+    path.extend(cloud_proof_path(cloud_logged_in, cloud_logged_in));
     path
 }
 
@@ -719,8 +716,8 @@ fn candidate_preview(candidate: &difflore_core::skills::CandidateRule) -> Candid
             .as_ref()
             .and_then(|proof| proof.comment_url.clone()),
         preview: candidate_body_preview(&candidate.description),
-        accept_command: "difflore import-reviews".to_owned(),
-        explain_command: "difflore status".to_owned(),
+        accept_command: format!("difflore drafts approve {}", candidate.id),
+        explain_command: format!("difflore drafts show {}", candidate.id),
     }
 }
 
@@ -757,7 +754,7 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
         return text.to_owned();
     }
     let head: String = text.chars().take(max_chars.saturating_sub(1)).collect();
-    format!("{head}…")
+    format!("{head}...")
 }
 
 #[cfg(test)]
@@ -805,8 +802,8 @@ mod tests {
         id: &str,
         owner: Option<&str>,
         repo: Option<&str>,
-    ) -> difflore_core::models::SkillRecord {
-        difflore_core::models::SkillRecord {
+    ) -> difflore_core::domain::models::SkillRecord {
+        difflore_core::domain::models::SkillRecord {
             id: id.to_owned(),
             name: "Rule".to_owned(),
             source: "local".to_owned(),
@@ -888,7 +885,7 @@ mod tests {
     fn repo_scope_status_requires_repo_and_scoped_rules() {
         let no_repo = scope(None, 3);
         assert!(!no_repo.scoped_recall_ready);
-        assert!(no_repo.reason.contains("no GitHub origin"));
+        assert!(no_repo.reason.contains("no supported origin"));
 
         let empty_repo = scope(Some("acme/app"), 0);
         assert!(!empty_repo.scoped_recall_ready);
@@ -926,7 +923,7 @@ mod tests {
 
         assert_eq!(
             next_action_for_test(0, 4, 2, &scope, &proof).command,
-            "difflore import-reviews --repo acme/app"
+            "difflore drafts review --repo acme/app"
         );
     }
 
@@ -937,7 +934,7 @@ mod tests {
 
         assert_eq!(
             next_action_for_test(0, 4, 2, &scope, &proof).command,
-            "difflore import-reviews --repo acme/app"
+            "difflore drafts review --repo acme/app"
         );
     }
 
@@ -953,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn next_action_verifies_team_after_local_recall_proof_when_cloud_logged_in() {
+    fn next_action_uses_fix_preview_after_local_recall_proof_when_cloud_logged_in() {
         let scope = scope(Some("acme/app"), 2);
         let proof = empty_local_proof();
         let recall_proof = LocalRecallProof {
@@ -972,12 +969,12 @@ mod tests {
             local_mcp_serves: &empty_mcp_serves(),
         });
 
-        assert_eq!(next.command, "difflore cloud team --json");
-        assert!(next.reason.contains("verify cloud session and team"));
+        assert_eq!(next.command, "difflore fix --preview");
+        assert!(next.reason.contains("accepted edits"));
     }
 
     #[test]
-    fn next_action_moves_to_login_after_local_recall_proof_when_cloud_logged_out() {
+    fn next_action_uses_fix_preview_after_local_recall_proof_when_cloud_logged_out() {
         let scope = scope(Some("acme/app"), 2);
         let proof = empty_local_proof();
         let recall_proof = LocalRecallProof {
@@ -996,12 +993,12 @@ mod tests {
             local_mcp_serves: &empty_mcp_serves(),
         });
 
-        assert_eq!(next.command, "difflore cloud login");
-        assert!(next.reason.contains("before cloud impact"));
+        assert_eq!(next.command, "difflore fix --preview");
+        assert!(next.reason.contains("accepted edits"));
     }
 
     #[test]
-    fn next_action_verifies_team_after_mcp_rule_serves_when_cloud_logged_in() {
+    fn next_action_uses_fix_preview_after_mcp_rule_serves_when_cloud_logged_in() {
         let scope = scope(Some("acme/app"), 2);
         let proof = empty_local_proof();
         let mcp_serves = LocalMcpRuleServe {
@@ -1023,8 +1020,8 @@ mod tests {
             local_mcp_serves: &mcp_serves,
         });
 
-        assert_eq!(next.command, "difflore cloud team --json");
-        assert!(next.reason.contains("verify cloud session and team"));
+        assert_eq!(next.command, "difflore fix --preview");
+        assert!(next.reason.contains("accepted edits"));
     }
 
     #[test]
@@ -1063,7 +1060,7 @@ mod tests {
         let next = next_action_for_test(10, 0, 0, &fork, &proof);
 
         assert_eq!(next.command, "difflore recall --diff");
-        assert!(next.reason.contains("preview the memories"));
+        assert!(next.reason.contains("preview the rules"));
     }
 
     #[test]
@@ -1088,6 +1085,7 @@ mod tests {
                 "difflore import-reviews --repo acme/app",
                 "difflore recall --diff",
                 "difflore fix --preview",
+                "difflore cloud login",
                 "difflore cloud team --json",
             ]
         );
@@ -1102,7 +1100,7 @@ mod tests {
         );
         assert_eq!(
             proof_path_commands(&impact, false),
-            vec!["difflore cloud team --json"]
+            vec!["difflore cloud login", "difflore cloud team --json"]
         );
 
         let team = NextAction {
@@ -1115,7 +1113,16 @@ mod tests {
         );
         assert_eq!(
             proof_path_commands(&team, false),
-            vec!["difflore cloud team --json"]
+            vec!["difflore cloud login", "difflore cloud team --json"]
+        );
+
+        let login = NextAction {
+            command: "difflore cloud login".to_owned(),
+            reason: String::new(),
+        };
+        assert_eq!(
+            proof_path_commands(&login, false),
+            vec!["difflore cloud login", "difflore cloud team --json"]
         );
     }
 
@@ -1127,6 +1134,17 @@ mod tests {
         assert_eq!(
             next_action_for_test(10, 3, 0, &scope, &proof).command,
             "difflore import-reviews --repo acme/app"
+        );
+    }
+
+    #[test]
+    fn next_action_reviews_global_drafts_without_repo_scope() {
+        let scope = scope(None, 0);
+        let proof = empty_local_proof();
+
+        assert_eq!(
+            next_action_for_test(0, 3, 0, &scope, &proof).command,
+            "difflore drafts review"
         );
     }
 
@@ -1160,7 +1178,7 @@ mod tests {
         });
 
         assert_eq!(next.command, "difflore cloud team --json");
-        assert!(next.reason.contains("accepted proof"));
+        assert!(next.reason.contains("accepted edits"));
     }
 
     #[test]
@@ -1193,7 +1211,10 @@ mod tests {
         });
 
         assert_eq!(next.command, "difflore cloud login");
-        assert!(next.reason.contains("before turning local accepted proof"));
+        assert!(
+            next.reason
+                .contains("before uploading local accepted edits")
+        );
     }
 
     #[test]
@@ -1225,7 +1246,7 @@ mod tests {
 
         assert_eq!(status.stage, "repo_candidates_pending");
         assert!(status.repo_candidates_ready);
-        assert!(status.buyer_evidence.contains("5 review-memory candidates"));
+        assert!(status.buyer_evidence.contains("5 rule candidates"));
     }
 
     #[test]
@@ -1249,13 +1270,9 @@ mod tests {
 
         assert_eq!(status.stage, "agent_recall_seen");
         assert!(status.mcp_agent_recall_proof_ready);
-        assert!(
-            status
-                .buyer_evidence
-                .contains("file-scoped MCP rule matches")
-        );
-        assert!(status.buyer_evidence.contains("run impact"));
-        assert!(!status.buyer_evidence.contains("fix preview"));
+        assert!(status.buyer_evidence.contains("file-scoped memory matches"));
+        assert!(status.buyer_evidence.contains("preview fixes"));
+        assert!(!status.buyer_evidence.contains("run impact"));
     }
 
     #[test]
@@ -1279,7 +1296,7 @@ mod tests {
 
         assert_eq!(status.stage, "repo_rules_ready");
         assert!(!status.mcp_agent_recall_proof_ready);
-        assert!(status.buyer_evidence.contains("run recall"));
+        assert!(status.buyer_evidence.contains("preview them"));
     }
 
     #[test]
@@ -1316,7 +1333,7 @@ mod tests {
         assert!(
             status
                 .buyer_evidence
-                .contains("2 after prior memory-use proof (2 rule recalls) within 7d")
+                .contains("2 after prior memory use (2 rule recalls) within 7d")
         );
         assert_eq!(status.saved_review_minutes, 8);
     }
@@ -1434,6 +1451,7 @@ Prefer stable waits here instead of relying on a race with the scheduler."
                 .to_owned(),
             origin: "pr_review".to_owned(),
             installed_at: "2026-05-06 00:00:00".to_owned(),
+            source_repo: Some("tanstack/router".to_owned()),
             file_patterns: vec!["packages/router/**/*.ts".to_owned()],
             drafted_rule: Some(
                 "When touching `packages/router/**/*.ts`, prefer stable waits.".to_owned(),
@@ -1461,6 +1479,7 @@ Prefer stable waits here instead of relying on a race with the scheduler.",
             preview.preview,
             "Prefer stable waits here instead of relying on a race with the scheduler."
         );
-        assert_eq!(preview.accept_command, "difflore import-reviews");
+        assert_eq!(preview.accept_command, "difflore drafts approve cand-123");
+        assert_eq!(preview.explain_command, "difflore drafts show cand-123");
     }
 }

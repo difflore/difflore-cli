@@ -1,11 +1,11 @@
 use serde_json::{Value, json};
 
-use crate::models::RememberRuleInput;
-use crate::review_trajectory::TrajectoryStep;
+use crate::domain::models::RememberRuleInput;
+use crate::observability::trajectory::TrajectoryStep;
 use crate::skills;
 
 use super::super::{McpState, build_cost_meta, emit_trajectory_step, estimate_tokens};
-use super::util::{MCP_EMBEDDING_TIMEOUT, drain_mcp_query_outbox, enqueue_mcp_query_outbox};
+use super::serve_stats::{MCP_EMBEDDING_TIMEOUT, drain_mcp_query_outbox, enqueue_mcp_query_outbox};
 
 const MAX_REMEMBER_TITLE_CHARS: usize = 200;
 
@@ -110,6 +110,7 @@ pub(crate) async fn tool_remember_rule(
         .filter(|s| !s.trim().is_empty())
         .map(String::from);
 
+    let capture_client = "mcp-server";
     let input = RememberRuleInput {
         title: title.to_owned(),
         body: body.to_owned(),
@@ -119,8 +120,16 @@ pub(crate) async fn tool_remember_rule(
         severity,
         // MCP path is always the conversation channel.
         origin: Some("conversation".to_owned()),
+        captured_by_client: Some(capture_client.to_owned()),
     };
 
+    // Warm the configured-GitLab-host cache from the auth DB before detecting
+    // remotes. A fresh MCP-server process starts with an empty host cache; if
+    // remember_rule runs before any recall (search_rules/hook), self-managed
+    // GitLab remotes would otherwise fail to resolve and the rule would be
+    // captured without a repo scope — invisible to the next repo-scoped recall.
+    // Mirrors hook.rs and search_rules.rs.
+    crate::mcp_server::hook::refresh_configured_gitlab_hosts_for_remote_detection().await;
     let detected_repos = crate::mcp_server::hook::detect_git_remote_owner_repos();
 
     let outcome = skills::remember(&state.db, input)
@@ -128,15 +137,23 @@ pub(crate) async fn tool_remember_rule(
         .map_err(|e| (-32603, format!("Failed to remember rule: {e}")))?;
     let skill = &outcome.skill;
 
-    if let Some(repo_full_name) = detected_repos
+    // Route the detected remote through `RepoScope::canonical` so this UPDATE
+    // shares the one normalization gate every other `source_repo` write uses.
+    // The detected value is already canonical, but funnelling it through the
+    // newtype keeps RepoScope the single source_repo write entry point and
+    // fails closed (skips the write) on any non-canonical value rather than
+    // binding a raw String.
+    if let Some(repo_scope) = detected_repos
         .first()
         .map(String::as_str)
         .filter(|r| !r.trim().is_empty())
+        .and_then(crate::infra::git::RepoScope::canonical)
     {
         // MCP recall is repo-scoped. Without attaching the remembered
         // conversation rule to the current repo, the next search_rules /
         // get_rules call filters out the very rule the user just
         // asked the agent to remember.
+        let repo_full_name = repo_scope.as_str();
         let skill_id = skill.id.as_str();
         if let Err(e) = sqlx::query!(
             "UPDATE skills
@@ -151,14 +168,15 @@ pub(crate) async fn tool_remember_rule(
         .execute(&state.db)
         .await
         {
-            eprintln!("[difflore-mcp] remember_rule source_repo update failed: {e}");
+            if crate::infra::env::debug_telemetry() {
+                eprintln!("[difflore-mcp] remember_rule source_repo update failed: {e}");
+            }
         }
     }
 
-    // Re-index the rule store so the very next `search_rules` call
-    // can recall it. Route through the shared project-scoped index refresh
-    // so cloud/SHA1 embedding profiles and repo filtering stay consistent
-    // with CLI recall and MCP search.
+    // Re-index so the next `search_rules` call can recall the rule. Route
+    // through the shared project-scoped refresh so embedding profiles and repo
+    // filtering stay consistent with CLI recall and MCP search.
     if let Ok(index_pool) = state.resolve_index_pool().await {
         if let Err(e) = crate::context::orchestrator::ensure_rules_indexed_with_embedding_timeout(
             &state.db,
@@ -167,7 +185,9 @@ pub(crate) async fn tool_remember_rule(
         )
         .await
         {
-            eprintln!("[difflore-mcp] remember_rule index refresh failed: {e}");
+            if crate::infra::env::debug_telemetry() {
+                eprintln!("[difflore-mcp] remember_rule index refresh failed: {e}");
+            }
         }
     }
 
@@ -177,7 +197,7 @@ pub(crate) async fn tool_remember_rule(
     // doesn't become a silent flood.
     let warn_suffix = if outcome.captures_today >= skills::REMEMBER_WARN_THRESHOLD {
         format!(
-            "\n\n⚠️ {} conversation captures today (cap: {}). \
+            "\n\nWarning: {} conversation captures today (cap: {}). \
              Audit with `difflore status --json`.",
             outcome.captures_today,
             skills::REMEMBER_DAILY_LIMIT,
@@ -193,9 +213,9 @@ pub(crate) async fn tool_remember_rule(
         // bump is `MIN(1.0, current + 0.05)` — when the current value
         // is already near the cap the displayed delta is wrong.
         format!(
-            "Already had a matching rule **{}** (`{}`) — strengthened by +0.05 (now at {:.2} confidence). \
+            "~ strengthened existing rule **{}** (`{}`) captured from agent chat. \
              Inspect local memory with `difflore status --json`.",
-            skill.name, skill.id, outcome.confidence_after,
+            skill.name, skill.id,
         )
     } else {
         let pattern_hint = if skill.tags.iter().any(|t| t.contains('*')) {
@@ -204,11 +224,11 @@ pub(crate) async fn tool_remember_rule(
             " (repo-wide)"
         };
         format!(
-            "Remembered as **{}** (`{}`) at confidence {:.2}{}.\n\n\
+            "+1 rule captured from agent chat as **{}** (`{}`){}.\n\n\
              The rule is local on this device until your next cloud sync publishes eligible memory with the team. \
              Next time DiffLore reviews a matching file or your agent calls `search_rules` then `get_rules`, this rule will be in scope. \
              Inspect local memory with `difflore status --json`.",
-            skill.name, skill.id, outcome.confidence_after, pattern_hint,
+            skill.name, skill.id, pattern_hint,
         )
     };
 
@@ -239,7 +259,7 @@ pub(crate) async fn tool_remember_rule(
         let repo_full_name: Option<String> = detected_repos.first().cloned();
         enqueue_mcp_query_outbox(
             &state.db,
-            super::util::McpQueryOutboxEntry {
+            super::serve_stats::McpQueryOutboxEntry {
                 file: "remember_rule",
                 intent: &rule_name,
                 rules_injected: 1,
@@ -265,6 +285,7 @@ pub(crate) async fn tool_remember_rule(
             "cost": build_cost_meta(confirm_tokens, None),
             "rule_id": skill.id,
             "origin": skill.origin,
+            "captured_by_client": capture_client,
             "published": false,
             "deduped": outcome.deduped,
             "dedup_window_hit": outcome.dedup_window_hit,

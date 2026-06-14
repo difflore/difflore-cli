@@ -2,11 +2,11 @@ use core::fmt::Write as _;
 use std::collections::HashMap;
 use std::path::Path;
 
-use difflore_core::models::DiffContentRecord;
-use difflore_core::review::ReviewIssueRecord;
+use difflore_core::domain::models::DiffContentRecord;
+use difflore_core::review_engine::ReviewIssueRecord;
 
-use crate::commands::util::exit_err;
 use crate::style::{self, sym};
+use crate::support::util::exit_err;
 
 use super::pr::PreparedPrFix;
 use super::{CONFIDENCE_THRESHOLD, file_loc, percent, review_status_for_outcome};
@@ -36,7 +36,7 @@ pub(super) fn render_fix_report_markdown(
                 .get(id)
                 .map(|repo| format!(" _(learned from `{repo}`)_"))
                 .unwrap_or_default();
-            writeln!(out, "- **{title}** — `{id}`{provenance}").ok();
+            writeln!(out, "- **{title}** - `{id}`{provenance}").ok();
         }
         out.push('\n');
     }
@@ -63,7 +63,7 @@ pub(super) fn render_fix_report_markdown(
         let loc = file_loc(issue);
         writeln!(
             out,
-            "### {idx}. `{loc}` — {rule} ({pct}% {conf_label})\n",
+            "### {idx}. `{loc}` - {rule} ({pct}% {conf_label})\n",
             idx = i + 1,
             rule = issue.rule,
         )
@@ -152,7 +152,7 @@ pub(super) fn render_agent_handoff_markdown(
     let mut out = String::new();
     out.push_str("# DiffLore local agent fix task\n\n");
     out.push_str(
-        "You are editing this repository locally with team review memory from DiffLore.\n\n",
+        "You are editing this repository locally with source-backed codebase rules from DiffLore.\n\n",
     );
 
     out.push_str("## Constraints\n\n");
@@ -342,7 +342,7 @@ pub(super) fn emit_fix_json(
         attributions,
         outcome,
     );
-    println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+    println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
 }
 
 #[cfg(test)]
@@ -430,10 +430,10 @@ mod tests {
 
         assert!(
             report
-                .contains("**MaxBytesError handling** — `rule-a` _(learned from `gin-gonic/gin`)_")
+                .contains("**MaxBytesError handling** - `rule-a` _(learned from `gin-gonic/gin`)_")
         );
         // rule-b has no attribution -> no provenance suffix.
-        assert!(report.contains("**Other rule** — `rule-b`\n"));
+        assert!(report.contains("**Other rule** - `rule-b`\n"));
     }
 
     #[test]

@@ -1,9 +1,8 @@
 //! LLM gate for session-mined candidates.
 //!
 //! Calls the user's installed agent CLI (Claude Code / Codex / cursor-
-//! agent / Gemini) via [`crate::agent_cli::dispatch_gate`] to decide
-//! whether a session contains a reusable rule. Mirrors hivemind's
-//! `src/skillify/gate-parser.ts`.
+//! agent / Gemini) via [`crate::agent_exec::dispatch_gate`] to decide
+//! whether a session contains a reusable rule.
 //!
 //! ## Prompt shape
 //!
@@ -50,13 +49,11 @@
 //! and try from there. If parsing still fails, the gate returns
 //! [`GateError::ParseFailure`] and the worker drops the candidate.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::extract::Pair;
-use crate::agent_cli::{AgentKind, GateResult, dispatch_gate};
-use difflore_core::cloud::session_mined::{
-    SessionMinedCandidate, SessionMinedCandidateArgs,
-};
+use crate::agent_exec::{AgentKind, GateResult, dispatch_gate};
+use difflore_core::cloud::session_mined::{SessionMinedCandidate, SessionMinedCandidateArgs};
 
 /// Total prompt budget. Roughly ~30 KB ≈ ~7-8 K tokens after the JSON
 /// envelope overhead, leaving headroom for the model's response. Pairs
@@ -68,42 +65,56 @@ const PROMPT_MAX_CHARS: usize = 30_000;
 /// prompt budget gets dominated by digests rather than session content.
 const MAX_EXISTING_RULES_IN_PROMPT: usize = 24;
 
-/// How long we'll wait for the agent CLI to return. 90s is generous —
-/// Haiku-class models usually finish in 5-15s but cold CLI starts
-/// (especially `claude` on Windows) can add ~30s. Anything over 90s
-/// means something is wrong; the worker drops the candidate.
-const GATE_TIMEOUT: Duration = Duration::from_secs(90);
+const FALLBACK_GATE_AGENTS: [AgentKind; 4] = [
+    AgentKind::ClaudeCode,
+    AgentKind::Cursor,
+    AgentKind::GeminiCli,
+    AgentKind::Codex,
+];
+
+/// Per-agent cap for one fallback attempt. Haiku-class models usually finish
+/// in 5-15s; cold CLI starts can add overhead, but an individual attempt that
+/// cannot return in 30s should yield to the next compatible agent.
+const GATE_AGENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Total wall-clock cap for the whole fallback chain. This prevents a missing
+/// or chatty first agent from turning the background worker into a multi-minute
+/// stall.
+const GATE_TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Snapshot of an existing rule passed into the gate so it can decide
 /// MERGE vs KEEP. The cloud side already exposes this shape via
 /// `get_rules`; the worker just forwards the necessary subset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingRule {
-    /// Stable cloud rule id.
     pub rule_id: String,
     /// Title shown in MCP — the gate uses it to decide overlap.
     pub title: String,
-    /// First few sentences of the body. Trimmed to keep the prompt
-    /// short — full bodies would blow the context window once the
+    /// Trimmed body so full bodies don't blow the prompt budget once the
     /// user has 50+ rules.
     pub body_snippet: String,
+    /// Stored glob scope for the existing rule. The worker reuses this
+    /// when the gate returns MERGE without fresh file evidence.
+    pub file_patterns: Vec<String>,
+    /// Stored source repo attribution for the existing rule. When present,
+    /// merge candidates inherit it so the cloud can apply the update to the
+    /// same project scope as the target rule.
+    pub source_repo: Option<String>,
 }
 
-/// Inputs accepted by [`run_gate`].
 #[derive(Debug, Clone)]
 pub struct GateArgs<'a> {
     pub session_id: &'a str,
     pub source_repo: &'a str,
     pub pairs: &'a [Pair],
     pub existing_rules: &'a [ExistingRule],
-    /// Provider:model identifier recorded on the candidate (e.g.
-    /// `"claude-code:gate"`). Not used to pick the agent CLI — that is
-    /// derived from `client_name` — but stored on the
-    /// [`SessionMinedCandidate`] for audits.
+    /// Legacy provider:model identifier recorded on the candidate when a
+    /// caller maps a parsed verdict directly. Normal [`run_gate`] execution
+    /// records the actual successful agent instead.
     pub gate_model: &'a str,
     /// Hook adapter client name (`"claude-code"`, `"cursor"`, …). Maps
-    /// to an [`AgentKind`] via `AgentKind::from_client_name`; unknown
-    /// values default to Claude Code (the most common install).
+    /// to an [`AgentKind`] via `AgentKind::from_client_name`; gate execution
+    /// tries the user's current client first, then other compatible CLIs.
     pub client_name: &'a str,
     /// Unix-ms timestamp to stamp on the produced candidate when the
     /// gate keeps the session. Passed in (rather than read from the
@@ -120,7 +131,13 @@ pub enum GateVerdict {
     /// verdict so the cloud-side merge code knows which rule to
     /// extend. `updated_body` is the gate's proposed replacement
     /// body for the merged rule.
-    Merge { rule_id: String, updated_body: String },
+    Merge {
+        gate_model: String,
+        rule_id: String,
+        title: Option<String>,
+        updated_body: String,
+        file_patterns: Vec<String>,
+    },
     /// Nothing reusable in the session — log + drop.
     Skip { reason: String },
 }
@@ -134,7 +151,7 @@ pub enum GateError {
     EmptyInput,
     /// Agent CLI dispatch failed (binary missing, timeout, non-zero
     /// exit, etc). `message` is the human-readable reason from
-    /// [`crate::agent_cli::GateResult::error_message`].
+    /// [`crate::agent_exec::GateResult::error_message`].
     #[error("session-mine gate dispatch failed: {message}")]
     Dispatch { message: String },
     /// Agent returned output we couldn't parse as the JSON contract.
@@ -156,21 +173,94 @@ pub async fn run_gate(args: GateArgs<'_>) -> Result<GateVerdict, GateError> {
         return Err(GateError::EmptyInput);
     }
 
-    let agent = AgentKind::from_client_name(args.client_name).unwrap_or(AgentKind::ClaudeCode);
     let prompt = build_prompt(args.pairs, args.existing_rules);
+    let mut dispatch_errors = Vec::new();
+    let started = Instant::now();
 
-    let result: GateResult = dispatch_gate(agent, &prompt, GATE_TIMEOUT).await;
-    if result.errored {
-        let message = if result.error_message.is_empty() {
-            "agent CLI reported error with no message".to_owned()
-        } else {
-            result.error_message
+    for agent in gate_agent_candidates(args.client_name) {
+        let Some(time_budget) = gate_dispatch_budget(started.elapsed()) else {
+            dispatch_errors.push(format!(
+                "time budget exhausted after {}s",
+                GATE_TOTAL_TIMEOUT.as_secs()
+            ));
+            break;
         };
-        return Err(GateError::Dispatch { message });
+        let result: GateResult = dispatch_gate(agent, &prompt, time_budget).await;
+        if let Some(verdict) = verdict_from_gate_result(agent, result, &args, &mut dispatch_errors)
+        {
+            return verdict;
+        }
     }
 
-    let parsed = parse_gate_json(&result.stdout)?;
-    parsed_to_verdict(parsed, &args)
+    Err(GateError::Dispatch {
+        message: if dispatch_errors.is_empty() {
+            "no compatible gate agents were configured".to_owned()
+        } else {
+            format!("all gate agents failed: {}", dispatch_errors.join("; "))
+        },
+    })
+}
+
+fn gate_dispatch_budget(elapsed: Duration) -> Option<Duration> {
+    let remaining = GATE_TOTAL_TIMEOUT.checked_sub(elapsed)?;
+    if remaining.is_zero() {
+        return None;
+    }
+    Some(remaining.min(GATE_AGENT_TIMEOUT))
+}
+
+fn verdict_from_gate_result(
+    agent: AgentKind,
+    result: GateResult,
+    args: &GateArgs<'_>,
+    dispatch_errors: &mut Vec<String>,
+) -> Option<Result<GateVerdict, GateError>> {
+    if result.errored {
+        dispatch_errors.push(format!(
+            "{}: {}",
+            agent.label(),
+            dispatch_error_message(result)
+        ));
+        return None;
+    }
+
+    let parsed = match parse_gate_json(&result.stdout) {
+        Ok(parsed) => parsed,
+        Err(err @ GateError::ParseFailure { .. }) => {
+            dispatch_errors.push(format!("{}: {err}", agent.label()));
+            return None;
+        }
+        Err(err) => return Some(Err(err)),
+    };
+
+    let gate_model = format!("{}:gate", agent.label());
+    Some(parsed_to_verdict(parsed, args, &gate_model))
+}
+
+fn dispatch_error_message(result: GateResult) -> String {
+    if result.error_message.is_empty() {
+        "agent CLI reported error with no message".to_owned()
+    } else {
+        result.error_message
+    }
+}
+
+fn gate_agent_candidates(client_name: &str) -> Vec<AgentKind> {
+    let mut agents = Vec::with_capacity(FALLBACK_GATE_AGENTS.len());
+    if let Some(client_agent) = AgentKind::from_client_name(client_name) {
+        push_gate_agent(&mut agents, client_agent);
+    }
+    for agent in FALLBACK_GATE_AGENTS {
+        push_gate_agent(&mut agents, agent);
+    }
+    agents
+}
+
+fn push_gate_agent(agents: &mut Vec<AgentKind>, agent: AgentKind) {
+    if matches!(agent, AgentKind::Windsurf) || agents.contains(&agent) {
+        return;
+    }
+    agents.push(agent);
 }
 
 /// Parsed JSON shape from the gate. Optional fields are normalized to
@@ -210,6 +300,21 @@ contains a reusable, transferable rule about how to write code in this team's re
             out.push_str(rule.rule_id.trim());
             out.push_str(": ");
             out.push_str(&title);
+            if let Some(source_repo) = rule
+                .source_repo
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                out.push_str(" [source_repo: ");
+                out.push_str(source_repo);
+                out.push(']');
+            }
+            if !rule.file_patterns.is_empty() {
+                out.push_str(" [file_patterns: ");
+                out.push_str(&rule.file_patterns.join(", "));
+                out.push(']');
+            }
             if !snippet_short.is_empty() {
                 out.push_str(" — ");
                 out.push_str(&snippet_short);
@@ -220,7 +325,6 @@ contains a reusable, transferable rule about how to write code in this team's re
     out.push('\n');
 
     // Render pairs newest-last but drop oldest first if we overflow.
-    // Pre-render each pair so we can pop from the front cheaply.
     let mut rendered_pairs: Vec<String> = pairs
         .iter()
         .map(|p| {
@@ -239,7 +343,6 @@ contains a reusable, transferable rule about how to write code in this team's re
         if candidate_len <= body_budget {
             break;
         }
-        // Drop the oldest pair (front) and retry.
         rendered_pairs.remove(0);
     }
     if rendered_pairs.is_empty() {
@@ -364,9 +467,7 @@ fn strip_markdown_fence(s: &str) -> String {
         // After the opening backticks there may be a language tag
         // (e.g. `json`). Drop everything up to and including the first
         // newline, then trim the closing fence off the end.
-        let after_lang = rest
-            .find('\n')
-            .map_or("", |idx| &rest[idx + 1..]);
+        let after_lang = rest.find('\n').map_or("", |idx| &rest[idx + 1..]);
         let stripped = after_lang
             .trim_end()
             .strip_suffix("```")
@@ -413,33 +514,41 @@ fn locate_json_object(s: &str) -> Option<String> {
     None
 }
 
-fn parsed_to_verdict(parsed: GateJson, args: &GateArgs<'_>) -> Result<GateVerdict, GateError> {
+fn parsed_to_verdict(
+    parsed: GateJson,
+    args: &GateArgs<'_>,
+    gate_model: &str,
+) -> Result<GateVerdict, GateError> {
     let verdict_uc = parsed.verdict.to_ascii_uppercase();
     match verdict_uc.as_str() {
         "KEEP" => {
-            let title = parsed
-                .title
-                .ok_or_else(|| GateError::InvalidCandidate {
-                    reason: "KEEP verdict missing title".to_owned(),
-                })?;
-            let body = parsed
-                .body
-                .ok_or_else(|| GateError::InvalidCandidate {
-                    reason: "KEEP verdict missing body".to_owned(),
-                })?;
+            let title = parsed.title.ok_or_else(|| GateError::InvalidCandidate {
+                reason: "KEEP verdict missing title".to_owned(),
+            })?;
+            let body = parsed.body.ok_or_else(|| GateError::InvalidCandidate {
+                reason: "KEEP verdict missing body".to_owned(),
+            })?;
             if parsed.file_patterns.is_empty() {
                 return Err(GateError::InvalidCandidate {
                     reason: "KEEP verdict missing file_patterns".to_owned(),
                 });
             }
+            // Funnel the worker-supplied scope through `RepoScope` so the
+            // candidate's `source_repo` write goes through the one normalization
+            // gate. The worker only ever passes a canonical scope, so this
+            // fails closed (rejects the candidate) on anything unexpected.
+            let source_repo = difflore_core::infra::git::RepoScope::canonical(args.source_repo)
+                .ok_or_else(|| GateError::InvalidCandidate {
+                    reason: format!("non-canonical source_repo: {}", args.source_repo),
+                })?;
             let candidate = SessionMinedCandidate::try_new(SessionMinedCandidateArgs {
                 session_id: args.session_id.to_owned(),
                 ts_ms: args.ts_ms,
-                source_repo: args.source_repo.to_owned(),
+                source_repo,
                 title,
                 body,
                 file_patterns: parsed.file_patterns,
-                gate_model: args.gate_model.to_owned(),
+                gate_model: gate_model.to_owned(),
                 gate_verdict: "KEEP".to_owned(),
             })
             .map_err(|e| GateError::InvalidCandidate {
@@ -448,22 +557,24 @@ fn parsed_to_verdict(parsed: GateJson, args: &GateArgs<'_>) -> Result<GateVerdic
             Ok(GateVerdict::Keep { candidate })
         }
         "MERGE" => {
-            let rule_id = parsed
-                .rule_id
-                .ok_or_else(|| GateError::InvalidCandidate {
-                    reason: "MERGE verdict missing rule_id".to_owned(),
-                })?;
-            let updated_body =
-                parsed.body.ok_or_else(|| GateError::InvalidCandidate {
-                    reason: "MERGE verdict missing body".to_owned(),
-                })?;
+            let rule_id = parsed.rule_id.ok_or_else(|| GateError::InvalidCandidate {
+                reason: "MERGE verdict missing rule_id".to_owned(),
+            })?;
+            let updated_body = parsed.body.ok_or_else(|| GateError::InvalidCandidate {
+                reason: "MERGE verdict missing body".to_owned(),
+            })?;
             Ok(GateVerdict::Merge {
+                gate_model: gate_model.to_owned(),
                 rule_id,
+                title: parsed.title,
                 updated_body,
+                file_patterns: parsed.file_patterns,
             })
         }
         "SKIP" => Ok(GateVerdict::Skip {
-            reason: parsed.reason.unwrap_or_else(|| "no reason given".to_owned()),
+            reason: parsed
+                .reason
+                .unwrap_or_else(|| "no reason given".to_owned()),
         }),
         other => Err(GateError::ParseFailure {
             reason: format!("unknown verdict '{other}'"),
@@ -495,10 +606,7 @@ mod tests {
         }
     }
 
-    fn args<'a>(
-        pairs: &'a [Pair],
-        existing: &'a [ExistingRule],
-    ) -> GateArgs<'a> {
+    fn args<'a>(pairs: &'a [Pair], existing: &'a [ExistingRule]) -> GateArgs<'a> {
         GateArgs {
             session_id: "sess_test",
             source_repo: "owner/repo",
@@ -510,8 +618,94 @@ mod tests {
         }
     }
 
-    // -- Prompt assembly --------------------------------------------------
+    #[test]
+    fn gate_candidates_prefer_current_client_and_leave_codex_as_fallback() {
+        let claude = gate_agent_candidates("claude-code");
+        assert_eq!(claude.first(), Some(&AgentKind::ClaudeCode));
+        assert_eq!(claude.last(), Some(&AgentKind::Codex));
+        assert_eq!(
+            claude,
+            vec![
+                AgentKind::ClaudeCode,
+                AgentKind::Cursor,
+                AgentKind::GeminiCli,
+                AgentKind::Codex,
+            ]
+        );
 
+        let codex = gate_agent_candidates("codex");
+        assert_eq!(codex.first(), Some(&AgentKind::Codex));
+        assert_eq!(
+            codex,
+            vec![
+                AgentKind::Codex,
+                AgentKind::ClaudeCode,
+                AgentKind::Cursor,
+                AgentKind::GeminiCli,
+            ]
+        );
+    }
+
+    #[test]
+    fn gate_dispatch_budget_caps_each_agent_and_total_chain() {
+        assert_eq!(
+            gate_dispatch_budget(Duration::ZERO),
+            Some(GATE_AGENT_TIMEOUT)
+        );
+        assert_eq!(
+            gate_dispatch_budget(Duration::from_secs(89)),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(gate_dispatch_budget(GATE_TOTAL_TIMEOUT), None);
+    }
+
+    #[test]
+    fn parse_failure_is_recorded_and_allows_next_agent() {
+        let pairs = vec![pair("u", "a")];
+        let existing = Vec::new();
+        let gate_args = args(&pairs, &existing);
+        let mut dispatch_errors = Vec::new();
+
+        let non_json = GateResult {
+            stdout: "login required before running the agent".to_owned(),
+            stderr: String::new(),
+            errored: false,
+            error_message: String::new(),
+        };
+        assert!(
+            verdict_from_gate_result(AgentKind::Codex, non_json, &gate_args, &mut dispatch_errors)
+                .is_none()
+        );
+        assert!(
+            dispatch_errors
+                .iter()
+                .any(|msg| msg.contains("codex") && msg.contains("parse failed")),
+            "parse failure should be retained for final diagnostics: {dispatch_errors:?}"
+        );
+
+        let valid_skip = GateResult {
+            stdout: r#"{"verdict":"SKIP","reason":"covered"}"#.to_owned(),
+            stderr: String::new(),
+            errored: false,
+            error_message: String::new(),
+        };
+        let verdict = verdict_from_gate_result(
+            AgentKind::ClaudeCode,
+            valid_skip,
+            &gate_args,
+            &mut dispatch_errors,
+        )
+        .expect("valid fallback should produce a verdict")
+        .expect("valid fallback should succeed");
+        assert_eq!(
+            verdict,
+            GateVerdict::Skip {
+                reason: "covered".to_owned()
+            }
+        );
+    }
+
+    // Prompt assembly
     #[test]
     fn prompt_includes_existing_rules_section_with_ids_and_titles() {
         let rules = vec![
@@ -519,12 +713,15 @@ mod tests {
                 rule_id: "rule-1".to_owned(),
                 title: "Prefer typed deserialization".to_owned(),
                 body_snippet: "Use serde structs instead of Value::as_str.".to_owned(),
+                file_patterns: vec!["src/**/*.rs".to_owned()],
+                source_repo: Some("owner/repo".to_owned()),
             },
             ExistingRule {
                 rule_id: "rule-2".to_owned(),
                 title: "Hard-deny dbg!".to_owned(),
-                body_snippet: "Workspace forbids debug macros in committed code."
-                    .to_owned(),
+                body_snippet: "Workspace forbids debug macros in committed code.".to_owned(),
+                file_patterns: vec!["**/*.rs".to_owned()],
+                source_repo: None,
             },
         ];
         let pairs = vec![pair("hi", "hello")];
@@ -582,22 +779,20 @@ mod tests {
                 rule_id: format!("rule-{i}"),
                 title: format!("title-{i}"),
                 body_snippet: format!("snippet-{i}"),
+                file_patterns: Vec::new(),
+                source_repo: None,
             });
         }
         let pairs = vec![pair("u", "a")];
         let prompt = build_prompt(&pairs, &rules);
         // First MAX in
         assert!(prompt.contains("rule-0:"));
-        assert!(prompt.contains(&format!(
-            "rule-{}:",
-            MAX_EXISTING_RULES_IN_PROMPT - 1
-        )));
+        assert!(prompt.contains(&format!("rule-{}:", MAX_EXISTING_RULES_IN_PROMPT - 1)));
         // Beyond MAX out
         assert!(!prompt.contains(&format!("rule-{MAX_EXISTING_RULES_IN_PROMPT}:")));
     }
 
-    // -- JSON parsing -----------------------------------------------------
-
+    // JSON parsing
     #[test]
     fn parse_keep_minimal_shape() {
         let raw = r#"{"verdict":"KEEP","title":"Always validate","body":"Validate before enqueue.","file_patterns":["src/**/*.rs"]}"#;
@@ -628,9 +823,6 @@ mod tests {
 
     #[test]
     fn parse_tolerates_markdown_json_fence() {
-        // Common: agent CLIs occasionally wrap JSON in a fence despite
-        // instruction. Parser must tolerate ```json … ``` exactly so a
-        // misbehaving gate doesn't poison the worker.
         let raw = "```json\n{\"verdict\":\"SKIP\",\"reason\":\"covered\"}\n```";
         let parsed = parse_gate_json(raw).expect("parses through fence");
         assert_eq!(parsed.verdict, "SKIP");
@@ -664,7 +856,6 @@ mod tests {
 
     #[test]
     fn parse_rejects_malformed_payload_with_clean_error() {
-        // Total garbage. The function must Err cleanly, not panic.
         let raw = "this is not JSON at all";
         let err = parse_gate_json(raw).unwrap_err();
         match err {
@@ -684,7 +875,10 @@ mod tests {
         let err = parse_gate_json(raw).unwrap_err();
         match err {
             GateError::ParseFailure { reason, .. } => {
-                assert!(reason.contains("verdict"), "diagnostic mentions verdict: {reason}");
+                assert!(
+                    reason.contains("verdict"),
+                    "diagnostic mentions verdict: {reason}"
+                );
             }
             other => panic!("expected ParseFailure, got {other:?}"),
         }
@@ -701,27 +895,28 @@ mod tests {
         assert!(matches!(err, GateError::ParseFailure { .. }));
     }
 
-    // -- Verdict mapping --------------------------------------------------
-
+    // Verdict mapping
     #[test]
     fn keep_verdict_builds_session_mined_candidate() {
         let parsed = GateJson {
             verdict: "KEEP".to_owned(),
             rule_id: None,
             title: Some("Validate before enqueue".to_owned()),
-            body: Some("Session-mined candidates must validate before reaching the outbox.".to_owned()),
+            body: Some(
+                "Session-mined candidates must validate before reaching the outbox.".to_owned(),
+            ),
             file_patterns: vec!["crates/**/*.rs".to_owned()],
             reason: None,
         };
         let pairs = vec![pair("u", "a")];
         let a = args(&pairs, &[]);
-        let verdict = parsed_to_verdict(parsed, &a).expect("verdict");
+        let verdict = parsed_to_verdict(parsed, &a, "codex:gate").expect("verdict");
         match verdict {
             GateVerdict::Keep { candidate } => {
                 assert_eq!(candidate.source_repo, "owner/repo");
                 assert_eq!(candidate.session_id, "sess_test");
                 assert_eq!(candidate.gate_verdict, "KEEP");
-                assert_eq!(candidate.gate_model, "claude-code:gate");
+                assert_eq!(candidate.gate_model, "codex:gate");
                 assert!(candidate.requires_human_approval);
                 assert_eq!(candidate.file_patterns, vec!["crates/**/*.rs"]);
             }
@@ -730,23 +925,26 @@ mod tests {
     }
 
     #[test]
-    fn merge_verdict_carries_rule_id_and_updated_body() {
+    fn merge_verdict_carries_rule_id_body_and_scope_evidence() {
         let parsed = GateJson {
             verdict: "MERGE".to_owned(),
             rule_id: Some("rule-42".to_owned()),
             title: Some("Extended".to_owned()),
             body: Some("Refined body".to_owned()),
-            file_patterns: vec![],
+            file_patterns: vec!["src/session.rs".to_owned()],
             reason: None,
         };
         let pairs = vec![pair("u", "a")];
         let a = args(&pairs, &[]);
-        let verdict = parsed_to_verdict(parsed, &a).expect("verdict");
+        let verdict = parsed_to_verdict(parsed, &a, "codex:gate").expect("verdict");
         assert_eq!(
             verdict,
             GateVerdict::Merge {
+                gate_model: "codex:gate".to_owned(),
                 rule_id: "rule-42".to_owned(),
+                title: Some("Extended".to_owned()),
                 updated_body: "Refined body".to_owned(),
+                file_patterns: vec!["src/session.rs".to_owned()],
             }
         );
     }
@@ -763,7 +961,7 @@ mod tests {
         };
         let pairs = vec![pair("u", "a")];
         let a = args(&pairs, &[]);
-        let verdict = parsed_to_verdict(parsed, &a).expect("verdict");
+        let verdict = parsed_to_verdict(parsed, &a, "codex:gate").expect("verdict");
         assert_eq!(
             verdict,
             GateVerdict::Skip {
@@ -787,7 +985,7 @@ mod tests {
         };
         let pairs = vec![pair("u", "a")];
         let a = args(&pairs, &[]);
-        let err = parsed_to_verdict(parsed, &a).unwrap_err();
+        let err = parsed_to_verdict(parsed, &a, "codex:gate").unwrap_err();
         assert!(matches!(err, GateError::InvalidCandidate { .. }));
     }
 
@@ -803,7 +1001,7 @@ mod tests {
         };
         let pairs = vec![pair("u", "a")];
         let a = args(&pairs, &[]);
-        let err = parsed_to_verdict(parsed, &a).unwrap_err();
+        let err = parsed_to_verdict(parsed, &a, "codex:gate").unwrap_err();
         match err {
             GateError::InvalidCandidate { reason } => {
                 assert!(reason.contains("file_patterns"));
@@ -824,11 +1022,49 @@ mod tests {
         };
         let pairs = vec![pair("u", "a")];
         let a = args(&pairs, &[]);
-        let err = parsed_to_verdict(parsed, &a).unwrap_err();
+        let err = parsed_to_verdict(parsed, &a, "codex:gate").unwrap_err();
         assert!(matches!(err, GateError::ParseFailure { .. }));
     }
 
-    // -- Public surface ---------------------------------------------------
+    // Public surface
+    #[test]
+    fn gate_agent_candidates_prefers_current_client_for_claude_code_hooks() {
+        assert_eq!(
+            gate_agent_candidates("claude-code"),
+            vec![
+                AgentKind::ClaudeCode,
+                AgentKind::Cursor,
+                AgentKind::GeminiCli,
+                AgentKind::Codex,
+            ],
+        );
+    }
+
+    #[test]
+    fn gate_agent_candidates_keeps_client_agent_first() {
+        assert_eq!(
+            gate_agent_candidates("cursor"),
+            vec![
+                AgentKind::Cursor,
+                AgentKind::ClaudeCode,
+                AgentKind::GeminiCli,
+                AgentKind::Codex,
+            ],
+        );
+    }
+
+    #[test]
+    fn gate_agent_candidates_skips_agents_without_headless_cli() {
+        assert_eq!(
+            gate_agent_candidates("windsurf"),
+            vec![
+                AgentKind::ClaudeCode,
+                AgentKind::Cursor,
+                AgentKind::GeminiCli,
+                AgentKind::Codex,
+            ],
+        );
+    }
 
     #[tokio::test]
     async fn run_gate_rejects_empty_input_without_spawning() {
@@ -846,6 +1082,8 @@ mod tests {
             rule_id: "rule-1".to_owned(),
             title: "Prefer typed parse".to_owned(),
             body_snippet: "..".to_owned(),
+            file_patterns: vec!["**/*.rs".to_owned()],
+            source_repo: Some("owner/repo".to_owned()),
         };
         assert_eq!(r.clone(), r);
     }

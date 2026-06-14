@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use crate::mcp_install;
+use crate::installer;
 use crate::style;
 
 const HOOK_SHIM_STALE_GRACE: Duration = Duration::from_secs(5);
@@ -32,7 +32,7 @@ pub(crate) fn has_fixable() -> bool {
     if !difflore_dir_exists() {
         return true;
     }
-    if !mcp_install::detect_install_repair_targets().is_empty() {
+    if !installer::detect_install_repair_targets().is_empty() {
         return true;
     }
     matches!(
@@ -88,7 +88,7 @@ pub(crate) fn run_fix_pass() {
     );
 }
 
-// ── Action planning ────────────────────────────────────────────────
+// Action planning
 
 enum Action {
     CreateDiffloreDir,
@@ -101,7 +101,7 @@ fn collect_actions() -> Vec<Action> {
     if !difflore_dir_exists() {
         out.push(Action::CreateDiffloreDir);
     }
-    let drift = mcp_install::detect_install_repair_targets();
+    let drift = installer::detect_install_repair_targets();
     if !drift.is_empty() {
         out.push(Action::InstallMcpDrift(drift));
     }
@@ -112,10 +112,10 @@ fn collect_actions() -> Vec<Action> {
     out
 }
 
-// ── 1. ~/.difflore/ directory ──────────────────────────────────────
+// 1. ~/.difflore/ directory
 
 fn difflore_dir_path() -> Option<PathBuf> {
-    difflore_core::paths::data_home().ok()
+    difflore_core::infra::paths::data_home().ok()
 }
 
 fn difflore_dir_exists() -> bool {
@@ -147,7 +147,7 @@ fn apply_create_difflore_dir() {
     }
 }
 
-// ── 2. MCP install drift ───────────────────────────────────────────
+// 2. MCP install drift
 
 fn apply_install_mcp_drift(names: &[String]) {
     println!(
@@ -159,7 +159,7 @@ fn apply_install_mcp_drift(names: &[String]) {
     // `install_all` is idempotent — re-running picks up newly detected
     // agents without re-prompting for already-installed ones, which is
     // exactly what we want for drift recovery.
-    mcp_install::install_all(false);
+    installer::install_all(false);
     println!(
         "  {} {}",
         style::emerald(style::sym::OK),
@@ -167,7 +167,7 @@ fn apply_install_mcp_drift(names: &[String]) {
     );
 }
 
-// ── 3. difflore-hook shim ──────────────────────────────────────────
+// 3. difflore-hook shim
 
 enum HookShimState {
     Ok,
@@ -206,7 +206,7 @@ fn hook_shim_for_cli(cli: &std::path::Path) -> Option<PathBuf> {
 
 fn which_hook_shim() -> Option<PathBuf> {
     let exe_name = format!("difflore-hook{}", std::env::consts::EXE_SUFFIX);
-    let path = difflore_core::env::var_os(difflore_core::env::PATH)?;
+    let path = difflore_core::infra::env::var_os(difflore_core::infra::env::PATH)?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(&exe_name);
         if candidate.is_file() {
@@ -272,7 +272,7 @@ fn apply_hook_shim(state: HookShimState) {
     }
 }
 
-// ── Decline notices ────────────────────────────────────────────────
+// Decline notices
 
 /// Print the one-line "we won't auto-touch this" notices for the
 /// privacy-sensitive surfaces. Only emitted under `--fix` so the

@@ -4,7 +4,7 @@ use crate::context::embedding::{
     EMBEDDING_DIM, active_embedding_profile, embed_text, embed_texts_async_with_timeout,
 };
 use crate::context::rule_source::RuleDocument;
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 use super::schema::{
     IndexedRuleChunk, QueryFilter, blob_to_embedding, embedding_to_blob, read_meta, write_meta,
@@ -35,15 +35,11 @@ pub async fn upsert_rule_chunks_with_profile_and_timeout(
     rules: &[RuleDocument],
     embedding_timeout: Option<std::time::Duration>,
 ) -> Result<RuleChunksUpsertOutcome, CoreError> {
-    // 2026-04-27 perf: pre-load existing rows once so we can short-
-    // circuit unchanged rules without re-embedding or hitting the SQL
-    // hot path. The hook path runs upsert_rule_chunks on EVERY
-    // PreToolUse:Read/Edit/Write — a 3,921-rule cloud corpus would
-    // otherwise pay 3,921 embedding calls + 3,921 INSERT OR UPDATE
-    // statements per fire. Existing-row signature
-    // (content, file_patterns, language, repo_scope) — all four must
-    // match to skip; a metadata change still forces a row update so
-    // the SQL filter sees the new value.
+    // Pre-load existing rows once to short-circuit unchanged rules without
+    // re-embedding. The hook path runs this on EVERY PreToolUse
+    // Read/Edit/Write, so a large corpus would otherwise pay one embedding
+    // call + one upsert per rule per fire. All four signature fields
+    // (content, file_patterns, language, repo_scope) must match to skip.
     use std::collections::HashMap;
     type Sig = (String, Option<String>, Option<String>, Option<String>);
     type PendingUpsert = (
@@ -84,12 +80,10 @@ pub async fn upsert_rule_chunks_with_profile_and_timeout(
     let force_reembed =
         indexed_embedding_profile.as_deref() != Some(active_embedding_profile.as_str());
 
-    // Collect (id, embedding) pairs so we can push them into the ANN
-    // index after the SQL transaction commits. We cannot write the ANN
-    // BEFORE the commit because a DB rollback would leave the graph
-    // out of sync; we also cannot write INSIDE the transaction because
-    // ann.upsert + ann.save are not transactional. Post-commit is the
-    // natural resync point.
+    // Collect (id, embedding) pairs to push into the ANN index AFTER the
+    // SQL transaction commits: writing before commit risks a rollback
+    // desyncing the graph, and ann.upsert/ann.save aren't transactional, so
+    // post-commit is the only safe resync point.
     let mut ann_updates: Vec<(String, Vec<f32>)> = Vec::with_capacity(rules.len());
     let mut rows_to_embed: Vec<RowToEmbed> = Vec::new();
 
@@ -103,11 +97,10 @@ pub async fn upsert_rule_chunks_with_profile_and_timeout(
             rule.repo_scope.clone(),
         );
         if !force_reembed && existing.get(&id) == Some(&want) {
-            // No-op: row matches in content + all filtered metadata,
-            // and the active embedding profile matches the stored index
-            // profile. Skip both — saves an embedding call and a SQL
-            // UPDATE. If the profile changed (e.g. local SHA1 -> cloud
-            // semantic), force a re-embed even when content is unchanged.
+            // Row matches content + all filtered metadata and the active
+            // embedding profile matches the stored one, so skip the
+            // embedding call and the UPDATE. A profile change (e.g. local
+            // SHA1 -> cloud semantic) forces a re-embed even when unchanged.
             count += 1;
             continue;
         }
@@ -209,13 +202,10 @@ pub async fn upsert_rule_chunks_with_profile_and_timeout(
         .await?;
     }
 
-    // 2026-04-25: prune chunks whose skill_id is NOT in the input set.
-    // Without this, deleted rules' chunks linger forever and pollute
-    // recall — a process-advice rule we removed from rules_cloud was
-    // still surfacing here because the chunk row stayed indefinitely.
-    // Callers that pass all current skills (the MCP path does) get
-    // free orphan cleanup; callers that pass a partial slice should use
-    // a narrower write path instead of calling this function.
+    // Prune chunks whose skill_id is NOT in the input set, or deleted
+    // rules' chunks linger forever and pollute recall. Callers that pass all
+    // current skills (the MCP path) get free orphan cleanup; callers passing
+    // a partial slice should use a narrower write path instead.
     let valid_ids: Vec<String> = rules.iter().map(|r| r.skill_id.clone()).collect();
     let ids_json = serde_json::to_string(&valid_ids)
         .map_err(|e| CoreError::Internal(format!("serialize valid_ids: {e}")))?;
@@ -240,10 +230,11 @@ pub async fn upsert_rule_chunks_with_profile_and_timeout(
     tx.commit().await?;
 
     // Incrementally update the per-project ANN graph. Errors are logged and
-    // swallowed because retrieval has a linear fallback. Empty upserts stay free.
+    // swallowed because retrieval has a linear fallback.
     if !ann_updates.is_empty() {
         let dim = ann_updates[0].1.len();
-        let project_hash = crate::db::project_hash_from_root(&crate::db::current_project_root());
+        let project_hash =
+            crate::infra::db::project_hash_from_root(&crate::infra::db::current_project_root());
         match crate::context::ann::get_ann_for_project(&project_hash, dim).await {
             Ok(ann_arc) => {
                 let mut ann_guard = ann_arc.lock().await;
@@ -251,11 +242,15 @@ pub async fn upsert_rule_chunks_with_profile_and_timeout(
                     ann_guard.upsert(id, emb);
                 }
                 if let Err(e) = ann_guard.save().await {
-                    eprintln!("[upsert_rule_chunks] ann save failed: {e}");
+                    if crate::infra::env::debug_telemetry() {
+                        eprintln!("[upsert_rule_chunks] ann save failed: {e}");
+                    }
                 }
             }
             Err(e) => {
-                eprintln!("[upsert_rule_chunks] ann cache lookup failed: {e}");
+                if crate::infra::env::debug_telemetry() {
+                    eprintln!("[upsert_rule_chunks] ann cache lookup failed: {e}");
+                }
             }
         }
     }
@@ -266,21 +261,15 @@ pub async fn upsert_rule_chunks_with_profile_and_timeout(
     })
 }
 
-/// Build a fully self-contained rule index in `pool` for an ephemeral,
-/// throwaway corpus (the `difflore try` demo). Assumes a fresh pool.
-///
-/// Differs from [`upsert_rule_chunks`] in three deliberate ways, all so the
-/// demo is instant, deterministic, and never touches the user's real data:
-/// - Embeds with the local SHA1 lexical embedder only — no provider call and
-///   no dependency on the user's cloud/BYOK config. This is exactly the
-///   zero-setup recall path a brand-new user gets, so what the demo shows is
-///   honest, and it can't hang on a slow or misconfigured cloud embedder.
-/// - Writes NO ANN graph. The ANN write in `upsert_rule_chunks` is keyed to
-///   the process CWD's project hash, so reusing it would scribble demo vectors
-///   into whatever real repo the user happens to be standing in
-///   (`~/.difflore/projects/{hash}/hnsw.*`). Retrieval over this pool must pass
-///   `ann_enabled = false`; the linear scan is trivial for a small demo corpus.
-/// - Skips orphan pruning (the pool is fresh, so there is nothing to prune).
+/// Build a self-contained rule index in a fresh `pool` for the ephemeral
+/// `difflore try` demo corpus. Differs from [`upsert_rule_chunks`] so the
+/// demo is instant, deterministic, and never touches real data:
+/// - Embeds with the local SHA1 lexical embedder only — no provider call,
+///   no cloud/BYOK dependency, and can't hang on a slow embedder.
+/// - Writes NO ANN graph: the ANN write is keyed to the CWD's project hash,
+///   so reusing it would scribble demo vectors into the user's real repo.
+///   Retrieval over this pool must pass `ann_enabled = false`.
+/// - Skips orphan pruning (the pool is fresh).
 pub async fn upsert_rule_chunks_isolated(
     pool: &SqlitePool,
     rules: &[RuleDocument],
@@ -289,9 +278,8 @@ pub async fn upsert_rule_chunks_isolated(
     for rule in rules {
         let id = format!("rule-{}", rule.skill_id);
         let blob = embedding_to_blob(&embed_text(&rule.content));
-        // Non-macro `query` (not `query!`) so this isolated path carries no
-        // offline-cache dependency; the binding shape mirrors the canonical
-        // upsert above.
+        // Non-macro `query` so this isolated path carries no offline-cache
+        // dependency; binding shape mirrors the canonical upsert above.
         sqlx::query(
             "INSERT INTO rule_chunks (id, skill_id, content, embedding, file_patterns, language, repo_scope)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -322,9 +310,9 @@ pub async fn upsert_rule_chunks_isolated(
     .await?;
     tx.commit().await?;
 
-    // Self-describe the index as the local lexical profile so the retrieval
-    // path's `embed_query_aligned_to_index` embeds the query with SHA1 too
-    // (matching dimensions), restoring the hash + FTS hybrid lane.
+    // Self-describe as the local lexical profile so the retrieval path
+    // embeds the query with SHA1 too (matching dimensions), restoring the
+    // hash + FTS hybrid lane.
     write_meta(
         pool,
         "embedding_profile",
@@ -335,21 +323,16 @@ pub async fn upsert_rule_chunks_isolated(
     Ok(rules.len())
 }
 
-/// Load chunks from the index DB applying the metadata pre-filter at the
-/// SQL layer. `filter.language` matches exact equality when set;
-/// `filter.repo_scope` matches exact equality when set. NULL repo scope is
-/// unattributed metadata and must not be widened into another repo at runtime.
-///
-/// When `filter.is_empty()` this returns the current per-project index
-/// without widening through retired repo metadata.
+/// Load chunks from the index DB, applying the metadata pre-filter in SQL.
+/// `language` and `repo_scope` match on exact equality when set. A NULL
+/// repo scope is unattributed and must not be widened into another repo.
 pub async fn query_rule_chunks(
     pool: &SqlitePool,
     filter: &QueryFilter,
 ) -> Result<Vec<IndexedRuleChunk>, CoreError> {
-    // The WHERE clause uses the "param IS NULL OR column = param" idiom
-    // so we can bind a fixed parameter list regardless of which filters
-    // are active. Unlike language, repo scope is intentionally exact:
-    // no cross-project/runtime global rules.
+    // The "param IS NULL OR column = param" idiom binds a fixed parameter
+    // list regardless of which filters are active. Repo scope is exact (no
+    // cross-project global rules), unlike language which also matches NULL.
     let language = filter.language.as_deref();
     let repo_scope = filter.repo_scope.as_deref();
     let rows = sqlx::query!(
@@ -379,15 +362,11 @@ pub async fn query_rule_chunks(
     Ok(out)
 }
 
-/// FTS5 keyword search. Returns `(chunk_id, rank)` pairs ordered by BM25
-/// rank (smaller = better in `SQLite` FTS5). `top_k` caps the result size
-/// BEFORE the metadata filter is applied — we fetch `top_k * 4` raw
-/// candidates from FTS then post-filter in Rust so rules that fail the
-/// metadata check don't eat into the keyword budget.
-///
-/// A malformed / empty query string yields an empty result rather than
-/// an error: the retrieval path treats FTS as best-effort (an embedding
-/// fallback always exists).
+/// FTS5 keyword search returning `(chunk_id, rank)` pairs ordered by BM25
+/// rank (smaller = better). Fetches `top_k * 4` raw candidates then
+/// post-filters metadata in Rust so filtered-out rows don't eat into the
+/// keyword budget. A malformed/empty query yields an empty result rather
+/// than an error — FTS is best-effort with an embedding fallback.
 pub async fn fts_search(
     pool: &SqlitePool,
     query: &str,
@@ -401,9 +380,8 @@ pub async fn fts_search(
 
     // Sanitise the query: FTS5 treats `:` / `-` / `"` as operators. Split
     // on any non-alphanumeric boundary (including `_`) so identifiers like
-    // `deprecated_xyzzy_handler` break into discoverable tokens that match
-    // what the porter/unicode61 tokenizer stored at index time. Matches how
-    // most hybrid-search tutorials preprocess BM25 input.
+    // `deprecated_xyzzy_handler` break into tokens matching what the
+    // porter/unicode61 tokenizer stored at index time.
     let terms: Vec<String> = trimmed
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
@@ -448,7 +426,9 @@ pub async fn fts_search(
             // FTS5 can raise syntax errors on unexpected query shapes.
             // We downgrade to "no hits" rather than failing retrieval —
             // the embedding path is always available as fallback.
-            eprintln!("[fts_search] query failed ({e}); returning empty hit set");
+            if crate::infra::env::debug_telemetry() {
+                eprintln!("[fts_search] query failed ({e}); returning empty hit set");
+            }
             return Ok(Vec::new());
         }
     };
