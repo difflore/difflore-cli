@@ -388,12 +388,8 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
     }
 
     if plan_tier.is_team() {
-        let label = difflore_core::cloud::sync::cloud_plan_label_from_status(&cloud_status);
-        let team_suffix = cloud_status
-            .team_name
-            .as_deref()
-            .map(|t| format!(" | team `{t}`"))
-            .unwrap_or_default();
+        let (label, team_suffix) =
+            impact_plan_line(plan_tier, cloud_status.team_name.as_deref());
         println!(
             "  {} {} {}{}",
             "Plan".bold(),
@@ -427,6 +423,28 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         style::pewter("Upgrade:"),
         difflore_core::cloud::endpoints::pricing_url()
     );
+}
+
+/// Plan line for the `impact` summary: the shared tier label plus an optional
+/// `| team `name`` suffix.
+///
+/// Deliberately uses [`CloudTier::default_label`] rather than
+/// `cloud_plan_label_from_status` (which returns the *team name* when one is
+/// set): the team name is already shown in the suffix, so reusing it as the
+/// label duplicated it and dropped the tier label. Using the tier label here
+/// also matches what `difflore init` / `doctor` render, so the same login shows
+/// one consistent plan name across surfaces.
+fn impact_plan_line(
+    tier: difflore_core::cloud::sync::CloudTier,
+    team_name: Option<&str>,
+) -> (String, String) {
+    let label = tier.default_label().to_owned();
+    let team_suffix = team_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| format!(" | team `{name}`"))
+        .unwrap_or_default();
+    (label, team_suffix)
 }
 
 fn impact_logged_out_value() -> serde_json::Value {
@@ -524,5 +542,27 @@ mod tests {
                 .expect("value description")
                 .contains("could not be verified")
         );
+    }
+
+    #[test]
+    fn impact_plan_line_keeps_tier_label_and_single_team_suffix() {
+        use difflore_core::cloud::sync::CloudTier;
+
+        // Team user with a team name: the tier label is kept and the team name
+        // appears exactly once (in the suffix, never folded into the label).
+        let (label, suffix) = impact_plan_line(CloudTier::Team, Some("Acme"));
+        assert_eq!(label, "Cloud Team");
+        assert_eq!(suffix, " | team `Acme`");
+        assert!(
+            !label.contains("Acme"),
+            "team name must not leak into the plan label (regression guard)"
+        );
+
+        // Team Plus keeps its own label.
+        assert_eq!(impact_plan_line(CloudTier::TeamPlus, Some("Acme")).0, "Cloud Team Plus");
+
+        // No team name -> no suffix; blank/whitespace name -> no empty suffix.
+        assert_eq!(impact_plan_line(CloudTier::Team, None).1, "");
+        assert_eq!(impact_plan_line(CloudTier::Team, Some("  ")).1, "");
     }
 }
