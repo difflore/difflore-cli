@@ -62,7 +62,7 @@ pub(crate) async fn handle_trajectory(ctx: &CommandContext, args: TrajectoryArgs
     let doc = match fetched {
         Ok(doc) => doc,
         Err(e) => {
-            render_fetch_error(review_id, &e, args.json);
+            render_fetch_error(review_id, &e.to_string(), args.json);
             return;
         }
     };

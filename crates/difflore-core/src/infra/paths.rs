@@ -2,17 +2,17 @@ use std::path::PathBuf;
 
 /// Root for all local data and config files: `~/.difflore`, overridden by
 /// `$DIFFLORE_HOME` in production or the shared test home in tests.
-pub fn data_home() -> Result<PathBuf, String> {
+pub fn data_home() -> crate::Result<PathBuf> {
     crate::infra::db::difflore_dir()
 }
 
 /// Currently equals `data_home()`. Separate so a future split (e.g. honoring
 /// XDG `$XDG_CONFIG_HOME`) won't break callers.
-pub fn config_home() -> Result<PathBuf, String> {
+pub fn config_home() -> crate::Result<PathBuf> {
     data_home()
 }
 
-pub fn config_file() -> Result<PathBuf, String> {
+pub fn config_file() -> crate::Result<PathBuf> {
     Ok(config_home()?.join("config.toml"))
 }
 

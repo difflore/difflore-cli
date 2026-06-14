@@ -1,12 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::domain::models::{
-    DiscoverSkillsInput, DiscoveredSkillRecord, InstallSkillInput, RemoveSkillInput, SkillRecord,
-    ToggleSkillEngineInput,
+    InstallSkillInput, RemoveSkillInput, SkillRecord, ToggleSkillEngineInput,
 };
 use crate::error::CoreError;
 
-use super::{SkillRow, decode_base64_lossy, parse_skill_frontmatter};
+use super::SkillRow;
 
 /// Map `skill_id → source_repo` for every active rule. Lets the TUI
 /// default the rules tab to the current repo without widening the stable
@@ -201,8 +200,7 @@ pub async fn remove(db: &sqlx::SqlitePool, input: RemoveSkillInput) -> crate::Re
                 eprintln!("warning: sync_engine_link failed for engine {engine}: {e}");
             }
         }
-        let skill_dir = crate::skills::fs::skills_base_dir()
-            .map_err(CoreError::Internal)?
+        let skill_dir = crate::skills::fs::skills_base_dir()?
             .join(&skill.source)
             .join(&skill.directory);
         if skill_dir.exists() {
@@ -264,128 +262,6 @@ pub async fn toggle_engine(
     }
 
     Ok(())
-}
-
-pub async fn discover(
-    db: &sqlx::SqlitePool,
-    input: DiscoverSkillsInput,
-) -> crate::Result<Vec<DiscoveredSkillRecord>> {
-    let branch = input.branch.unwrap_or_else(|| "main".into());
-    let repo_slug = format!("{}/{}", input.owner, input.repo);
-
-    let dirs: Vec<String> = if which::which("gh").is_ok() {
-        let output = std::process::Command::new("gh")
-            .args([
-                "api",
-                &format!("repos/{repo_slug}/contents"),
-                "--jq",
-                ".[].name",
-            ])
-            .output();
-
-        match output {
-            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .map(|l| l.trim().to_owned())
-                .filter(|l| !l.is_empty() && !l.starts_with('.'))
-                .collect(),
-            _ => vec![],
-        }
-    } else {
-        vec![]
-    };
-
-    let installed_ids: Vec<String> =
-        sqlx::query_scalar!("SELECT id FROM skills WHERE source = 'github'")
-            .fetch_all(db)
-            .await?;
-
-    if dirs.is_empty() {
-        return Ok(vec![DiscoveredSkillRecord {
-            name: format!("{} skills", input.repo),
-            description: format!("Skills from {repo_slug}"),
-            r#type: "skill".into(),
-            engines: vec!["claude".into()],
-            tags: vec!["remote".into()],
-            version: "1.0.0".into(),
-            directory: input.repo.clone(),
-            repo_owner: input.owner.clone(),
-            repo_name: input.repo,
-            repo_branch: branch,
-            installed: installed_ids.iter().any(|id| id.contains(&input.owner)),
-        }]);
-    }
-
-    let mut results = Vec::new();
-    for dir in dirs {
-        let skill_id = format!("skill-{}-{}", input.owner, dir);
-        let installed = installed_ids.contains(&skill_id);
-
-        let (name, description, fm) = if which::which("gh").is_ok() {
-            let md_output = std::process::Command::new("gh")
-                .args([
-                    "api",
-                    &format!("repos/{repo_slug}/contents/{dir}/SKILL.md"),
-                    "--jq",
-                    ".content",
-                ])
-                .output();
-
-            match md_output {
-                Ok(o) if o.status.success() => {
-                    let raw = String::from_utf8_lossy(&o.stdout).trim().to_owned();
-                    let decoded = decode_base64_lossy(&raw);
-                    let fm = parse_skill_frontmatter(&decoded);
-                    let first_line = fm
-                        .body
-                        .lines()
-                        .find(|l| !l.trim().is_empty())
-                        .unwrap_or(&dir)
-                        .trim_start_matches('#')
-                        .trim()
-                        .to_owned();
-                    let desc = fm
-                        .body
-                        .lines()
-                        .skip(1)
-                        .find(|l| !l.trim().is_empty())
-                        .unwrap_or("Remote skill")
-                        .trim()
-                        .to_owned();
-                    (first_line, desc, fm)
-                }
-                _ => (
-                    dir.replace('-', " "),
-                    format!("Skill from {repo_slug}/{dir}"),
-                    parse_skill_frontmatter(""),
-                ),
-            }
-        } else {
-            (
-                dir.replace('-', " "),
-                format!("Skill from {repo_slug}/{dir}"),
-                parse_skill_frontmatter(""),
-            )
-        };
-
-        results.push(DiscoveredSkillRecord {
-            name,
-            description,
-            r#type: fm.r#type.unwrap_or_else(|| "skill".into()),
-            engines: fm.engines.unwrap_or_else(|| vec!["claude".into()]),
-            tags: fm
-                .tags
-                .unwrap_or_else(|| vec!["remote".into(), "github".into()]),
-            version: fm.version.unwrap_or_else(|| "1.0.0".into()),
-            directory: dir,
-            repo_owner: input.owner.clone(),
-            repo_name: input.repo.clone(),
-            repo_branch: branch.clone(),
-            installed,
-        });
-    }
-
-    Ok(results)
 }
 
 pub async fn sync_links(db: &sqlx::SqlitePool) -> crate::Result<()> {

@@ -68,9 +68,7 @@ pub async fn create_local(
     let skill_type = input.r#type.unwrap_or_else(|| "skill".into());
     let description = input.description.unwrap_or_default();
 
-    let base_dir = crate::skills::fs::skills_base_dir()
-        .map_err(CoreError::Internal)?
-        .join("local");
+    let base_dir = crate::skills::fs::skills_base_dir()?.join("local");
     let skill_dir = base_dir.join(&slug);
 
     // Create base_dir BEFORE canonicalize so both sides share a prefix form.

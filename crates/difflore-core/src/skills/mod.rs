@@ -20,9 +20,9 @@ pub use sweep::{
 
 #[cfg(test)]
 pub(crate) use remember::remember_content_hash;
+pub(crate) use types::{SkillRepoRow, SkillRow};
 #[cfg(test)]
-pub(crate) use types::parse_list_value;
-pub(crate) use types::{SkillRepoRow, SkillRow, decode_base64_lossy, parse_skill_frontmatter};
+pub(crate) use types::{decode_base64_lossy, parse_list_value, parse_skill_frontmatter};
 
 #[cfg(test)]
 #[path = "tests.rs"]

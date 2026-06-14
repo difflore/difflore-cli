@@ -2,11 +2,11 @@ use std::path::PathBuf;
 
 use crate::infra::paths;
 
-pub fn skills_base_dir() -> Result<PathBuf, String> {
+pub fn skills_base_dir() -> crate::Result<PathBuf> {
     Ok(paths::data_home()?.join("skills"))
 }
 
-pub fn ensure_skill_dirs() -> Result<(), String> {
+pub fn ensure_skill_dirs() -> crate::Result<()> {
     let base = skills_base_dir()?;
     for source in &["github", "local", "cloud", "team"] {
         std::fs::create_dir_all(base.join(source))

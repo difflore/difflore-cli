@@ -50,9 +50,7 @@ pub fn index_db_path_for_project(project_hash: &str) -> PathBuf {
 /// Retired global path: `~/.difflore/context-index.db`. Used only by the
 /// startup guard to fail closed when a pre-split DB is present.
 pub(crate) fn retired_global_index_db_path() -> Result<PathBuf, CoreError> {
-    Ok(crate::infra::paths::data_home()
-        .map_err(CoreError::Internal)?
-        .join(INDEX_DB_NAME))
+    Ok(crate::infra::paths::data_home()?.join(INDEX_DB_NAME))
 }
 
 pub(super) fn embedding_to_blob(emb: &[f32]) -> Vec<u8> {

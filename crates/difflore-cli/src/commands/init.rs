@@ -81,7 +81,7 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
         installer::install_all(false);
     }
     if opts.run_provider() {
-        let has_active = difflore_core::domain::providers::list(db)
+        let has_active = difflore_core::infra::providers::list(db)
             .await
             .is_ok_and(|ps| ps.iter().any(|p| p.is_active));
         if !has_active {
@@ -180,7 +180,7 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
         }
     );
 
-    let providers = difflore_core::domain::providers::list(db)
+    let providers = difflore_core::infra::providers::list(db)
         .await
         .unwrap_or_default();
     let active = providers.iter().find(|p| p.is_active);
@@ -242,17 +242,10 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) {
     println!("  {}", style::cmd(next));
 }
 
-/// Return true when the user is on a paid Cloud Team plan. Unknown plan
-/// slugs deliberately fall back to OSS/free messaging so a typo or
-/// unreleased slug cannot suppress the upgrade prompt.
+/// Return true when the user is on a Cloud Team plan or has an active team
+/// identity. The exact tier mapping lives in core so CLI and TUI cannot drift.
 pub(crate) fn is_cloud_team(status: &difflore_core::cloud::sync::CloudStatus) -> bool {
-    if !status.logged_in {
-        return false;
-    }
-    matches!(
-        status.plan.as_deref(),
-        Some("team" | "team_plus" | "pro" | "business" | "enterprise")
-    )
+    difflore_core::cloud::sync::cloud_tier_from_status(status).is_team()
 }
 
 async fn fetch_cloud_status_for_init(
@@ -285,8 +278,12 @@ async fn fetch_cloud_status_for_init(
 ///   - OSS local mode → highlights what the user already has locally
 ///   - Cloud Team active → highlights what they're paying for
 pub(crate) fn tier_badge_line(status: &difflore_core::cloud::sync::CloudStatus) -> String {
-    if is_cloud_team(status) {
-        "Cloud Team | multi-device sync + GitHub App team review history".to_owned()
+    let tier = difflore_core::cloud::sync::cloud_tier_from_status(status);
+    if tier.is_team() {
+        format!(
+            "{} | multi-device sync + GitHub App team review history",
+            tier.default_label()
+        )
     } else if status.logged_in {
         "Cloud Free | logged in | local runtime + upgrade path".to_owned()
     } else {

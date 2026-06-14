@@ -203,11 +203,7 @@ fn patch_edit_strings(command: &str) -> (Option<String>, Option<String>) {
     let mut old_acc = String::new();
     let mut new_acc = String::new();
     for line in command.lines() {
-        if line.starts_with("***")
-            || line.starts_with("@@")
-            || line.starts_with("---")
-            || line.starts_with("+++")
-        {
+        if line.starts_with("***") || line.starts_with("@@") {
             continue;
         }
         if let Some(removed) = line.strip_prefix('-') {
@@ -329,6 +325,17 @@ mod tests {
         } else {
             panic!("expected PostToolUse");
         }
+    }
+
+    #[test]
+    fn patch_edit_strings_preserve_lines_that_start_with_patch_markers() {
+        let command =
+            "*** Begin Patch\n*** Update File: src/main.rs\n@@\n---flag\n+++i\n*** End Patch";
+
+        let (old_text, new_text) = patch_edit_strings(command);
+
+        assert_eq!(old_text.as_deref(), Some("--flag"));
+        assert_eq!(new_text.as_deref(), Some("++i"));
     }
 
     #[test]

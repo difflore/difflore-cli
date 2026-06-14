@@ -3,24 +3,18 @@
 
 use std::time::Duration;
 
-use difflore_core::cloud::sync::CloudStatus;
+use difflore_core::cloud::sync::{CloudStatus, CloudTier};
 use difflore_core::domain::models::SkillRecord;
 use difflore_core::observability::activity_stream::{ActivityEvent, ActivityPayload};
 
 use crate::plan::{Entitlements, EventStrip, PlanState, SupportSla, Tier};
 use crate::tabs::memory::filter::primary_memory_rule_count;
-use crate::widgets::{EventStripState, PlanStateView, PlanTier};
+use crate::widgets::{EventStripState, PlanStateView};
 
 const CLOUD_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 pub(super) const FREE_CLOUD_MEMORY_CAP: usize = 200;
 
 pub(super) fn build_status_bar_view(plan: &PlanState) -> PlanStateView {
-    let tier = match plan.tier {
-        Tier::Free => PlanTier::Free,
-        Tier::Team => PlanTier::Team,
-        Tier::TeamPlus => PlanTier::TeamPlus,
-    };
-
     let event_strip = match &plan.event_strip {
         EventStrip::None => EventStripState::None,
         EventStrip::CrossMachine { .. } => EventStripState::CrossMachine,
@@ -37,7 +31,7 @@ pub(super) fn build_status_bar_view(plan: &PlanState) -> PlanStateView {
     };
 
     PlanStateView {
-        tier,
+        tier: plan.tier,
         plan_label: plan.plan_label.clone(),
         rule_count: plan.rule_count,
         published_count: plan.published_count,
@@ -126,9 +120,9 @@ fn apply_cloud_status_to_plan(plan: &mut PlanState, status: &CloudStatus) {
         return;
     }
 
-    let tier = tier_from_cloud_status(status);
+    let tier = tier_from_cloud_tier(difflore_core::cloud::sync::cloud_tier_from_status(status));
     plan.tier = tier;
-    plan.plan_label = plan_label_from_cloud_status(status, tier);
+    plan.plan_label = difflore_core::cloud::sync::cloud_plan_label_from_status(status);
     match tier {
         Tier::Free => "#7d8588",
         Tier::Team => "#5ee0c8",
@@ -138,32 +132,11 @@ fn apply_cloud_status_to_plan(plan: &mut PlanState, status: &CloudStatus) {
     plan.entitlements = entitlements_for_tier(tier);
 }
 
-fn tier_from_cloud_status(status: &CloudStatus) -> Tier {
-    let plan = status
-        .plan
-        .as_deref()
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .replace('-', "_");
-    match plan.as_str() {
-        "team_plus" | "enterprise" => Tier::TeamPlus,
-        "team" | "pro" | "business" => Tier::Team,
-        _ if status.team_name.is_some() => Tier::Team,
-        _ => Tier::Free,
-    }
-}
-
-fn plan_label_from_cloud_status(status: &CloudStatus, tier: Tier) -> String {
-    if let Some(team) = status.team_name.as_deref().map(str::trim)
-        && !team.is_empty()
-    {
-        return team.to_owned();
-    }
-
+const fn tier_from_cloud_tier(tier: CloudTier) -> Tier {
     match tier {
-        Tier::Free => "Cloud Free".to_owned(),
-        Tier::Team => "Cloud Team".to_owned(),
-        Tier::TeamPlus => "Cloud Team Plus".to_owned(),
+        CloudTier::Free => Tier::Free,
+        CloudTier::Team => Tier::Team,
+        CloudTier::TeamPlus => Tier::TeamPlus,
     }
 }
 
@@ -213,7 +186,7 @@ mod tests {
         plan.entitlements.fix_runs_used = 240;
         plan.entitlements.fix_runs_quota = 300;
         let view = build_status_bar_view(&plan);
-        assert_eq!(view.tier, PlanTier::Team);
+        assert_eq!(view.tier, Tier::Team);
         assert!(matches!(
             view.event_strip,
             EventStripState::FixRunsLow {

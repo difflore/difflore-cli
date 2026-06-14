@@ -50,12 +50,12 @@ impl ObservationEmitter {
         &self.pool
     }
 
-    pub async fn open_default() -> Result<Self, String> {
+    pub async fn open_default() -> crate::Result<Self> {
         let path = crate::infra::paths::data_home()?.join(OUTBOX_DB_NAME);
         Self::open_at(&path).await
     }
 
-    pub async fn open_at(path: &Path) -> Result<Self, String> {
+    pub async fn open_at(path: &Path) -> crate::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
@@ -74,7 +74,7 @@ impl ObservationEmitter {
         Ok(Self { pool })
     }
 
-    pub async fn enqueue(&self, event: &ObservationEvent) -> Result<i64, String> {
+    pub async fn enqueue(&self, event: &ObservationEvent) -> crate::Result<i64> {
         if !crate::cloud::capture::capture_enabled() {
             return Ok(0);
         }
@@ -112,7 +112,7 @@ impl ObservationEmitter {
         session_id: &str,
         file_path: &str,
         within_ms: i64,
-    ) -> Result<Vec<String>, String> {
+    ) -> crate::Result<Vec<String>> {
         let cutoff = now_unix_ms() - within_ms.max(1);
         let rows = sqlx::query(
             "SELECT payload_json FROM observation_events \
@@ -189,7 +189,7 @@ impl ObservationEmitter {
         session_id: &str,
         file_path: &str,
         within_ms: i64,
-    ) -> Result<Option<String>, String> {
+    ) -> crate::Result<Option<String>> {
         Ok(self
             .matching_recent_rule_ids(app_db, session_id, file_path, within_ms)
             .await?
@@ -212,7 +212,7 @@ impl ObservationEmitter {
         file_path: Option<&str>,
         accepted_at_ms: i64,
         window_ms: i64,
-    ) -> Result<Vec<i64>, String> {
+    ) -> crate::Result<Vec<i64>> {
         let rule_id = rule_id.trim();
         if rule_id.is_empty() {
             return Ok(Vec::new());
@@ -272,7 +272,7 @@ impl ObservationEmitter {
     pub async fn latest_rule_fire_for_session(
         &self,
         session_id: &str,
-    ) -> Result<Option<RuleFireSnapshot>, String> {
+    ) -> crate::Result<Option<RuleFireSnapshot>> {
         let row = sqlx::query(
             "SELECT payload_json FROM observation_events \
              WHERE event_type = 'rule_fired' \
@@ -302,10 +302,7 @@ impl ObservationEmitter {
         }))
     }
 
-    pub async fn cited_edits_for_session(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<CitedEdit>, String> {
+    pub async fn cited_edits_for_session(&self, session_id: &str) -> crate::Result<Vec<CitedEdit>> {
         let rows = sqlx::query(
             "SELECT DISTINCT rule_id, file_path FROM observation_events \
              WHERE event_type = 'rule_cited_in_edit' AND session_id = ?1 \
@@ -330,7 +327,7 @@ impl ObservationEmitter {
             .collect())
     }
 
-    pub async fn has_fix_outcome(&self, session_id: &str, rule_id: &str) -> Result<bool, String> {
+    pub async fn has_fix_outcome(&self, session_id: &str, rule_id: &str) -> crate::Result<bool> {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM observation_events \
              WHERE event_type = 'fix_outcome' AND session_id = ?1 AND rule_id = ?2",
@@ -364,7 +361,7 @@ impl ObservationEmitter {
         &self,
         days: i64,
         ctx: &AcceptedOutcomeCtx,
-    ) -> Result<Vec<AcceptedOutcome>, String> {
+    ) -> crate::Result<Vec<AcceptedOutcome>> {
         let since_ms = Self::accepted_outcomes_since_ms(days);
         let rows = sqlx::query(
             "SELECT payload_json FROM observation_events \
@@ -402,7 +399,7 @@ impl ObservationEmitter {
         Ok(out)
     }
 
-    pub async fn accepted_fix_outcome_count(&self, days: i64) -> Result<i64, String> {
+    pub async fn accepted_fix_outcome_count(&self, days: i64) -> crate::Result<i64> {
         // The count path never computes prior-recall links, keeping a single
         // SELECT.
         let outcomes = self
@@ -421,7 +418,7 @@ impl ObservationEmitter {
         &self,
         days: i64,
         lookback_days: i64,
-    ) -> Result<AcceptedRecallLinkSummary, String> {
+    ) -> crate::Result<AcceptedRecallLinkSummary> {
         let lookback_ms = chrono::Duration::days(lookback_days.max(1))
             .num_milliseconds()
             .max(1);
@@ -475,7 +472,7 @@ impl ObservationEmitter {
         &self,
         days: i64,
         lookback_days: i64,
-    ) -> Result<Vec<AcceptedFixOutcomeRuleSummary>, String> {
+    ) -> crate::Result<Vec<AcceptedFixOutcomeRuleSummary>> {
         let lookback_ms = chrono::Duration::days(lookback_days.max(1))
             .num_milliseconds()
             .max(1);
@@ -561,7 +558,7 @@ impl ObservationEmitter {
         file_path: Option<&str>,
         accepted_at_ms: i64,
         lookback_ms: i64,
-    ) -> Result<PriorRuleUseLinks, String> {
+    ) -> crate::Result<PriorRuleUseLinks> {
         if rule_id.trim().is_empty() {
             return Ok(PriorRuleUseLinks::default());
         }
@@ -607,18 +604,20 @@ impl ObservationEmitter {
         Ok(links)
     }
 
-    pub async fn pending_upload_count(&self) -> Result<i64, String> {
-        sqlx::query_scalar("SELECT COUNT(*) FROM observation_events WHERE status = 'pending'")
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| format!("count pending observation uploads: {e}"))
+    pub async fn pending_upload_count(&self) -> crate::Result<i64> {
+        Ok(
+            sqlx::query_scalar("SELECT COUNT(*) FROM observation_events WHERE status = 'pending'")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| format!("count pending observation uploads: {e}"))?,
+        )
     }
 
     pub async fn has_rule_actual_citation(
         &self,
         session_id: &str,
         rule_id: &str,
-    ) -> Result<bool, String> {
+    ) -> crate::Result<bool> {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM observation_events \
              WHERE event_type = 'rule_actually_cited' AND session_id = ?1 AND rule_id = ?2",
@@ -634,7 +633,7 @@ impl ObservationEmitter {
     pub async fn actual_citation_summary_since(
         &self,
         since_ms: i64,
-    ) -> Result<ActualCitationSummary, String> {
+    ) -> crate::Result<ActualCitationSummary> {
         let actual_citations: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM observation_events \
              WHERE event_type = 'rule_actually_cited' AND occurred_at_ms >= ?1",
@@ -692,7 +691,7 @@ impl ObservationEmitter {
     pub async fn accepted_fix_proof_sources(
         &self,
         rule_ids: &[String],
-    ) -> Result<HashMap<String, String>, String> {
+    ) -> crate::Result<HashMap<String, String>> {
         let mut out = HashMap::new();
         if rule_ids.is_empty() {
             return Ok(out);
@@ -743,7 +742,7 @@ impl ObservationEmitter {
         Ok(out)
     }
 
-    pub(super) async fn cap_queue(&self) -> Result<(), String> {
+    pub(super) async fn cap_queue(&self) -> crate::Result<()> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM observation_events")
             .fetch_one(&self.pool)
             .await
@@ -787,14 +786,14 @@ impl ObservationEmitter {
 
 pub async fn accepted_fix_proof_sources_default(
     rule_ids: &[String],
-) -> Result<HashMap<String, String>, String> {
+) -> crate::Result<HashMap<String, String>> {
     ObservationEmitter::open_default()
         .await?
         .accepted_fix_proof_sources(rule_ids)
         .await
 }
 
-pub async fn actual_citation_summary_default(days: i64) -> Result<ActualCitationSummary, String> {
+pub async fn actual_citation_summary_default(days: i64) -> crate::Result<ActualCitationSummary> {
     let since_ms = now_unix_ms().saturating_sub(days.max(1).saturating_mul(86_400_000));
     ObservationEmitter::open_default()
         .await?
@@ -843,7 +842,7 @@ fn proof_source_rank(source: &str) -> u8 {
 pub async fn enqueue_and_flush_default(
     event: ObservationEvent,
     client: &crate::cloud::client::CloudClient,
-) -> Result<(usize, usize), String> {
+) -> crate::Result<(usize, usize)> {
     if !crate::cloud::capture::capture_enabled() {
         return Ok((0, 0));
     }
@@ -852,7 +851,7 @@ pub async fn enqueue_and_flush_default(
     emitter.flush_to_cloud(client).await
 }
 
-pub async fn enqueue_default(event: ObservationEvent) -> Result<i64, String> {
+pub async fn enqueue_default(event: ObservationEvent) -> crate::Result<i64> {
     if !crate::cloud::capture::capture_enabled() {
         return Ok(0);
     }
@@ -860,7 +859,7 @@ pub async fn enqueue_default(event: ObservationEvent) -> Result<i64, String> {
     emitter.enqueue(&event).await
 }
 
-async fn migrate(pool: &SqlitePool) -> Result<(), String> {
+async fn migrate(pool: &SqlitePool) -> crate::Result<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS observation_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

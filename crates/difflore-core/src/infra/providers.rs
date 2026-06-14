@@ -1,3 +1,5 @@
+//! Provider persistence and local provider auth probes.
+
 use uuid::Uuid;
 
 use crate::domain::models::{
@@ -122,7 +124,7 @@ pub async fn add(db: &sqlx::SqlitePool, input: ProviderAddInput) -> crate::Resul
     // BYOK has been removed from the local CLI. Provider rows now only
     // describe an agent-cli sentinel (`agent-cli://<tool>`); the column
     // stays for back-compat with older DBs but is always written empty.
-    let encrypted_key = crate::infra::crypto::encrypt_secret("").map_err(CoreError::Internal)?;
+    let encrypted_key = crate::infra::crypto::encrypt_secret("")?;
 
     sqlx::query!(
         "INSERT INTO providers (id, name, base_url, api_key, model_mapping, is_active, created_at, updated_at)
@@ -183,7 +185,7 @@ pub async fn update(
     let mapping_json = serde_json::to_string(&provider.model_mapping)?;
     // BYOK has been removed; the api_key column is left in place for
     // older schemas but always overwritten with an encrypted empty string.
-    let encrypted_secret = crate::infra::crypto::encrypt_secret("").map_err(CoreError::Internal)?;
+    let encrypted_secret = crate::infra::crypto::encrypt_secret("")?;
 
     let result = sqlx::query!(
         "UPDATE providers SET name=?1, base_url=?2, api_key=?3, model_mapping=?4, updated_at=?5 WHERE id=?6",

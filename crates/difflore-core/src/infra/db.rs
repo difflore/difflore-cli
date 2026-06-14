@@ -28,7 +28,7 @@ pub(crate) fn shared_test_home() -> &'static Path {
 }
 
 #[cfg_attr(test, allow(clippy::unnecessary_wraps))]
-pub(crate) fn difflore_dir() -> Result<PathBuf, String> {
+pub(crate) fn difflore_dir() -> crate::Result<PathBuf> {
     // `DIFFLORE_HOME` lets integration tests redirect the data dir to a
     // tempdir without modifying $HOME / $USERPROFILE. Honoured first; falls
     // back to the standard ~/.difflore in production.
@@ -52,7 +52,7 @@ pub(crate) fn difflore_dir() -> Result<PathBuf, String> {
 /// Path to the global data.db. Stays global because cross-project features
 /// (e.g. `rules stats`) rely on a single aggregate view; only the
 /// per-project embedding index lives outside the global root.
-pub fn data_db_path() -> Result<PathBuf, String> {
+pub fn data_db_path() -> crate::Result<PathBuf> {
     Ok(difflore_dir()?.join("data.db"))
 }
 
@@ -195,16 +195,16 @@ static MIGRATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(()
 /// Run every pending migration from `./migrations` against the given pool.
 /// Centralised so `sqlx::migrate!` expands once per crate and every path is
 /// guarded by `MIGRATION_LOCK`.
-pub async fn run_migrations(pool: &SqlitePool) -> Result<(), String> {
+pub async fn run_migrations(pool: &SqlitePool) -> crate::Result<()> {
     let _guard = MIGRATION_LOCK.lock().await;
     // `sqlx::migrate!` embeds the migration files at compile time so
     // `cargo install difflore-cli` doesn't need the registry source to
     // persist post-install (the disk-reading `Migrator::new(path)` form
     // broke after `cargo cache clean`).
-    sqlx::migrate!("./migrations")
+    Ok(sqlx::migrate!("./migrations")
         .run(pool)
         .await
-        .map_err(|e| format!("migration failed: {e}"))
+        .map_err(|e| format!("migration failed: {e}"))?)
 }
 
 /// Cache of opened `data.db` pools keyed by resolved path, so all callers
@@ -244,9 +244,10 @@ pub(crate) fn restrict_sqlite_files(db_path: &Path) {
 #[cfg(not(unix))]
 pub(crate) const fn restrict_sqlite_files(_db_path: &Path) {}
 
-pub async fn init_db() -> Result<SqlitePool, String> {
+pub async fn init_db() -> crate::Result<SqlitePool> {
     let dir = difflore_dir()?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create ~/.difflore: {e}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| crate::CoreError::Internal(format!("failed to create ~/.difflore: {e}")))?;
     restrict_to_owner(&dir, true);
     let db_path = dir.join("data.db");
 
@@ -278,14 +279,14 @@ pub async fn init_db() -> Result<SqlitePool, String> {
             // cryptic code into an actionable hint; read-only open isn't
             // supported (an existing `-wal` defeats `immutable=1`).
             if is_readonly_home_open_error(&e) {
-                format!(
+                crate::CoreError::Internal(format!(
                     "failed to open data.db: {e}\n\
                      hint: ~/.difflore appears read-only. A sandboxed agent (e.g. codex with a \
                      restrictive --sandbox) blocks DiffLore's writes. Run DiffLore unsandboxed for \
                      that client, or set DIFFLORE_HOME to a writable path."
-                )
+                ))
             } else {
-                format!("failed to open data.db: {e}")
+                crate::CoreError::Internal(format!("failed to open data.db: {e}"))
             }
         })?;
 
@@ -312,44 +313,41 @@ fn is_readonly_home_open_error(err: &sqlx::Error) -> bool {
 /// Count rows in the named tables for the `difflore doctor` inventory.
 /// Missing tables surface as `Err(message)` rather than aborting, so the
 /// report stays best-effort.
-pub async fn table_counts(
-    pool: &SqlitePool,
-    tables: &[&str],
-) -> Vec<(String, Result<i64, String>)> {
+pub async fn table_counts(pool: &SqlitePool, tables: &[&str]) -> Vec<(String, crate::Result<i64>)> {
     let mut out = Vec::with_capacity(tables.len());
     for t in tables {
-        let count: Result<i64, String> = match *t {
+        let count: crate::Result<i64> = match *t {
             "skills" => sqlx::query_scalar!(r#"SELECT COUNT(*) AS "n!: i64" FROM skills"#)
                 .fetch_one(pool)
                 .await
-                .map_err(|e| e.to_string()),
+                .map_err(crate::CoreError::Database),
             "review_items" => {
                 sqlx::query_scalar!(r#"SELECT COUNT(*) AS "n!: i64" FROM review_items"#)
                     .fetch_one(pool)
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(crate::CoreError::Database)
             }
             "review_comments" => {
                 sqlx::query_scalar!(r#"SELECT COUNT(*) AS "n!: i64" FROM review_comments"#)
                     .fetch_one(pool)
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(crate::CoreError::Database)
             }
             "providers" => sqlx::query_scalar!(r#"SELECT COUNT(*) AS "n!: i64" FROM providers"#)
                 .fetch_one(pool)
                 .await
-                .map_err(|e| e.to_string()),
+                .map_err(crate::CoreError::Database),
             "cloud_outbox" => {
                 sqlx::query_scalar!(r#"SELECT COUNT(*) AS "n!: i64" FROM cloud_outbox"#)
                     .fetch_one(pool)
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(crate::CoreError::Database)
             }
             "projects" => sqlx::query_scalar!(r#"SELECT COUNT(*) AS "n!: i64" FROM projects"#)
                 .fetch_one(pool)
                 .await
-                .map_err(|e| e.to_string()),
-            other => Err(format!("unknown table: {other}")),
+                .map_err(crate::CoreError::Database),
+            other => Err(format!("unknown table: {other}").into()),
         };
         out.push((t.to_string(), count));
     }
@@ -369,7 +367,7 @@ pub struct CorpusHealth {
     pub empty_file_patterns: i64,
 }
 
-pub async fn corpus_health(pool: &SqlitePool) -> Result<CorpusHealth, String> {
+pub async fn corpus_health(pool: &SqlitePool) -> crate::Result<CorpusHealth> {
     let total =
         sqlx::query_scalar!("SELECT COUNT(*) as \"n!: i64\" FROM skills WHERE status = 'active'")
             .fetch_one(pool)

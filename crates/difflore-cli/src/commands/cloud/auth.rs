@@ -38,7 +38,9 @@ struct CloudGithubLoginResponse {
 }
 
 fn device_registration_state_path() -> Result<PathBuf, String> {
-    Ok(difflore_core::infra::paths::data_home()?.join(DEVICE_REGISTRATION_FILE))
+    Ok(difflore_core::infra::paths::data_home()
+        .map_err(|e| e.to_string())?
+        .join(DEVICE_REGISTRATION_FILE))
 }
 
 pub(super) fn load_device_registration_state() -> Option<DeviceRegistrationState> {

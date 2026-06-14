@@ -52,11 +52,7 @@ fn draw_plan_snapshot(
     plan: &PlanState,
 ) {
     let theme = crate::theme::Theme::current();
-    let tier_label = match plan.tier {
-        Tier::Free => "Free",
-        Tier::Team => "Team",
-        Tier::TeamPlus => "Team Plus",
-    };
+    let tier_label = plan.tier.label();
     let tier_color = match plan.tier {
         Tier::Free => theme.muted,
         Tier::Team => theme.origin_cloud,

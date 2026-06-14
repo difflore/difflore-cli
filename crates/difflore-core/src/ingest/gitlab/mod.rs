@@ -59,8 +59,7 @@ pub async fn import_mr_reviews(
     opts: ImportOptions,
     on_progress: Option<ProgressCallback>,
 ) -> Result<ImportProgress, CoreError> {
-    crate::ingest::provider::validate_gitlab_project_path(&opts.project_path)
-        .map_err(CoreError::Internal)?;
+    crate::ingest::provider::validate_gitlab_project_path(&opts.project_path)?;
     let client = GitlabClient::new(&opts.host, &opts.token)?;
 
     let mut progress = ImportProgress {
@@ -140,8 +139,7 @@ pub async fn verify_project_access(
     token: &str,
     project_path: &str,
 ) -> Result<(), CoreError> {
-    crate::ingest::provider::validate_gitlab_project_path(project_path)
-        .map_err(CoreError::Internal)?;
+    crate::ingest::provider::validate_gitlab_project_path(project_path)?;
     let client = GitlabClient::new(host, token)?;
     client.check_project_access(project_path).await
 }

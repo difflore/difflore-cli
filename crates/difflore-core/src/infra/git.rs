@@ -3,9 +3,8 @@ use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::domain::models::{
-    DiffContentRecord, DiffHunkRecord, GitBranchRecord, GitBranchesInput, GitCheckoutPRInput,
-    GitCommitInput, GitCreatePRInput, GitDiffInput, GitFileStatusRecord, GitPRResult, GitPushInput,
-    GitStatusInput, GitStatusRecord,
+    DiffContentRecord, DiffHunkRecord, GitBranchRecord, GitBranchesInput, GitCommitInput,
+    GitDiffInput, GitFileStatusRecord, GitStatusInput, GitStatusRecord,
 };
 use crate::error::CoreError;
 
@@ -365,76 +364,6 @@ pub async fn commit(input: GitCommitInput) -> crate::Result<()> {
     let commit_result = run_git_args(&input.project_path, &commit_args);
     let _ = fs::remove_file(&message_file);
     commit_result?;
-    Ok(())
-}
-
-/// NOTE: git:changed events are driven by frontend mutation invalidation
-/// (useGitPush onSettled), not emitted from the backend.
-pub async fn push(input: GitPushInput) -> crate::Result<()> {
-    run_git(&input.project_path, &["push"])?;
-    Ok(())
-}
-
-pub async fn create_pr(input: GitCreatePRInput) -> crate::Result<GitPRResult> {
-    which::which("gh")
-        .map_err(|_| CoreError::Internal("GitHub CLI (gh) is not installed".into()))?;
-
-    let mut args = vec![
-        "pr".to_owned(),
-        "create".to_owned(),
-        "--title".to_owned(),
-        input.title,
-    ];
-    if let Some(body) = input.body {
-        args.push("--body".to_owned());
-        args.push(body);
-    }
-    if let Some(base) = input.base {
-        args.push("--base".to_owned());
-        args.push(base);
-    }
-
-    let output = std::process::Command::new("gh")
-        .args(&args)
-        .current_dir(&input.project_path)
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(CoreError::Internal(format!("gh error: {stderr}")));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let url = if stdout.starts_with("http") {
-        Some(stdout)
-    } else {
-        stdout
-            .lines()
-            .find(|l| l.starts_with("http"))
-            .map(ToOwned::to_owned)
-    };
-
-    Ok(GitPRResult { url })
-}
-
-pub async fn checkout_pr(input: GitCheckoutPRInput) -> crate::Result<()> {
-    which::which("gh")
-        .map_err(|_| CoreError::Internal("GitHub CLI (gh) is not installed".into()))?;
-
-    let pr_number = input
-        .pr_number
-        .ok_or_else(|| CoreError::Internal("pr_number is required".into()))?;
-
-    let output = std::process::Command::new("gh")
-        .args(["pr", "checkout", &pr_number.to_string()])
-        .current_dir(&input.project_path)
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(CoreError::Internal(format!("gh error: {stderr}")));
-    }
-
     Ok(())
 }
 

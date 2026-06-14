@@ -96,7 +96,7 @@ impl OutboxQueue {
 
     /// Insert a new fire-and-forget payload. Returns the row id; production
     /// callers usually ignore it.
-    pub async fn enqueue(&self, kind: &str, payload_json: &str) -> Result<i64, sqlx::Error> {
+    pub async fn enqueue(&self, kind: &str, payload_json: &str) -> crate::Result<i64, sqlx::Error> {
         if !crate::cloud::capture::capture_enabled() {
             return Ok(0);
         }
@@ -461,6 +461,7 @@ pub struct OutboxDrainReport {
 }
 
 /// Per-row dispatch result.
+#[derive(Debug)]
 struct DispatchOutcome {
     ok: bool,
     accepted_edit_attribution: Option<AcceptedEditAttributionSummary>,
@@ -541,8 +542,7 @@ pub mod kind {
     pub const OBSERVATION: &str = "observation";
     /// Session-mined candidate rule (see
     /// [`crate::cloud::session_mined::SessionMinedCandidate`]); destination is
-    /// `POST /api/cloud/session-mined-candidates`. The dispatcher still needs
-    /// an explicit arm before these rows leave `pending`.
+    /// `POST /api/cloud/session-mined-candidates`.
     pub const SESSION_MINED_CANDIDATE: &str = "session_mined_candidate";
 }
 
@@ -588,7 +588,7 @@ pub async fn drain_outbox_report(
         let outcome = match dispatch(client, &item).await {
             Ok(outcome) => outcome,
             Err(err) => {
-                let _ = queue.mark_failed(item.id, &err).await;
+                let _ = queue.mark_failed(item.id, &err.to_string()).await;
                 continue;
             }
         };
@@ -649,7 +649,7 @@ pub async fn drain_outbox_kind_report(
         let outcome = match dispatch(client, &item).await {
             Ok(outcome) => outcome,
             Err(err) => {
-                let _ = queue.mark_failed(item.id, &err).await;
+                let _ = queue.mark_failed(item.id, &err.to_string()).await;
                 continue;
             }
         };
@@ -687,10 +687,12 @@ pub async fn drain_outbox_kind_report(
 ///                             "strict_match_count", "rule_titles",
 ///                             "client_label" }`
 /// * `imported_reviews`  — `UploadImportedReviewsRequest`
+/// * `session_mined_candidate` — `SessionMinedCandidate`
 async fn dispatch(
     client: &super::client::CloudClient,
     item: &OutboxItem,
-) -> Result<DispatchOutcome, String> {
+) -> crate::Result<DispatchOutcome> {
+    use crate::cloud::session_mined::SessionMinedCandidate;
     use crate::contract::{
         RecordAcceptedEditRequest, RecordReviewMetricsRequest, UploadImportedReviewsRequest,
     };
@@ -854,7 +856,23 @@ async fn dispatch(
                 },
             )
         }
-        other => Err(format!("unknown outbox kind '{other}'")),
+        kind::SESSION_MINED_CANDIDATE => {
+            let candidate: SessionMinedCandidate = serde_json::from_str(&item.payload_json)
+                .map_err(|e| format!("session_mined_candidate parse: {e}"))?;
+            candidate
+                .validate()
+                .map_err(|e| format!("session_mined_candidate validate: {e}"))?;
+            Ok(
+                match client
+                    .post_session_mined_candidate_outcome(&candidate)
+                    .await
+                {
+                    Ok(()) => DispatchOutcome::ok(true),
+                    Err(failure) => DispatchOutcome::from_outbox_failure(&failure),
+                },
+            )
+        }
+        other => Err(format!("unknown outbox kind '{other}'").into()),
     }
 }
 
@@ -961,6 +979,44 @@ mod tests {
 
         assert!(outcome.ok);
         assert_eq!(outcome.accepted_edit_attribution, None);
+    }
+
+    #[tokio::test]
+    async fn session_mined_candidate_dispatch_is_a_known_outbox_kind() {
+        let client = crate::cloud::client::CloudClient::new();
+        let candidate = crate::cloud::session_mined::SessionMinedCandidate::try_new(
+            crate::cloud::session_mined::SessionMinedCandidateArgs {
+                session_id: "sess_test".to_owned(),
+                ts_ms: 1_719_000_000_000,
+                source_repo: crate::infra::git::RepoScope::github("acme/widgets")
+                    .expect("valid repo scope"),
+                title: "Validate webhook signatures".to_owned(),
+                body: "Always verify webhook signatures before parsing payloads.".to_owned(),
+                file_patterns: vec!["src/webhooks/**/*.ts".to_owned()],
+                gate_model: "codex:local".to_owned(),
+                gate_verdict: "KEEP".to_owned(),
+            },
+        )
+        .expect("valid candidate");
+        let item = OutboxItem {
+            id: 1,
+            kind: kind::SESSION_MINED_CANDIDATE.to_owned(),
+            payload_json: serde_json::to_string(&candidate).expect("serialize candidate"),
+            retry_count: 0,
+        };
+
+        let outcome = dispatch(&client, &item)
+            .await
+            .expect("session-mined candidates must have a dispatch arm");
+
+        assert!(!outcome.ok);
+        assert!(
+            outcome
+                .last_error
+                .as_deref()
+                .is_some_and(|err| err.contains("not logged in")),
+            "logged-out dispatch should fail via CloudClient, not unknown kind: {outcome:?}"
+        );
     }
 
     #[tokio::test]

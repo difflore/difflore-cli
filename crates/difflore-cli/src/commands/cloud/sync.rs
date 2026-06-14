@@ -431,7 +431,7 @@ async fn run_providers_phase(
     }
 
     if do_push {
-        let provider_entries = match difflore_core::domain::providers::list(db).await {
+        let provider_entries = match difflore_core::infra::providers::list(db).await {
             Ok(providers) => difflore_core::cloud::sync::build_provider_sync_entries(&providers),
             Err(_) => Vec::new(),
         };
@@ -536,7 +536,7 @@ async fn apply_cloud_providers(
     cloud_providers: &serde_json::Value,
 ) -> usize {
     let mut added = 0usize;
-    let Ok(local_providers) = difflore_core::domain::providers::list(db).await else {
+    let Ok(local_providers) = difflore_core::infra::providers::list(db).await else {
         return 0;
     };
     let existing: std::collections::HashSet<(String, String)> = local_providers
@@ -585,7 +585,7 @@ async fn apply_cloud_providers(
             base_url,
             model_mapping,
         };
-        if difflore_core::domain::providers::add(db, input)
+        if difflore_core::infra::providers::add(db, input)
             .await
             .is_ok()
         {

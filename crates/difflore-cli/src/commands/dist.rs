@@ -4,6 +4,7 @@
 //! agree with the CLI package version and that the plugin bundle still contains
 //! the runtime files the marketplaces expect.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -11,6 +12,19 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::support::util::exit_code;
+
+const REQUIRED_SKILL_DIRS: &[&str] = &[
+    "difflore-onboard",
+    "knowledge-agent",
+    "remember-rule-guide",
+    "rule-diff",
+    "rule-gap",
+    "rule-journey",
+    "rule-search",
+    "rule-why-fired",
+    "session-recap",
+    "smart-explore",
+];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -142,6 +156,7 @@ pub fn verify_repo(root: &Path) -> DistCheckReport {
     check_marketplace(root, &mut report);
     check_mcp_bundle(root, &mut report);
     check_hook_bundle(root, &mut report);
+    check_codex_hook_reachability(root, &mut report);
 
     report
 }
@@ -154,16 +169,6 @@ fn check_required_files(root: &Path, report: &mut DistCheckReport) {
         "plugin/.claude-plugin/plugin.json",
         "plugin/.mcp.json",
         "plugin/hooks/hooks.json",
-        "plugin/skills/rule-search/SKILL.md",
-        "plugin/skills/remember-rule-guide/SKILL.md",
-        "plugin/skills/rule-why-fired/SKILL.md",
-        "plugin/skills/rule-gap/SKILL.md",
-        "plugin/skills/rule-diff/SKILL.md",
-        "plugin/skills/rule-journey/SKILL.md",
-        "plugin/skills/smart-explore/SKILL.md",
-        "plugin/skills/knowledge-agent/SKILL.md",
-        "plugin/skills/session-recap/SKILL.md",
-        "plugin/skills/difflore-onboard/SKILL.md",
     ] {
         if !root.join(rel).exists() {
             push(
@@ -171,6 +176,90 @@ fn check_required_files(root: &Path, report: &mut DistCheckReport) {
                 DistSeverity::Error,
                 rel,
                 "required distribution file is missing",
+            );
+        }
+    }
+    check_skill_bundle(root, report);
+}
+
+fn check_skill_bundle(root: &Path, report: &mut DistCheckReport) {
+    let skills_rel = "plugin/skills";
+    let expected: BTreeSet<&str> = REQUIRED_SKILL_DIRS.iter().copied().collect();
+    let entries = match fs::read_dir(root.join(skills_rel)) {
+        Ok(entries) => entries,
+        Err(e) => {
+            push(
+                report,
+                DistSeverity::Error,
+                skills_rel,
+                &format!("could not read skills directory: {e}"),
+            );
+            return;
+        }
+    };
+    let mut actual = BTreeSet::new();
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                push(
+                    report,
+                    DistSeverity::Error,
+                    skills_rel,
+                    &format!("could not read skills directory entry: {e}"),
+                );
+                continue;
+            }
+        };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(e) => {
+                let path = entry.path().display().to_string();
+                push(
+                    report,
+                    DistSeverity::Error,
+                    &path,
+                    &format!("could not inspect skills directory entry: {e}"),
+                );
+                continue;
+            }
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let skill_name = entry.file_name().to_string_lossy().to_string();
+        let skill_rel = format!("{skills_rel}/{skill_name}");
+        actual.insert(skill_name);
+        if !entry.path().join("SKILL.md").exists() {
+            push(
+                report,
+                DistSeverity::Error,
+                &skill_rel,
+                "skill directory is missing SKILL.md",
+            );
+        }
+    }
+
+    let actual_names: BTreeSet<&str> = actual.iter().map(String::as_str).collect();
+    for skill in expected.difference(&actual_names) {
+        let rel = format!("{skills_rel}/{skill}/SKILL.md");
+        push(
+            report,
+            DistSeverity::Error,
+            &rel,
+            "required distribution skill is missing",
+        );
+    }
+    for skill in &actual {
+        if !expected.contains(skill.as_str()) {
+            let rel = format!("{skills_rel}/{skill}");
+            push(
+                report,
+                DistSeverity::Error,
+                &rel,
+                "skill directory is not registered in dist verify",
             );
         }
     }
@@ -206,10 +295,7 @@ fn check_json_manifest(root: &Path, rel: &str, report: &mut DistCheckReport) {
 fn check_manifest_consistency(root: &Path, report: &mut DistCheckReport) {
     let rel_root = ".claude-plugin/plugin.json";
     let rel_bundle = "plugin/.claude-plugin/plugin.json";
-    let read = |rel: &str| -> Option<Value> {
-        let raw = fs::read_to_string(root.join(rel)).ok()?;
-        serde_json::from_str(&raw).ok()
-    };
+    let read = |rel: &str| -> Option<Vec<u8>> { fs::read(root.join(rel)).ok() };
     // Unreadable or invalid manifests are already reported by check_json_manifest.
     let (Some(root_manifest), Some(bundle_manifest)) = (read(rel_root), read(rel_bundle)) else {
         return;
@@ -219,7 +305,7 @@ fn check_manifest_consistency(root: &Path, report: &mut DistCheckReport) {
             report,
             DistSeverity::Error,
             rel_bundle,
-            &format!("manifest drifted from {rel_root}; keep both files identical"),
+            &format!("manifest drifted from {rel_root}; keep both files byte-identical"),
         );
     }
 }
@@ -306,6 +392,8 @@ fn check_hook_bundle(root: &Path, report: &mut DistCheckReport) {
         "PostToolUse",
         "SessionStart",
         "UserPromptSubmit",
+        "Stop",
+        "SessionEnd",
     ] {
         if !raw.contains(needle) {
             push(
@@ -315,6 +403,37 @@ fn check_hook_bundle(root: &Path, report: &mut DistCheckReport) {
                 &format!("hooks bundle missing `{needle}`"),
             );
         }
+    }
+}
+
+fn check_codex_hook_reachability(root: &Path, report: &mut DistCheckReport) {
+    let adapter_rel = "crates/difflore-cli/src/hook/adapters/codex.rs";
+    if !root.join(adapter_rel).exists() {
+        return;
+    }
+
+    let mut codex_hook_route = false;
+    for rel in [".codex-plugin/plugin.json", "plugin/hooks/hooks.json"] {
+        if fs::read_to_string(root.join(rel))
+            .is_ok_and(|raw| raw.contains("difflore-hook --client codex"))
+        {
+            codex_hook_route = true;
+            break;
+        }
+    }
+    if root.join(".codex-plugin/hooks.json").exists()
+        || root.join(".codex-plugin/hooks/hooks.json").exists()
+    {
+        codex_hook_route = true;
+    }
+
+    if !codex_hook_route {
+        push(
+            report,
+            DistSeverity::Warning,
+            ".codex-plugin/plugin.json",
+            "Codex hook adapter exists but no Codex lifecycle hook distribution route was found; Codex installs currently wire MCP only",
+        );
     }
 }
 
@@ -432,11 +551,52 @@ mod tests {
 
         fs::write(
             root.join("plugin/.claude-plugin/plugin.json"),
-            r#"{"name":"difflore","version":"0.2.0"}"#,
+            r#"{ "name": "difflore", "version": "0.1.0" }"#,
         )
         .expect("write");
         check_manifest_consistency(root, &mut report);
         assert_eq!(report.error_count(), 1);
+        assert!(report.issues[0].message.contains("byte-identical"));
+    }
+
+    #[test]
+    fn skill_bundle_flags_missing_and_unregistered_skill_dirs() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        for skill in REQUIRED_SKILL_DIRS {
+            if *skill == "session-recap" {
+                continue;
+            }
+            let dir = root.join("plugin/skills").join(skill);
+            fs::create_dir_all(&dir).expect("mkdir");
+            fs::write(dir.join("SKILL.md"), "# skill\n").expect("write");
+        }
+        let extra = root.join("plugin/skills/unlisted-skill");
+        fs::create_dir_all(&extra).expect("mkdir");
+        fs::write(extra.join("SKILL.md"), "# extra\n").expect("write");
+
+        let mut report = DistCheckReport {
+            repo_root: root.display().to_string(),
+            expected_version: None,
+            issues: Vec::new(),
+        };
+        check_skill_bundle(root, &mut report);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.path.contains("session-recap")),
+            "missing expected skill should be reported: {:?}",
+            report.issues
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.path.contains("unlisted-skill")),
+            "extra skill should be reported: {:?}",
+            report.issues
+        );
     }
 
     #[test]
@@ -452,5 +612,88 @@ mod tests {
         assert!(!report.ok());
         assert_eq!(report.error_count(), 1);
         assert_eq!(report.warning_count(), 1);
+    }
+
+    #[test]
+    fn hook_bundle_requires_stop_and_session_end_events() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        fs::create_dir_all(root.join("plugin/hooks")).expect("mkdir");
+        fs::write(
+            root.join("plugin/hooks/hooks.json"),
+            r#"{
+              "hooks": {
+                "PostToolUse": [{"hooks": [{"command": "difflore-hook --client claude-code"}]}],
+                "SessionStart": [{"hooks": [{"command": "difflore-hook --client claude-code"}]}],
+                "UserPromptSubmit": [{"hooks": [{"command": "difflore-hook --client claude-code"}]}]
+              }
+            }"#,
+        )
+        .expect("write");
+
+        let mut report = DistCheckReport {
+            repo_root: root.display().to_string(),
+            expected_version: None,
+            issues: Vec::new(),
+        };
+        check_hook_bundle(root, &mut report);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.message.contains("Stop")),
+            "missing Stop should be reported: {:?}",
+            report.issues
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.message.contains("SessionEnd")),
+            "missing SessionEnd should be reported: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn codex_adapter_without_hook_route_warns_in_dist_verify() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let root = tmp.path();
+        fs::create_dir_all(root.join("crates/difflore-cli/src/hook/adapters")).expect("mkdir");
+        fs::create_dir_all(root.join(".codex-plugin")).expect("mkdir");
+        fs::create_dir_all(root.join("plugin/hooks")).expect("mkdir");
+        fs::write(
+            root.join("crates/difflore-cli/src/hook/adapters/codex.rs"),
+            "",
+        )
+        .expect("write");
+        fs::write(root.join(".codex-plugin/plugin.json"), "{}").expect("write");
+        fs::write(
+            root.join("plugin/hooks/hooks.json"),
+            r#"{"hooks":{"Stop":[{"hooks":[{"command":"difflore-hook --client claude-code"}]}]}}"#,
+        )
+        .expect("write");
+
+        let mut report = DistCheckReport {
+            repo_root: root.display().to_string(),
+            expected_version: None,
+            issues: Vec::new(),
+        };
+        check_codex_hook_reachability(root, &mut report);
+        assert_eq!(report.warning_count(), 1);
+        assert!(report.issues[0].message.contains("Codex hook adapter"));
+
+        fs::write(
+            root.join(".codex-plugin/plugin.json"),
+            r#"{"hooks":[{"command":"difflore-hook --client codex"}]}"#,
+        )
+        .expect("write");
+        let mut routed_report = DistCheckReport {
+            repo_root: root.display().to_string(),
+            expected_version: None,
+            issues: Vec::new(),
+        };
+        check_codex_hook_reachability(root, &mut routed_report);
+        assert!(routed_report.issues.is_empty());
     }
 }

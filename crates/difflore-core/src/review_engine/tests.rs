@@ -427,17 +427,22 @@ fn severity_rank_ordering() {
 // Verify pass and summary.
 
 struct StubLlm {
-    response: std::sync::Mutex<Result<String, String>>,
+    response: std::sync::Mutex<StubLlmResponse>,
+}
+
+enum StubLlmResponse {
+    Ok(String),
+    Err(String),
 }
 impl StubLlm {
     fn ok(s: &str) -> Self {
         Self {
-            response: std::sync::Mutex::new(Ok(s.to_owned())),
+            response: std::sync::Mutex::new(StubLlmResponse::Ok(s.to_owned())),
         }
     }
     fn err(s: &str) -> Self {
         Self {
-            response: std::sync::Mutex::new(Err(s.to_owned())),
+            response: std::sync::Mutex::new(StubLlmResponse::Err(s.to_owned())),
         }
     }
 }
@@ -445,8 +450,8 @@ impl StubLlm {
 impl ReviewLlm for StubLlm {
     async fn chat(&self, _system_prompt: &str, _user_prompt: &str) -> crate::Result<String> {
         match &*self.response.lock().unwrap() {
-            Ok(s) => Ok(s.clone()),
-            Err(e) => Err(CoreError::Internal(e.clone())),
+            StubLlmResponse::Ok(s) => Ok(s.clone()),
+            StubLlmResponse::Err(e) => Err(CoreError::Internal(e.clone())),
         }
     }
 }

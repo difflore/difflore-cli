@@ -187,13 +187,13 @@ impl CloudClient {
         super::endpoints::api_base()
     }
 
-    fn auth_db_path() -> Result<PathBuf, String> {
+    fn auth_db_path() -> crate::Result<PathBuf> {
         // Route through `paths::data_home()` so `DIFFLORE_HOME` controls
         // tests and self-host setups.
         Ok(crate::infra::paths::data_home()?.join("cloud-auth.db"))
     }
 
-    pub async fn auth_pool() -> Result<SqlitePool, String> {
+    pub async fn auth_pool() -> crate::Result<SqlitePool> {
         let path = Self::auth_db_path()?;
         let mut guard = AUTH_POOL_CACHE.lock().await;
         let cache = guard.get_or_insert_with(HashMap::new);
@@ -202,7 +202,7 @@ impl CloudClient {
         }
 
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(parent).map_err(crate::CoreError::Io)?;
             crate::infra::db::restrict_to_owner(parent, true);
         }
 
@@ -214,7 +214,7 @@ impl CloudClient {
             .max_connections(1)
             .connect_with(opts)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(crate::CoreError::Database)?;
 
         // cloud-auth.db holds the (encrypted) auth token — restrict it to the
         // owner on Unix (Windows relies on the per-user profile ACL).
@@ -230,17 +230,17 @@ impl CloudClient {
         )
         .execute(&pool)
         .await
-        .map_err(|e| format!("auth table create failed: {e}"))?;
+        .map_err(|e| crate::CoreError::Internal(format!("auth table create failed: {e}")))?;
 
         cache.insert(path, pool.clone());
         Ok(pool)
     }
 
-    pub async fn auth_pool_public() -> Result<SqlitePool, String> {
+    pub async fn auth_pool_public() -> crate::Result<SqlitePool> {
         Self::auth_pool().await
     }
 
-    async fn save_encrypted_auth_key(key: &str, value: &str) -> Result<(), String> {
+    async fn save_encrypted_auth_key(key: &str, value: &str) -> crate::Result<()> {
         let encrypted = encrypt_secret(value)?;
         let pool = Self::auth_pool().await?;
         sqlx::query("INSERT OR REPLACE INTO auth (key, value) VALUES (?1, ?2)")
@@ -248,7 +248,7 @@ impl CloudClient {
             .bind(encrypted)
             .execute(&pool)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(crate::CoreError::Database)?;
         Ok(())
     }
 
@@ -279,8 +279,8 @@ impl CloudClient {
         }
     }
 
-    async fn delete_auth_key(key: &str) -> Result<(), String> {
-        let pool = Self::auth_pool().await?;
+    async fn delete_auth_key(key: &str) -> crate::Result<()> {
+        let pool = Self::auth_pool().await.map_err(|e| e.to_string())?;
         sqlx::query("DELETE FROM auth WHERE key = ?1")
             .bind(key)
             .execute(&pool)
@@ -289,9 +289,9 @@ impl CloudClient {
         Ok(())
     }
 
-    pub async fn save_token(token: &str) -> Result<(), String> {
+    pub async fn save_token(token: &str) -> crate::Result<()> {
         Self::save_encrypted_auth_key(AUTH_TOKEN_KEY, token).await?;
-        let pool = Self::auth_pool().await?;
+        let pool = Self::auth_pool().await.map_err(|e| e.to_string())?;
         sqlx::query!("DELETE FROM auth WHERE key = 'login_nonce'")
             .execute(&pool)
             .await
@@ -299,11 +299,11 @@ impl CloudClient {
         Ok(())
     }
 
-    pub async fn save_refresh_token(refresh_token: &str) -> Result<(), String> {
+    pub async fn save_refresh_token(refresh_token: &str) -> crate::Result<()> {
         Self::save_encrypted_auth_key(AUTH_REFRESH_TOKEN_KEY, refresh_token).await
     }
 
-    pub async fn save_login_tokens(token: &str, refresh_token: Option<&str>) -> Result<(), String> {
+    pub async fn save_login_tokens(token: &str, refresh_token: Option<&str>) -> crate::Result<()> {
         Self::save_token(token).await?;
         match refresh_token.map(str::trim).filter(|s| !s.is_empty()) {
             Some(refresh_token) => Self::save_refresh_token(refresh_token).await?,
@@ -358,7 +358,7 @@ impl CloudClient {
         }
     }
 
-    pub async fn clear_token() -> Result<(), String> {
+    pub async fn clear_token() -> crate::Result<()> {
         Self::delete_auth_key(AUTH_TOKEN_KEY).await?;
         Self::delete_auth_key(AUTH_REFRESH_TOKEN_KEY).await?;
         Self::delete_auth_key(AUTH_HOST_KEY).await
@@ -435,7 +435,7 @@ impl CloudClient {
     /// send failures from retry failures.
     async fn send_with_refresh<F>(
         build: F,
-    ) -> Result<reqwest::Response, (SendPhase, reqwest::Error)>
+    ) -> crate::Result<reqwest::Response, (SendPhase, reqwest::Error)>
     where
         F: Fn(Option<&str>) -> reqwest::RequestBuilder,
     {
@@ -665,9 +665,9 @@ impl CloudClient {
         path: &str,
         body: &T,
         endpoint_label: &'static str,
-    ) -> Result<(), String> {
+    ) -> crate::Result<()> {
         if !self.is_logged_in() {
-            return Err(format!("{endpoint_label} skipped: not logged in"));
+            return Err(format!("{endpoint_label} skipped: not logged in").into());
         }
 
         let url = format!("{}{}", self.base_url, path);
@@ -705,7 +705,8 @@ impl CloudClient {
         Err(format!(
             "{endpoint_label} returned {status}: {}",
             truncate_for_error(&body, 500)
-        ))
+        )
+        .into())
     }
 
     /// Like [`post_fire_and_forget_result`] but surfaces the HTTP status +
@@ -722,7 +723,7 @@ impl CloudClient {
         path: &str,
         body: &T,
         endpoint_label: &'static str,
-    ) -> Result<(), OutboxFailure> {
+    ) -> crate::Result<(), OutboxFailure> {
         if !self.is_logged_in() {
             // "Not logged in" is a transport-class failure: no HTTP status
             // to attach, same remediation shape as other unreachable states.
@@ -787,7 +788,7 @@ impl CloudClient {
         &self,
         pr_review_id: &str,
         steps: serde_json::Value,
-    ) -> Result<(), OutboxFailure> {
+    ) -> crate::Result<(), OutboxFailure> {
         let req = SaveTrajectoryRequest { steps };
         let path = format!("/reviews/{}/trajectory", escape_path_id(pr_review_id));
         self.post_fire_and_forget_outcome(&path, &req, "save_trajectory")
@@ -799,7 +800,7 @@ impl CloudClient {
         &self,
         review_id: &str,
         req: RecordReviewMetricsRequest,
-    ) -> Result<(), OutboxFailure> {
+    ) -> crate::Result<(), OutboxFailure> {
         let path = format!("/reviews/{}/metrics", escape_path_id(review_id));
         self.post_fire_and_forget_outcome(&path, &req, "record_review_metrics")
             .await
@@ -817,7 +818,7 @@ impl CloudClient {
         rule_ids: Vec<String>,
         client_label: Option<&str>,
         repo_full_name: Option<&str>,
-    ) -> Result<(), OutboxFailure> {
+    ) -> crate::Result<(), OutboxFailure> {
         let titles: Vec<String> = rule_titles.into_iter().take(10).collect();
         let ids: Vec<String> = rule_ids.into_iter().take(10).collect();
         let body = serde_json::json!({
@@ -838,7 +839,7 @@ impl CloudClient {
     pub(crate) async fn upload_imported_reviews_outcome(
         &self,
         req: &UploadImportedReviewsRequest,
-    ) -> Result<(), OutboxFailure> {
+    ) -> crate::Result<(), OutboxFailure> {
         self.post_fire_and_forget_outcome("/reviews/import", req, "upload_imported_reviews")
             .await
     }
@@ -847,9 +848,22 @@ impl CloudClient {
     pub(crate) async fn post_observations_outcome(
         &self,
         batch: &[crate::contract::Observation],
-    ) -> Result<(), OutboxFailure> {
+    ) -> crate::Result<(), OutboxFailure> {
         self.post_fire_and_forget_outcome("/cloud/observations", &batch, "post_observations")
             .await
+    }
+
+    /// Outbox-friendly wrapper for locally mined candidate rules.
+    pub(crate) async fn post_session_mined_candidate_outcome(
+        &self,
+        candidate: &crate::cloud::session_mined::SessionMinedCandidate,
+    ) -> crate::Result<(), OutboxFailure> {
+        self.post_fire_and_forget_outcome(
+            "/cloud/session-mined-candidates",
+            candidate,
+            "post_session_mined_candidate",
+        )
+        .await
     }
 
     /// POST `/reviews/{id}/metrics`: upload token usage + estimated cost +
@@ -887,10 +901,7 @@ impl CloudClient {
     /// A review with no persisted trajectory comes back as a zero-UUID
     /// placeholder with `steps: []` (not a 404), so an empty `steps` vec is
     /// the "nothing recorded yet" signal.
-    pub async fn get_trajectory(
-        &self,
-        pr_review_id: &str,
-    ) -> Result<GetTrajectoryResponse, String> {
+    pub async fn get_trajectory(&self, pr_review_id: &str) -> crate::Result<GetTrajectoryResponse> {
         let path = format!("/reviews/{}/trajectory", escape_path_id(pr_review_id));
         self.get_json(&path, "get_trajectory").await
     }
@@ -951,7 +962,7 @@ impl CloudClient {
     pub async fn record_accepted_edit_response(
         &self,
         req: RecordAcceptedEditRequest,
-    ) -> Result<RecordAcceptedEditResponse, String> {
+    ) -> crate::Result<RecordAcceptedEditResponse> {
         self.post_json("/accepted-edits", &req, "record_accepted_edit")
             .await
     }
@@ -980,7 +991,7 @@ impl CloudClient {
     pub async fn post_observation_events_result(
         &self,
         batch: &[super::observations::ObservationEvent],
-    ) -> Result<(), String> {
+    ) -> crate::Result<()> {
         self.post_fire_and_forget_result("/cloud/observations", &batch, "post_observation_events")
             .await
     }
@@ -1002,9 +1013,9 @@ impl CloudClient {
         &self,
         path: &str,
         label: &'static str,
-    ) -> Result<T, String> {
+    ) -> crate::Result<T> {
         if !self.is_logged_in() {
-            return Err("not_logged_in".to_owned());
+            return Err("not_logged_in".to_owned().into());
         }
         let url = format!("{}{}", self.base_url, path);
         let resp = Self::send_with_refresh(|refreshed| {
@@ -1034,11 +1045,12 @@ impl CloudClient {
             return Err(format!(
                 "[{label}] returned {status}: {}",
                 truncate_for_error(&body, 500)
-            ));
+            )
+            .into());
         }
         resp.json::<T>()
             .await
-            .map_err(|e| format!("[{label}] decode error: {e}"))
+            .map_err(|e| format!("[{label}] decode error: {e}").into())
     }
 
     /// POST helper that returns the decoded body. Used by interactive
@@ -1049,9 +1061,9 @@ impl CloudClient {
         path: &str,
         body: &B,
         label: &'static str,
-    ) -> Result<R, String> {
+    ) -> crate::Result<R> {
         if !self.is_logged_in() {
-            return Err("not_logged_in".to_owned());
+            return Err("not_logged_in".to_owned().into());
         }
         let url = format!("{}{}", self.base_url, path);
         let resp = Self::send_with_refresh(|refreshed| {
@@ -1084,11 +1096,12 @@ impl CloudClient {
             return Err(format!(
                 "[{label}] returned {status}: {}",
                 truncate_for_error(&body, 500)
-            ));
+            )
+            .into());
         }
         resp.json::<R>()
             .await
-            .map_err(|e| format!("[{label}] decode error: {e}"))
+            .map_err(|e| format!("[{label}] decode error: {e}").into())
     }
 
     /// POST `/knowledge/corpus` — build a filtered snapshot of rules +
@@ -1096,7 +1109,7 @@ impl CloudClient {
     pub async fn build_corpus(
         &self,
         req: &crate::contract::BuildCorpusRequest,
-    ) -> Result<crate::contract::BuildCorpusResult, String> {
+    ) -> crate::Result<crate::contract::BuildCorpusResult> {
         self.post_json("/knowledge/corpus", req, "build_corpus")
             .await
     }
@@ -1106,7 +1119,7 @@ impl CloudClient {
     pub async fn prime_corpus(
         &self,
         corpus_id: &str,
-    ) -> Result<crate::contract::PrimeCorpusResult, String> {
+    ) -> crate::Result<crate::contract::PrimeCorpusResult> {
         let path = format!("/knowledge/corpus/{corpus_id}/prime");
         self.post_json(&path, &serde_json::json!({}), "prime_corpus")
             .await
@@ -1119,7 +1132,7 @@ impl CloudClient {
         &self,
         corpus_id: &str,
         question: &str,
-    ) -> Result<crate::contract::QueryCorpusResult, String> {
+    ) -> crate::Result<crate::contract::QueryCorpusResult> {
         let path = format!("/knowledge/corpus/{corpus_id}/query");
         let body = crate::contract::QueryCorpusRequest {
             question: question.to_owned(),
@@ -1129,32 +1142,32 @@ impl CloudClient {
 
     /// GET `/knowledge/corpora` — list this team's corpora with item
     /// counts and prime/query timestamps.
-    pub async fn list_corpora(&self) -> Result<Vec<crate::contract::CorpusSummary>, String> {
+    pub async fn list_corpora(&self) -> crate::Result<Vec<crate::contract::CorpusSummary>> {
         self.get_json("/knowledge/corpora", "list_corpora").await
     }
 
     /// GET `/impact/banner` — past verdicts recalled into reviews this week.
-    pub async fn get_impact_banner(&self) -> Result<ImpactBannerDto, String> {
+    pub async fn get_impact_banner(&self) -> crate::Result<ImpactBannerDto> {
         self.get_json("/impact/banner", "impact_banner").await
     }
 
     /// GET `/impact/weekly` — last 12 weeks of rules / verdicts / fixes.
-    pub async fn get_impact_weekly(&self) -> Result<ImpactWeeklyDto, String> {
+    pub async fn get_impact_weekly(&self) -> crate::Result<ImpactWeeklyDto> {
         self.get_json("/impact/weekly", "impact_weekly").await
     }
 
     /// GET `/impact/top-rules` — top 5 candidate rules across user's teams.
-    pub async fn get_impact_top_rules(&self) -> Result<ImpactTopRulesDto, String> {
+    pub async fn get_impact_top_rules(&self) -> crate::Result<ImpactTopRulesDto> {
         self.get_json("/impact/top-rules", "impact_top_rules").await
     }
 
     /// GET `/impact/coverage` — repos / PRs / files covered by extractions.
-    pub async fn get_impact_coverage(&self) -> Result<ImpactCoverageDto, String> {
+    pub async fn get_impact_coverage(&self) -> crate::Result<ImpactCoverageDto> {
         self.get_json("/impact/coverage", "impact_coverage").await
     }
 
     /// GET `/impact/fix-scorecard` — last 30d fix acceptance rate + trend.
-    pub async fn get_impact_fix_scorecard(&self) -> Result<ImpactFixScorecardDto, String> {
+    pub async fn get_impact_fix_scorecard(&self) -> crate::Result<ImpactFixScorecardDto> {
         self.get_json("/impact/fix-scorecard", "impact_fix_scorecard")
             .await
     }

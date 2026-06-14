@@ -459,7 +459,7 @@ impl Spinner {
             frame: AtomicUsize::new(0),
             last_width: AtomicUsize::new(0),
             done: AtomicBool::new(false),
-            enabled: color_support() != ColorSupport::None,
+            enabled: spinner_enabled(color_support(), stderr().is_terminal()),
             tick_interval: Duration::from_millis(80),
         });
 
@@ -594,6 +594,10 @@ fn clear_state_line_locked(state: &SpinnerState) {
     let _ = stderr().flush();
 }
 
+const fn spinner_enabled(color_support: ColorSupport, stderr_is_tty: bool) -> bool {
+    !matches!(color_support, ColorSupport::None) && stderr_is_tty
+}
+
 fn spinner_line_width(label: &str) -> usize {
     SPIN_FRAMES[0].chars().count() + 1 + label.chars().count() + 2
 }
@@ -628,6 +632,13 @@ mod tests {
         assert_eq!(sym::WARN, "!");
         assert_eq!(sym::TIP, ">");
         assert_eq!(sym::BULLET, "-");
+    }
+
+    #[test]
+    fn spinner_requires_stderr_tty() {
+        assert!(spinner_enabled(ColorSupport::TrueColor, true));
+        assert!(!spinner_enabled(ColorSupport::TrueColor, false));
+        assert!(!spinner_enabled(ColorSupport::None, true));
     }
 
     #[test]

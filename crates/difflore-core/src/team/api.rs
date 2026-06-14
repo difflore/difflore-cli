@@ -177,9 +177,7 @@ pub async fn publish_rule(input: TeamRulePublishInput) -> crate::Result<String> 
     }
 
     let (team_id, _) = resolve_team_id(&client, input.team_id).await?;
-    let pool = crate::infra::db::init_db()
-        .await
-        .map_err(CoreError::Internal)?;
+    let pool = crate::infra::db::init_db().await?;
 
     if let Some(s) = crate::skills::rule_status(&pool, &input.rule_id).await?
         && s == "pending"
@@ -223,9 +221,7 @@ pub async fn unpublish_rule(input: TeamRuleUnpublishInput) -> crate::Result<()> 
     }
 
     let (team_id, _) = resolve_team_id(&client, input.team_id).await?;
-    let pool = crate::infra::db::init_db()
-        .await
-        .map_err(CoreError::Internal)?;
+    let pool = crate::infra::db::init_db().await?;
     let cloud_rule_id = resolve_cloud_rule_id_for_unpublish(&pool, &input.rule_id).await?;
     let body = serde_json::json!({
         "ruleId": cloud_rule_id,

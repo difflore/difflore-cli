@@ -104,11 +104,10 @@ pub(crate) async fn run_drain(
         .map_err(|e| format!("drain cloud_outbox: {e}"))?;
 
     let observation_events = match ObservationEmitter::open_default().await {
-        Ok(emitter) => {
-            emitter
-                .drain_abandoned_older_than(cutoff_ms, dry_run)
-                .await?
-        }
+        Ok(emitter) => emitter
+            .drain_abandoned_older_than(cutoff_ms, dry_run)
+            .await
+            .map_err(|e| format!("drain observation_events: {e}"))?,
         // No observations DB on disk means this queue has nothing to drain.
         Err(_) => DrainSummary::default(),
     };

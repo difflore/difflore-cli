@@ -91,7 +91,7 @@ async fn collect_wiring_snapshot() -> difflore_tui::WiringSnapshot {
 /// configured provider when none is explicitly active (same resolution the
 /// doctor table uses).
 async fn active_provider_name(pool: &difflore_core::SqlitePool) -> Option<String> {
-    let providers = difflore_core::domain::providers::list(pool).await.ok()?;
+    let providers = difflore_core::infra::providers::list(pool).await.ok()?;
     providers
         .iter()
         .find(|p| p.is_active)

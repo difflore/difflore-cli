@@ -171,40 +171,40 @@ pub fn detect_provider_from_remote_url(
 /// validator — so the path is safe to embed in API URLs without further
 /// escaping (the caller still percent-encodes the `/` separators for the
 /// GitLab REST API).
-pub fn validate_gitlab_project_path(path: &str) -> Result<(), String> {
+pub fn validate_gitlab_project_path(path: &str) -> crate::Result<()> {
     let segments: Vec<&str> = path.split('/').collect();
     if segments.len() < 2 {
-        return Err(format!(
+        return Err(crate::CoreError::Validation(format!(
             "invalid GitLab project path {path:?}: expected group/project (subgroups allowed, e.g. group/subgroup/project)"
-        ));
+        )));
     }
     if let Some(last) = segments.last()
         && last.to_ascii_lowercase().ends_with(".git")
     {
         // GitLab project paths never end in `.git`; this is almost always a
         // pasted clone URL, so name the fix instead of a generic rejection.
-        return Err(format!(
+        return Err(crate::CoreError::Validation(format!(
             "invalid GitLab project path {path:?}: drop the trailing .git suffix"
-        ));
+        )));
     }
     for segment in &segments {
         if segment.is_empty() {
-            return Err(format!(
+            return Err(crate::CoreError::Validation(format!(
                 "invalid GitLab project path {path:?}: empty path segment"
-            ));
+            )));
         }
         if *segment == "." || *segment == ".." {
-            return Err(format!(
+            return Err(crate::CoreError::Validation(format!(
                 "invalid GitLab project path {path:?}: segment {segment:?} is not allowed"
-            ));
+            )));
         }
         if !segment
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
         {
-            return Err(format!(
+            return Err(crate::CoreError::Validation(format!(
                 "invalid GitLab project path {path:?}: segment {segment:?} contains disallowed characters"
-            ));
+            )));
         }
     }
     Ok(())
@@ -375,7 +375,9 @@ mod tests {
         assert!(validate_gitlab_project_path("group/proj?ect").is_err());
         assert!(validate_gitlab_project_path("group/proj#ect").is_err());
         // Pasted clone-URL suffix gets an actionable message.
-        let err = validate_gitlab_project_path("group/project.git").unwrap_err();
+        let err = validate_gitlab_project_path("group/project.git")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains(".git"), "unexpected error: {err}");
     }
 }

@@ -27,7 +27,7 @@ use crate::cloud::outbox::{DEFAULT_STALE_SECONDS, OutboxQueue, drain_outbox};
 use crate::infra::db::init_db;
 use crate::infra::paths;
 
-pub fn pid_path() -> Result<PathBuf, String> {
+pub fn pid_path() -> crate::Result<PathBuf> {
     Ok(paths::data_home()?.join("daemon.pid"))
 }
 
@@ -72,11 +72,11 @@ fn read_pid(path: &std::path::Path) -> Option<i32> {
     raw.trim().parse::<i32>().ok()
 }
 
-fn write_pid(path: &std::path::Path, pid: i32) -> Result<(), String> {
+fn write_pid(path: &std::path::Path, pid: i32) -> crate::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create parent: {e}"))?;
     }
-    fs::write(path, pid.to_string()).map_err(|e| format!("write pid: {e}"))
+    fs::write(path, pid.to_string()).map_err(|e| format!("write pid: {e}").into())
 }
 
 fn remove_pid_file(path: &std::path::Path) {
@@ -164,7 +164,7 @@ fn send_kill(pid: i32) -> std::io::Result<()> {
 /// `grace_secs` for the process to exit, then escalates to SIGKILL.
 /// Removes a stale PID file regardless of which path exits. Returns
 /// what actually happened so the CLI can phrase the UX correctly.
-pub async fn stop(grace_secs: u64) -> Result<StopOutcome, String> {
+pub async fn stop(grace_secs: u64) -> crate::Result<StopOutcome> {
     let path = pid_path()?;
     let Some(pid) = read_pid(&path) else {
         return Ok(StopOutcome::NotRunning);
@@ -210,7 +210,7 @@ pub enum StopOutcome {
 ///
 /// Safe to call at most once per process: writes its own PID file on
 /// entry and errors out if one already belongs to a live process.
-pub async fn run(tick_interval_secs: u64, batch_size: usize) -> Result<(), String> {
+pub async fn run(tick_interval_secs: u64, batch_size: usize) -> crate::Result<()> {
     let path = pid_path()?;
 
     // Refuse to start a second daemon against the same DIFFLORE_HOME —
@@ -219,7 +219,8 @@ pub async fn run(tick_interval_secs: u64, batch_size: usize) -> Result<(), Strin
         DaemonStatus::Running { pid } => {
             return Err(format!(
                 "another daemon is already running (pid {pid}); stop that process before starting another"
-            ));
+            )
+            .into());
         }
         DaemonStatus::Stale { .. } | DaemonStatus::NotRunning => {}
     }

@@ -23,6 +23,7 @@ pub(super) type TuiTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 type PanicHook = Box<dyn Fn(&PanicHookInfo<'_>) + Sync + Send + 'static>;
 
 const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const INPUT_ERROR_BACKOFF: Duration = Duration::from_millis(250);
 
 pub(super) struct InputReader {
     receiver: mpsc::Receiver<io::Result<KeyEvent>>,
@@ -68,14 +69,18 @@ fn read_input_events(stop: &Arc<AtomicBool>, sender: &mpsc::Sender<io::Result<Ke
                 }
                 Ok(_) => {}
                 Err(err) => {
-                    let _ = sender.send(Err(err));
-                    break;
+                    if sender.send(Err(err)).is_err() {
+                        break;
+                    }
+                    thread::sleep(INPUT_ERROR_BACKOFF);
                 }
             },
             Ok(false) => {}
             Err(err) => {
-                let _ = sender.send(Err(err));
-                break;
+                if sender.send(Err(err)).is_err() {
+                    break;
+                }
+                thread::sleep(INPUT_ERROR_BACKOFF);
             }
         }
     }
@@ -87,12 +92,41 @@ pub(super) struct SignalTask {
 
 impl SignalTask {
     pub(super) fn spawn(shutdown_requested: Arc<AtomicBool>) -> Self {
-        let handle = tokio::spawn(async move {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                shutdown_requested.store(true, Ordering::Relaxed);
-            }
-        });
+        let handle = tokio::spawn(wait_for_shutdown_signal(shutdown_requested));
         Self { handle }
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown_signal(shutdown_requested: Arc<AtomicBool>) {
+    use tokio::signal::unix::{Signal, SignalKind, signal};
+
+    async fn recv(signal: &mut Option<Signal>) {
+        if let Some(signal) = signal.as_mut() {
+            let _ = signal.recv().await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    }
+
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+    let mut terminate = signal(SignalKind::terminate()).ok();
+    let mut hangup = signal(SignalKind::hangup()).ok();
+
+    tokio::select! {
+        _ = &mut ctrl_c => {}
+        () = recv(&mut terminate) => {}
+        () = recv(&mut hangup) => {}
+    }
+
+    shutdown_requested.store(true, Ordering::Relaxed);
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown_signal(shutdown_requested: Arc<AtomicBool>) {
+    if tokio::signal::ctrl_c().await.is_ok() {
+        shutdown_requested.store(true, Ordering::Relaxed);
     }
 }
 

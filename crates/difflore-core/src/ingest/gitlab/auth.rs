@@ -10,6 +10,7 @@
 //! Env wins so CI and one-off shells never need to write to disk.
 
 use crate::cloud::client::CloudClient;
+use crate::error::CoreError;
 use crate::infra::crypto::{decrypt_secret, encrypt_secret};
 
 /// Default host for `difflore auth gitlab` when `--host` is omitted.
@@ -45,7 +46,7 @@ impl GitlabTokenSource {
 /// Accepts a pasted origin (`https://gitlab.corp.example/`) as a convenience
 /// but rejects anything with a path, credentials, or non-host characters so
 /// the value is safe to interpolate into `https://{host}/api/v4/...` URLs.
-pub fn normalize_gitlab_host(input: &str) -> Result<String, String> {
+pub fn normalize_gitlab_host(input: &str) -> crate::Result<String> {
     let trimmed = input.trim();
     let without_scheme = trimmed
         .strip_prefix("https://")
@@ -53,12 +54,14 @@ pub fn normalize_gitlab_host(input: &str) -> Result<String, String> {
         .unwrap_or(trimmed);
     let without_slash = without_scheme.trim_end_matches('/');
     if without_slash.is_empty() {
-        return Err("GitLab host is empty; pass --host like gitlab.example.com".to_owned());
+        return Err(CoreError::Validation(
+            "GitLab host is empty; pass --host like gitlab.example.com".to_owned(),
+        ));
     }
     if without_slash.contains('/') || without_slash.contains('@') {
-        return Err(format!(
+        return Err(CoreError::Validation(format!(
             "invalid GitLab host {input:?}: pass a bare host like gitlab.example.com (no path or credentials)"
-        ));
+        )));
     }
     let (name, port) = without_slash
         .split_once(':')
@@ -69,9 +72,9 @@ pub fn normalize_gitlab_host(input: &str) -> Result<String, String> {
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
     let port_ok = port.is_none_or(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
     if !host_chars_ok || !port_ok {
-        return Err(format!(
+        return Err(CoreError::Validation(format!(
             "invalid GitLab host {input:?}: pass a bare host like gitlab.example.com (optionally :port)"
-        ));
+        )));
     }
     Ok(without_slash.to_ascii_lowercase())
 }
@@ -84,20 +87,22 @@ pub fn pat_storage_key(host: &str) -> String {
 
 /// Encrypt and persist a PAT for `host`. Overwrites any previous token for
 /// the same host.
-pub async fn save_pat(host: &str, token: &str) -> Result<(), String> {
+pub async fn save_pat(host: &str, token: &str) -> crate::Result<()> {
     let trimmed = token.trim();
     if trimmed.is_empty() {
-        return Err("GitLab token is empty.".to_owned());
+        return Err(CoreError::Validation("GitLab token is empty.".to_owned()));
     }
     let encrypted = encrypt_secret(trimmed)?;
-    let pool = CloudClient::auth_pool_public().await?;
+    let pool = CloudClient::auth_pool_public()
+        .await
+        .map_err(|e| e.to_string())?;
     let key = pat_storage_key(host);
     sqlx::query("INSERT OR REPLACE INTO auth (key, value) VALUES (?1, ?2)")
         .bind(&key)
         .bind(encrypted)
         .execute(&pool)
         .await
-        .map_err(|e| format!("could not save GitLab token: {e}"))?;
+        .map_err(|e| CoreError::Internal(format!("could not save GitLab token: {e}")))?;
     Ok(())
 }
 
@@ -124,13 +129,15 @@ pub async fn load_stored_pat(host: &str) -> Option<String> {
 }
 
 /// Delete the stored PAT for `host`. Returns `true` when a token existed.
-pub async fn remove_pat(host: &str) -> Result<bool, String> {
-    let pool = CloudClient::auth_pool_public().await?;
+pub async fn remove_pat(host: &str) -> crate::Result<bool> {
+    let pool = CloudClient::auth_pool_public()
+        .await
+        .map_err(|e| e.to_string())?;
     let result = sqlx::query("DELETE FROM auth WHERE key = ?1")
         .bind(pat_storage_key(host))
         .execute(&pool)
         .await
-        .map_err(|e| format!("could not remove GitLab token: {e}"))?;
+        .map_err(|e| CoreError::Internal(format!("could not remove GitLab token: {e}")))?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -195,8 +202,8 @@ mod tests {
         ];
         for (input, expected) in cases {
             assert_eq!(
-                normalize_gitlab_host(input).as_deref(),
-                Ok(*expected),
+                normalize_gitlab_host(input).unwrap(),
+                *expected,
                 "input: {input}"
             );
         }

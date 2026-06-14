@@ -9,7 +9,7 @@
 //! * Cursor / Gemini / Windsurf — return `Ok(vec![])` (adapters not yet
 //!   written). The worker skips empty pairs, so this is a no-op, not an error.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One conversation pair handed to the gate. `user_prompt` is the user message
 /// before the assistant turn; `assistant_text` is the reply with tool calls and
@@ -83,7 +83,7 @@ pub fn extract_recent_session_pairs(args: ExtractArgs<'_>) -> std::io::Result<Ve
 /// reading the tail is sufficient; a truncated first line is skipped.
 const MAX_TRANSCRIPT_BYTES: u64 = 32 * 1024 * 1024;
 
-fn read_transcript_tail_capped(path: &str) -> std::io::Result<String> {
+fn read_transcript_tail_capped(path: &Path) -> std::io::Result<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
@@ -93,6 +93,31 @@ fn read_transcript_tail_capped(path: &str) -> std::io::Result<String> {
     let mut buf = Vec::new();
     file.take(MAX_TRANSCRIPT_BYTES).read_to_end(&mut buf)?;
     Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+fn allowed_transcript_roots(platform: Platform) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if platform == Platform::ClaudeCode
+        && let Some(home) = dirs::home_dir()
+    {
+        roots.push(home.join(".claude").join("projects"));
+    }
+    #[cfg(test)]
+    roots.push(std::env::temp_dir());
+    roots
+}
+
+fn canonical_allowed_transcript_path(platform: Platform, transcript_path: &str) -> Option<PathBuf> {
+    let path = Path::new(transcript_path);
+    if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+        return None;
+    }
+    let canonical_path = path.canonicalize().ok()?;
+    allowed_transcript_roots(platform)
+        .into_iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .any(|root| canonical_path.starts_with(root))
+        .then_some(canonical_path)
 }
 
 /// Claude Code: JSONL transcript, one event per line (same shape as
@@ -106,11 +131,12 @@ fn extract_from_claude_code(args: &ExtractArgs<'_>) -> std::io::Result<Vec<Pair>
     if transcript_path.trim().is_empty() {
         return Ok(Vec::new());
     }
-    if !Path::new(transcript_path).exists() {
+    let Some(transcript_path) = canonical_allowed_transcript_path(args.platform, transcript_path)
+    else {
         return Ok(Vec::new());
-    }
+    };
 
-    let body = read_transcript_tail_capped(transcript_path)?;
+    let body = read_transcript_tail_capped(&transcript_path)?;
     let mut pending_user: Option<String> = None;
     let mut pairs: Vec<Pair> = Vec::new();
     let mut total_chars: usize = 0;

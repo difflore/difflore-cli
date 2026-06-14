@@ -116,11 +116,16 @@ Three manifests exist on purpose — they serve different install flows, **do no
 | `.claude-plugin/plugin.json` | Claude Code, repo added directly as a plugin |
 | `.claude-plugin/marketplace.json` | Claude Code marketplace index; points at `./plugin` |
 | `plugin/` (+ its `.claude-plugin/plugin.json`) | The actual plugin bundle (hooks, skills, `.mcp.json`) installed via the marketplace |
-| `.codex-plugin/plugin.json` | Codex variant (intentionally different description + `interface` block) |
+| `.codex-plugin/plugin.json` | Codex variant (intentionally different description + `interface` block); currently covers MCP/skills metadata, not lifecycle hooks |
 
 The two Claude manifests (root and `plugin/`) must stay **identical**; `difflore dist verify`
 enforces this (`check_manifest_consistency` in `commands/dist.rs`) along with
 name/version/license checks against the CLI crate version.
+
+Codex has a hook adapter in the CLI runtime, but the Codex plugin manifest does
+not yet carry a lifecycle-hook registration schema. `difflore dist verify`
+warns while that adapter has no Codex-specific hook distribution route, so the
+gap is visible without claiming an unsupported plugin shape.
 
 ## Moving-files must-check list (landmines)
 

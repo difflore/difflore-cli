@@ -56,9 +56,10 @@ use std::time::Duration;
 /// can downgrade a failed gate to "skip, don't block". `time_budget` is
 /// enforced via `tokio::time::timeout` and the child is killed on drop.
 ///
-/// Spawns a child process inheriting the parent's environment, sending
-/// `prompt` as the last argv positional. A prompt that itself starts with `-`
-/// may be misparsed by the CLI — sanitise prompts upstream of this call.
+/// Spawns a child process inheriting the parent's environment. Agents with a
+/// confirmed stdin contract receive `prompt` over stdin; argv-only agents keep
+/// it as their final positional so prompts that start with `-` are not parsed
+/// as flags.
 pub async fn dispatch_gate(agent: AgentKind, prompt: &str, time_budget: Duration) -> GateResult {
     runner::run(agent, prompt, time_budget).await
 }

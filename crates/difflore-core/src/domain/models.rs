@@ -352,29 +352,6 @@ pub struct ToggleSkillEngineInput {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct DiscoverSkillsInput {
-    pub owner: String,
-    pub repo: String,
-    pub branch: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiscoveredSkillRecord {
-    pub name: String,
-    pub description: String,
-    pub r#type: String,
-    pub engines: Vec<String>,
-    pub tags: Vec<String>,
-    pub version: String,
-    pub directory: String,
-    pub repo_owner: String,
-    pub repo_name: String,
-    pub repo_branch: String,
-    pub installed: bool,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CreateLocalSkillInput {
     pub name: String,
     pub engines: Option<Vec<String>>,
@@ -552,34 +529,6 @@ pub struct GitCommitInput {
     pub message: String,
     /// Specific files to stage. If empty/None, stages all changes (`git add -A`).
     pub files: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GitPushInput {
-    pub project_path: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GitCreatePRInput {
-    pub project_path: String,
-    pub title: String,
-    pub body: Option<String>,
-    pub base: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GitCheckoutPRInput {
-    pub project_path: String,
-    pub pr_number: Option<i32>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GitPRResult {
-    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

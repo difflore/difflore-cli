@@ -56,7 +56,7 @@ impl StartupStatus {
 
 /// `~/.difflore/startup-cache.json` (overridable via `DIFFLORE_HOME`).
 fn cache_path() -> Result<PathBuf, CoreError> {
-    let dir = paths::data_home().map_err(CoreError::Internal)?;
+    let dir = paths::data_home()?;
     Ok(dir.join("startup-cache.json"))
 }
 
@@ -99,9 +99,7 @@ async fn run_full_check() -> Result<StartupStatus, CoreError> {
 
     // Migrations — re-running is a no-op when everything is already
     // applied, so the cost is a single metadata query.
-    let _pool = crate::infra::db::init_db()
-        .await
-        .map_err(CoreError::Internal)?;
+    let _pool = crate::infra::db::init_db().await?;
 
     // Recover any cloud-outbox rows that got stuck in 'processing' after
     // a crashed drain (e.g. SIGKILL'd hook). Anything older than 60 s is
@@ -124,10 +122,8 @@ async fn run_full_check() -> Result<StartupStatus, CoreError> {
     // provider table?" — the `list()` query walks the same rows as the
     // CLI would. Failures are recorded as `None` so the next invocation
     // retries.
-    let db = crate::infra::db::init_db()
-        .await
-        .map_err(CoreError::Internal)?;
-    let provider_ok_at = match crate::domain::providers::list(&db).await {
+    let db = crate::infra::db::init_db().await?;
+    let provider_ok_at = match crate::infra::providers::list(&db).await {
         Ok(_) => Some(now),
         Err(_) => None,
     };

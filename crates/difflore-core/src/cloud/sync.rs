@@ -159,14 +159,16 @@ pub async fn sync_skills_filtered(
     }))
 }
 
-fn map_synced_rule_value(val: &serde_json::Value) -> Result<SyncedRule, String> {
+fn map_synced_rule_value(val: &serde_json::Value) -> crate::Result<SyncedRule> {
     // `id` and `content` are REQUIRED — a missing/empty value would create or
     // overwrite a local rule keyed on an empty id (corrupting the store). Cloud
     // schema drift must fail the whole sync, never silently apply a junk rule.
-    let required = |key: &str| -> Result<String, String> {
+    let required = |key: &str| -> crate::Result<String> {
         match val.get(key).and_then(|v| v.as_str()) {
             Some(s) if !s.trim().is_empty() => Ok(s.to_owned()),
-            _ => Err(format!("missing or empty required field `{key}`")),
+            _ => Err(crate::CoreError::Internal(format!(
+                "missing or empty required field `{key}`"
+            ))),
         }
     };
     Ok(SyncedRule {
@@ -405,6 +407,68 @@ pub struct CloudStatus {
     pub plan: Option<String>,
     pub team_id: Option<String>,
     pub team_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloudTier {
+    Free,
+    Team,
+    TeamPlus,
+}
+
+impl CloudTier {
+    pub const fn is_team(self) -> bool {
+        matches!(self, Self::Team | Self::TeamPlus)
+    }
+
+    pub const fn default_label(self) -> &'static str {
+        match self {
+            Self::Free => "Cloud Free",
+            Self::Team => "Cloud Team",
+            Self::TeamPlus => "Cloud Team Plus",
+        }
+    }
+}
+
+pub fn cloud_tier_from_status(status: &CloudStatus) -> CloudTier {
+    if !status.logged_in {
+        return CloudTier::Free;
+    }
+
+    let plan = status
+        .plan
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .replace('-', "_");
+    match plan.as_str() {
+        "team_plus" | "enterprise" => CloudTier::TeamPlus,
+        "team" | "pro" | "business" => CloudTier::Team,
+        "free" | "self_host" | "oss" => CloudTier::Free,
+        _ if has_team_identity(status) => CloudTier::Team,
+        _ => CloudTier::Free,
+    }
+}
+
+pub fn cloud_plan_label_from_status(status: &CloudStatus) -> String {
+    if let Some(team) = status.team_name.as_deref().map(str::trim)
+        && !team.is_empty()
+    {
+        return team.to_owned();
+    }
+
+    cloud_tier_from_status(status).default_label().to_owned()
+}
+
+fn has_team_identity(status: &CloudStatus) -> bool {
+    status
+        .team_id
+        .as_deref()
+        .is_some_and(|team| !team.trim().is_empty())
+        || status
+            .team_name
+            .as_deref()
+            .is_some_and(|team| !team.trim().is_empty())
 }
 
 /// Fetch the user's cloud status (profile + billing plan + active team).
@@ -754,6 +818,54 @@ mod tests {
             "stringified provider JSON must fail closed"
         );
         assert!(normalize_provider_payload(Some(serde_json::json!({}))).is_none());
+    }
+
+    fn cloud_status(
+        logged_in: bool,
+        plan: Option<&str>,
+        team_id: Option<&str>,
+        team_name: Option<&str>,
+    ) -> CloudStatus {
+        CloudStatus {
+            logged_in,
+            email: None,
+            plan: plan.map(String::from),
+            team_id: team_id.map(String::from),
+            team_name: team_name.map(String::from),
+        }
+    }
+
+    #[test]
+    fn cloud_tier_mapping_is_shared_for_cli_and_tui() {
+        assert_eq!(
+            cloud_tier_from_status(&cloud_status(false, Some("team"), None, None)),
+            CloudTier::Free
+        );
+        assert_eq!(
+            cloud_tier_from_status(&cloud_status(true, Some("free"), None, None)),
+            CloudTier::Free
+        );
+        assert_eq!(
+            cloud_tier_from_status(&cloud_status(true, Some("pro"), None, None)),
+            CloudTier::Team
+        );
+        assert_eq!(
+            cloud_tier_from_status(&cloud_status(true, Some("team-plus"), None, None)),
+            CloudTier::TeamPlus
+        );
+        assert_eq!(
+            cloud_tier_from_status(&cloud_status(true, None, Some("team_123"), None)),
+            CloudTier::Team
+        );
+    }
+
+    #[test]
+    fn cloud_plan_label_prefers_team_name() {
+        let status = cloud_status(true, Some("team"), Some("team_123"), Some("Acme"));
+        assert_eq!(cloud_plan_label_from_status(&status), "Acme");
+
+        let fallback = cloud_status(true, Some("enterprise"), None, None);
+        assert_eq!(cloud_plan_label_from_status(&fallback), "Cloud Team Plus");
     }
 
     #[test]

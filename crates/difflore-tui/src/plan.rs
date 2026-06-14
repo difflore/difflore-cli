@@ -11,6 +11,16 @@ pub enum Tier {
     TeamPlus,
 }
 
+impl Tier {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Free => "Free",
+            Self::Team => "Team",
+            Self::TeamPlus => "Team Plus",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum SupportSla {
     #[default]

@@ -49,7 +49,7 @@
 //! and try from there. If parsing still fails, the gate returns
 //! [`GateError::ParseFailure`] and the worker drops the candidate.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::extract::Pair;
 use crate::agent_exec::{AgentKind, GateResult, dispatch_gate};
@@ -65,19 +65,22 @@ const PROMPT_MAX_CHARS: usize = 30_000;
 /// prompt budget gets dominated by digests rather than session content.
 const MAX_EXISTING_RULES_IN_PROMPT: usize = 24;
 
-const DEFAULT_GATE_AGENT: AgentKind = AgentKind::Codex;
 const FALLBACK_GATE_AGENTS: [AgentKind; 4] = [
-    AgentKind::Codex,
     AgentKind::ClaudeCode,
     AgentKind::Cursor,
     AgentKind::GeminiCli,
+    AgentKind::Codex,
 ];
 
-/// How long we'll wait for the agent CLI to return. 90s is generous —
-/// Haiku-class models usually finish in 5-15s but cold CLI starts
-/// (especially `claude` on Windows) can add ~30s. Anything over 90s
-/// means something is wrong; the worker drops the candidate.
-const GATE_TIMEOUT: Duration = Duration::from_secs(90);
+/// Per-agent cap for one fallback attempt. Haiku-class models usually finish
+/// in 5-15s; cold CLI starts can add overhead, but an individual attempt that
+/// cannot return in 30s should yield to the next compatible agent.
+const GATE_AGENT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Total wall-clock cap for the whole fallback chain. This prevents a missing
+/// or chatty first agent from turning the background worker into a multi-minute
+/// stall.
+const GATE_TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Snapshot of an existing rule passed into the gate so it can decide
 /// MERGE vs KEEP. The cloud side already exposes this shape via
@@ -111,7 +114,7 @@ pub struct GateArgs<'a> {
     pub gate_model: &'a str,
     /// Hook adapter client name (`"claude-code"`, `"cursor"`, …). Maps
     /// to an [`AgentKind`] via `AgentKind::from_client_name`; gate execution
-    /// now prefers Codex locally and falls back through compatible CLIs.
+    /// tries the user's current client first, then other compatible CLIs.
     pub client_name: &'a str,
     /// Unix-ms timestamp to stamp on the produced candidate when the
     /// gate keeps the session. Passed in (rather than read from the
@@ -172,21 +175,21 @@ pub async fn run_gate(args: GateArgs<'_>) -> Result<GateVerdict, GateError> {
 
     let prompt = build_prompt(args.pairs, args.existing_rules);
     let mut dispatch_errors = Vec::new();
+    let started = Instant::now();
 
     for agent in gate_agent_candidates(args.client_name) {
-        let result: GateResult = dispatch_gate(agent, &prompt, GATE_TIMEOUT).await;
-        if result.errored {
+        let Some(time_budget) = gate_dispatch_budget(started.elapsed()) else {
             dispatch_errors.push(format!(
-                "{}: {}",
-                agent.label(),
-                dispatch_error_message(result)
+                "time budget exhausted after {}s",
+                GATE_TOTAL_TIMEOUT.as_secs()
             ));
-            continue;
+            break;
+        };
+        let result: GateResult = dispatch_gate(agent, &prompt, time_budget).await;
+        if let Some(verdict) = verdict_from_gate_result(agent, result, &args, &mut dispatch_errors)
+        {
+            return verdict;
         }
-
-        let parsed = parse_gate_json(&result.stdout)?;
-        let gate_model = format!("{}:gate", agent.label());
-        return parsed_to_verdict(parsed, &args, &gate_model);
     }
 
     Err(GateError::Dispatch {
@@ -196,6 +199,42 @@ pub async fn run_gate(args: GateArgs<'_>) -> Result<GateVerdict, GateError> {
             format!("all gate agents failed: {}", dispatch_errors.join("; "))
         },
     })
+}
+
+fn gate_dispatch_budget(elapsed: Duration) -> Option<Duration> {
+    let remaining = GATE_TOTAL_TIMEOUT.checked_sub(elapsed)?;
+    if remaining.is_zero() {
+        return None;
+    }
+    Some(remaining.min(GATE_AGENT_TIMEOUT))
+}
+
+fn verdict_from_gate_result(
+    agent: AgentKind,
+    result: GateResult,
+    args: &GateArgs<'_>,
+    dispatch_errors: &mut Vec<String>,
+) -> Option<Result<GateVerdict, GateError>> {
+    if result.errored {
+        dispatch_errors.push(format!(
+            "{}: {}",
+            agent.label(),
+            dispatch_error_message(result)
+        ));
+        return None;
+    }
+
+    let parsed = match parse_gate_json(&result.stdout) {
+        Ok(parsed) => parsed,
+        Err(err @ GateError::ParseFailure { .. }) => {
+            dispatch_errors.push(format!("{}: {err}", agent.label()));
+            return None;
+        }
+        Err(err) => return Some(Err(err)),
+    };
+
+    let gate_model = format!("{}:gate", agent.label());
+    Some(parsed_to_verdict(parsed, args, &gate_model))
 }
 
 fn dispatch_error_message(result: GateResult) -> String {
@@ -208,7 +247,6 @@ fn dispatch_error_message(result: GateResult) -> String {
 
 fn gate_agent_candidates(client_name: &str) -> Vec<AgentKind> {
     let mut agents = Vec::with_capacity(FALLBACK_GATE_AGENTS.len());
-    push_gate_agent(&mut agents, DEFAULT_GATE_AGENT);
     if let Some(client_agent) = AgentKind::from_client_name(client_name) {
         push_gate_agent(&mut agents, client_agent);
     }
@@ -580,6 +618,93 @@ mod tests {
         }
     }
 
+    #[test]
+    fn gate_candidates_prefer_current_client_and_leave_codex_as_fallback() {
+        let claude = gate_agent_candidates("claude-code");
+        assert_eq!(claude.first(), Some(&AgentKind::ClaudeCode));
+        assert_eq!(claude.last(), Some(&AgentKind::Codex));
+        assert_eq!(
+            claude,
+            vec![
+                AgentKind::ClaudeCode,
+                AgentKind::Cursor,
+                AgentKind::GeminiCli,
+                AgentKind::Codex,
+            ]
+        );
+
+        let codex = gate_agent_candidates("codex");
+        assert_eq!(codex.first(), Some(&AgentKind::Codex));
+        assert_eq!(
+            codex,
+            vec![
+                AgentKind::Codex,
+                AgentKind::ClaudeCode,
+                AgentKind::Cursor,
+                AgentKind::GeminiCli,
+            ]
+        );
+    }
+
+    #[test]
+    fn gate_dispatch_budget_caps_each_agent_and_total_chain() {
+        assert_eq!(
+            gate_dispatch_budget(Duration::ZERO),
+            Some(GATE_AGENT_TIMEOUT)
+        );
+        assert_eq!(
+            gate_dispatch_budget(Duration::from_secs(89)),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(gate_dispatch_budget(GATE_TOTAL_TIMEOUT), None);
+    }
+
+    #[test]
+    fn parse_failure_is_recorded_and_allows_next_agent() {
+        let pairs = vec![pair("u", "a")];
+        let existing = Vec::new();
+        let gate_args = args(&pairs, &existing);
+        let mut dispatch_errors = Vec::new();
+
+        let non_json = GateResult {
+            stdout: "login required before running the agent".to_owned(),
+            stderr: String::new(),
+            errored: false,
+            error_message: String::new(),
+        };
+        assert!(
+            verdict_from_gate_result(AgentKind::Codex, non_json, &gate_args, &mut dispatch_errors)
+                .is_none()
+        );
+        assert!(
+            dispatch_errors
+                .iter()
+                .any(|msg| msg.contains("codex") && msg.contains("parse failed")),
+            "parse failure should be retained for final diagnostics: {dispatch_errors:?}"
+        );
+
+        let valid_skip = GateResult {
+            stdout: r#"{"verdict":"SKIP","reason":"covered"}"#.to_owned(),
+            stderr: String::new(),
+            errored: false,
+            error_message: String::new(),
+        };
+        let verdict = verdict_from_gate_result(
+            AgentKind::ClaudeCode,
+            valid_skip,
+            &gate_args,
+            &mut dispatch_errors,
+        )
+        .expect("valid fallback should produce a verdict")
+        .expect("valid fallback should succeed");
+        assert_eq!(
+            verdict,
+            GateVerdict::Skip {
+                reason: "covered".to_owned()
+            }
+        );
+    }
+
     // Prompt assembly
     #[test]
     fn prompt_includes_existing_rules_section_with_ids_and_titles() {
@@ -903,27 +1028,27 @@ mod tests {
 
     // Public surface
     #[test]
-    fn gate_agent_candidates_prefers_codex_for_claude_code_hooks() {
+    fn gate_agent_candidates_prefers_current_client_for_claude_code_hooks() {
         assert_eq!(
             gate_agent_candidates("claude-code"),
             vec![
-                AgentKind::Codex,
                 AgentKind::ClaudeCode,
                 AgentKind::Cursor,
                 AgentKind::GeminiCli,
+                AgentKind::Codex,
             ],
         );
     }
 
     #[test]
-    fn gate_agent_candidates_keeps_client_agent_as_first_fallback() {
+    fn gate_agent_candidates_keeps_client_agent_first() {
         assert_eq!(
             gate_agent_candidates("cursor"),
             vec![
-                AgentKind::Codex,
                 AgentKind::Cursor,
                 AgentKind::ClaudeCode,
                 AgentKind::GeminiCli,
+                AgentKind::Codex,
             ],
         );
     }
@@ -933,10 +1058,10 @@ mod tests {
         assert_eq!(
             gate_agent_candidates("windsurf"),
             vec![
-                AgentKind::Codex,
                 AgentKind::ClaudeCode,
                 AgentKind::Cursor,
-                AgentKind::GeminiCli
+                AgentKind::GeminiCli,
+                AgentKind::Codex,
             ],
         );
     }

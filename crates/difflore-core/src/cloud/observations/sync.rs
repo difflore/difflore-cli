@@ -4,7 +4,7 @@ use crate::cloud::outbox_core::{RetryDecision, backoff_delay_ms, decide_retry};
 use sqlx::Row;
 
 impl ObservationEmitter {
-    pub async fn retry_pending_uploads_now(&self) -> Result<u64, String> {
+    pub async fn retry_pending_uploads_now(&self) -> crate::Result<u64> {
         let now = now_unix_ms();
         let result = sqlx::query(
             "UPDATE observation_events \
@@ -21,7 +21,7 @@ impl ObservationEmitter {
     pub async fn flush_to_cloud(
         &self,
         client: &crate::cloud::client::CloudClient,
-    ) -> Result<(usize, usize), String> {
+    ) -> crate::Result<(usize, usize)> {
         if !client.is_logged_in() {
             return Ok((0, 0));
         }
@@ -88,7 +88,7 @@ impl ObservationEmitter {
                     sent += 1;
                 }
                 Err(err) => {
-                    self.mark_failed(id, retry_count, &err).await?;
+                    self.mark_failed(id, retry_count, &err.to_string()).await?;
                 }
             }
         }
@@ -101,7 +101,7 @@ impl ObservationEmitter {
         id: i64,
         retry_count: i64,
         err: &str,
-    ) -> Result<(), String> {
+    ) -> crate::Result<()> {
         // Shared retry/abandon decision (unified `MAX_RETRY_COUNT`); abandon at
         // the cap, otherwise re-schedule with exponential backoff.
         let next_count = match decide_retry(retry_count) {
@@ -125,7 +125,7 @@ impl ObservationEmitter {
         Ok(())
     }
 
-    pub(super) async fn mark_sent(&self, id: i64, sent_at_ms: i64) -> Result<(), String> {
+    pub(super) async fn mark_sent(&self, id: i64, sent_at_ms: i64) -> crate::Result<()> {
         sqlx::query("UPDATE observation_events SET status = 'sent', sent_at_ms = ?1 WHERE id = ?2")
             .bind(sent_at_ms)
             .bind(id)
@@ -150,7 +150,7 @@ impl ObservationEmitter {
         &self,
         cutoff_unix_ms: i64,
         dry_run: bool,
-    ) -> Result<crate::cloud::outbox::DrainSummary, String> {
+    ) -> crate::Result<crate::cloud::outbox::DrainSummary> {
         let mut tx = self
             .pool()
             .begin()
@@ -210,7 +210,7 @@ impl ObservationEmitter {
         Ok(summary)
     }
 
-    pub(super) async fn abandon(&self, id: i64, err: &str) -> Result<(), String> {
+    pub(super) async fn abandon(&self, id: i64, err: &str) -> crate::Result<()> {
         sqlx::query(
             "UPDATE observation_events \
              SET status = 'abandoned', last_error = ?1 WHERE id = ?2",

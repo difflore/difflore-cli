@@ -140,11 +140,12 @@ pub(crate) async fn init_db() -> difflore_core::SqlitePool {
     match difflore_core::infra::db::init_db().await {
         Ok(pool) => pool,
         Err(e) => {
+            let err = e.to_string();
             // Stale-DB-across-versions case: sqlx surfaces an opaque
             // "migration NNNN was previously applied but is missing" when the
             // on-disk DB has migrations this binary doesn't know about.
             // Translate to actionable copy.
-            if e.contains("was previously applied but is missing") {
+            if err.contains("was previously applied but is missing") {
                 exit_err(
                     "DiffLore's local database was created by a different version and can't be \
                      opened by this binary.\n  \
@@ -153,7 +154,7 @@ pub(crate) async fn init_db() -> difflore_core::SqlitePool {
                      `difflore cloud sync` after login.",
                 );
             }
-            exit_err(&format!("Failed to initialize database: {e}"));
+            exit_err(&format!("Failed to initialize database: {err}"));
         }
     }
 }

@@ -29,7 +29,19 @@ pub enum CoreError {
     EmbedCapReached { cap: u32, used: u32 },
 }
 
-pub type Result<T> = std::result::Result<T, CoreError>;
+pub type Result<T, E = CoreError> = std::result::Result<T, E>;
+
+impl From<String> for CoreError {
+    fn from(value: String) -> Self {
+        Self::Internal(value)
+    }
+}
+
+impl From<&str> for CoreError {
+    fn from(value: &str) -> Self {
+        Self::Internal(value.to_owned())
+    }
+}
 
 /// Render an error together with its `source()` chain (deduplicated against
 /// text the message already carries).

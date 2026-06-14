@@ -336,9 +336,7 @@ pub async fn install_pack(
     }
 
     // Resolve and confine the on-disk pack root once.
-    let base_dir = crate::skills::fs::skills_base_dir()
-        .map_err(CoreError::Internal)?
-        .join(PACK_SKILL_SOURCE);
+    let base_dir = crate::skills::fs::skills_base_dir()?.join(PACK_SKILL_SOURCE);
     std::fs::create_dir_all(&base_dir)
         .map_err(|e| CoreError::Internal(format!("failed to create pack skills dir: {e}")))?;
     let canonical_base = base_dir

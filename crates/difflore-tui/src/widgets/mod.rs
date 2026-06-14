@@ -9,5 +9,5 @@ pub mod status_bar;
 pub mod text;
 
 pub use ascii_bar::ascii_bar_counts;
-pub use status_bar::{EventStripState, PlanStateView, PlanTier, SmartStatusBar};
+pub use status_bar::{EventStripState, PlanStateView, SmartStatusBar};
 pub use text::truncate;

@@ -16,6 +16,7 @@ use crate::installer;
 /// Construct one with [`gather`].
 pub(crate) struct Findings {
     pub(crate) binary_version: String,
+    pub(crate) master_key_storage: difflore_core::infra::crypto::MasterKeyStorageStatus,
     pub(crate) project_db: ProjectDbProbe,
     /// Pre-loaded "what the AI has learned" snapshot. Defaults (rendering to
     /// "") when the current repo has no ready memory, so no load is issued.
@@ -99,6 +100,7 @@ pub(crate) async fn gather(ctx: &crate::runtime::CommandContext) -> Findings {
     // near the row that reports it).
     let project_db = probe_project_db(pool, &ctx.project).await;
     let binary_version = env!("CARGO_PKG_VERSION").to_owned();
+    let master_key_storage = difflore_core::infra::crypto::probe_master_key_storage();
     let mcp = installer::collect_status_snapshot_with_runtime_probe();
     let provider = probe_provider(pool).await;
     let cloud = probe_cloud(ctx).await;
@@ -114,6 +116,7 @@ pub(crate) async fn gather(ctx: &crate::runtime::CommandContext) -> Findings {
     };
     Findings {
         binary_version,
+        master_key_storage,
         project_db: project_db.probe,
         memory_snapshot,
         mcp,
@@ -250,7 +253,7 @@ async fn probe_provider(pool: Option<&difflore_core::SqlitePool>) -> ProviderPro
     let Some(pool) = pool else {
         return ProviderProbe::DbUnavailable;
     };
-    match difflore_core::domain::providers::list(pool).await {
+    match difflore_core::infra::providers::list(pool).await {
         Ok(providers) if providers.is_empty() => ProviderProbe::NoneConfigured,
         Ok(providers) => {
             let active = providers

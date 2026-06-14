@@ -15,17 +15,17 @@
 //!
 //! | Endpoint | Types |
 //! | --- | --- |
-//! | `POST /reviews/recallPastVerdicts` | `RecallPastVerdictsRequest`, `PastVerdictDto` |
+//! | `POST /reviews/recall-past-verdicts` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `RecallPastVerdictsRequest`, `PastVerdictDto` |
 //! | `POST /reviews/{id}/metrics` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `RecordReviewMetricsRequest` |
 //! | `POST /reviews/{prReviewId}/trajectory` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `SaveTrajectoryRequest` |
 //! | `GET /reviews/{prReviewId}/trajectory` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `GetTrajectoryResponse` |
 //! | `POST /accepted-edits` (in spec; kept hand-written for serde derives until the R4 contract pipeline migrates it to `generated`) | `RecordAcceptedEditRequest`, `RecordAcceptedEditResponse`, `accepted_edit_diff_signature` |
-//! | `POST /reviews/uploadImported` | `UploadImportedReviewsRequest`, `ImportedReviewUpload`, `ImportedCommentUpload`, `ImportedCommentEventType` |
+//! | `POST /reviews/import` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `UploadImportedReviewsRequest`, `ImportedReviewUpload`, `ImportedCommentUpload`, `ImportedCommentEventType` |
 //! | `GET /impact/*` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `ImpactBannerDto`, `ImpactWeeklyDto`, `ImpactWeeklyPointDto`, `ImpactTopRuleDto`, `ImpactTopRulesDto`, `ImpactPromotionProgressDto`, `ImpactCoverageDto`, `ImpactFixWindowDto`, `ImpactRoiDto`, `ImpactFixScorecardDto` |
 //! | outbox `kind="observation"` wire payload (not an HTTP endpoint) | `Observation`, `ObservationScope` |
 //! | `POST /knowledge/corpus` (in spec; hand-written for serde derives, migration is contract-pipeline debt), `POST /knowledge/corpus/{id}/prime`, `POST /knowledge/corpus/{id}/query`, `GET /knowledge/corpora` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `BuildCorpusFilters`, `BuildCorpusRequest`, `BuildCorpusResult`, `PrimeCorpusResult`, `QueryCorpusRequest`, `QueryCitation`, `QueryCorpusResult`, `CorpusSummary` |
 
-/// Request body for `POST /reviews/recallPastVerdicts`.
+/// Request body for `POST /reviews/recall-past-verdicts`.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecallPastVerdictsRequest {
@@ -290,7 +290,23 @@ mod tests {
         GetTrajectoryResponse, ImpactCoverageDto, ImpactFixScorecardDto, ImpactTopRulesDto,
         RecordAcceptedEditRequest, RecordAcceptedEditResponse, accepted_edit_diff_signature,
     };
+    use crate::contract::RegisterDeviceResult;
     use crate::observability::trajectory::TrajectoryStep;
+
+    #[test]
+    fn register_device_result_accepts_null_device_token() {
+        let device: RegisterDeviceResult = serde_json::from_value(serde_json::json!({
+            "id": "dev_123",
+            "name": "workstation",
+            "platform": "macos",
+            "createdAt": "2026-06-13T12:00:00.000Z",
+            "deviceToken": null
+        }))
+        .expect("deviceToken null must decode for already-registered devices");
+
+        assert_eq!(device.id, "dev_123");
+        assert!(device.device_token.is_none());
+    }
 
     /// The GET envelope is camelCase but `steps` uses the `kind`-tagged
     /// snake_case step shape; verify the DTO decodes both without coercion.

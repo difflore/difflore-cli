@@ -305,7 +305,7 @@ async fn handle_request(state: &State, line: &str) -> Response {
 }
 
 async fn ipc_roundtrip(request_line: &str) -> anyhow::Result<String> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::io::{AsyncWriteExt, BufReader};
 
     let path = protocol::endpoint_for_current_project().map_err(anyhow::Error::msg)?;
     let name = path.to_fs_name::<GenericFilePath>()?;
@@ -315,11 +315,30 @@ async fn ipc_roundtrip(request_line: &str) -> anyhow::Result<String> {
     writer.flush().await?;
     let mut reader = BufReader::new(reader);
     let mut response = String::new();
-    reader.read_line(&mut response).await?;
+    read_ipc_line_capped(&mut reader, &mut response).await?;
     if response.trim().is_empty() {
         anyhow::bail!("hook forwarder returned an empty response");
     }
     Ok(response)
+}
+
+async fn read_ipc_line_capped<R>(reader: &mut R, line: &mut String) -> anyhow::Result<usize>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt as _};
+
+    let n = reader
+        .take(protocol::MAX_IPC_BYTES + 1)
+        .read_line(line)
+        .await?;
+    if n as u64 > protocol::MAX_IPC_BYTES {
+        anyhow::bail!(
+            "hook forwarder IPC line exceeds {} bytes",
+            protocol::MAX_IPC_BYTES
+        );
+    }
+    Ok(n)
 }
 
 /// Accept-loop with an idle reaper. Each `accept` is wrapped in a
@@ -362,14 +381,21 @@ async fn serve_until_idle(
 }
 
 async fn handle_connection(stream: interprocess::local_socket::tokio::Stream, state: Arc<State>) {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::io::{AsyncWriteExt, BufReader};
 
     let trace = difflore_core::infra::env::trace_hook();
     let started = std::time::Instant::now();
     let (reader, mut writer) = stream.split();
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
-    if reader.read_line(&mut line).await.is_err() {
+    if let Err(error) = read_ipc_line_capped(&mut reader, &mut line).await {
+        let response = Response::error(error.to_string());
+        let response_line = serde_json::to_string(&response).map_or_else(
+            |_| "{\"ok\":false,\"error\":\"serialize response failed\"}\n".to_owned(),
+            |s| s + "\n",
+        );
+        let _ = writer.write_all(response_line.as_bytes()).await;
+        let _ = writer.flush().await;
         return;
     }
     if trace {

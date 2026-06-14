@@ -77,7 +77,7 @@ pub(super) async fn preflight_provider_backend(
     db: &difflore_core::SqlitePool,
     require_configured_provider: bool,
 ) -> Result<(), String> {
-    let providers = difflore_core::domain::providers::list(db)
+    let providers = difflore_core::infra::providers::list(db)
         .await
         .map_err(|e| format!("failed to read provider configuration: {e}"))?;
     let has_active_provider = providers.iter().any(|provider| provider.is_active);

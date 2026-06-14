@@ -92,7 +92,7 @@ EOF
 # Rewrite SOURCE for branch B (downgrade): keep the verified vendored sha256,
 # but register the divergent cloud commit + a note describing the gap.
 register_cloud_divergence() {
-  local cloud_commit="$1" cloud_path="$2" vendored_only="$3" vendored_sha="$4" cloud_sha="$5"
+  local cloud_commit="$1" cloud_path="$2" removed_fields="$3" vendored_sha="$4" cloud_sha="$5"
   cat > "$source_file" <<EOF
 # Provenance for crates/difflore-core/contracts/openapi-spec.json
 #
@@ -113,14 +113,12 @@ spec-sha256:   $vendored_sha
 cloud-spec-sha256: $cloud_sha
 
 # DIVERGENCE: the cloud export at source-commit is structurally compatible
-# (identical top-level keys, path set, and component-schema names) but its
-# generated-type surface differs from the vendored copy by $vendored_only
-# field line(s) that exist only in the vendored spec. Adopting the cloud spec
-# directly would SHRINK the types produced by \`generate_types!\`, so
-# sync-contract.sh deliberately did NOT replace the vendored spec. The
-# vendored sha256 above was re-verified against this file before registering
-# the cloud commit. Convergence is tracked for the C1/C5 cloud batches
-# (export diff-empty gate) — see REORG-BLUEPRINT.md section 5.
+# (identical top-level keys, path set, and component-schema names) but would
+# remove $removed_fields generated field(s) that exist in the vendored spec.
+# Adopting the cloud spec directly would SHRINK the types produced by
+# \`generate_types!\`, so sync-contract.sh deliberately did NOT replace the
+# vendored spec. The vendored sha256 above was re-verified against this file
+# before registering the cloud commit.
 EOF
 }
 
@@ -175,26 +173,78 @@ cloud_commit="$(git -C "$cloud_repo" rev-parse HEAD 2>/dev/null || echo "unknown
 vendored_sha="$(sha256_of "$vendored_spec")"
 cloud_sha="$(sha256_of "$cloud_spec")"
 
-# Structural comparison on key-sorted JSON across three axes: top-level keys,
-# the set of paths, and the set of component-schema names.
-struct_keys() { jq -S 'keys' "$1"; }
-struct_paths() { jq -S '.paths | keys' "$1"; }
-struct_schemas() { jq -S '.components.schemas | (keys? // [])' "$1"; }
+# Structural comparison across three axes: top-level keys, path names, and
+# component-schema names. The cloud export may be a superset (new endpoints or
+# schemas), but it must not remove anything the vendored spec already exposes.
+struct_keys() { jq -r 'keys[]' "$1" | sort -u; }
+struct_paths() { jq -r '.paths | keys[]' "$1" | sort -u; }
+struct_schemas() { jq -r '.components.schemas | (keys? // [])[]' "$1" | sort -u; }
 
+missing_structural_lines="$(
+  for axis in keys paths schemas; do
+    comm -23 <(struct_"$axis" "$vendored_spec") <(struct_"$axis" "$cloud_spec") \
+      | sed "s/^/$axis: /"
+  done
+)"
 structurally_compatible=1
-for axis in keys paths schemas; do
-  if ! diff -q <(struct_"$axis" "$vendored_spec") <(struct_"$axis" "$cloud_spec") >/dev/null; then
-    structurally_compatible=0
-  fi
-done
+if [ -n "$missing_structural_lines" ]; then
+  structurally_compatible=0
+fi
 
-# Regression guard: would adopting the cloud spec DROP any property/required
-# field the vendored copy currently carries? generate_types! turns those into
-# struct fields, so a drop is a breaking change to generated.rs consumers. We
-# detect it by diffing the fully-normalized specs and counting lines that exist
-# only on the vendored side ('<').
+# Regression guard: would adopting the cloud spec DROP any schema property or
+# required field the vendored copy currently carries? generate_types! turns
+# those into struct fields, so a drop is a breaking change to generated.rs
+# consumers. Type-shape changes that preserve the field, such as
+# `string -> anyOf[string,null]`, are intentionally allowed.
+schema_field_surface() {
+  jq -r '
+    def walk_schema($prefix; $s):
+      if ($s | type) == "object" then
+        (
+          if (($s.properties? // null) | type) == "object" then
+            ($s.properties | to_entries[] | "\($prefix).properties.\(.key)"),
+            ($s.properties | to_entries[] | walk_schema("\($prefix).properties.\(.key)"; .value))
+          else empty end
+        ),
+        (
+          if (($s.required? // null) | type) == "array" then
+            ($s.required[] | "\($prefix).required.\(.)")
+          else empty end
+        ),
+        (
+          if $s.items? then walk_schema("\($prefix).items"; $s.items)
+          else empty end
+        ),
+        (
+          if (($s.anyOf? // null) | type) == "array" then
+            ($s.anyOf[] | walk_schema("\($prefix).anyOf"; .))
+          else empty end
+        ),
+        (
+          if (($s.oneOf? // null) | type) == "array" then
+            ($s.oneOf[] | walk_schema("\($prefix).oneOf"; .))
+          else empty end
+        ),
+        (
+          if (($s.allOf? // null) | type) == "array" then
+            ($s.allOf[] | walk_schema("\($prefix).allOf"; .))
+          else empty end
+        )
+      else empty end;
+
+    .components.schemas
+    | to_entries[]
+    | walk_schema("schema.\(.key)"; .value)
+  ' "$1" | sort -u
+}
+
 normalized_diff="$(diff <(jq -S . "$vendored_spec") <(jq -S . "$cloud_spec") || true)"
-vendored_only_lines="$(printf '%s\n' "$normalized_diff" | grep -c '^<' || true)"
+removed_field_lines="$(
+  comm -23 \
+    <(schema_field_surface "$vendored_spec") \
+    <(schema_field_surface "$cloud_spec") || true
+)"
+removed_field_count="$(printf '%s\n' "$removed_field_lines" | sed '/^$/d' | wc -l | tr -d ' ')"
 
 if [ "$structurally_compatible" = "1" ] && [ -z "$normalized_diff" ]; then
   echo "sync-contract: vendored spec already matches cloud (normalized identical)."
@@ -205,10 +255,10 @@ if [ "$structurally_compatible" = "1" ] && [ -z "$normalized_diff" ]; then
   exit 0
 fi
 
-if [ "$structurally_compatible" = "1" ] && [ "$vendored_only_lines" -eq 0 ]; then
+if [ "$structurally_compatible" = "1" ] && [ "$removed_field_count" -eq 0 ]; then
   # ── Branch A: direct adoption ──────────────────────────────────────────────
   echo "sync-contract: direct adoption — cloud spec is structurally compatible"
-  echo "  and adds fields without dropping any. Copying + refreshing SOURCE."
+  echo "  and preserves every generated field. Copying + refreshing SOURCE."
   cp "$cloud_spec" "$vendored_spec"
   new_sha="$(sha256_of "$vendored_spec")"
   refresh_source_adopted "$cloud_commit" "$new_sha"
@@ -219,9 +269,15 @@ fi
 
 # ── Branch B: verify-and-register (downgrade) ────────────────────────────────
 echo "sync-contract: DOWNGRADE — cloud spec diverges in a way that would" >&2
-echo "  change/shrink generated types (vendored-only structural lines: $vendored_only_lines)." >&2
+echo "  shrink generated types (removed fields: $removed_field_count)." >&2
 echo "  Not replacing the vendored spec; verifying sha256 + registering cloud" >&2
 echo "  provenance instead. See SOURCE 'DIVERGENCE' note." >&2
+if [ -n "$missing_structural_lines" ]; then
+  printf '%s\n' "$missing_structural_lines" | sed 's/^/  - missing /' >&2
+fi
+if [ -n "$removed_field_lines" ]; then
+  printf '%s\n' "$removed_field_lines" | sed 's/^/  - /' >&2
+fi
 
 recorded="$(source_field 'spec-sha256')"
 if [ "$recorded" != "$vendored_sha" ]; then
@@ -232,7 +288,7 @@ if [ "$recorded" != "$vendored_sha" ]; then
   exit 1
 fi
 
-register_cloud_divergence "$cloud_commit" "$cloud_spec_rel" "$vendored_only_lines" "$vendored_sha" "$cloud_sha"
+register_cloud_divergence "$cloud_commit" "$cloud_spec_rel" "$removed_field_count" "$vendored_sha" "$cloud_sha"
 echo "sync-contract: registered cloud provenance (commit $cloud_commit)."
 echo "  Vendored spec verified against SOURCE; not replaced."
 exit 0

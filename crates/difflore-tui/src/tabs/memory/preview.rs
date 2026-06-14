@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use super::{RulesFocus, RulesOriginFilter, RulesRepoFilter};
-use crate::plan::{PlanState, Tier};
+use crate::plan::PlanState;
 use crate::theme::origin_color;
 
 use crate::widgets::truncate;
@@ -322,11 +322,7 @@ fn apply_plan_to_embedder_snapshot(snapshot: &mut EmbedderModeSnapshot, plan: &P
     if !matches!(snapshot.mode, EmbedderMode::CloudManaged) {
         return;
     }
-    snapshot.plan = Some(match plan.tier {
-        Tier::Free => "Free".to_owned(),
-        Tier::Team => "Team".to_owned(),
-        Tier::TeamPlus => "Team Plus".to_owned(),
-    });
+    snapshot.plan = Some(plan.tier.label().to_owned());
 }
 
 /// Snapshot of the current embedder configuration. Mirrors the JSON shape
@@ -467,6 +463,7 @@ pub(super) fn format_embedder_status_bar(snap: &EmbedderModeSnapshot) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plan::Tier;
 
     #[test]
     fn embedder_snapshot_cache_is_time_bounded() {

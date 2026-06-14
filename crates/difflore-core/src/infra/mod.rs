@@ -6,5 +6,6 @@ pub mod env;
 pub mod files;
 pub mod git;
 pub mod paths;
+pub mod providers;
 pub mod settings;
 pub mod startup;

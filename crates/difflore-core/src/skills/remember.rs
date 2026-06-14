@@ -563,9 +563,7 @@ async fn remember_inner(
 
     // Persist to disk so hand-edits round-trip, path-confined to the
     // skills/local/ root via the same canonicalisation guard as create_local.
-    let base_dir = crate::skills::fs::skills_base_dir()
-        .map_err(CoreError::Internal)?
-        .join("local");
+    let base_dir = crate::skills::fs::skills_base_dir()?.join("local");
     std::fs::create_dir_all(&base_dir)
         .map_err(|e| CoreError::Internal(format!("failed to create skills dir: {e}")))?;
     let canonical_base = base_dir

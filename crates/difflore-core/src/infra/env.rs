@@ -240,14 +240,15 @@ pub const MAX_DEEP_RECALL_SAMPLE_RATE: f32 = 0.10;
 /// Empty / whitespace input is rejected: an explicit
 /// `DIFFLORE_DEEP_RECALL_SAMPLE_RATE=` is almost always a typo. Unset the var
 /// to get the default.
-pub fn parse_deep_recall_sample_rate(raw: &str) -> Result<f32, String> {
+pub fn parse_deep_recall_sample_rate(raw: &str) -> crate::Result<f32> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(format!(
             "{DIFFLORE_DEEP_RECALL_SAMPLE_RATE} is empty; unset it to use the default \
              ({DEFAULT_DEEP_RECALL_SAMPLE_RATE}) or pass a value in \
              [0.0, {MAX_DEEP_RECALL_SAMPLE_RATE}]"
-        ));
+        )
+        .into());
     }
     let parsed: f32 = trimmed.parse().map_err(|_| {
         format!(
@@ -258,13 +259,15 @@ pub fn parse_deep_recall_sample_rate(raw: &str) -> Result<f32, String> {
     if !parsed.is_finite() {
         return Err(format!(
             "{DIFFLORE_DEEP_RECALL_SAMPLE_RATE}={raw:?} must be finite; got {parsed}"
-        ));
+        )
+        .into());
     }
     if !(0.0..=MAX_DEEP_RECALL_SAMPLE_RATE).contains(&parsed) {
         return Err(format!(
             "{DIFFLORE_DEEP_RECALL_SAMPLE_RATE}={parsed} is out of range; expected \
              [0.0, {MAX_DEEP_RECALL_SAMPLE_RATE}]"
-        ));
+        )
+        .into());
     }
     Ok(parsed)
 }

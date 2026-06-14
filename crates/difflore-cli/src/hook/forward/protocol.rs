@@ -176,7 +176,9 @@ pub const BLOCKING_READ_TIMEOUT_MS: u64 = 3_000;
 /// limit). Honours `DIFFLORE_HOME` via the core data-home resolver so tests and
 /// sandboxes redirect the socket together with the rest of the data dir.
 pub fn endpoint_for_hash(project_hash: &str) -> Result<std::path::PathBuf, String> {
-    Ok(difflore_core::infra::paths::data_home()?.join(endpoint_file_name(project_hash)))
+    Ok(difflore_core::infra::paths::data_home()
+        .map_err(|e| e.to_string())?
+        .join(endpoint_file_name(project_hash)))
 }
 
 fn endpoint_file_name(project_hash: &str) -> String {

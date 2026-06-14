@@ -22,7 +22,7 @@ pub(crate) async fn handle_gitlab(host: String, check: bool, remove: bool) {
 }
 
 async fn run(host_input: String, check: bool, remove: bool) -> Result<(), String> {
-    let host = gitlab_auth::normalize_gitlab_host(&host_input)?;
+    let host = gitlab_auth::normalize_gitlab_host(&host_input).map_err(|e| e.to_string())?;
     if remove {
         return run_remove(&host).await;
     }
@@ -33,7 +33,10 @@ async fn run(host_input: String, check: bool, remove: bool) -> Result<(), String
 }
 
 async fn run_remove(host: &str) -> Result<(), String> {
-    if gitlab_auth::remove_pat(host).await? {
+    if gitlab_auth::remove_pat(host)
+        .await
+        .map_err(|e| e.to_string())?
+    {
         println!(
             "{} Removed the stored GitLab token for {host}.",
             style::ok(style::sym::OK)
@@ -58,7 +61,9 @@ async fn run_remove(host: &str) -> Result<(), String> {
 
 async fn run_store(host: &str) -> Result<(), String> {
     let (token, source) = read_token_for_store().ok_or_else(|| missing_token_message(host))?;
-    gitlab_auth::save_pat(host, &token).await?;
+    gitlab_auth::save_pat(host, &token)
+        .await
+        .map_err(|e| e.to_string())?;
     println!(
         "{} GitLab token for {host} saved (encrypted at rest).",
         style::ok(style::sym::OK)

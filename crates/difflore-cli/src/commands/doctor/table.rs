@@ -25,6 +25,7 @@ use super::probes::{
 };
 use crate::installer;
 use crate::style;
+use difflore_core::infra::crypto::{KeyseedStatus, MasterKeyStorageStatus};
 
 const RULE: &str = "-----------------------------------------";
 const LABEL_W: usize = 17;
@@ -93,6 +94,7 @@ pub(crate) async fn render_table(ctx: &crate::runtime::CommandContext) -> String
 fn render_findings(findings: &Findings) -> String {
     let rows = vec![
         binary_row(&findings.binary_version),
+        secrets_row(&findings.master_key_storage),
         project_db_row(&findings.project_db),
         mcp_row(&findings.mcp),
         provider_row(&findings.provider),
@@ -110,6 +112,125 @@ fn render_findings(findings: &Findings) -> String {
 fn binary_row(version: &str) -> Row {
     // Always Ready: if the binary couldn't run, we wouldn't be here.
     Row::ready_ok("binary", format!("v{version}"))
+}
+
+fn secrets_row(status: &MasterKeyStorageStatus) -> Row {
+    match status {
+        MasterKeyStorageStatus::EnvOverride => Row::ready_ok(
+            "secrets",
+            "DIFFLORE_MASTER_KEY override (32-byte hex)".to_owned(),
+        ),
+        MasterKeyStorageStatus::KeyringReady => {
+            Row::ready_ok("secrets", "OS keyring master key".to_owned())
+        }
+        MasterKeyStorageStatus::KeyringWillCreate => Row::ready_ok(
+            "secrets",
+            "OS keyring available | master key will be created on first secret".to_owned(),
+        ),
+        MasterKeyStorageStatus::KeyringInvalid(error) => Row {
+            severity: Severity::Optional,
+            status: Status::Err,
+            label: "secrets",
+            value: "OS keyring entry invalid".to_owned(),
+            hints: vec![
+                format!("stored master key is not a valid 32-byte hex key: {error}"),
+                "re-authenticate cloud/provider credentials after repairing the keyring entry"
+                    .to_owned(),
+            ],
+            repair: None,
+        },
+        MasterKeyStorageStatus::LocalFallback {
+            keyring_error,
+            keyseed,
+        } => local_fallback_secrets_row(keyring_error, keyseed),
+        MasterKeyStorageStatus::CiRequiresExplicitKey { keyring_error } => Row {
+            severity: Severity::Optional,
+            status: Status::Err,
+            label: "secrets",
+            value: "OS keyring unavailable on CI".to_owned(),
+            hints: vec![
+                format!("keyring error: {}", short_detail(keyring_error)),
+                "set DIFFLORE_MASTER_KEY=<64-char-hex> for CI/headless secret storage".to_owned(),
+            ],
+            repair: None,
+        },
+    }
+}
+
+fn local_fallback_secrets_row(keyring_error: &str, keyseed: &KeyseedStatus) -> Row {
+    let (status, value) = match keyseed {
+        KeyseedStatus::Present {
+            permissions_ok: Some(true),
+            ..
+        } => (
+            Status::Warn,
+            "local fallback | keyseed present (0600)".to_owned(),
+        ),
+        KeyseedStatus::Present {
+            permissions_ok: Some(false),
+            ..
+        } => (
+            Status::Warn,
+            "local fallback | keyseed present (permissions need repair)".to_owned(),
+        ),
+        KeyseedStatus::Present { .. } => {
+            (Status::Warn, "local fallback | keyseed present".to_owned())
+        }
+        KeyseedStatus::Missing { .. } => (
+            Status::Warn,
+            "local fallback | keyseed will be created on first secret".to_owned(),
+        ),
+        KeyseedStatus::Invalid { .. } => {
+            (Status::Err, "local fallback | keyseed invalid".to_owned())
+        }
+        KeyseedStatus::Unreadable { .. } => (
+            Status::Err,
+            "local fallback | keyseed unreadable".to_owned(),
+        ),
+        KeyseedStatus::Unavailable { .. } => (
+            Status::Err,
+            "local fallback | keyseed unavailable".to_owned(),
+        ),
+    };
+    let mut hints = vec![
+        format!("OS keyring unavailable: {}", short_detail(keyring_error)),
+        "fallback secrets are derived from a persisted 32-byte random keyseed".to_owned(),
+    ];
+    hints.extend(keyseed_hints(keyseed));
+    Row {
+        severity: Severity::Optional,
+        status,
+        label: "secrets",
+        value,
+        hints,
+        repair: None,
+    }
+}
+
+fn keyseed_hints(status: &KeyseedStatus) -> Vec<String> {
+    match status {
+        KeyseedStatus::Present { path, .. } => vec![format!("keyseed: {}", path.display())],
+        KeyseedStatus::Missing { path } => {
+            vec![format!("will create {} with mode 0600", path.display())]
+        }
+        KeyseedStatus::Invalid { path, error, .. }
+        | KeyseedStatus::Unreadable { path, error, .. } => {
+            vec![format!("{}: {}", path.display(), short_detail(error))]
+        }
+        KeyseedStatus::Unavailable { error } => vec![short_detail(error)],
+    }
+}
+
+fn short_detail(detail: &str) -> String {
+    const MAX: usize = 140;
+    let first = detail.lines().next().unwrap_or(detail).trim();
+    let mut chars = first.chars();
+    let truncated: String = chars.by_ref().take(MAX).collect();
+    if chars.next().is_none() {
+        first.to_owned()
+    } else {
+        format!("{truncated}...")
+    }
 }
 
 fn project_db_row(probe: &ProjectDbProbe) -> Row {
@@ -854,11 +975,13 @@ fn render_row_into(out: &mut String, row: &Row) {
 mod tests {
     use super::{
         Severity, Status, embedder_row_from_diagnostics, embedder_row_from_kind,
-        recent_embedding_degradation,
+        recent_embedding_degradation, secrets_row,
     };
     use difflore_core::context::EmbeddingDiagnostics;
     use difflore_core::context::embedding::ActiveEmbedderKind;
+    use difflore_core::infra::crypto::{KeyseedStatus, MasterKeyStorageStatus};
     use difflore_core::observability::activity_stream::{ActivityEvent, ActivityPayload};
+    use std::path::PathBuf;
 
     fn assert_ready_ok(row: &super::Row, label: &'static str) {
         assert_eq!(row.label, label);
@@ -872,6 +995,66 @@ mod tests {
 
     fn no_recent() -> super::RecentEmbeddingDegradation {
         super::RecentEmbeddingDegradation::default()
+    }
+
+    #[test]
+    fn secrets_row_reports_keyring_ready() {
+        let row = secrets_row(&MasterKeyStorageStatus::KeyringReady);
+        assert_ready_ok(&row, "secrets");
+        assert!(row.value.contains("OS keyring"), "value: {}", row.value);
+    }
+
+    #[test]
+    fn secrets_row_warns_for_local_fallback_with_keyseed() {
+        let row = secrets_row(&MasterKeyStorageStatus::LocalFallback {
+            keyring_error: "secret service unavailable".to_owned(),
+            keyseed: KeyseedStatus::Present {
+                path: PathBuf::from("/tmp/difflore/keyseed"),
+                permissions_ok: Some(true),
+            },
+        });
+
+        assert_eq!(row.label, "secrets");
+        assert!(matches!(row.severity, Severity::Optional));
+        assert!(matches!(row.status, Status::Warn));
+        assert!(
+            row.value.contains("keyseed present"),
+            "value: {}",
+            row.value
+        );
+        assert!(
+            row.hints.iter().any(|hint| hint.contains("32-byte random")),
+            "hints: {:?}",
+            row.hints
+        );
+        assert!(
+            row.hints
+                .iter()
+                .any(|hint| hint.contains("/tmp/difflore/keyseed")),
+            "hints: {:?}",
+            row.hints
+        );
+    }
+
+    #[test]
+    fn secrets_row_errors_for_invalid_local_keyseed() {
+        let row = secrets_row(&MasterKeyStorageStatus::LocalFallback {
+            keyring_error: "secret service unavailable".to_owned(),
+            keyseed: KeyseedStatus::Invalid {
+                path: PathBuf::from("/tmp/difflore/keyseed"),
+                error: "expected 64 lowercase hex characters".to_owned(),
+                permissions_ok: Some(true),
+            },
+        });
+
+        assert_eq!(row.label, "secrets");
+        assert!(matches!(row.severity, Severity::Optional));
+        assert!(matches!(row.status, Status::Err));
+        assert!(
+            row.value.contains("keyseed invalid"),
+            "value: {}",
+            row.value
+        );
     }
 
     #[test]

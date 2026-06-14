@@ -3,13 +3,15 @@ use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt as _, AsyncWriteExt, BufReader};
 
 use crate::cloud::client::CloudClient;
 use crate::context::retrieval::RuleRankingWhy;
 use crate::context::{EmbeddingDiagnostics, gather_embedding_diagnostics_with_activity};
 use crate::error::CoreError;
 use crate::observability::trajectory::TrajectoryStep;
+
+const MAX_JSONRPC_LINE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Run the MCP server event loop. Reads JSON-RPC messages line-by-line
 /// from stdin and writes responses to stdout. Runs until stdin is closed.
@@ -30,7 +32,17 @@ pub async fn run(db: SqlitePool) -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         line.clear();
-        let n = reader.read_line(&mut line).await?;
+        let n = match read_jsonrpc_line_capped(&mut reader, &mut line).await {
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                let err = jsonrpc_error(Value::Null, -32700, &e.to_string());
+                let out = jsonrpc_line_bytes(&err);
+                stdout.write_all(&out).await?;
+                stdout.flush().await?;
+                break;
+            }
+            Err(e) => return Err(Box::new(e)),
+        };
         if n == 0 {
             break;
         }
@@ -59,6 +71,23 @@ pub async fn run(db: SqlitePool) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+async fn read_jsonrpc_line_capped<R>(reader: &mut R, line: &mut String) -> std::io::Result<usize>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let n = reader
+        .take(MAX_JSONRPC_LINE_BYTES + 1)
+        .read_line(line)
+        .await?;
+    if n as u64 > MAX_JSONRPC_LINE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("JSON-RPC line exceeds {MAX_JSONRPC_LINE_BYTES} bytes"),
+        ));
+    }
+    Ok(n)
 }
 
 fn jsonrpc_line_bytes(value: &Value) -> Vec<u8> {

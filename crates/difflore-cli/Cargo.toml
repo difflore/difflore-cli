@@ -74,7 +74,6 @@ colored = "3"
 which = "8"
 gate4agent = "0.2"
 dirs = "6"
-tower-lsp = "0.20"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 anyhow = "1"
 thiserror = "2"

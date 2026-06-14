@@ -203,7 +203,7 @@ async fn save_provider(
     model_mapping: HashMap<String, String>,
     human_summary: String,
 ) {
-    let added = match difflore_core::domain::providers::add(
+    let added = match difflore_core::infra::providers::add(
         db,
         ProviderAddInput {
             name: name.to_owned(),
@@ -223,7 +223,7 @@ async fn save_provider(
         }
     };
 
-    if let Err(e) = difflore_core::domain::providers::set_active(
+    if let Err(e) = difflore_core::infra::providers::set_active(
         db,
         ProviderSetActiveInput {
             id: added.id.clone(),

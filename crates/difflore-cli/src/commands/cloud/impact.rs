@@ -117,7 +117,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         Err(e) => println!(
             "  {} {}",
             style::amber("!"),
-            impact_panel_error("banner", e)
+            impact_panel_error("banner", &e.to_string())
         ),
     }
 
@@ -271,7 +271,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         Err(e) => println!(
             "    {} {}",
             style::amber("!"),
-            impact_panel_error("top rules", e)
+            impact_panel_error("top rules", &e.to_string())
         ),
     }
 
@@ -296,7 +296,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         Err(e) => println!(
             "    {} {}",
             style::amber("!"),
-            impact_panel_error("coverage", e)
+            impact_panel_error("coverage", &e.to_string())
         ),
     }
 
@@ -338,12 +338,12 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         Err(e) => println!(
             "    {} {}",
             style::amber("!"),
-            impact_panel_error("fix acceptance", e)
+            impact_panel_error("fix acceptance", &e.to_string())
         ),
     }
 
     println!();
-    let plan = cloud_status.plan.as_deref().unwrap_or("free");
+    let plan_tier = difflore_core::cloud::sync::cloud_tier_from_status(&cloud_status);
     let prs = coverage.as_ref().map_or(0, |c| c.prs);
     let fixes_total = fix.as_ref().map_or(0, |f| f.last30.total);
     let has_signal = prs > 0 || fixes_total > 0;
@@ -387,52 +387,46 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         return;
     }
 
-    match plan {
-        "team" | "team_plus" | "enterprise" => {
-            let label = match plan {
-                "team_plus" => "Cloud Team Plus",
-                "enterprise" => "Enterprise",
-                _ => "Cloud Team",
-            };
-            let team_suffix = cloud_status
-                .team_name
-                .as_deref()
-                .map(|t| format!(" | team `{t}`"))
-                .unwrap_or_default();
-            println!(
-                "  {} {} {}{}",
-                "Plan".bold(),
-                style::ok(label),
-                style::ok(style::sym::OK),
-                style::pewter(&team_suffix)
-            );
-        }
-        _ => {
-            println!("  {}", "Why Cloud Team".bold());
-            if prs > 0 {
-                println!(
-                    "    You've reviewed {} PR{} locally. Cloud Team's GitHub App learns \
-                     from review history and shares governed rules with every agent.",
-                    style::emerald(&prs.to_string()),
-                    if prs == 1 { "" } else { "s" }
-                );
-            }
-            if fixes_total >= 5 {
-                println!(
-                    "    {} local fix outcome{} were recorded in 30d. Cloud plans add \
-                     shared team rules, GitHub App ingest, Reviewer Context, team controls, \
-                     and impact analytics.",
-                    style::emerald(&fixes_total.to_string()),
-                    if fixes_total == 1 { "" } else { "s" }
-                );
-            }
-            println!(
-                "    {} {}",
-                style::pewter("Upgrade:"),
-                difflore_core::cloud::endpoints::pricing_url()
-            );
-        }
+    if plan_tier.is_team() {
+        let label = difflore_core::cloud::sync::cloud_plan_label_from_status(&cloud_status);
+        let team_suffix = cloud_status
+            .team_name
+            .as_deref()
+            .map(|t| format!(" | team `{t}`"))
+            .unwrap_or_default();
+        println!(
+            "  {} {} {}{}",
+            "Plan".bold(),
+            style::ok(&label),
+            style::ok(style::sym::OK),
+            style::pewter(&team_suffix)
+        );
+        return;
     }
+
+    println!("  {}", "Why Cloud Team".bold());
+    if prs > 0 {
+        println!(
+            "    You've reviewed {} PR{} locally. Cloud Team's GitHub App learns \
+             from review history and shares governed rules with every agent.",
+            style::emerald(&prs.to_string()),
+            if prs == 1 { "" } else { "s" }
+        );
+    }
+    if fixes_total >= 5 {
+        println!(
+            "    {} local fix outcome{} were recorded in 30d. Cloud plans add \
+             shared team rules, GitHub App ingest, Reviewer Context, team controls, \
+             and impact analytics.",
+            style::emerald(&fixes_total.to_string()),
+            if fixes_total == 1 { "" } else { "s" }
+        );
+    }
+    println!(
+        "    {} {}",
+        style::pewter("Upgrade:"),
+        difflore_core::cloud::endpoints::pricing_url()
+    );
 }
 
 fn impact_logged_out_value() -> serde_json::Value {

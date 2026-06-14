@@ -179,7 +179,7 @@ fn resolve_provider(
                 "--gitlab-host conflicts with --provider github; drop one of the two.".to_owned(),
             );
         }
-        let host = gitlab_auth::normalize_gitlab_host(host_input)?;
+        let host = gitlab_auth::normalize_gitlab_host(host_input).map_err(|e| e.to_string())?;
         return Ok(ResolvedProvider::Gitlab { host });
     }
 

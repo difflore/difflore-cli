@@ -150,14 +150,16 @@ pub(super) fn build_args(agent: AgentKind, prompt: &str) -> Vec<OsString> {
             args.push(OsString::from("haiku"));
             args.push(OsString::from("--permission-mode"));
             args.push(OsString::from("bypassPermissions"));
+            args.push(OsString::from("--allowedTools"));
+            args.push(OsString::from("Read"));
             // Prompt travels via stdin, not argv.
         }
         AgentKind::Codex => {
-            // `exec` is codex's headless invocation. The dangerous-bypass
-            // flag only suppresses the per-tool approval prompt; the gate
-            // never triggers tool calls.
+            // `exec` is Codex's headless invocation. Keep the gate sandboxed:
+            // session text is untrusted input and may contain prompt injection.
             args.push(OsString::from("exec"));
-            args.push(OsString::from("--dangerously-bypass-approvals-and-sandbox"));
+            args.push(OsString::from("--sandbox"));
+            args.push(OsString::from("read-only"));
             // Prompt travels via stdin, not argv.
         }
         AgentKind::Cursor => {
@@ -218,19 +220,18 @@ mod tests {
                 "haiku",
                 "--permission-mode",
                 "bypassPermissions",
+                "--allowedTools",
+                "Read",
             ]
         );
         assert!(!args.contains(&"hello".to_owned()));
     }
 
     #[test]
-    fn codex_args_use_exec_with_bypass() {
+    fn codex_args_use_exec_with_read_only_sandbox() {
         // Prompt goes via stdin, not argv.
         let args = args_as_strings(&build_args(AgentKind::Codex, "hi"));
-        assert_eq!(
-            args,
-            vec!["exec", "--dangerously-bypass-approvals-and-sandbox"]
-        );
+        assert_eq!(args, vec!["exec", "--sandbox", "read-only"]);
         assert!(!args.contains(&"hi".to_owned()));
     }
 

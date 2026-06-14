@@ -53,7 +53,7 @@ pub(super) fn write_atomic(
 }
 
 pub(super) fn difflore_mcp_record_path() -> Result<PathBuf, String> {
-    let dir = difflore_core::infra::paths::data_home()?;
+    let dir = difflore_core::infra::paths::data_home().map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
     Ok(dir.join("mcp.json"))
 }

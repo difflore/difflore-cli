@@ -57,8 +57,9 @@ done
 
 # ── Gate 2: domain purity ────────────────────────────────────────────────
 domain_dir="crates/difflore-core/src/domain"
-if violations=$(grep -rnE 'use crate::(cloud|store|infra|context)' "$domain_dir" --include='*.rs'); then
-    echo "layer-gate: DOMAIN LAYER VIOLATION — domain/ must not import cloud/store/infra/context:" >&2
+domain_forbidden_layers='(^|[^[:alnum:]_])crate::(cloud|store|infra|context)(::|[[:space:];,{])'
+if violations=$(grep -rnE "$domain_forbidden_layers" "$domain_dir" --include='*.rs'); then
+    echo "layer-gate: DOMAIN LAYER VIOLATION — domain/ must not reference cloud/store/infra/context:" >&2
     printf '%s\n' "$violations" >&2
     fail=1
 fi
