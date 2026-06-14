@@ -388,8 +388,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
     }
 
     if plan_tier.is_team() {
-        let (label, team_suffix) =
-            impact_plan_line(plan_tier, cloud_status.team_name.as_deref());
+        let (label, team_suffix) = impact_plan_line(plan_tier, cloud_status.team_name.as_deref());
         println!(
             "  {} {} {}{}",
             "Plan".bold(),
@@ -559,7 +558,10 @@ mod tests {
         );
 
         // Team Plus keeps its own label.
-        assert_eq!(impact_plan_line(CloudTier::TeamPlus, Some("Acme")).0, "Cloud Team Plus");
+        assert_eq!(
+            impact_plan_line(CloudTier::TeamPlus, Some("Acme")).0,
+            "Cloud Team Plus"
+        );
 
         // No team name -> no suffix; blank/whitespace name -> no empty suffix.
         assert_eq!(impact_plan_line(CloudTier::Team, None).1, "");
