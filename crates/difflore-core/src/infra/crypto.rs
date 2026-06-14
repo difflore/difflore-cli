@@ -405,7 +405,7 @@ fn keyseed_permissions_ok(path: &Path) -> Option<bool> {
 }
 
 #[cfg(not(unix))]
-fn keyseed_permissions_ok(_path: &Path) -> Option<bool> {
+const fn keyseed_permissions_ok(_path: &Path) -> Option<bool> {
     None
 }
 
