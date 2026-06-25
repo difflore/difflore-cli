@@ -56,7 +56,7 @@ jobs:
 
       - name: cargo check (workspace)
         env:
-          RUSTFLAGS: -D warnings
+          RUSTFLAGS: ${{ runner.os == 'Windows' && '-D warnings -C link-arg=/STACK:16777216' || '-D warnings' }}
         run: cargo check --workspace --all-targets
 
       - name: Verify plugin distribution manifests
@@ -72,7 +72,7 @@ jobs:
 
       - name: cargo nextest run
         env:
-          RUSTFLAGS: -D warnings
+          RUSTFLAGS: ${{ runner.os == 'Windows' && '-D warnings -C link-arg=/STACK:16777216' || '-D warnings' }}
         run: cargo nextest run --workspace --all-targets --profile ci
 
       - name: cargo test --doc

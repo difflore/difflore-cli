@@ -16,6 +16,15 @@
 /// Maximum delivery attempts per outbox row, shared by both queues.
 pub(crate) const MAX_RETRY_COUNT: i64 = 8;
 
+/// Maximum observation events uploaded to the cloud in one batch.
+///
+/// Single source of truth for the observations batch ceiling: the outbox
+/// drainer chunks claims to this size and the emitter's flush query binds it
+/// as the SQL `LIMIT`. Must stay at or below the cloud's accepted batch max
+/// (its OpenAPI request-array `maxItems`); a larger value here means full
+/// batches get rejected with `400 invalid_batch` and fail-loop in the outbox.
+pub(crate) const MAX_OBSERVATION_BATCH: usize = 64;
+
 /// What a queue should do with a row whose upload just failed.
 ///
 /// This encodes the *decision* both `OutboxQueue::mark_failed` and the
@@ -60,6 +69,18 @@ pub(crate) const fn decide_retry(retry_count: i64) -> RetryDecision {
 pub(crate) fn backoff_delay_ms(next_count: i64) -> i64 {
     let shift = u32::try_from(next_count.clamp(0, 5)).unwrap_or(0);
     60_000_i64.saturating_mul(1_i64.checked_shl(shift).unwrap_or(32))
+}
+
+/// A bounded, deterministic jitter in `[0, base_ms/4]` derived from `seed`.
+///
+/// Added on top of a backoff/retry delay so that many rows that failed in
+/// the same tick (e.g. a cloud outage or a rate-limit burst) do not all
+/// become due at the same instant and stampede the server on recovery.
+/// `seed` is typically `now ^ row_id`; `rem_euclid` keeps the result
+/// non-negative even for negative seeds/clocks.
+pub(crate) fn jitter_ms(base_ms: i64, seed: i64) -> i64 {
+    let span = (base_ms / 4).max(1);
+    seed.rem_euclid(span)
 }
 
 /// Wall-clock now in unix milliseconds, saturating on overflow or
@@ -130,8 +151,7 @@ mod tests {
         // Clamp holds beyond shift 5.
         assert_eq!(backoff_delay_ms(6), 1_920_000);
         assert_eq!(backoff_delay_ms(99), 1_920_000);
-        // Negative counts clamp to shift 0 (matches the old
-        // `clamp(0, 5)` then `try_from(..).unwrap_or(0)`).
+        // Negative counts clamp to shift 0.
         assert_eq!(backoff_delay_ms(-1), 60_000);
     }
 
@@ -141,9 +161,31 @@ mod tests {
         let long: String = "x".repeat(5000);
         let clipped = truncate(&long, 2048);
         assert_eq!(clipped.chars().count(), 2048);
-        // Identical to the inline `chars().take(n).collect()` form.
         let inline: String = long.chars().take(2048).collect();
         assert_eq!(clipped, inline);
+    }
+
+    #[test]
+    fn jitter_ms_stays_within_a_quarter_of_base_and_is_nonnegative() {
+        // Always in [0, base/4], for assorted seeds incl. negative.
+        for base in [60_000_i64, 1_920_000, 1] {
+            let span = (base / 4).max(1);
+            for seed in [-7_i64, 0, 1, 999_999, i64::MIN, i64::MAX] {
+                let j = jitter_ms(base, seed);
+                assert!(
+                    j >= 0,
+                    "jitter must be non-negative (base={base}, seed={seed})"
+                );
+                assert!(
+                    j < span,
+                    "jitter must be < base/4 (base={base}, seed={seed})"
+                );
+            }
+        }
+        // Different seeds spread out (not all collapsing to one value).
+        let a = jitter_ms(1_920_000, 1);
+        let b = jitter_ms(1_920_000, 2);
+        assert_ne!(a, b);
     }
 
     #[test]

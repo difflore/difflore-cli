@@ -2,12 +2,12 @@ use serde_json::{Value, json};
 
 use crate::context::retrieval;
 use crate::context::types::{PastVerdict, PastVerdictScope};
-use crate::review_trajectory::TrajectoryStep;
+use crate::observability::trajectory::TrajectoryStep;
 
 use super::super::{
     McpState, build_cost_meta, detect_git_remote_owner_repos, emit_trajectory_step, estimate_tokens,
 };
-use super::util::{MCP_TEXT_ARG_CHAR_LIMIT, validate_mcp_text_arg};
+use super::validate::{MCP_TEXT_ARG_CHAR_LIMIT, validate_mcp_text_arg};
 
 pub(crate) async fn tool_get_past_verdicts(
     state: &McpState,
@@ -18,8 +18,7 @@ pub(crate) async fn tool_get_past_verdicts(
         .and_then(|v| v.as_str())
         .ok_or((-32602, "Missing required parameter: query".to_owned()))?;
     validate_mcp_text_arg("query", query, MCP_TEXT_ARG_CHAR_LIMIT)?;
-    // Optional `file` enables server-side cascade ordering and concrete
-    // gap attribution.
+    // Optional `file` enables server-side cascade ordering.
     let target_file = args
         .get("file")
         .and_then(|v| v.as_str())
@@ -38,18 +37,35 @@ pub(crate) async fn tool_get_past_verdicts(
     let repo_scopes: Vec<String> = if let Some(repo) = explicit_repo {
         vec![repo]
     } else {
+        // Warm the configured-GitLab-host cache before detecting remotes so a
+        // fresh MCP-server process that calls get_past_verdicts before any
+        // recall can still resolve self-managed GitLab scopes. Without it the
+        // detection falls empty and the verdict recall silently returns nothing.
+        // Mirrors hook.rs / search_rules.rs / remember_rule.rs.
+        crate::mcp_server::hook::refresh_configured_gitlab_hosts_for_remote_detection().await;
         detect_git_remote_owner_repos()
     };
 
-    // Send raw query text for server-side embedding, and retain per-repo
-    // provenance before merging fan-out responses.
+    if !crate::infra::env::mcp_cloud_reads_enabled() {
+        let text = "MCP cloud-backed verdict recall is local-only by default. Set `DIFFLORE_MCP_ALLOW_CLOUD_READS=1` for this MCP process if you want cloud review history to enter agent context, or run DiffLore cloud commands explicitly in the CLI.";
+        let tokens_used = estimate_tokens(text);
+        return Ok(json!({
+            "content": [{ "type": "text", "text": text }],
+            "_meta": {
+                "cost": build_cost_meta(tokens_used, None),
+                "cloudReadAllowed": false,
+                "impact": { "verdictsRecalled": 0, "kind": "verdicts" }
+            }
+        }));
+    }
+
+    // Retain per-repo provenance before merging fan-out responses.
     let mut repo_by_extraction: std::collections::HashMap<String, (String, f32)> =
         std::collections::HashMap::new();
-    // Cap fan-out at 4 to bound MCP latency.
     let cloud = &state.cloud;
     let cloud_status = crate::cloud::sync::fetch_cloud_status(cloud).await;
     if !cloud_status.logged_in {
-        let text = "Cloud review memory skipped: not logged in. Local recall still works offline; run `difflore cloud login` to append imported PR review memory.";
+        let text = "Local recall is available now. Use `difflore cloud login` to append cloud PR review memory.";
         let tokens_used = estimate_tokens(text);
         return Ok(json!({
             "content": [{ "type": "text", "text": text }],
@@ -68,6 +84,7 @@ pub(crate) async fn tool_get_past_verdicts(
     } else {
         PastVerdictScope::Personal
     };
+    // Cap fan-out at 4 repos to bound MCP latency.
     let recalls = repo_scopes.into_iter().take(4).map(|repo| {
         let target_file = target_file.clone();
         let team_id = team_id.clone();
@@ -121,8 +138,8 @@ pub(crate) async fn tool_get_past_verdicts(
         }));
     }
 
-    // Format verdicts into readable text. Each verdict carries a
-    // Include repo provenance when available.
+    // Format verdicts into readable text, including repo provenance when
+    // available.
     let mut text = String::from("## Past Review Verdicts\n\n");
     for (i, v) in verdicts.iter().enumerate() {
         let source_repo = repo_by_extraction
@@ -130,7 +147,7 @@ pub(crate) async fn tool_get_past_verdicts(
             .map(|(repo, _)| repo.as_str());
         let provenance = source_pr_label(v, source_repo)
             .or_else(|| source_repo.map(str::to_owned))
-            .map(|source| format!(" ← from {source}"))
+            .map(|source| format!(" <- from {source}"))
             .unwrap_or_default();
         text.push_str(&format!(
             "### {} [{}, similarity {:.2}]{}\n\n",
@@ -303,7 +320,8 @@ fn normalize_target_file_for_cloud(raw: &str) -> Option<String> {
 }
 
 fn has_windows_drive_prefix(path: &str) -> bool {
-    path.as_bytes().get(1) == Some(&b':')
+    let bytes = path.as_bytes();
+    bytes.first().is_some_and(u8::is_ascii_alphabetic) && bytes.get(1) == Some(&b':')
 }
 
 fn path_components_for_cloud(path: &std::path::Path, max_components: usize) -> Option<String> {

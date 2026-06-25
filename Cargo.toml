@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "crates/difflore-core",
     "crates/difflore-cli",
-    "crates/difflore-tui",
 ]
 
 # Lint preset: strict. Inspired by Embark Studios' rust-ecosystem lints
@@ -79,6 +78,7 @@ unused_async = "allow"                  # tokio trait impls often trigger this
 case_sensitive_file_extension_comparisons = "allow"  # we control inputs
 items_after_statements = "allow"        # often style choice
 no_effect_underscore_binding = "allow"  # `let _ = ...` to drop guards is idiomatic
+wildcard_imports = "allow"              # split modules re-export via `use super::*` / `self::sub::*`
 
 [profile.release]
 codegen-units = 1

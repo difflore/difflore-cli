@@ -10,246 +10,145 @@ description: Search the local DiffLore rule library before editing code, reviewi
 
 # Rule Search
 
-Use this skill when the user is editing code, reviewing a diff, or asking about
-repo conventions.
-
-## Workflow
-
-1. Call `search_rules` with the current intent and file path.
-2. If a result is borderline or disputed, inspect `rule_timeline` for context.
-3. Fetch full bodies with `get_rules` only for the 1-3 rules that actually
-   apply.
+Find the rules that apply before you edit or review.
 
 ```text
 search_rules(intent="async executor boundary", file="src/worker.rs", top_k=5)
-rule_timeline(rule_id="conv-a1f9c", depth_before=5, depth_after=5)
-get_rules(ids=["conv-a1f9c"], file="src/worker.rs")
+get_rules(ids=["conv-a1f9c"], file="src/worker.rs")   # only the 1-3 that apply
 ```
 
-Skip `rule_timeline` when the top hit is clearly relevant. Use it when the user
-asks why a rule exists, when confidence is low, or when a rule may be stale.
+Add `rule_timeline(rule_id="<id>", depth_before=5, depth_after=5)` only when a
+hit is borderline, disputed, or maybe stale.
 
 ## Avoid
 
-- Do not fetch full rule bodies before searching.
-- Do not use very large `top_k` values unless the user asks for a broad audit.
-- Do not re-query for every tool call; agent transports may already cache hits.
+- Don't fetch full bodies before searching.
+- Don't use large `top_k` unless the user asked for a broad audit.
+- Don't re-query every tool call — transports may cache hits.
+- Don't capture or claim new learning from search results; use
+  `remember-rule-guide` or `rule-gap` when the user wants a rule saved.
 
 ## Related
 
-- `remember_rule`: save a new rule.
-- `rule-gap`: find missing rules.
-- `rule-why-fired`: explain a specific match."################;
+`remember-rule-guide` — save a rule · `rule-gap` — find missing rules · `rule-why-fired` — explain a match."################;
 
 pub(super) const RULE_GAP_SKILL_MD: &str = r################"---
 name: rule-gap
-description: Find review-feedback patterns your team keeps repeating that aren't yet captured as DiffLore rules. Use during PR retros, after a batch of review comments, or when the user asks "what are we missing as a rule?".
+description: Find review-feedback patterns your team repeats that aren't captured as DiffLore rules yet. Use in PR retros, after a batch of review comments, or when the user asks "what are we missing as a rule?".
 ---
 
 # Rule Gap Analysis
 
-Surface review patterns that should be rules but aren't yet — the highest-leverage captures to add to your team's DiffLore library.
+Surface patterns that should be rules but aren't — the highest-leverage captures to add.
 
-## When to Use
+### 1. Pull review signals (per topic)
 
-- User runs a retro and asks "what's next to codify?"
-- A new PR batch came in and the user wants to convert comments into rules
-- Onboarding a new codebase via `difflore import-reviews` and wanting to seed team rules
-
-## 3-Step Recipe
-
-### Step 1: Pull recent review feedback signals
-
-For each topic the user wants to retro on, call:
-
-```
-get_past_verdicts(
-  query="<topic-phrase>",
-  file="<optional-path>"
-)
+```text
+get_past_verdicts(query="<natural-language topic>", file="<optional-path>")
 ```
 
-Required `query` is a natural-language topic phrase ("async borrow", "header types"); `file` is an optional scoping hint. Run the call once per topic of interest. Returns past review extractions — each one is a structured `{ title, body, file_patterns, confidence }` tuple. Dismissed extractions still land here so we see the "tried but rejected" signal too.
+Returns `{title, body, file_patterns}` memories — including dismissed
+("tried but rejected") ones.
 
-### Step 2: Diff against the current rule library
+Treat repeated explicit corrections, review comments, failed-fix patterns, and
+durable preferences as gap signals. A user explicitly asking "save this rule"
+can be captured immediately with `remember-rule-guide`; everything else needs a
+repeated pattern before becoming a proposed rule.
 
-Read the active rule library as a single Markdown document:
+### 2. Diff against the current library
 
-```
-resource: difflore://rules/active
-```
-
-That resource renders the full library with origins and confidence — a one-shot listing without spending search tokens. Cross-reference with Step 1: for each extraction, check if any existing rule covers the same `file_patterns` + body topic.
-
-Public CLI cross-check (use when you want to ask whether the current library
-already covers the topic):
-
-```bash
-difflore ask "Do we already have review guidance for <topic>?"
+```text
+resource: difflore://rules/active        # this project's library as Markdown
 ```
 
-For more precise matching, fetch specific rule full-text with `get_rules(ids=[...])` on any suspicious matches.
+For each memory, check whether an existing rule already covers its topic +
+`file_patterns`. Cross-check with `difflore ask "Do we already have guidance for
+<topic>?"` or `get_rules(ids=[...])` on suspicious matches.
 
-### Step 3: Propose remember_rule captures
+### 3. Propose captures
 
-For extractions without a covering rule:
+Cluster yourself; pick 3-5 patterns that repeat across **3+ memories** with no
+covering rule. For each, propose the capture shape: action-phrased title,
+matching `file_patterns`, trigger, minimal bad/good, and 1-2 source examples.
+Only call `remember_rule(...)` after the user approves a proposal or explicitly
+asks you to save all of them.
 
-1. Cluster by topic (do this yourself — a few lines of analysis).
-2. Pick 3-5 high-leverage capture proposals where the pattern repeats across ≥3 extractions.
-3. For each, propose a `remember_rule(...)` call with:
-   - `title` rewritten for action ("don't X" → "always Y")
-   - `file_patterns` that match where the extractions originated
-   - `bad_code` / `good_code` if you can construct minimal examples
+## Avoid
 
-Present the proposals to the user and ask which to capture. Don't auto-capture — the user should steer.
-
-## Anti-patterns
-
-- **Don't** propose rules for single-occurrence extractions — wait for pattern repetition (≥3 is a reasonable bar).
-- **Don't** duplicate existing rules. If `search_rules` returns a high-similarity match (>0.75), skip that cluster.
-- **Don't** propose vague rules ("write better tests"). If the rule isn't actionable, it's noise.
-
-## Related
-
-- `remember-rule-guide` skill — schema for the capture call
-- `rule-why-fired` skill — debug path when a proposed rule feels off
-- Cloud: the team dashboard has the long-horizon signature-clustering pipeline for the same goal."################;
+- Don't propose rules for single-occurrence memories (3+ is the bar).
+- Don't duplicate an existing strong match.
+- Don't propose vague rules ("write better tests") — actionable or it's noise.
+- Don't turn every preference into a rule; it must affect future coding choices."################;
 
 pub(super) const RULE_DIFF_SKILL_MD: &str = r################"---
 name: rule-diff
-description: Summarize team rule changes since the last `difflore cloud sync`. Use right after a sync completes, when the user asks "what's new from the team?", or when pushing local captures has just happened.
+description: Summarize team rule changes since the last `difflore cloud sync`. Use after a sync, when the user asks "what's new from the team?", or before a review session.
 ---
 
 # Rule Diff
 
-Show what's changed in the team rule set since the local cache was last synced — new additions, confidence bumps, and removals. Useful for "catch me up" moments after a sync.
+Show what changed in the team rule set since the last sync — added, strengthened, removed.
 
-## When to Use
+### 1. Read the snapshot
 
-- Immediately after `difflore cloud sync` completes (user or automation just ran it)
-- User asks "what's new from the team?" / "did anything change?"
-- Before a PR review session — so you apply rules the team added since last time
-
-## 2-Step Recipe
-
-### Step 1: Read the active rule snapshot
-
-```
-# MCP resource (static, no tool call needed)
-Read resource: difflore://rules/active
+```text
+resource: difflore://rules/active        # Markdown; _meta.synced_at in frontmatter
 ```
 
-The resource returns the current rule set rendered as Markdown with `_meta.synced_at` embedded in the frontmatter. Compare `_meta.synced_at` against the previous snapshot (look in conversation history or ask the user).
+Compare `_meta.synced_at` against the previous snapshot (conversation history, or ask the user).
 
-### Step 2: Group changes and present
-
-Produce a compact diff summary grouped by origin:
+### 2. Present grouped by change
 
 ```
 Team rule changes since <last_sync>:
-
 added (3)
-  ● [pr_review]  "no router-core in adapters"   — extracted from PR #421
-  ● [pr_review]  "use Mapping not dict for headers"   — PR #418
-  ● [cloud]      "ban .unwrap() in hot paths"
-
-confidence ↑ (2)
-  ● [manual]     "always Arc for shared state"   0.75 → 0.82
-  ● [extracted]  "prefer PathBuf over String"    0.68 → 0.74
-
+  * [pr_review]  "no router-core in adapters"   — PR #421
+strengthened (2)
+  * [manual]     "always Arc for shared state"  0.75 → 0.82
 removed (1)
-  ● [manual]     "use async_std for I/O"         — superseded
+  * [manual]     "use async_std for I/O"        — superseded
 ```
 
-Prioritize pr_review and cloud-origin additions (team-visible) over conversation captures (personal). Highlight high-confidence additions (>0.8) — those are the rules agents will inject often.
+Prioritize `pr_review` / `cloud` additions (team-visible) over personal conversation captures.
 
-## Anti-patterns
+## Avoid
 
-- **Don't** list every single rule — only changes. The user already has the full library.
-- **Don't** reorder by confidence — stable grouping (added / changed / removed) is easier to scan.
-- **Don't** silently call `sync` yourself. If the user wants a fresh diff, they run `difflore cloud sync` explicitly first.
-
-## Related
-
-- `rule-search` — look up the full body of any changed rule
-- CLI: `difflore cloud sync` (call it yourself if the user explicitly asks)"################;
+- Don't list unchanged rules — only changes.
+- Don't reorder by internal score — stable added/changed/removed grouping scans easier.
+- Don't call `sync` yourself; the user runs `difflore cloud sync` first."################;
 
 pub(super) const RULE_WHY_FIRED_SKILL_MD: &str = r################"---
 name: rule-why-fired
-description: Explain why a specific DiffLore rule matched the current file / diff. Use when the user asks "why is this rule here?", disputes a rule injection, or is debugging a false-positive match.
+description: Explain why a specific DiffLore rule matched the current file / diff. Use when the user asks "why is this rule here?", disputes a rule, or debugs a false-positive match.
 ---
 
 # Rule: Why Fired?
 
-Give the user a precise, evidence-based answer for why a particular rule showed up in the agent's context.
+Give a concrete, history-based reason a rule showed up — not abstract ML talk.
 
-## When to Use
-
-- User asks "why is this rule injected?" / "why did you surface <rule-name>?"
-- User disputes a rule's relevance ("this rule doesn't apply here")
-- User is debugging retrieval quality or tuning the rule set
-
-## 2-Step Recipe
-
-### Step 1: Fetch the full rule body
-
-```
-get_rules(ids=["<rule-id>"])
+```text
+get_rules(ids=["<rule-id>"])      # or reuse the search_rules match reasons
 ```
 
-If the rule came back from `search_rules`, inspect its `evidence` array first. That response now carries explicit evidence types:
+Explain in priority order; the first that applies is usually *the* reason:
 
-- `filePatternMatch` when the current file matches the rule's glob(s)
-- `semanticSimilarity` for the retrieval score against the user's intent
+1. **File-pattern match** (strongest) — the rule's `file_patterns` glob matches
+   the edited path. Cite it: `["src/**/*.rs"]` vs `src/worker/executor.rs`.
+2. **Semantic similarity** — the rule body's topic matches the current
+   intent/code. Cite the concrete phrase, not the score.
+3. **Past-verdict recall** — `get_past_verdicts` returned historical judgments on
+   the same pattern, pulling the rule along.
 
-Look for three signals in the response:
+Add `rule_timeline(rule_id="<id>")` to ground the story in dated history rows.
+If none apply cleanly, say "borderline match" — never fabricate a reason.
 
-- `file_patterns` — glob(s) the rule claims to apply to. A match here is the **strongest** reason a rule fired.
-- `similarity` (if present in the response metadata) — semantic match against the current file / intent.
-- `origin` + `confidence` — higher-confidence rules have a lower injection threshold.
+## Avoid
 
-### Step 2: Explain the match in 3 ordered causes
-
-Present the reasoning in this priority order — the first reason that applies is usually *the* reason:
-
-1. **File-pattern match** (strongest):
-   ```
-   Rule `conv-a1f9c` has file_patterns ["src/**/*.rs"].
-   You are editing src/worker/executor.rs → pattern matches.
-   This is a strict file-pattern match.
-   ```
-
-2. **Semantic similarity** (next):
-   ```
-   Rule body mentions "executor boundary" / "borrow across spawn".
-   Current file contains `tokio::spawn(self.process(...))` — matches
-   the retrieval query with cosine similarity ~0.82.
-   ```
-
-3. **Past-verdict recall** (occasional):
-   ```
-   get_past_verdicts returned 2 historical judgments on the same pattern
-   in this repo — the agent transport's strict-verdict path pulled the associated
-   rule along for context.
-   ```
-
-When `rule_timeline` is available, use it to ground the story with
-chronological evidence rows. Those rows now carry their own `evidence`
-objects, so you can cite both the event and the reason it matters instead
-of reconstructing provenance from free-form prose.
-
-If none of the three apply cleanly, say so plainly — "this looks like a borderline match; retrieval confidence is N.NN." Never fabricate a reason.
-
-## Anti-patterns
-
-- **Don't** explain in abstract ML terms — the user wants a concrete citation ("line X matches glob Y").
-- **Don't** dismiss the dispute with "the rule is always right." If the user says it doesn't apply, they're probably correct — inspect provenance with `rule_timeline`; if it is confirmed bad, tell the user the rule should be removed through the current governance path.
-- **Don't** walk through the full retrieval stack unless asked. Three clear causes beats a tutorial.
-
-## Related
-
-- `rule-search` — inspect the retrieved rule set for the current file
-- Public CLI: `difflore recall` / `difflore ask` can verify what context the agent sees; provenance inspection uses the MCP `rule_timeline` tool."################;
+- Don't explain in ML abstractions — cite "line X matches glob Y".
+- Don't dismiss a dispute with "the rule is always right." If the user says it
+  doesn't apply, they're probably right — check `rule_timeline`; if confirmed
+  bad, say it should be removed via the team memory admin path.
+- Don't walk the whole retrieval stack unless asked."################;
 
 pub(super) const RULE_JOURNEY_SKILL_MD: &str = r################"---
 name: rule-journey
@@ -258,141 +157,270 @@ description: Summarize the local DiffLore rule library for onboarding, retros, o
 
 # Rule Journey
 
-Use this skill when the user asks for a summary of how a repo's DiffLore rules
-are evolving.
+Summarize how a repo's DiffLore rules are evolving.
 
-## Inputs
+Prefer public surfaces: `difflore status`, `difflore recall`, `difflore ask`,
+MCP `search_rules` / `rule_timeline`. Inspect `~/.difflore/data.db` only if asked
+for a deeper report — and don't dump raw rows.
 
-Prefer public DiffLore surfaces:
-
-- `difflore status`
-- `difflore recall`
-- `difflore ask`
-- MCP `search_rules`
-- MCP `rule_timeline`
-
-If direct local DB access is available and the user asked for a deeper report,
-you may inspect `~/.difflore/data.db`, but keep the report focused and avoid
-dumping raw SQL output.
-
-## Report Shape
-
-Write a concise Markdown report with:
+Write a concise Markdown report (default `./difflore-rule-summary.md`):
 
 1. Rule count and date range.
-2. Main origins, such as manual, conversation, or PR review.
-3. The highest-confidence rules and why they matter.
+2. Main origins (manual / conversation / pr_review).
+3. Rules with the strongest team review history, and why they matter.
 4. File-pattern coverage gaps.
-5. Suggested next steps, such as importing reviews or capturing missing rules.
-
-Default output path: `./difflore-rule-summary.md`, unless the user requests
-another path.
+5. Next steps (import reviews, capture missing rules).
 
 ## Avoid
 
-- Do not write a marketing post unless the user asks for one.
-- Do not cite benchmark numbers unless the user provides public results.
-- Do not promise cloud analytics when the user is using only local DiffLore.
-- Do not produce a long report when a short onboarding summary is enough."################;
+- Don't write marketing copy or cite benchmarks unless asked.
+- Don't promise cloud analytics to a local-only user.
+- Don't produce a long report when a short onboarding summary fits."################;
 
 pub(super) const SMART_EXPLORE_SKILL_MD: &str = r################"---
 name: smart-explore
-description: Map a repository cheaply before reading files. Use when starting work in an unfamiliar repo, before large refactors, or when deciding which files and DiffLore rules to inspect first.
+description: Map a repository cheaply before reading files. Use when starting in an unfamiliar repo, before large refactors, or when deciding which files and DiffLore rules to inspect first.
 ---
 
 # Smart Explore
 
-Build a small repo map before spending context on file reads. This skill uses cheap shell inspection plus DiffLore MCP rule lookup; it does not rely on a separate user-facing explorer command.
+Build a small repo map before spending context on file reads — cheap shell plus DiffLore rule lookup.
 
-## When to Use
-
-- The user asks you to inspect, understand, audit, or modify an unfamiliar codebase.
-- You see a large repo and need to choose which files to read first.
-- You are about to run `search_rules` but do not yet know the relevant file, directory, or subsystem.
-- You need a quick changed-file map before review or implementation.
-
-## Workflow
-
-### Step 1: Run a cheap map
+### 1. Cheap map
 
 ```bash
-rg --files
+rg --files | rg "^(src|crates|packages|apps|tests|docs)/"   # sample large repos
 ```
 
-For very large repos, sample by likely source and test directories:
+Note file-type counts, the directories holding most of the source, orientation
+files (README / AGENTS / Cargo.toml / package.json), and git working-tree changes.
+
+### 2. Query rules before reading deeply
+
+```text
+search_rules(intent="<hint>", file="<path>", top_k=5)
+get_rules(ids=["<id>"])                                  # only relevant ones
+rule_timeline(rule_id="<id>", depth_before=3, depth_after=3)   # borderline / old rules
+```
+
+### 3. Read narrowly
+
+Read the smallest useful queue first — changed files, nearby tests, one metadata
+file — before fanning out. Need more? `rg --files | rg "auth|review|provider"`,
+then repeat step 2 with the concrete path.
+
+If exploration shows a repeated gap and no rule covers it, use `rule-gap` to
+propose a capture or `remember-rule-guide` when the user explicitly asks to save
+one. Do not invent an active rule in the summary.
+
+**Read Gate:** a `DiffLore Read Gate` block before a big read is soft orientation —
+apply the shown rules, use the suggested `rule_timeline` calls, and read the file
+only when you need exact lines. It never means "don't read".
+
+## Avoid
+
+- Don't read a whole directory just because it's large.
+- Don't call `get_rules` before `search_rules`.
+- Don't lead with heavy static analysis.
+- Don't treat the map as authoritative architecture — it's triage."################;
+
+pub(super) const KNOWLEDGE_AGENT_SKILL_MD: &str = r################"---
+name: knowledge-agent
+description: Answer broad questions from the team's DiffLore codebase rules — repo decisions, review history, team rules. Use for a focused "brain" over many rules at once.
+---
+
+# Knowledge Agent
+
+Answer cross-cutting questions over DiffLore memory. Use `difflore ask` for the
+public path; reach for MCP tools only when you need provenance or full bodies.
+
+**Not for:** single-rule lookup (`rule-search`), capturing a rule
+(`remember-rule-guide`), or diff since sync (`rule-diff`).
+
+### 1. Ask the public CLI
 
 ```bash
-rg --files | rg "^(src|crates|packages|apps|tests|docs)/"
+difflore ask "What are our conventions for async task boundaries?"
+difflore ask "What should I know before changing this worker?" --file src/worker.rs
 ```
 
-Build a compact map from:
+If answers are empty, suggest `difflore init` + `difflore import-reviews`.
 
-- extension-only file type counts
-- directories carrying most of the source surface
-- orientation files such as README, AGENTS, Cargo.toml, package.json
-- git working tree changes
-- the smallest useful file queue
-- ready-to-run `search_rules` hints
+### 2. Ground important claims
 
-### Step 2: Query rules before reading deeply
-
-For each changed or high-value file, ask DiffLore for local conventions:
-
-```
-search_rules(intent="<hint.query>", file="<hint.file>", top_k=5)
+```text
+search_rules(intent="<topic>", file="<optional-path>", top_k=5)
+get_rules(ids=["<id>"])                                # 1-3 that matter
+rule_timeline(rule_id="<id>", depth_before=5, depth_after=5)
 ```
 
-Only expand IDs that look relevant:
+### 3. Report
 
-```
-get_rules(ids=["<id-1>", "<id-2>"])
-```
+Short answer · supporting rule IDs/titles · any gap, stale signal, or conflict ·
+the next public command (`difflore recall` / `ask` / `status`).
+Call gaps "missing coverage" or "candidate captures", not active rules, unless a
+command output proves they were approved.
 
-Use `rule_timeline` for borderline rules whose age or provenance matters:
+## Avoid
 
-```
-rule_timeline(rule_id="<id>", depth_before=3, depth_after=3)
-```
+- Don't treat `ask` as authoritative with zero citations — verify via `search_rules`.
+- Don't pass cloud tokens or secrets through the conversation.
+- Don't build a global summary when the user named a specific file/subsystem — scope first.
+- Don't call retired corpus or knowledge subcommands.
+- Don't invent "learned N rules" or value receipts; quote the command output."################;
 
-### Step 3: Read narrowly
+pub(super) const MEMORY_CANDIDATE_TRIAGE_SKILL_MD: &str = r################"---
+name: memory-candidate-triage
+description: Help a user inspect and triage DiffLore memory candidates without approving or rejecting them yourself.
+---
 
-Read the small file queue before fanning out. Prefer changed files, nearby tests, and one build or project metadata file over broad recursive reads.
+# Memory Candidate Triage
 
-When you need more files, search by subsystem:
+Use this when the user asks what DiffLore learned, which candidate memories
+exist, what should be approved, or why a memory is or is not active.
+
+## Flow
+
+1. Read the inventory with `list_memory(state="pending", limit=100)` or the
+   `difflore://memory/inbox` resource.
+2. For any item you might recommend, call `get_memory_item(id="<item-id>")`
+   before judging it.
+3. Group items into:
+   - approve: specific, reusable, scoped, and not a duplicate
+   - merge/rewrite: valuable but overlapping, vague, too broad, or missing
+     useful `file_patterns`
+   - reject/defer: one-off, noisy, stale, unsafe, or not a coding rule
+4. Look for consolidation: when several candidates say the same thing, pick one
+   canonical wording and list the duplicate candidate ids to reject or rewrite.
+5. Explain that only active rules affect agents. Drafts and candidates do not.
+   `pending` means saved for review, not failed learning.
+6. Give the exact CLI commands for the user to run, such as
+   `difflore memory approve draft:<id>` or
+   `difflore memory reject session:<hash>`.
+7. Treat `pending` as successfully saved for user review, not as a failed
+   capture. Do not call `remember_rule` again for the same persisted draft.
+
+## Guardrails
+
+- Do not approve, reject, sync, archive, delete, or edit memory through MCP.
+- Do not claim a candidate affected code. Use `get_memory_activity` only for
+  retrieved/surfaced evidence, not proof of final-code influence.
+- Do not retry or duplicate an existing pending draft just because it is not
+  active yet.
+- Do not read local SQLite files unless the user explicitly asks; use DiffLore
+  CLI/MCP surfaces first.
+- Keep recommendations scoped and reversible; prefer "merge/rewrite" over
+  approving vague rules.
+- Never invent a "learned N rules" receipt. Quote the inventory or command
+  output that proves the candidate exists."################;
+
+pub(super) const PRE_SUBMIT_REVIEW_SKILL_MD: &str = r################"---
+name: pre-submit-review
+description: Use when a user is about to commit, push, open a PR, submit code, or asks for a final local review after editing in a DiffLore repo.
+---
+
+# Pre-Submit Review
+
+Before code leaves the working tree, run a local DiffLore review pass and fix
+only the issues it finds. This is a delivery gate, not a commit command.
+
+## Flow
+
+1. Inspect the current diff: `git diff --stat` and, if useful, `git status --short`.
+2. Run `difflore review --diff all`.
+3. If the review reports findings, summarize them and ask before applying broad changes.
+4. Fix locally with the current agent, or run `difflore fix` when interactive patching is appropriate.
+5. Run `difflore review --diff all` again until it is clean or remaining items are explicitly deferred.
+6. Show the user the final status and tell them to review `git diff`.
+
+## Guardrails
+
+- Do not commit, push, open a PR, or post review comments.
+- Do not run `difflore fix --yes` unless the user explicitly asked for automatic fixes.
+- Do not treat "could not review" as clean; resolve review provider/config issues or report the blocker.
+- Keep fixes scoped to DiffLore findings and the user's requested change.
+
+## Useful Commands
 
 ```bash
-rg --files | rg "auth|review|provider"
+difflore review --diff all
+difflore fix
+difflore status
 ```
 
-Then repeat Step 2 with the concrete file path.
+When nothing is found, say the DiffLore pre-submit review is clean and mention
+that the user should still review the final diff before committing."################;
 
-## Output Discipline
+pub(super) const SESSION_RECAP_SKILL_MD: &str = r################"---
+name: session-recap
+description: After editing code in a difflore repo, optionally end your final summary with one quiet line when accepted edits were captured for this task. Use when wrapping up a coding task.
+---
 
-When reporting back to the user, summarize:
+# Session Recap
 
-- the project shape in one or two sentences
-- the files you will inspect first
-- any rules that look relevant
-- the next concrete action
+When you finish editing code, add **one line** to your wrap-up only when
+difflore captured accepted edits for this task:
 
-Do not dump raw file lists unless the user asks.
+```bash
+difflore status   # read accepted edits, not the heading
+```
 
-## Read Gate Interaction
+> difflore: 2 accepted edits captured.
 
-DiffLore may also surface a `DiffLore Read Gate` block before a large file read. Treat it as a cheap orientation layer:
+## Rules
 
-- Apply the shown rules before forming an edit plan.
-- Use the suggested `rule_timeline(...)` calls when provenance or staleness matters.
-- Continue with the file read when exact implementation details or line numbers are needed.
+- **Numbers come from `difflore status`. Never invent them.**
+- Do not prefix the line with `session-recap:` or the skill name.
+- If you use a label, write lowercase `difflore:`.
+- **Nothing applied or only recall/agent-ready activity? Say nothing.**
+- Mention pending captures only if this task created them and the command output
+  gave concrete ids; label them as pending review, not active agent behavior.
+- Do not mention "top memory", "best memory", recall counts, ready-for-agent
+  counts, or "no accepted edits yet" in the recap line.
+- Name a source repo only if you are citing a specific memory that directly
+  shaped the edit in your main summary, not as a generic recap metric.
+- Do not translate accepted edits into saved time, ROI, avoided comments, or
+  reduced review rework.
+- One line. Once per session. Not a pitch."################;
 
-The gate is soft. It never means "do not read this file"; it means "you may not need to spend that context yet."
+pub(super) const DIFFLORE_ONBOARD_SKILL_MD: &str = r################"---
+name: difflore-onboard
+description: Guide a user through first local difflore value in a repo: init, import PR review memory locally, preview recall, and report receipts after each step.
+---
 
-## Anti-patterns
+# DiffLore Onboard
 
-- Do not read a whole directory just because it is large.
-- Do not call `get_rules` before `search_rules`.
-- Do not run heavy static analysis as the first move.
-- Do not treat the cheap map as authoritative architecture analysis; it is triage, not a parser."################;
+Use this when the user wants to start using DiffLore in a repo, verify that it is wired, or get from a cold checkout to the first useful recall.
+
+## Flow
+
+1. Confirm you are in the intended git repo.
+2. Run `difflore init`.
+3. Run `difflore import-reviews --dry-run`.
+4. If the dry run is healthy, run `difflore import-reviews`.
+5. Run `difflore recall --diff`.
+6. End with a concrete `difflore status` receipt. Only call it value when accepted edits were actually captured.
+
+## Receipts
+
+After every write step, echo the concrete receipt line DiffLore printed, such as:
+
+- `+N local memory writes`
+- `+1 rule captured from agent chat`
+- `+N accepted edits recorded for local value tracking`
+
+If a command writes nothing, say what the next command is and do not invent value numbers.
+If a command creates pending candidates, say they were saved for review and are
+not active rules until approved. Never report "N learnings" unless the command
+printed that number.
+
+## Upgrade Path
+
+Keep local memory first. Cloud login, upload, and team sync are upgrades:
+
+- Use `difflore cloud login` only when the user asks for team sync or multi-device memory.
+- Use `difflore import-reviews --upload` only after the user has opted into cloud processing.
+- Existing local conversation captures and imported candidates stay local unless explicitly synced."################;
 
 #[cfg(test)]
 mod tests {
@@ -420,6 +448,11 @@ mod tests {
             ("rule-why-fired", RULE_WHY_FIRED_SKILL_MD),
             ("rule-journey", RULE_JOURNEY_SKILL_MD),
             ("smart-explore", SMART_EXPLORE_SKILL_MD),
+            ("knowledge-agent", KNOWLEDGE_AGENT_SKILL_MD),
+            ("memory-candidate-triage", MEMORY_CANDIDATE_TRIAGE_SKILL_MD),
+            ("pre-submit-review", PRE_SUBMIT_REVIEW_SKILL_MD),
+            ("session-recap", SESSION_RECAP_SKILL_MD),
+            ("difflore-onboard", DIFFLORE_ONBOARD_SKILL_MD),
         ] {
             let path = skills_root.join(slug).join("SKILL.md");
             let expected = std::fs::read_to_string(&path)

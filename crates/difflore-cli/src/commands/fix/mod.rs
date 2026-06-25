@@ -4,16 +4,16 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use difflore_core::models::DiffContentRecord;
-use difflore_core::review::{
+use difflore_core::domain::models::DiffContentRecord;
+use difflore_core::review_engine::{
     DiffContextFile, DiffContextMode, DiffContextOptions, PackedDiffContext, ReviewCheckResult,
     ReviewIssueRecord, pack_diff_context,
 };
 
-use crate::commands::util::{diff_records_to_string, exit_err};
-use crate::mcp_install;
+use crate::installer;
 use crate::runtime::CommandContext;
 use crate::style::{self, sym};
+use crate::support::util::{diff_records_to_string, exit_err};
 
 mod apply;
 mod attribution;
@@ -21,6 +21,7 @@ mod ci;
 mod context;
 mod errors;
 mod modes;
+mod path_hints;
 mod path_safety;
 mod pr;
 mod preflight;
@@ -34,7 +35,9 @@ use apply::{
 };
 use attribution::fetch_rule_source_repos;
 use ci::{exit_after_output, finish_ci_mode};
-use context::{FixContext, prepare_fix_context, primary_file_for_retrieval};
+use context::{
+    FixContext, changed_files_for_retrieval, prepare_fix_context, primary_file_for_retrieval,
+};
 use errors::format_fix_err;
 use modes::FixOutputMode;
 use pr::print_pr_review_instructions;
@@ -43,14 +46,15 @@ use preflight::{
     review_timeout_for_args,
 };
 use render::{
-    emit_fix_json, render_agent_handoff_markdown, render_fix_report_markdown, write_fix_report,
+    emit_fix_json, finding_json, recalled_provenance_json, render_agent_handoff_markdown,
+    render_fix_report_markdown, write_fix_report,
 };
+use scope::{RequestedScope, collect_diff};
 use scope_guardrail::scope_guardrail_for_handoff;
 
-// Confidence under which a patch is treated as "low confidence" — shown in
-// dry-run, but in the interactive walkthrough the default key flips Y→N and
-// `--yes` skips it. Matches the redesign contract (2026-04-27): "user can
-// press Enter all the way through and end up with the safe outcome".
+// Confidence under which a patch is treated as "low confidence": still shown,
+// but the interactive default key flips Y→N and `--yes` skips it, so pressing
+// Enter through the walkthrough lands on the safe outcome.
 pub(crate) const CONFIDENCE_THRESHOLD: f32 = 0.80;
 const PREVIEW_RECALL_DIAGNOSTIC_TIMEOUT: Duration = Duration::from_secs(5);
 const FIX_EXIT_OUTBOX_DRAIN_MAX: usize = 16;
@@ -77,27 +81,25 @@ struct ReviewDiffContext {
     packed: Option<PackedDiffContext>,
 }
 
-// Machine-readable review status, surfaced in --json so a caller (CI, agent) can
-// tell a *clean review* (provider ran, found nothing) apart from *no review at
-// all* (no provider / provider error / timeout). Only `Reviewed` is a passing
-// state. Everything else must not read as a clean pass.
+// Machine-readable review status in --json so a caller (CI, agent) can tell a
+// clean review (provider ran, found nothing) apart from no review at all (no
+// provider / provider error / timeout). Only `reviewed` is a passing state.
 const REVIEW_STATUS_REVIEWED: &str = "reviewed";
 const REVIEW_STATUS_NOT_REVIEWED: &str = "not_reviewed";
 
 impl PreviewDiagnostic {
-    // Every preview diagnostic represents a path where DiffLore could not actually
-    // review the diff (missing provider, provider error, or timeout), so the review
-    // status is always "not_reviewed" and the exit code is non-success.
+    // Every preview diagnostic is a path where the diff was not actually
+    // reviewed (missing provider, provider error, or timeout), so status is
+    // always "not_reviewed".
     const fn review_status() -> &'static str {
         REVIEW_STATUS_NOT_REVIEWED
     }
 }
 
-// Maps a fix `outcome` string to the machine-readable review status. The failure
-// outcomes — no provider configured, provider error, or review timeout — mean the
-// diff was never actually reviewed, so they must NOT read as a clean pass. Every
-// other outcome (observed, no_changes, no_patches, applied, ...) means a review
-// actually ran (or there was nothing to review), which is a passing state.
+// Maps a fix `outcome` string to the machine-readable review status. The
+// failure outcomes (no provider, provider error, review timeout) mean the diff
+// was never reviewed and must NOT read as a clean pass; every other outcome
+// means a review ran (or there was nothing to review), a passing state.
 pub(crate) fn review_status_for_outcome(outcome: &str) -> &'static str {
     match outcome {
         "no_provider" | "provider_error" | "review_timeout" => REVIEW_STATUS_NOT_REVIEWED,
@@ -105,13 +107,21 @@ pub(crate) fn review_status_for_outcome(outcome: &str) -> &'static str {
     }
 }
 
-// Exit code used when fix --preview could not complete a real review. Non-zero so
-// CI / scripts never mistake "could not review" for "reviewed clean".
-const PREVIEW_NOT_REVIEWED_EXIT_CODE: i32 = 2;
+// Human `review` is advisory and must not fail the shell, even when the review
+// provider is unavailable.
+const PREVIEW_NOT_REVIEWED_EXIT_CODE: i32 = 0;
+
+const fn preview_not_reviewed_exit_code(args: &FixArgs) -> i32 {
+    if args.json {
+        1
+    } else {
+        PREVIEW_NOT_REVIEWED_EXIT_CODE
+    }
+}
 
 macro_rules! fix_debug {
     ($($arg:tt)*) => {{
-        if difflore_core::env::fix_debug() {
+        if difflore_core::infra::env::fix_debug() {
             eprintln!("[fix-debug] {}", format!($($arg)*));
         }
     }};
@@ -121,6 +131,7 @@ pub(crate) use fix_debug;
 pub(crate) struct FixArgs {
     pub yes: bool,
     pub preview: bool,
+    pub read_only: bool,
     pub ci: bool,
     pub strict: bool,
     pub diff_scope: Option<String>,
@@ -142,9 +153,10 @@ impl From<crate::cli::FixCliArgs> for FixArgs {
     fn from(args: crate::cli::FixCliArgs) -> Self {
         Self {
             yes: args.yes,
-            preview: args.preview,
-            ci: args.ci,
-            strict: args.strict,
+            preview: false,
+            read_only: false,
+            ci: false,
+            strict: false,
             diff_scope: args.diff,
             explain_rules: args.explain_rules,
             report: args.report,
@@ -162,6 +174,31 @@ impl From<crate::cli::FixCliArgs> for FixArgs {
     }
 }
 
+impl From<crate::cli::ReviewCliArgs> for FixArgs {
+    fn from(args: crate::cli::ReviewCliArgs) -> Self {
+        Self {
+            yes: false,
+            preview: !args.ci,
+            read_only: true,
+            ci: args.ci,
+            strict: args.strict,
+            diff_scope: args.diff,
+            explain_rules: args.explain_rules,
+            report: args.report,
+            json: args.json,
+            pr: args.pr,
+            repo: None,
+            base: None,
+            work_branch: None,
+            no_checkout: args.no_checkout,
+            allow_dirty: args.allow_dirty,
+            no_upload_acceptance: true,
+            agent: FixAgentMode::Provider,
+            path: args.path,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FixAgentMode {
     Provider,
@@ -172,6 +209,16 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
     let structured_output =
         args.report.is_some() || args.json || args.agent == FixAgentMode::Handoff;
     let mode = FixOutputMode::pick(&args, structured_output);
+    let failed_label = if args.read_only {
+        "Review failed"
+    } else {
+        "Fix failed"
+    };
+    let pipeline_failed_label = if args.read_only {
+        "Review pipeline failed"
+    } else {
+        "Fix pipeline failed"
+    };
 
     let ctx = match prepare_fix_context(
         cmd_ctx,
@@ -183,13 +230,14 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
         args.no_checkout,
         args.allow_dirty,
         args.yes,
+        args.read_only,
         args.preview,
         args.path.as_ref(),
     )
     .await
     {
         Ok(ctx) => ctx,
-        Err(e) => exit_err(&format_fix_err("Fix failed", &format!("{e:#}"))),
+        Err(e) => exit_err(&format_fix_err(failed_label, &format!("{e:#}"))),
     };
     let scope_label = ctx.diff_scope.label();
 
@@ -216,9 +264,9 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
     let primary_file = primary_file_for_retrieval(&ctx.diff_records);
 
     if args.agent == FixAgentMode::Provider
-        && let Err(e) = preflight_provider_backend(&ctx.db, args.preview).await
+        && let Err(e) = preflight_provider_backend(&ctx.db, args.read_only).await
     {
-        let message = format_fix_err("Fix failed", &e);
+        let message = format_fix_err(failed_label, &e);
         if args.preview {
             emit_preview_diagnostic(
                 &ctx,
@@ -261,10 +309,14 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
         return;
     }
 
-    let review_input = difflore_core::review::ReviewCheckInput {
+    let review_input = difflore_core::review_engine::ReviewCheckInput {
         project_id: ctx.project_id.clone(),
         diff_content: diff_text.clone(),
         file_path: primary_file.clone(),
+        // Authoritative changed-file list from the diff records (NOT parsed
+        // from `diff_text`, which may be packed under a char budget for big
+        // PRs): rule retrieval uses the whole changeset as path hints.
+        diff_files: changed_files_for_retrieval(&ctx.diff_records),
         engine: None,
         review_id: review_id_for_provider_run(ctx.review_id.as_deref(), args.preview),
         repo_full_name: ctx.repo_full_name.clone(),
@@ -276,7 +328,7 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
     let review_started = Instant::now();
     let mut result = match tokio::time::timeout(
         review_timeout,
-        difflore_core::review::run_review_smart(&ctx.db, review_input),
+        difflore_core::review_engine::run_review_smart(&ctx.db, review_input),
     )
     .await
     {
@@ -291,7 +343,7 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
                 primary_file.as_deref(),
                 PreviewDiagnostic {
                     kind: "provider_error",
-                    message: format_fix_err("Fix pipeline failed", &e.to_string()),
+                    message: format_fix_err(pipeline_failed_label, &e.to_string()),
                     budget_ms: Some(duration_ms(review_timeout)),
                     elapsed_ms,
                 },
@@ -299,7 +351,7 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
             .await;
             return;
         }
-        Ok(Err(e)) => exit_err(&format_fix_err("Fix pipeline failed", &e.to_string())),
+        Ok(Err(e)) => exit_err(&format_fix_err(pipeline_failed_label, &e.to_string())),
         Err(_) if args.preview => {
             let review_timeout_secs = review_timeout.as_secs();
             emit_preview_diagnostic(
@@ -311,7 +363,7 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
                 PreviewDiagnostic {
                     kind: "review_timeout",
                     message: format!(
-                        "fix preview stopped after {review_timeout_secs}s while waiting for the review provider. \
+                        "review stopped after {review_timeout_secs}s while waiting for the review provider. \
                          Set DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS to a higher value for slow local providers."
                     ),
                     budget_ms: Some(duration_ms(review_timeout)),
@@ -322,8 +374,9 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
             return;
         }
         Err(_) => exit_err(&format!(
-            "fix pipeline timed out after {REVIEW_TIMEOUT_SECS}s while waiting for the review provider. \
-             Run `difflore doctor` to check the active provider, then retry."
+            "{} pipeline timed out after {REVIEW_TIMEOUT_SECS}s while waiting for the review provider. \
+             Run `difflore doctor` to check the active provider, then retry.",
+            if args.read_only { "review" } else { "fix" },
         )),
     };
     fix_debug!(
@@ -484,6 +537,9 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
                     &yes_outcome,
                 );
             }
+            if !args.json && !yes_outcome.outcome.applied.is_empty() {
+                print_compact_value_summary(&ctx.db).await;
+            }
             if !args.json
                 && let Some(pr) = ctx.pr_fix.as_ref()
             {
@@ -495,12 +551,12 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
             }
         }
         FixOutputMode::Pipe => {
-            // Piped / scripted without `--yes`: dump suggestions as text. Style helpers
-            // no-op outside a TTY so this is ANSI-clean for jq / less / CI logs.
+            // Piped / scripted without `--yes`: dump suggestions as text. Style
+            // helpers no-op outside a TTY, so output is ANSI-clean for jq / CI.
             print_pipe_format(&suggestions);
         }
         FixOutputMode::Interactive => {
-            run_interactive(
+            let outcome = run_interactive(
                 &ctx.db,
                 &ctx.path,
                 &suggestions,
@@ -510,10 +566,20 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
                 !args.no_upload_acceptance,
             )
             .await;
+            if !outcome.applied.is_empty() {
+                print_compact_value_summary(&ctx.db).await;
+            }
             if let Some(pr) = ctx.pr_fix.as_ref() {
                 print_pr_review_instructions(pr);
             }
         }
+    }
+}
+
+async fn print_compact_value_summary(db: &difflore_core::SqlitePool) {
+    let summary = crate::commands::status::compact_value_summary_for_current_project(db).await;
+    if let Some(line) = crate::commands::status::render_compact_value_summary(&summary) {
+        println!("{}", style::pewter(&line));
     }
 }
 
@@ -644,6 +710,14 @@ async fn recall_rules_for_handoff(
     {
         repo_scopes.push(repo);
     }
+    // Same changeset scope the provider path uses: rules tagged for ANY
+    // changed file stay eligible, instead of collapsing onto the primary.
+    let diff_files = changed_files_for_retrieval(&ctx.diff_records);
+    let target_scope = if diff_files.is_empty() {
+        primary_file.map(retrieval::TargetScope::File)
+    } else {
+        Some(retrieval::TargetScope::Changeset(&diff_files))
+    };
     let scored = match retrieval::retrieve_rules_for_search(
         &index_pool,
         retrieval::RuleSearchRetrievalOptions {
@@ -652,12 +726,14 @@ async fn recall_rules_for_handoff(
             top_k: 5,
             confidence_map: ranking_inputs.confidence_map.as_ref(),
             age_days_map: ranking_inputs.age_days_map.as_ref(),
-            target_file: primary_file,
+            effectiveness_map: ranking_inputs.effectiveness_map.as_ref(),
+            target_scope,
             repo_scopes: repo_scopes.as_slice(),
             ann_enabled: true,
+            local_query_embedding: false,
             embedding_timeout: Some(FIX_RECALL_EMBEDDING_TIMEOUT),
-            // Scoped to interactive `recall` for now; `fix` keeps its existing
-            // fast-degrade behaviour.
+            // `fix` keeps its fast-degrade behaviour; cold-start retry is
+            // scoped to interactive `recall`.
             cold_start_retry: false,
             adaptive_prune: false,
         },
@@ -685,7 +761,7 @@ fn handoff_rule_recall_failed(stage: &str, error: impl std::fmt::Display) -> Han
         ids: Vec::new(),
         titles: Vec::new(),
         note: Some(format!(
-            "Rule memory retrieval could not complete while trying to {stage}: {error}. Treat this as unavailable recall evidence, not as proof that no rule matched."
+            "Rule memory retrieval could not complete while trying to {stage}: {error}. Treat this as unavailable recall, not a sign that no memory matched."
         )),
     }
 }
@@ -738,7 +814,8 @@ fn supplement_fix_result_with_recalled_rules(
                 .unwrap_or_else(|| id.clone()),
         );
     }
-    result.matched_rules = i32::try_from(result.matched_rule_ids.len()).unwrap_or(i32::MAX);
+    let supplemented_count = i32::try_from(result.matched_rule_ids.len()).unwrap_or(i32::MAX);
+    result.matched_rules = result.matched_rules.max(supplemented_count);
     backfill_missing_issue_rule_ids(
         &mut result.issues,
         &result.matched_rule_ids,
@@ -754,7 +831,7 @@ fn backfill_missing_issue_rule_ids(
     if matched_rule_ids.is_empty() {
         return;
     }
-    // A single recalled rule is already the disambiguation signal; multi-rule
+    // A single recalled rule is itself the disambiguation signal; multi-rule
     // recalls still require title/message overlap below.
     let single_recalled_rule_fallback =
         matched_rule_ids.len() == 1 && issues.iter().all(issue_rule_id_is_missing);
@@ -855,12 +932,15 @@ fn print_preview_failure(message: &str) {
     let message = message
         .trim()
         .strip_prefix("Fix pipeline failed: ")
+        .or_else(|| message.trim().strip_prefix("Review pipeline failed: "))
+        .or_else(|| message.trim().strip_prefix("Fix failed: "))
+        .or_else(|| message.trim().strip_prefix("Review failed: "))
         .unwrap_or(message.trim());
     if message.starts_with("fix needs ") {
         println!("{} {message}", style::warn(sym::WARN));
     } else {
         println!(
-            "{} preview could not complete: {message}",
+            "{} review could not complete: {message}",
             style::warn(sym::WARN)
         );
     }
@@ -890,7 +970,7 @@ async fn recall_rules_for_preview_diagnostic(
             ids: Vec::new(),
             titles: Vec::new(),
             note: Some(format!(
-                "Rule memory retrieval did not finish within {}ms; this is a preview diagnostic, not proof that no memory matched.",
+                "Rule memory retrieval did not finish within {}ms; this review could not confirm whether memory matched.",
                 duration_ms(PREVIEW_RECALL_DIAGNOSTIC_TIMEOUT)
             )),
         },
@@ -924,10 +1004,11 @@ async fn emit_preview_diagnostic(
         );
         write_fix_report(report_target, &md, args.json);
     }
-    // The review never produced a verdict (no provider / provider error / timeout),
-    // so exit non-success: a stranger (or CI) must not read this as a clean pass.
+    // No verdict was produced (no provider / provider error / timeout). Human
+    // review mode stays advisory, but JSON mode is usually consumed by agents
+    // and must not look like a clean pass.
     flush_fix_outbox_before_exit(&ctx.db).await;
-    exit_after_output(PREVIEW_NOT_REVIEWED_EXIT_CODE);
+    exit_after_output(preview_not_reviewed_exit_code(args));
 }
 
 fn preview_diagnostic_json_value(
@@ -936,28 +1017,19 @@ fn preview_diagnostic_json_value(
     attributions: &std::collections::HashMap<String, String>,
     diagnostic: &PreviewDiagnostic,
 ) -> serde_json::Value {
-    let recalled_provenance: Vec<serde_json::Value> = recalled
-        .ids
-        .iter()
-        .zip(recalled.titles.iter())
-        .map(|(id, title)| {
-            serde_json::json!({
-                "id": id,
-                "title": title,
-                "sourceRepo": attributions.get(id),
-            })
-        })
-        .collect();
+    let recalled_provenance =
+        recalled_provenance_json(&recalled.ids, &recalled.titles, attributions);
     serde_json::json!({
-        "mode": "preview",
+        "schemaVersion": crate::commands::ai_contract::CLI_SCHEMA_VERSION,
+        "mode": "review",
         "scope": scope_label,
         "recalledRuleIds": recalled.ids,
         "recalledRuleTitles": recalled.titles,
         "recalled": recalled_provenance,
         "findings": [],
         "outcome": diagnostic.kind,
-        // Machine-readable: "not_reviewed" means DiffLore could not review the diff,
-        // so this is NOT a clean pass even though there are zero findings.
+        // "not_reviewed" means the diff was not reviewed — NOT a clean pass,
+        // even with zero findings.
         "status": PreviewDiagnostic::review_status(),
         "diagnostic": {
             "kind": diagnostic.kind,
@@ -976,7 +1048,7 @@ fn emit_preview_diagnostic_json(
     diagnostic: &PreviewDiagnostic,
 ) {
     let payload = preview_diagnostic_json_value(scope_label, recalled, attributions, diagnostic);
-    println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+    println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
 }
 
 fn print_preview_diagnostic(
@@ -1002,7 +1074,7 @@ fn print_preview_diagnostic(
                 .ids
                 .get(i)
                 .and_then(|id| attributions.get(id))
-                .map(|repo| format!("  {}", style::pewter(&format!("← learned from {repo}"))))
+                .map(|repo| format!("  {}", style::pewter(&format!("<- learned from {repo}"))))
                 .unwrap_or_default();
             println!(
                 "    {} {title}{attribution_suffix}",
@@ -1016,7 +1088,7 @@ fn print_preview_diagnostic(
     println!(
         "next: {}  {}",
         style::cmd("difflore recall --diff"),
-        style::pewter("# inspect memory without calling the fix provider"),
+        style::pewter("inspect memory without calling the review provider"),
     );
 }
 
@@ -1047,7 +1119,7 @@ async fn handle_empty_diff(
         write_fix_report(target, &md, false);
         return;
     }
-    if mode == FixOutputMode::Structured {
+    if mode == FixOutputMode::Structured || args.json {
         if args.json {
             emit_fix_json(
                 scope_label,
@@ -1080,26 +1152,75 @@ async fn handle_empty_diff(
             "{} no changed files to check in {scope_label}.",
             style::ok(sym::OK),
         );
+        if let Some(hint) = alternate_scope_hint(ctx, args).await {
+            eprintln!("{hint}");
+        }
         return;
     }
     if args.preview {
         println!(
-            "{} no changed files to preview in {scope_label}.",
+            "{} no changed files to review in {scope_label}.",
             style::ok(sym::OK),
         );
         println!();
-        // `recall --diff` would error the same way (also reads git diff);
-        // suggest a non-diff path instead.
-        println!(
-            "next: {}",
-            style::cmd("difflore recall \"<intent phrase>\""),
-        );
+        if let Some(hint) = alternate_scope_hint(ctx, args).await {
+            println!("{hint}");
+        } else {
+            println!(
+                "next: {}",
+                style::cmd("difflore recall \"<intent phrase>\""),
+            );
+        }
         return;
     }
     if io::stdout().is_terminal() {
         println!("{} Nothing to fix in {scope_label}.", style::ok(sym::OK));
+        if let Some(hint) = alternate_scope_hint(ctx, args).await {
+            println!("{hint}");
+            return;
+        }
         print_empty_state_hint(&ctx.db).await;
-        mcp_install::maybe_print_mcp_hint().await;
+        installer::maybe_print_mcp_hint().await;
+    }
+}
+
+async fn alternate_scope_hint(ctx: &FixContext, args: &FixArgs) -> Option<String> {
+    let requested = args
+        .diff_scope
+        .as_deref()
+        .map(str::trim)
+        .filter(|scope| !scope.is_empty())?
+        .to_ascii_lowercase();
+    let (other_scope, other_label) = match requested.as_str() {
+        "worktree" | "working" | "working-tree" => (RequestedScope::Staged, "staged"),
+        "staged" | "stage" | "index" => (RequestedScope::Worktree, "worktree"),
+        _ => return None,
+    };
+    let (records, _) = collect_diff(&ctx.path, other_scope).await.ok()?;
+    if records.is_empty() {
+        return None;
+    }
+
+    let noun = if records.len() == 1 { "file" } else { "files" };
+    let primary = command_for_alternate_scope(args, other_label);
+    let all = command_for_alternate_scope(args, "all");
+    Some(format!(
+        "{} found {} changed {noun} in {other_label}. Try:\n  {}\n  {}",
+        style::pewter("hint:"),
+        records.len(),
+        style::cmd(&primary),
+        style::cmd(&all),
+    ))
+}
+
+fn command_for_alternate_scope(args: &FixArgs, scope: &str) -> String {
+    if args.preview {
+        format!("difflore review --diff {scope}")
+    } else if args.ci {
+        let strict = if args.strict { " --strict" } else { "" };
+        format!("difflore review --ci{strict} --diff {scope}")
+    } else {
+        format!("difflore fix --diff {scope}")
     }
 }
 
@@ -1113,7 +1234,7 @@ async fn run_interactive(
     pr_number: Option<u64>,
     sync_staged_index: bool,
     upload_acceptance: bool,
-) {
+) -> ApplyOutcome {
     println!();
     println!(
         "{} Found {} suggestion{} in your changes.",
@@ -1135,7 +1256,8 @@ async fn run_interactive(
         let confident = issue.confidence >= CONFIDENCE_THRESHOLD;
         print_patch_card(i + 1, total, issue);
 
-        // Auto-apply tail (after `a`): only auto-accept confident; low-confidence still asks.
+        // Auto-apply tail (after `a`): only confident patches auto-accept;
+        // low-confidence still asks.
         if auto_rest && confident {
             println!("  {} auto-accepted (rest)", style::ok(sym::OK));
             accepted.push(issue);
@@ -1210,6 +1332,7 @@ async fn run_interactive(
         u32::try_from(skipped.len()).unwrap_or(u32::MAX),
         total,
     );
+    outcome
 }
 
 struct YesModeOutcome {
@@ -1287,10 +1410,10 @@ async fn run_yes_mode(
             style::pewter(sym::BULLET),
         );
         for issue in &held_back {
-            println!("      {}  ⌕ {}", issue.file_loc, issue.rule_label());
+            println!("      {}  {}", issue.file_loc, issue.rule_label());
         }
         println!(
-            "      → review interactively: {}",
+            "      > review interactively: {}",
             style::cmd("difflore fix")
         );
     }
@@ -1341,35 +1464,10 @@ fn emit_fix_yes_json(
 ) {
     let findings: Vec<serde_json::Value> = suggestions
         .iter()
-        .map(|issue| {
-            let source_repo = issue
-                .rule_id
-                .as_deref()
-                .and_then(|id| attributions.get(id))
-                .cloned();
-            serde_json::json!({
-                "id": issue.rule_id,
-                "rule": issue.rule,
-                "file": issue.file,
-                "line": issue.line,
-                "confidence": issue.confidence,
-                "summary": issue.message,
-                "diff": issue.suggestion,
-                "sourceRepo": source_repo,
-            })
-        })
+        .map(|issue| finding_json(issue, attributions))
         .collect();
-    let recalled_provenance: Vec<serde_json::Value> = matched_rule_ids
-        .iter()
-        .zip(matched_rule_titles.iter())
-        .map(|(id, title)| {
-            serde_json::json!({
-                "id": id,
-                "title": title,
-                "sourceRepo": attributions.get(id),
-            })
-        })
-        .collect();
+    let recalled_provenance =
+        recalled_provenance_json(matched_rule_ids, matched_rule_titles, attributions);
     let failed: Vec<serde_json::Value> = yes_outcome
         .outcome
         .failed
@@ -1406,8 +1504,8 @@ fn emit_fix_yes_json(
         "recalled": recalled_provenance,
         "findings": findings,
         "outcome": outcome,
-        // A provider review actually ran in --yes mode; the outcome describes the
-        // apply result, not whether a review happened, so status is always reviewed.
+        // A provider review ran in --yes mode; the outcome describes the apply
+        // result, not whether a review happened.
         "status": review_status_for_outcome(outcome),
         "apply": {
             "appliedCount": yes_outcome.outcome.applied.len(),
@@ -1429,7 +1527,7 @@ fn emit_fix_yes_json(
             "acceptedEditProofs": accepted_edit_proofs,
         },
     });
-    println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+    println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
 }
 
 async fn flush_fix_outbox_before_exit(db: &difflore_core::SqlitePool) {
@@ -1442,7 +1540,7 @@ async fn flush_fix_outbox_before_exit(db: &difflore_core::SqlitePool) {
         difflore_core::cloud::outbox::drain_outbox(&queue, &client, FIX_EXIT_OUTBOX_DRAIN_MAX).await
     {
         eprintln!(
-            "{} local telemetry remains queued: {e}",
+            "{} local activity remains queued: {e}",
             style::warn(sym::WARN)
         );
     }
@@ -1452,33 +1550,32 @@ async fn print_empty_state_hint(db: &difflore_core::SqlitePool) {
     match difflore_core::skills::stats(db).await {
         Ok(stats) if stats.total == 0 => {
             println!(
-                "  {} No team review memory in your local corpus yet.",
+                "  {} No source-backed team rules on this machine yet.",
                 style::pewter(sym::BULLET)
             );
             println!(
-                "  → create local memories from PR history: {}",
+                "  > create local rules from PR history: {}",
                 style::cmd("difflore import-reviews --max-prs 50")
             );
             println!(
-                "  → preview recalled memory: {}",
+                "  > inspect recalled rules: {}",
                 style::cmd("difflore recall --diff")
             );
-            // Cloud-aware secondary hint: `--upload` and `sync` both need
-            // an active session. Keep the always-available CLI path first so
-            // OSS-only users still see a green path before the paid upgrade.
+            // `--upload` and `sync` both need an active session, so keep the
+            // always-available CLI path first for OSS-only users.
             let cloud_client = difflore_core::cloud::client::CloudClient::create().await;
             if cloud_client.is_logged_in() {
                 println!(
-                    "  → or use cloud extraction/governance: {}",
+                    "  > or upload PR history for Cloud to process: {}",
                     style::cmd("difflore import-reviews --max-prs 50 --upload")
                 );
                 println!(
-                    "  → then pull extracted memory: {}",
+                    "  > then pull team memory: {}",
                     style::cmd("difflore cloud sync")
                 );
             } else {
                 println!(
-                    "  → optional cloud extraction/governance: {}",
+                    "  > optional team sync: {}",
                     style::cmd("difflore cloud login")
                 );
             }
@@ -1494,16 +1591,15 @@ async fn print_empty_state_hint(db: &difflore_core::SqlitePool) {
         }
         Err(_) => {
             println!(
-                "  → teach agents from PR history: {}",
+                "  > teach agents from PR history: {}",
                 style::cmd("difflore import-reviews --max-prs 50")
             );
         }
     }
 }
 
-// `--preview` order: Scope → Recalled memories (top 3) →
-// Findings/patches → Next. `explain_rules` swaps the rule label on each finding
-// for the rule_id form so users can re-derive the source memory.
+// Human review order: Scope → Recalled memories (top 3) → Findings/patches →
+// Next. `explain_rules` swaps each finding's rule label for the rule_id form.
 fn run_preview_mode(
     suggestions: &[&ReviewIssueRecord],
     scope_label: &str,
@@ -1525,7 +1621,7 @@ fn run_preview_mode(
             let attribution_suffix = matched_rule_ids
                 .get(i)
                 .and_then(|id| attributions.get(id))
-                .map(|repo| format!("  {}", style::pewter(&format!("← learned from {repo}"))))
+                .map(|repo| format!("  {}", style::pewter(&format!("<- learned from {repo}"))))
                 .unwrap_or_default();
             println!(
                 "    {} {title}{attribution_suffix}",
@@ -1535,8 +1631,8 @@ fn run_preview_mode(
     }
     println!();
     if suggestions.is_empty() {
-        // 0 patches with N>0 recalled rules is the *good* outcome — frame it that
-        // way so users don't assume the system is broken vs. a previous run.
+        // 0 patches with N>0 recalled rules is the good outcome; frame it so
+        // users don't assume the system is broken.
         if matched_rules > 0 {
             println!(
                 "{} {scope_label} looks clean against {} recalled memor{}. No patches suggested.",
@@ -1545,17 +1641,16 @@ fn run_preview_mode(
                 if matched_rules == 1 { "y" } else { "ies" },
             );
             println!();
-            // Forward-pointing bridge: a clean scope is the *good* outcome,
-            // so route the user to evidence of accumulated value instead of
-            // looping them back into another preview of the same diff.
+            // A clean scope is the good outcome, so route to evidence of
+            // accumulated value instead of another preview of the same diff.
             println!(
                 "next: {}  {}",
                 style::cmd("difflore status"),
-                style::pewter("# see the local proof loop and next command"),
+                style::pewter("see accepted edits and the next command"),
             );
         } else {
-            // 0 rules + 0 patches: corpus/scope didn't match. Recall is the right
-            // diagnostic, not another fix preview.
+            // 0 rules + 0 patches: local memory/scope didn't match, so recall is
+            // the right diagnostic, not another review run.
             println!(
                 "{} no patches suggested in {scope_label} (0 rules matched the changed files).",
                 style::ok(sym::OK),
@@ -1575,19 +1670,19 @@ fn run_preview_mode(
         .count();
     let low = suggestions.len() - confident;
     println!(
-        "{} {} suggestion{} in {scope_label} ({confident} confident, {low} low-confidence). Preview only; no files changed.",
+        "{} {} suggestion{} in {scope_label} ({confident} confident, {low} low-confidence). Review only; no files changed.",
         style::ok(sym::OK),
         suggestions.len(),
         if suggestions.len() == 1 { "" } else { "s" },
     );
     for issue in suggestions {
         let badge = if issue.confidence >= CONFIDENCE_THRESHOLD {
-            style::ok(&format!("{}% \u{2713}", percent(issue.confidence)))
+            style::ok(&format!("{}% ok", percent(issue.confidence)))
         } else {
             style::warn(&format!("{}% low", percent(issue.confidence)))
         };
         println!(
-            "  {} {}  ·  {}  ·  {badge}",
+            "  {} {}  |  {}  |  {badge}",
             style::pewter(sym::BULLET),
             file_loc(issue),
             issue_rule_label(issue),
@@ -1595,7 +1690,7 @@ fn run_preview_mode(
         if explain_rules {
             let snippet: String = issue.message.chars().take(120).collect();
             let suffix = if issue.message.chars().count() > 120 {
-                "…"
+                "..."
             } else {
                 ""
             };
@@ -1617,7 +1712,7 @@ fn run_preview_mode(
     println!(
         "next: {}  {}",
         style::cmd("difflore fix"),
-        style::pewter("apply confident patches after preview"),
+        style::pewter("apply confident patches after review"),
     );
 }
 
@@ -1658,18 +1753,15 @@ fn print_patch_card(idx: usize, total: usize, issue: &ReviewIssueRecord) {
     );
     let pct = percent(issue.confidence);
     let badge = if issue.confidence >= CONFIDENCE_THRESHOLD {
-        style::ok(&format!("{pct}% \u{2713}"))
+        style::ok(&format!("{pct}% ok"))
     } else {
-        style::warn(&format!("{pct}% \u{26a0} low confidence"))
+        style::warn(&format!("{pct}% low confidence"))
     };
 
+    println!("{}  [{idx}/{total}]  {file_loc}", style::pewter("--------"));
     println!(
-        "{}  [{idx}/{total}]  {file_loc}",
-        style::pewter("\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}"),
-    );
-    println!(
-        "       {} {}  ·  {badge}",
-        style::pewter("\u{2315}"),
+        "       {} {}  |  {badge}",
+        style::pewter("rule:"),
         style::title(&issue.rule),
     );
     println!();
@@ -1687,7 +1779,7 @@ fn print_patch_card(idx: usize, total: usize, issue: &ReviewIssueRecord) {
         if s.lines().count() > 12 {
             println!(
                 "  {} (truncated; press {} for full text)",
-                style::pewter("\u{2026}"),
+                style::pewter("..."),
                 style::cmd("?"),
             );
         }
@@ -1748,6 +1840,7 @@ mod tests {
         FixArgs {
             yes: false,
             preview,
+            read_only: preview,
             ci: false,
             strict: false,
             diff_scope: None,
@@ -1784,7 +1877,7 @@ mod tests {
     fn diff_record(file_path: &str, body: &str) -> DiffContentRecord {
         DiffContentRecord {
             file_path: file_path.to_owned(),
-            hunks: vec![difflore_core::models::DiffHunkRecord {
+            hunks: vec![difflore_core::domain::models::DiffHunkRecord {
                 header: "@@ -1,2 +1,2 @@".to_owned(),
                 body: body.to_owned(),
             }],
@@ -1889,14 +1982,14 @@ mod tests {
     fn preview_diagnostic_json_includes_budget_and_recalled_memory() {
         let recalled = HandoffRuleRecall {
             ids: vec!["rule-1".to_owned()],
-            titles: vec!["Avoid slow preview providers".to_owned()],
+            titles: vec!["Avoid slow review providers".to_owned()],
             note: Some("recall stayed local".to_owned()),
         };
         let mut attributions = std::collections::HashMap::new();
         attributions.insert("rule-1".to_owned(), "acme/api".to_owned());
         let diagnostic = PreviewDiagnostic {
             kind: "review_timeout",
-            message: "preview timed out".to_owned(),
+            message: "review timed out".to_owned(),
             budget_ms: Some(15_000),
             elapsed_ms: 15_000,
         };
@@ -1908,7 +2001,7 @@ mod tests {
             &diagnostic,
         );
 
-        assert_eq!(payload["mode"], "preview");
+        assert_eq!(payload["mode"], "review");
         assert_eq!(payload["outcome"], "review_timeout");
         // A timed-out review must NOT read as a clean pass even with zero findings.
         assert_eq!(payload["status"], "not_reviewed");
@@ -1946,9 +2039,8 @@ mod tests {
 
     #[test]
     fn preview_no_provider_preflight_error_is_actionable_and_disclaims_cli_fallback() {
-        // The preview rejection must read as not_reviewed once surfaced, point at
-        // `difflore providers setup`, and make clear it will not silently use a
-        // PATH agent CLI for the preview verdict.
+        // The preview rejection must read as not_reviewed, point at
+        // `difflore providers setup`, and disclaim any silent PATH-CLI fallback.
         let raw = preflight_decision(false, Some("claude"), true)
             .expect_err("no-provider preview must be a preflight error");
         let surfaced = format_fix_err("Fix failed", &raw);
@@ -1967,7 +2059,7 @@ mod tests {
             "preview no-provider error must disclaim the CLI fallback, got: {surfaced}"
         );
 
-        // End-to-end through the same JSON the live `--preview` path emits.
+        // End-to-end through the same JSON the live human-review path emits.
         let diagnostic = PreviewDiagnostic {
             kind: "no_provider",
             message: surfaced,
@@ -2001,11 +2093,13 @@ mod tests {
     }
 
     #[test]
-    fn not_reviewed_preview_uses_non_success_exit_code() {
-        // The "could not review" exit code must be non-zero so CI never reads it
-        // as a clean pass, and distinct from the blocking-findings code (1).
-        assert_ne!(PREVIEW_NOT_REVIEWED_EXIT_CODE, 0);
-        assert_ne!(PREVIEW_NOT_REVIEWED_EXIT_CODE, 1);
+    fn not_reviewed_preview_exit_code_matches_output_mode() {
+        // human `review` is a human-facing dry run and should never make the
+        // shell fail. JSON callers get `status: not_reviewed` and a failing
+        // exit code so automation cannot confuse it for a clean review.
+        assert_eq!(PREVIEW_NOT_REVIEWED_EXIT_CODE, 0);
+        assert_eq!(preview_not_reviewed_exit_code(&fix_args(true, true)), 1);
+        assert_eq!(preview_not_reviewed_exit_code(&fix_args(true, false)), 0);
     }
 
     #[test]
@@ -2129,6 +2223,35 @@ mod tests {
             Some("d09b9631-01a9-4aa5-a4f5-cbed12c4c0de")
         );
         assert_eq!(result.matched_rules, 2);
+    }
+
+    #[test]
+    fn supplement_recall_preserves_larger_provider_matched_rules_count() {
+        let mut result = ReviewCheckResult {
+            issues: Vec::new(),
+            matched_rules: 5,
+            matched_rule_ids: vec!["provider-rule".to_owned()],
+            matched_rule_titles: vec!["Provider rule".to_owned()],
+            prompt_tokens_estimate: 0,
+            trace_id: "trace".to_owned(),
+            summary: None,
+            stats: None,
+        };
+
+        supplement_fix_result_with_recalled_rules(
+            &mut result,
+            &HandoffRuleRecall {
+                ids: vec!["recalled-rule".to_owned()],
+                titles: vec!["Recalled rule".to_owned()],
+                note: None,
+            },
+        );
+
+        assert_eq!(result.matched_rules, 5);
+        assert_eq!(
+            result.matched_rule_ids,
+            vec!["provider-rule".to_owned(), "recalled-rule".to_owned()]
+        );
     }
 
     #[test]

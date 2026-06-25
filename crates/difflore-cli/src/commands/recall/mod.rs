@@ -2,7 +2,7 @@
 //!
 //! Local rules are the product's open-source value floor: `recall` must show
 //! what the CLI can retrieve from the on-disk rule corpus even when Cloud is
-//! absent. Cloud review memory is an append-only enhancement when the user is
+//! absent. Cloud PR review rules are an append-only enhancement when the user is
 //! logged in and the current git repo can be scoped safely.
 //!
 //! This module is split by concern: data gathering (local + cloud retrieval,
@@ -11,7 +11,7 @@
 //! [`presentation`]. The shared result types, argument validation, and the
 //! `handle_recall` orchestration stay here.
 
-use std::process::Command;
+use std::io;
 
 use anyhow::{Context, bail};
 use difflore_core::context::embedding::ActiveEmbedderKind;
@@ -19,13 +19,14 @@ use difflore_core::context::retrieval::RenderedRuleBody;
 use difflore_core::context::types::PastVerdict;
 use globset::Glob;
 
-use crate::commands::util::{exit_code, project_path};
-use crate::mcp_install;
+use crate::installer;
 use crate::runtime::CommandContext;
 use crate::style::{self, sym};
+use crate::support::util::{exit_code, project_path};
 
 mod presentation;
 mod retrieval;
+mod search;
 
 use presentation::{
     cross_repo_starter_json, local_rules_json, recall_diagnostics_json, render_cloud_recall_human,
@@ -41,19 +42,17 @@ use retrieval::{
 /// `embeddings status` / `status` surfaces read, so all three agree on whether
 /// recall ranking is semantic or keyword-only.
 struct RecallSemanticState {
-    /// True when a real embedding provider (cloud-managed or BYOK) is active, so
-    /// recall ranking uses semantic vectors. False for the local SHA1 lexical
-    /// hash — the "no provider configured" baseline.
+    /// True when a real embedding provider (cloud-managed or BYOK) is active.
+    /// False for the local SHA1 lexical hash (no provider configured).
     semantic: bool,
-    /// Stable snake_case tag: `cloud` | `byok` | `keyword`. Lets a `--json`
-    /// consumer branch without parsing prose.
+    /// Stable snake_case tag for `--json`: `cloud` | `byok` | `keyword`.
     mode: &'static str,
 }
 
 impl RecallSemanticState {
     const fn from_kind(kind: &ActiveEmbedderKind) -> Self {
         match kind {
-            ActiveEmbedderKind::Cloud { .. } => Self {
+            ActiveEmbedderKind::Cloud => Self {
                 semantic: true,
                 mode: "cloud",
             },
@@ -68,16 +67,15 @@ impl RecallSemanticState {
         }
     }
 
-    /// Honest one-line note for the human surfaces when ranking is keyword-only.
-    /// `None` when a semantic provider is active (no note needed — recall is
-    /// already semantic). Mirrors `difflore embeddings status` / `difflore
-    /// status` wording so the three surfaces read consistently.
+    /// One-line note for human surfaces when ranking is keyword-only; `None`
+    /// when a semantic provider is active. Mirrors the `embeddings status` /
+    /// `status` wording so the surfaces read consistently.
     const fn keyword_only_note(&self) -> Option<&'static str> {
         if self.semantic {
             None
         } else {
             Some(
-                "semantic ranking off; these matched by keyword (enable with `difflore embeddings setup` or `difflore cloud login`)",
+                "semantic matching is using local keyword fallback; managed vectors: `difflore cloud login`; BYOK vectors: `difflore embeddings setup`",
             )
         }
     }
@@ -178,18 +176,21 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
     );
 
     if json {
-        // Surface the strict-file-match information that record_local_recall
-        // already computes, plus a recall timestamp — buyer-grade proof
-        // pipelines need both at the top level and per-result.
+        // Surface path-hint match information, plus a recall timestamp —
+        // buyer-grade proof pipelines need both at the top level and
+        // per-result. With `--diff`, the compatibility strict* flags run
+        // against the whole changeset.
         let recalled_at = chrono::Utc::now().to_rfc3339();
         let queried_file = resolved_file.as_deref();
+        let scope_files = strict_scope_files(queried_file, &diff_files);
         let strict_match_count = local
             .matches
             .iter()
-            .filter(|hit| strict_file_pattern_match(&hit.file_patterns, queried_file))
+            .filter(|hit| strict_pattern_match_any_file(&hit.file_patterns, &scope_files))
             .count();
         let any_strict = strict_match_count > 0;
         let mut payload = serde_json::json!({
+            "schemaVersion": crate::commands::ai_contract::CLI_SCHEMA_VERSION,
             "intent": resolved_intent,
             "file": queried_file,
             "recalledAt": recalled_at,
@@ -204,7 +205,7 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
                 "mode": semantic_state.mode,
                 "note": semantic_state.keyword_only_note(),
             },
-            "localRules": local_rules_json(&local, queried_file),
+            "localRules": local_rules_json(&local, &scope_files),
             "cloudReviewMemory": {
                 "loggedIn": cloud.logged_in,
                 "repoFullName": cloud.repo_full_name,
@@ -221,7 +222,7 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
                 recall_diagnostics_json(diagnostics),
             );
         }
-        // Goal G2: include cross-repo starter suggestions for the cold-start
+        // Include cross-repo starter suggestions for the cold-start
         // (no scoped memory) case so proof pipelines can see the fallback fired.
         if local.matches.is_empty()
             && local.rules_indexed == 0
@@ -237,14 +238,21 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
                 );
             }
         }
-        println!("{}", crate::commands::util::json_or(&payload, "{}"));
+        println!("{}", crate::support::util::json_or(&payload, "{}"));
         return;
     }
 
     if let Some(diagnostics) = zero_match_diagnostics.as_ref() {
         render_zero_match_compact_human(diagnostics);
     } else {
-        render_local_recall_human(&local, &resolved_intent, resolved_file.as_deref(), verbose);
+        let scope_files = strict_scope_files(resolved_file.as_deref(), &diff_files);
+        render_local_recall_human(
+            &local,
+            &resolved_intent,
+            resolved_file.as_deref(),
+            &scope_files,
+            verbose,
+        );
         // Honest degradation note: when these matches were ranked by the local
         // keyword hash (no embedding provider configured) say so, so the user does
         // not read a lexical recall as a semantic one. Only on the with-matches
@@ -255,7 +263,7 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
         {
             println!("  {} {}", style::amber(sym::WARN), style::pewter(note));
         }
-        // Goal G2 cold-start fallback: no scoped memory here → offer transferable,
+        // Cold-start fallback: no scoped memory here → offer transferable,
         // file-pattern-matched rules from other repos, clearly labeled (a separate
         // "from other repos" section, never presented as this repo's own memory).
         if local.matches.is_empty()
@@ -270,18 +278,15 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
     }
 
     println!();
-    // Affirmation bridge. The whole point of `recall` is to verify what
-    // an agent will see; closing without saying "and now your wired
-    // agents really will receive these" leaves the buyer-evidence loop
-    // open. Only fires on the success path with at least one match —
-    // the empty branch already routes to import-reviews and adding an
-    // affirmation there would be misleading.
+    // Affirmation bridge confirming wired agents will receive these rules.
+    // Only fires when there is at least one match; the empty branch already
+    // routes to import-reviews.
     if !local.matches.is_empty() {
-        let snapshot = mcp_install::collect_status_snapshot();
+        let snapshot = installer::collect_status_snapshot();
         let installed: Vec<&'static str> = snapshot
             .clients
             .iter()
-            .filter(|c| matches!(c.state, mcp_install::InstallState::Installed))
+            .filter(|c| matches!(c.state, installer::InstallState::Installed))
             .map(|c| c.name)
             .collect();
         if installed.is_empty() {
@@ -306,7 +311,7 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
     }
 
     println!();
-    // Bridge to the next useful action. If 0 rules came back, "fix --preview"
+    // Bridge to the next useful action. If 0 rules came back, "review"
     // is a misleading bounce (it would just rerun the same empty retrieval);
     // route the user toward the local candidate path first. Cloud extraction
     // is an upgrade path, not the first gate for CLI-only value.
@@ -314,8 +319,15 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
         println!(
             "next: {}  {}",
             style::cmd("difflore status"),
-            style::pewter("see recall, MCP serve, and accepted-proof readiness"),
+            style::pewter("see matched memories, agent readiness, and accepted edits"),
         );
+    }
+    if diff {
+        let summary =
+            crate::commands::status::compact_value_summary_for_current_project(&ctx.db).await;
+        if let Some(line) = crate::commands::status::render_compact_value_summary(&summary) {
+            println!("      {}", style::pewter(&line));
+        }
     }
 }
 
@@ -373,14 +385,10 @@ fn git_diff_files() -> anyhow::Result<Vec<String>> {
         &["diff", "--name-only"][..],
         &["diff", "--name-only", "--cached"][..],
     ] {
-        let output = Command::new("git")
+        let output = difflore_core::infra::git::git_command(&cwd)
             .args(args)
-            .current_dir(&cwd)
             .output()
-            // ENOENT on `git` itself is a different failure mode than
-            // "running git in a non-repo dir". Tell the user to install
-            // git rather than leaking the OS-error string.
-            .with_context(|| "`git` not found on PATH (install it, then retry)")?;
+            .map_err(|error| git_spawn_error(&error))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             // The "not a git repository" case is the most common
@@ -413,11 +421,10 @@ fn git_diff_text() -> anyhow::Result<String> {
         &["diff", "--no-ext-diff", "--unified=8"][..],
         &["diff", "--cached", "--no-ext-diff", "--unified=8"][..],
     ] {
-        let output = Command::new("git")
+        let output = difflore_core::infra::git::git_command(&cwd)
             .args(args)
-            .current_dir(&cwd)
             .output()
-            .with_context(|| "`git` not found on PATH (install it, then retry)")?;
+            .map_err(|error| git_spawn_error(&error))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             bail!("git {} failed: {}", args.join(" "), stderr.trim());
@@ -429,6 +436,14 @@ fn git_diff_text() -> anyhow::Result<String> {
     }
 
     Ok(out)
+}
+
+fn git_spawn_error(error: &io::Error) -> anyhow::Error {
+    if error.kind() == io::ErrorKind::NotFound {
+        anyhow::anyhow!("`git` not found on PATH (install it, then retry)")
+    } else {
+        anyhow::anyhow!("failed to run `git`: {error}")
+    }
 }
 
 async fn handle_recall_copy(
@@ -454,21 +469,19 @@ async fn handle_recall_copy(
             // No repo scope -> empty by design, not an empty corpus (mirror the
             // precedence used by the styled renderer + diagnostics).
             println!(
-                "_difflore recalled 0 local memories for \"{intent}\"; this checkout has no GitHub remote, and local recall is repo-scoped (add one with `git remote -v`)._"
+                "_difflore recalled 0 local rules for \"{intent}\"; this checkout has no supported git remote, and local recall is repo-scoped (add one with `git remote -v`)._"
             );
         } else if local.rules_indexed == 0 {
             println!(
-                "_difflore recalled 0 local memories for \"{intent}\" because this repo has no local memories yet._"
+                "_difflore recalled 0 local rules for \"{intent}\" because this repo has no local rules yet._"
             );
         } else {
-            println!("_difflore recalled 0 local memories for \"{intent}\"._");
+            println!("_difflore recalled 0 local rules for \"{intent}\"._");
         }
         if !cloud.logged_in {
-            println!("_Cloud review memory was skipped because you are not logged in._");
+            println!("_Cloud PR review memory is available after sign-in._");
         } else if cloud.repo_full_name.is_none() {
-            println!(
-                "_Cloud review memory was skipped because no GitHub repo remote was detected._"
-            );
+            println!("_Cloud PR review memory needs a supported repo remote._");
         }
         println!();
         println!("_Likely causes:_");
@@ -501,9 +514,9 @@ async fn handle_recall_copy(
             .source_repo
             .as_deref()
             .filter(|repo| !repo.trim().is_empty())
-            .unwrap_or("review evidence");
+            .unwrap_or("review memory");
         println!(
-            "- **{}** \u{2190} learned from `{}`",
+            "- **{}** <- learned from `{}`",
             truncate_one_line(&hit.title, 110),
             source,
         );
@@ -512,24 +525,24 @@ async fn handle_recall_copy(
     if !cloud.verdicts.is_empty() {
         println!();
         println!(
-            "**Cloud review memory appended ({}):**",
+            "**Cloud PR review rules appended ({}):**",
             cloud.verdicts.len(),
         );
         for verdict in &cloud.verdicts {
             let source = source_label(verdict, cloud.repo_full_name.as_deref())
-                .unwrap_or_else(|| "review evidence".to_owned());
+                .unwrap_or_else(|| "review memory".to_owned());
             println!(
-                "- **{}** \u{2190} learned from `{}`",
+                "- **{}** <- learned from `{}`",
                 truncate_one_line(&verdict.issue_text, 110),
                 source,
             );
         }
     } else if !cloud.logged_in {
         println!();
-        println!("_Cloud review memory skipped: not logged in._");
+        println!("_Cloud PR review memory is available after sign-in._");
     } else if cloud.repo_full_name.is_none() {
         println!();
-        println!("_Cloud review memory skipped: no GitHub repo remote detected._");
+        println!("_Cloud PR review memory needs a supported repo remote._");
     }
     // Same honesty note as the styled surface: if this paste-ready block was
     // ranked by the local keyword hash, say so, so a user pasting it into an
@@ -554,76 +567,17 @@ async fn recall_local_and_cloud(
     session_id: &str,
 ) -> (LocalRecallResult, CloudRecallResult) {
     let local_branch = async {
-        let mut local = recall_local_rules(ctx, intent, file, top_k).await;
-        if let Some(primary_file) = file
-            && local.rules_indexed > 0
-            && strict_match_count_for_file(&local, Some(primary_file)) == 0
-        {
-            // Use the real `git diff --name-only` list passed in from
-            // `--diff` resolution; the old code parsed `intent` for a
-            // literal "changes in ..." prefix that
-            // `build_review_intent_text` never emits, so this fallback
-            // was effectively dead for typical `recall --diff` runs.
-            for candidate_file in candidate_fallback_files(diff_files, primary_file) {
-                let mut candidate =
-                    recall_local_rules(ctx, intent, Some(candidate_file), top_k).await;
-                if strict_match_count_for_file(&candidate, Some(candidate_file)) > 0 {
-                    candidate.file_scope_fallback = true;
-                    local = candidate;
-                    break;
-                }
-            }
-        }
-        record_local_recall(ctx, &local, intent, file, top_k, session_id).await;
+        // `--diff` runs ONE changeset-scoped query over every changed file for
+        // path-hint boosting, replacing the old primary-file query + per-file
+        // fallback re-query loop. Single-file recall is unchanged.
+        let local = recall_local_rules(ctx, intent, file, diff_files, top_k).await;
+        record_local_recall(ctx, &local, intent, file, diff_files, top_k, session_id).await;
         local
     };
+    // Cloud past-verdict recall stays single-file: its request contract takes
+    // one `target_file`, and the cloud side is out of scope here.
     let cloud_branch = recall_cloud_review_memory(ctx, intent, file, top_k);
     tokio::join!(local_branch, cloud_branch)
-}
-
-fn strict_match_count_for_file(local: &LocalRecallResult, file: Option<&str>) -> usize {
-    local
-        .matches
-        .iter()
-        .filter(|hit| strict_file_pattern_match(&hit.file_patterns, file))
-        .count()
-}
-
-/// Synthetic parser kept only as a unit-test fixture. The candidate-file
-/// fallback in `recall_local_and_cloud` used to call this against the
-/// resolved intent, but `build_review_intent_text` never emits a
-/// `"changes in ..."` prefix, so the fallback was effectively dead.
-/// The new code path uses `git diff --name-only` directly via the
-/// `diff_files` argument; this helper survives so the existing test
-/// (`synthetic_diff_files_extracts_ordered_files_from_diff_intent`)
-/// keeps documenting that synthetic shape.
-#[cfg(test)]
-fn synthetic_diff_files(intent: &str) -> Vec<String> {
-    let Some(rest) = intent.strip_prefix("changes in ") else {
-        return Vec::new();
-    };
-    rest.split(", ")
-        .filter_map(|part| {
-            let trimmed = part.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_owned())
-            }
-        })
-        .collect()
-}
-
-/// Pure helper: pick the candidate-file fallback list for
-/// `recall_local_and_cloud`. The primary file is filtered out so the
-/// fallback never re-queries the same scope. Order is preserved from
-/// `diff_files` (which is `git diff --name-only` order).
-fn candidate_fallback_files<'a>(diff_files: &'a [String], primary_file: &str) -> Vec<&'a str> {
-    diff_files
-        .iter()
-        .map(String::as_str)
-        .filter(|f| *f != primary_file)
-        .collect()
 }
 
 pub(super) struct LocalRuleHit {
@@ -642,12 +596,13 @@ pub(super) struct LocalRuleHit {
     pub(super) confidence: f64,
     pub(super) file_patterns: Vec<String>,
     pub(super) source_repo: Option<String>,
+    pub(super) origin: Option<String>,
+    pub(super) source_rank: Option<u8>,
     /// Full rule body and structured examples, hydrated from the DB after
-    /// retrieval (see `hydrate_full_rule_bodies`). `None` until hydration runs
-    /// — the cross-repo-starter path leaves it unset, so its `--json` keeps the
-    /// chunk-only shape it had before. When present this is what makes
-    /// `recall --json` surface the actual team memory (fix/bad/good code) rather
-    /// than a headline with NULL bodies.
+    /// retrieval (see `hydrate_full_rule_bodies`). `None` until hydration runs;
+    /// the cross-repo-starter path leaves it unset, keeping the chunk-only
+    /// `--json` shape. When present, `recall --json` surfaces the actual
+    /// fix/bad/good code rather than a headline with NULL bodies.
     pub(super) body: Option<RenderedRuleBody>,
 }
 
@@ -656,6 +611,19 @@ pub(super) struct LocalRecallResult {
     pub(super) repo_full_name: Option<String>,
     pub(super) matches: Vec<LocalRuleHit>,
     pub(super) file_scope_fallback: bool,
+    pub(super) trace: RecallTrace,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct RecallTrace {
+    pub(super) repo_scopes: Vec<String>,
+    pub(super) candidate_limit: usize,
+    pub(super) candidates_retrieved: usize,
+    pub(super) candidates_after_exact_merge: usize,
+    pub(super) candidates_after_intent_gate: usize,
+    pub(super) candidates_after_relevance_gate: usize,
+    pub(super) metadata_missing_dropped: usize,
+    pub(super) returned: usize,
 }
 
 pub(super) struct RecallDiagnostics {
@@ -724,7 +692,7 @@ pub(super) fn more_specific_query_example(intent: &str, file: Option<&str>) -> S
     if let Some(file) = file.and_then(file_extension_hint) {
         return format!("{file} review convention for {intent}");
     }
-    format!("{intent} around validation, error handling, or team conventions")
+    format!("{intent} around validation, error handling, or team decisions")
 }
 
 fn file_extension_hint(file: &str) -> Option<&'static str> {
@@ -753,21 +721,13 @@ pub(super) fn recall_command(intent: &str, file: Option<&str>) -> String {
     command
 }
 
-pub(super) fn recall_command_for_zero_match(intent: &str, file: Option<&str>) -> String {
-    if intent_looks_like_diff(intent) {
-        return "difflore recall --diff".to_owned();
-    }
-    recall_command(intent, file)
-}
-
 fn intent_looks_like_diff(intent: &str) -> bool {
     let trimmed = intent.trim_start();
     trimmed.starts_with("diff --git")
         || trimmed.contains("\n@@")
-        || trimmed.contains("\n-")
-        || trimmed.contains("\n+")
-        || intent.lines().count() > 1
-        || intent.chars().count() > 160
+        || trimmed
+            .lines()
+            .any(|line| line.starts_with("--- a/") || line.starts_with("+++ b/"))
 }
 
 pub(super) fn recall_subject(intent: &str) -> String {
@@ -788,12 +748,42 @@ pub(super) fn strict_file_pattern_match(patterns: &[String], file: Option<&str>)
     };
     let normalised = file.trim_start_matches('/').replace('\\', "/");
     patterns.iter().any(|pattern| {
-        Glob::new(pattern).is_ok_and(|glob| glob.compile_matcher().is_match(&normalised))
+        let normalised_pattern = pattern.trim().trim_start_matches('/').replace('\\', "/");
+        if normalised_pattern.is_empty() {
+            return false;
+        }
+        Glob::new(&normalised_pattern).map_or_else(
+            |_| normalised_pattern == normalised,
+            |glob| glob.compile_matcher().is_match(&normalised),
+        )
     })
 }
 
+/// Changeset-aware path-hint match: true when the rule's parsed
+/// `file_patterns` cover ANY of `files`. The function name stays for JSON
+/// compatibility (`strictFileMatch`), but the behavior is now diagnostic and
+/// ranking-adjacent rather than a hard retrieval gate.
+pub(super) fn strict_pattern_match_any_file(patterns: &[String], files: &[String]) -> bool {
+    files
+        .iter()
+        .any(|file| strict_file_pattern_match(patterns, Some(file)))
+}
+
+/// The paths path-hint matching runs against: the full `--diff` changeset when
+/// present, else the single `--file` argument (empty when neither is given).
+pub(super) fn strict_scope_files(file: Option<&str>, diff_files: &[String]) -> Vec<String> {
+    if diff_files.is_empty() {
+        file.map(str::trim)
+            .filter(|file| !file.is_empty())
+            .map(|file| vec![file.to_owned()])
+            .unwrap_or_default()
+    } else {
+        diff_files.to_vec()
+    }
+}
+
 pub(super) fn local_rule_title(content: &str, fallback: &str) -> String {
-    crate::commands::search::rule_title(content, fallback)
+    search::rule_title(content, fallback)
 }
 
 pub(super) struct CloudRecallResult {
@@ -831,34 +821,7 @@ fn is_source_or_test_file(file: &str) -> bool {
     else {
         return false;
     };
-    matches!(
-        ext,
-        "c" | "cc"
-            | "cpp"
-            | "cxx"
-            | "h"
-            | "hpp"
-            | "cs"
-            | "go"
-            | "java"
-            | "js"
-            | "jsx"
-            | "mjs"
-            | "cjs"
-            | "ts"
-            | "tsx"
-            | "mts"
-            | "cts"
-            | "py"
-            | "rb"
-            | "rs"
-            | "swift"
-            | "kt"
-            | "kts"
-            | "php"
-            | "vue"
-            | "svelte"
-    )
+    crate::support::file_ext::is_source_code_extension(ext)
 }
 
 fn primary_recall_file(files: &[String]) -> Option<String> {
@@ -924,11 +887,8 @@ fn is_reviewable_config_file(file: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Helpers exercised only by these tests; the parent module's production
-    // imports stay minimal, so pull the test-only items from the `retrieval`
-    // submodule explicitly (matching the explicit-import convention in
-    // `commands/fix`). Items already imported at module scope reach here via the
-    // `use super::*;` above and are not repeated.
+    // Test-only helpers pulled from the `retrieval` submodule explicitly so the
+    // parent module's production imports stay minimal.
     use super::retrieval::{
         ExampleSide, build_local_hits, classify_example_heading, content_only_file_scope_fallback,
         divergent_example_lines, extract_rule_examples, filter_starter_by_relevance,
@@ -951,21 +911,18 @@ mod tests {
         assert_eq!(state.mode, "keyword");
         let note = state.keyword_only_note().expect("keyword path has a note");
         assert!(
-            note.contains("semantic ranking off"),
-            "note must say semantic is off: {note}"
+            note.contains("local keyword fallback"),
+            "note must name local keyword fallback: {note}"
         );
         // The note must name the enablement paths so it is actionable and reads
         // consistently with `embeddings status` / `status`.
-        assert!(note.contains("difflore embeddings setup"), "note: {note}");
         assert!(note.contains("difflore cloud login"), "note: {note}");
+        assert!(note.contains("difflore embeddings setup"), "note: {note}");
     }
 
     #[test]
     fn semantic_state_providers_are_semantic_with_no_note() {
-        let cloud = RecallSemanticState::from_kind(&ActiveEmbedderKind::Cloud {
-            model: "text-embedding-3-small".to_owned(),
-            dim: 1536,
-        });
+        let cloud = RecallSemanticState::from_kind(&ActiveEmbedderKind::Cloud);
         assert!(cloud.semantic);
         assert_eq!(cloud.mode, "cloud");
         assert!(
@@ -981,6 +938,22 @@ mod tests {
         assert!(byok.semantic);
         assert_eq!(byok.mode, "byok");
         assert!(byok.keyword_only_note().is_none());
+    }
+
+    #[test]
+    fn intent_looks_like_diff_requires_structural_markers() {
+        assert!(intent_looks_like_diff(
+            "diff --git a/src/lib.rs b/src/lib.rs\n@@ -1 +1 @@"
+        ));
+        assert!(intent_looks_like_diff(
+            "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@"
+        ));
+        assert!(!intent_looks_like_diff(
+            "Please review this long, multi-line intent.\nIt mentions +added and -removed concepts but is not a patch."
+        ));
+        assert!(!intent_looks_like_diff(
+            &"explain the validation flow ".repeat(12)
+        ));
     }
 
     // ── extract_rule_examples: format coverage ───────────────────────────
@@ -1422,10 +1395,16 @@ mod tests {
             SearchSkillMeta {
                 file_patterns: vec!["**/*.go".to_owned()],
                 source_repo: Some("acme/widgets".to_owned()),
+                origin: Some("pr_review".to_owned()),
             },
         );
         let hits = build_local_hits(&scored, &metas);
         assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].origin.as_deref(), Some("pr_review"));
+        assert_eq!(
+            hits[0].source_rank,
+            Some(difflore_core::context::retrieval::source_rank("pr_review"))
+        );
         assert_eq!(hits[0].bad.as_deref(), Some("io.ReadAll(r.Body)"));
         assert_eq!(
             hits[0].fix.as_deref(),
@@ -1450,10 +1429,13 @@ mod tests {
                 confidence: 0.8,
                 file_patterns: vec!["**/*.go".to_owned()],
                 source_repo: Some("acme/widgets".to_owned()),
+                origin: Some("pr_review".to_owned()),
+                source_rank: Some(difflore_core::context::retrieval::source_rank("pr_review")),
                 body: None,
             }],
+            trace: RecallTrace::default(),
         };
-        let json = local_rules_json(&local, Some("internal/x.go"));
+        let json = local_rules_json(&local, &["internal/x.go".to_owned()]);
         assert_eq!(json["results"][0]["bad"], "io.ReadAll(r.Body)");
         assert_eq!(json["results"][0]["fix"], "http.MaxBytesReader(...)");
 
@@ -1473,10 +1455,13 @@ mod tests {
                 confidence: 0.8,
                 file_patterns: Vec::new(),
                 source_repo: None,
+                origin: None,
+                source_rank: None,
                 body: None,
             }],
+            trace: RecallTrace::default(),
         };
-        let bare_json = local_rules_json(&bare, None);
+        let bare_json = local_rules_json(&bare, &[]);
         assert!(bare_json["results"][0]["bad"].is_null());
         assert!(bare_json["results"][0]["fix"].is_null());
     }
@@ -1505,6 +1490,8 @@ mod tests {
                 confidence: 0.82,
                 file_patterns: vec!["**/*.go".to_owned()],
                 source_repo: Some("acme/widgets".to_owned()),
+                origin: Some("pr_review".to_owned()),
+                source_rank: Some(difflore_core::context::retrieval::source_rank("pr_review")),
                 body: Some(RenderedRuleBody {
                     body: "## Rule rule-cap — Cap request bodies\n### Cases\n❌ Counter-example:\n```\ndata, _ := io.ReadAll(r.Body)\n```\n✅ Conforming:\n```\nr.Body = http.MaxBytesReader(w, r.Body, max)\n```\n".to_owned(),
                     origin: "pr_review".to_owned(),
@@ -1518,9 +1505,10 @@ mod tests {
                     }],
                 }),
             }],
+            trace: RecallTrace::default(),
         };
 
-        let json = local_rules_json(&local, Some("internal/server.go"));
+        let json = local_rules_json(&local, &["internal/server.go".to_owned()]);
         let result = &json["results"][0];
 
         // Headline still present.
@@ -1549,6 +1537,7 @@ mod tests {
         );
         // Supplementary fix/check fields are surfaced.
         assert_eq!(result["origin"], "pr_review");
+        assert_eq!(result["sourceRank"], 2);
         assert_eq!(result["check"], "Is the body capped before reading?");
         assert_eq!(result["trigger"], "Touching an HTTP body read");
     }
@@ -1573,10 +1562,13 @@ mod tests {
                 confidence: 0.7,
                 file_patterns: Vec::new(),
                 source_repo: None,
+                origin: None,
+                source_rank: None,
                 body: None,
             }],
+            trace: RecallTrace::default(),
         };
-        let json = local_rules_json(&local, None);
+        let json = local_rules_json(&local, &[]);
         let result = &json["results"][0];
         assert!(result.get("body").is_none(), "no body key when unhydrated");
         assert!(result.get("examples").is_none());
@@ -1617,12 +1609,16 @@ mod tests {
             confidence: 0.8,
             file_patterns: vec!["**/*.go".to_owned()],
             source_repo: Some("gin-gonic/gin".to_owned()),
+            origin: Some("pr_review".to_owned()),
+            source_rank: Some(difflore_core::context::retrieval::source_rank("pr_review")),
             body: None,
         }];
         let json = cross_repo_starter_json(&hits);
         let arr = json.as_array().expect("array");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["sourceRepo"], "gin-gonic/gin");
+        assert_eq!(arr[0]["origin"], "pr_review");
+        assert_eq!(arr[0]["sourceRank"], 2);
         assert_eq!(arr[0]["title"], "Return 413 for oversized bodies");
         assert_eq!(arr[0]["filePatterns"][0], "**/*.go");
         // Empty input must serialise as an empty array, never null.
@@ -1646,6 +1642,8 @@ mod tests {
             confidence: 0.8,
             file_patterns: vec!["**/*.go".to_owned()],
             source_repo: Some("x/y".to_owned()),
+            origin: None,
+            source_rank: None,
             body: None,
         }
     }
@@ -1749,6 +1747,7 @@ mod tests {
             SearchSkillMeta {
                 file_patterns: vec!["**/*.go".to_owned()],
                 source_repo: Some("acme/widgets".to_owned()),
+                origin: None,
             },
         );
 
@@ -1779,11 +1778,14 @@ mod tests {
                 confidence: 0.7,
                 file_patterns: vec!["**/*.go".to_owned()],
                 source_repo: Some("acme/widgets".to_owned()),
+                origin: None,
+                source_rank: None,
                 body: None,
             }],
+            trace: RecallTrace::default(),
         };
 
-        let json = local_rules_json(&local, Some("internal/server.go"));
+        let json = local_rules_json(&local, &["internal/server.go".to_owned()]);
 
         assert_eq!(json["rulesIndexed"], 3);
         assert_eq!(json["repoFullName"], "acme/widgets");
@@ -1792,8 +1794,15 @@ mod tests {
         assert_eq!(json["results"][0]["sourceRepo"], "acme/widgets");
         assert_eq!(json["results"][0]["strictFileMatch"], true);
 
-        let no_match = local_rules_json(&local, Some("README.md"));
+        let no_match = local_rules_json(&local, &["README.md".to_owned()]);
         assert_eq!(no_match["results"][0]["strictFileMatch"], false);
+
+        // Changeset scope (`--diff`): strict when ANY changed file matches.
+        let changeset = local_rules_json(
+            &local,
+            &["README.md".to_owned(), "internal/server.go".to_owned()],
+        );
+        assert_eq!(changeset["results"][0]["strictFileMatch"], true);
     }
 
     #[test]
@@ -1809,6 +1818,8 @@ mod tests {
             confidence: 0.6,
             file_patterns: Vec::new(),
             source_repo: Some("acme/widgets".to_owned()),
+            origin: None,
+            source_rank: None,
             body: None,
         }];
         let strict = vec![LocalRuleHit {
@@ -1822,18 +1833,19 @@ mod tests {
             confidence: 0.6,
             file_patterns: vec!["src/**/*.rs".to_owned()],
             source_repo: Some("acme/widgets".to_owned()),
+            origin: None,
+            source_rank: None,
             body: None,
         }];
 
-        assert!(content_only_file_scope_fallback(
-            &content_only,
-            Some("src/lib.rs")
-        ));
-        assert!(!content_only_file_scope_fallback(
-            &strict,
-            Some("src/lib.rs")
-        ));
-        assert!(!content_only_file_scope_fallback(&content_only, None));
+        let scope = vec!["src/lib.rs".to_owned()];
+        assert!(content_only_file_scope_fallback(&content_only, &scope));
+        assert!(!content_only_file_scope_fallback(&strict, &scope));
+        assert!(!content_only_file_scope_fallback(&content_only, &[]));
+        // Changeset scope: a strict match on ANY changed file means recall
+        // did not fall back to content-only matching.
+        let changeset = vec!["README.md".to_owned(), "src/lib.rs".to_owned()];
+        assert!(!content_only_file_scope_fallback(&strict, &changeset));
     }
 
     #[test]
@@ -1843,6 +1855,7 @@ mod tests {
             repo_full_name: Some("acme/widgets".to_owned()),
             matches: Vec::new(),
             file_scope_fallback: false,
+            trace: RecallTrace::default(),
         };
         let cloud = CloudRecallResult {
             logged_in: false,
@@ -1893,6 +1906,7 @@ mod tests {
             repo_full_name: None,
             matches: Vec::new(),
             file_scope_fallback: false,
+            trace: RecallTrace::default(),
         };
         let cloud = CloudRecallResult {
             logged_in: false,
@@ -1922,7 +1936,7 @@ mod tests {
                 .next_steps
                 .iter()
                 .any(|step| step.command.as_deref() == Some("git remote -v")),
-            "the actionable step is adding a GitHub remote"
+            "the actionable step is adding a supported git remote"
         );
         assert!(
             diagnostics
@@ -1935,12 +1949,13 @@ mod tests {
     }
 
     #[test]
-    fn zero_match_diagnostics_explain_file_scope_and_broad_query() {
+    fn zero_match_diagnostics_explain_path_hint_and_broad_query() {
         let local = LocalRecallResult {
             rules_indexed: 12,
             repo_full_name: Some("acme/widgets".to_owned()),
             matches: Vec::new(),
             file_scope_fallback: false,
+            trace: RecallTrace::default(),
         };
         let cloud = CloudRecallResult {
             logged_in: true,
@@ -1957,7 +1972,7 @@ mod tests {
             diagnostics
                 .possible_causes
                 .iter()
-                .any(|cause| cause.code == "file_pattern_scope")
+                .any(|cause| cause.code == "file_path_hint")
         );
         assert!(
             diagnostics
@@ -1969,7 +1984,7 @@ mod tests {
             diagnostics
                 .next_steps
                 .iter()
-                .any(|step| { step.command.as_deref() == Some("difflore recall \"fix bug\"") })
+                .any(|step| { step.command.as_deref() == Some("difflore status") })
         );
         assert!(diagnostics.next_steps.iter().any(|step| {
             step.command
@@ -1989,55 +2004,44 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_diff_files_extracts_ordered_files_from_diff_intent() {
-        let files = synthetic_diff_files(
-            "changes in clients/src/main/java/A.java, core/src/test/scala/B.scala",
-        );
-        assert_eq!(
-            files,
-            vec![
-                "clients/src/main/java/A.java".to_owned(),
-                "core/src/test/scala/B.scala".to_owned(),
-            ]
-        );
-        assert!(synthetic_diff_files("fix group coordinator").is_empty());
+    fn strict_file_pattern_match_falls_back_to_literal_for_invalid_globs() {
+        let patterns = vec!["src/[broken.rs".to_owned()];
+
+        assert!(strict_file_pattern_match(&patterns, Some("src/[broken.rs")));
+        assert!(!strict_file_pattern_match(&patterns, Some("src/other.rs")));
     }
 
     #[test]
-    fn candidate_fallback_files_skips_primary_and_keeps_diff_order() {
-        // Simulates the real `--diff` shape: `build_review_intent_text`
-        // emits a structured intent starting with the file path and
-        // diff hunks — NOT a `"changes in ..."` string. The fallback
-        // must drive off the actual `git diff --name-only` list, so
-        // when the primary file produced no strict matches, we still
-        // try the other changed files (here `src/bar.rs`).
+    fn strict_pattern_match_any_file_uses_any_path_semantics() {
+        // The compatibility `--diff` flag mirrors path-hint semantics: ANY
+        // changed file matching the rule's patterns counts.
+        let patterns = vec!["src/**/*.rs".to_owned()];
+        let hit = vec!["README.md".to_owned(), "src/lib.rs".to_owned()];
+        assert!(strict_pattern_match_any_file(&patterns, &hit));
+        let miss = vec!["README.md".to_owned(), "docs/usage.md".to_owned()];
+        assert!(!strict_pattern_match_any_file(&patterns, &miss));
+        assert!(!strict_pattern_match_any_file(&patterns, &[]));
+        assert!(!strict_pattern_match_any_file(&[], &hit));
+    }
+
+    #[test]
+    fn strict_scope_files_prefers_changeset_over_single_file() {
+        // `--diff` (the old per-file fallback case): the WHOLE changeset is
+        // the strict scope, so a rule scoped to a non-primary changed file
+        // (here `src/bar.rs`) still strict-matches in the single query.
         let diff_files = vec!["src/foo.rs".to_owned(), "src/bar.rs".to_owned()];
-        let structured_intent = "src/foo.rs\n@@ -10,0 +10,2 @@\n+ let x = 1;\n+ let y = 2;\n";
-
-        // The retired `synthetic_diff_files` parser would have returned
-        // an empty list for the structured intent, killing the fallback.
-        assert!(
-            synthetic_diff_files(structured_intent).is_empty(),
-            "structured intent never starts with 'changes in '",
+        assert_eq!(
+            strict_scope_files(Some("src/foo.rs"), &diff_files),
+            diff_files,
         );
-
-        let candidates = candidate_fallback_files(&diff_files, "src/foo.rs");
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0], "src/bar.rs");
-
-        // Primary-only diff (one changed file) should produce no
-        // candidates — there is no other file to fall back to.
-        let only_primary = vec!["src/foo.rs".to_owned()];
-        assert!(candidate_fallback_files(&only_primary, "src/foo.rs").is_empty());
-
-        // Multi-file diff preserves `git diff --name-only` order.
-        let many = vec![
-            "src/a.rs".to_owned(),
-            "src/b.rs".to_owned(),
-            "src/c.rs".to_owned(),
-        ];
-        let kept: Vec<&str> = candidate_fallback_files(&many, "src/b.rs");
-        assert_eq!(kept, vec!["src/a.rs", "src/c.rs"]);
+        // Single-file recall: scope is exactly the queried file.
+        assert_eq!(
+            strict_scope_files(Some("src/foo.rs"), &[]),
+            vec!["src/foo.rs".to_owned()],
+        );
+        // No file at all: strict matching never fires.
+        assert!(strict_scope_files(None, &[]).is_empty());
+        assert!(strict_scope_files(Some("  "), &[]).is_empty());
     }
 
     #[test]

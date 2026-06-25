@@ -1,40 +1,26 @@
-//! Pure scoring helpers for hybrid rule retrieval.
-//!
-//! Split out of `rules.rs` so the main hybrid-retrieval orchestration stays
-//! focused on fusion and result-set shaping. These functions are all pure
-//! (no I/O): the intent-alignment directive matchers and the category-keyed
-//! confidence-decay model. The orchestration in `rules.rs` calls them via
-//! `super::scoring::…`; `effective_confidence`, `infer_rule_kind`, and
-//! `RuleKind` are re-exported from `super` (the retrieval module) for external
-//! callers.
+//! Pure (no-I/O) scoring helpers for hybrid rule retrieval: the
+//! intent-alignment directive matchers and the category-keyed
+//! confidence-decay model. `effective_confidence`, `infer_rule_kind`, and
+//! `RuleKind` are re-exported from `super` for external callers.
 
 use super::{
     MIN_DISTINCTIVE_SHARED_TERMS, MIN_INTENT_DIRECTIVE_OVERLAP, MIN_INTENT_DIRECTIVE_OVERLAP_RATIO,
     rule_title,
 };
 
-/// Distil the part of a rule's indexed content that carries its DIRECTIVE —
-/// the imperative + its object — for intent-alignment matching.
+/// Distil the part of a rule's indexed content that carries its directive
+/// (the imperative + its object) for intent-alignment matching.
 ///
-/// The indexed `content` is `Rule ID: …\nRule Name: <title>\nType: …\nTags:
-/// …\n\n<body>`. The `Rule Name:` line is the human-authored distillation of
-/// what the rule tells you to do ("Return false instead of panic on invalid
-/// input"), so it is the highest-signal directive text. We also fold in a
-/// SHORT leading slice of the body so a directive phrased only in the body
-/// (a title like "Error handling") still contributes its action/subject
-/// terms — but we cap it so a long body can't drown the gate in incidental
-/// vocabulary that re-introduces the topical-adjacency noise the gate exists
-/// to remove.
-///
-/// `BODY_DIRECTIVE_CHARS` is the leading-body budget: enough to capture the
-/// opening imperative sentence (the rule's "what to do") without pulling in
-/// the examples / rationale that follow.
+/// Indexed `content` is `Rule ID: …\nRule Name: <title>\nType: …\nTags:
+/// …\n\n<body>`. The `Rule Name:` line is the highest-signal directive text;
+/// a short leading slice of the body is folded in so a directive phrased only
+/// in the body still contributes its terms. The body slice is capped so a long
+/// body can't drown the gate in incidental vocabulary.
 pub(super) fn rule_directive_text(content: &str) -> String {
     const BODY_DIRECTIVE_CHARS: usize = 160;
     let title = rule_title(content, "");
-    // Body = everything after the blank line that separates the metadata
-    // header from the rule body. Fall back to the whole content when no such
-    // separator exists (a bare chunk with no header).
+    // Body = everything after the blank line separating the metadata header
+    // from the body. Fall back to the whole content when there's no separator.
     let body = content
         .split_once("\n\n")
         .map_or(content, |(_, body)| body)
@@ -43,20 +29,16 @@ pub(super) fn rule_directive_text(content: &str) -> String {
     format!("{title} {body_head}")
 }
 
-/// Generic topical/code anchors that, when SHARED between a query and a rule
-/// directive, do NOT by themselves establish a subject/action concern match —
-/// they are the words every rule in a file area tends to mention.
+/// Generic topical/code anchors that, when shared between a query and a rule
+/// directive, do not by themselves establish a subject/action concern match —
+/// they are the words every rule in a file area tends to mention. Forcing the
+/// concern match to rest on a specific shared token (e.g. `false`, `invalid`,
+/// `hijack`) instead of these prevents topically-adjacent false positives.
 ///
-/// The leak-free A/B diagnosis is specific: the extra false positives came
-/// from rules sharing one of these anchors (`panic`, `test`, `error`) plus
-/// incidental filler, not a genuine subject overlap. Treating these as
-/// non-distinctive forces the concern match to rest on a SPECIFIC shared
-/// token (the subject/action: `false`, `invalid`, `hijack`, `memchr`) rather
-/// than the topic everyone shares. Deliberately SMALL and conservative: only
-/// the highest-frequency, lowest-specificity programming/review words go here
-/// (a longer list would risk discounting a genuinely distinctive subject).
-/// Stems are listed in their light-stem form so the membership test below can
-/// compare on the stem and catch plural/gerund variants.
+/// Deliberately small: only the highest-frequency, lowest-specificity words go
+/// here, a longer list would risk discounting a genuinely distinctive subject.
+/// Listed in light-stem form so the membership test catches plural/gerund
+/// variants.
 pub(super) fn is_generic_anchor(stem: &str) -> bool {
     const GENERIC_ANCHORS: &[&str] = &[
         "panic", "error", "test", "value", "code", "data", "type", "result", "check", "handle",
@@ -68,64 +50,38 @@ pub(super) fn is_generic_anchor(stem: &str) -> bool {
     GENERIC_ANCHORS.contains(&stem)
 }
 
-/// Stem-tolerant substring presence of a single query term inside a
-/// directive STRING. Mirrors how [`super::lexical_boost`] scores presence
-/// (`directive.contains(term)`), so a query term matches when the directive
-/// contains it as a substring — `parse` inside `parsed`, `batch` inside
-/// `batching`. Folding the query term to its light stem first makes the test
-/// morphology-symmetric (`batching`/`retries` against a directive saying
-/// `batch`/`retry`) without losing the substring tolerance that real recall
-/// matches rely on. Returns the matched flag.
+/// Stem-tolerant substring presence of a query term inside a directive string.
+/// A term matches when the directive contains it as a substring (`parse` inside
+/// `parsed`); folding the term to its light stem first makes the test
+/// morphology-symmetric (`batching`/`retries` vs `batch`/`retry`).
 pub(super) fn term_present_in_directive(term: &str, directive: &str) -> bool {
     directive.contains(term) || directive.contains(light_stem(term).as_str())
 }
 
-/// Decide whether a single candidate rule's DIRECTIVE aligns with the query
-/// intent — a CONCERN (subject/action) match, not mere topical adjacency.
+/// Decide whether a candidate rule's directive aligns with the query intent —
+/// a concern (subject/action) match, not mere topical adjacency.
 ///
-/// Iter-2 (2026-06-02) hardened this with a DISTINCTIVENESS requirement,
-/// because the review A/B (n=6) showed the iter-1 count-or-ratio test still
-/// passed topically-adjacent, wrong-subject rules (extra false positives where
-/// recall fired). The old test asked only "does the directive contain >=2
-/// query terms, or cover half the query"; two GENERIC anchors (`panic` +
-/// `input`) cleared it with no real subject overlap, and so did a lone generic
-/// anchor that happened to be half of a 2-term query. The hardened test adds
-/// the missing axis: the shared terms must include at least one SPECIFIC
-/// (non-generic) subject/action token — the word that says these two
-/// directives are about the SAME thing, not just the same topic.
-///
-/// A candidate aligns when it has at least [`MIN_DISTINCTIVE_SHARED_TERMS`]
-/// distinctive shared term ([`is_generic_anchor`]) AND EITHER:
+/// A candidate aligns when it shares at least [`MIN_DISTINCTIVE_SHARED_TERMS`]
+/// distinctive (non-[`is_generic_anchor`]) term AND EITHER:
 ///   * **Absolute path** — the shared set has at least
-///     [`MIN_INTENT_DIRECTIVE_OVERLAP`] terms (the verb/object pair), OR
+///     [`MIN_INTENT_DIRECTIVE_OVERLAP`] terms, OR
 ///   * **Ratio path** — the shared set covers at least
-///     [`MIN_INTENT_DIRECTIVE_OVERLAP_RATIO`] of the QUERY's salient terms
-///     (keeps SHORT, sharp queries — and the realistic "one rule matches each
-///     half of a two-word intent" fan-out — from over-pruning).
+///     [`MIN_INTENT_DIRECTIVE_OVERLAP_RATIO`] of the query's salient terms
+///     (keeps short queries from over-pruning).
 ///
-/// The distinctiveness gate is the precision lever (it kills the all-anchor
-/// false positives the A/B diagnosed) and is deliberately chosen over a
-/// rule-side coverage ratio, which proved too sensitive to directive phrasing:
-/// a rule whose directive lives in its body, or whose title is a bare label,
-/// has few salient TITLE terms and a verbose body, so any fixed coverage floor
-/// either drops genuine body-phrased matches or fails to drop adjacency.
-/// Distinctiveness keys off the SHARED set itself, so it is robust to how
-/// either side is phrased. Self-recall — where the query *is* the rule's own
-/// intent text — shares its specific subject tokens, so it always has a
-/// distinctive overlap and is never regressed.
-///
-/// Pure: allocates the lowercased directive + a couple of stems, no I/O.
+/// The distinctiveness requirement is the precision lever: it keys off the
+/// shared set itself, so it is robust to how either side is phrased (a
+/// rule-side coverage ratio is too sensitive to whether the directive lives in
+/// the title or body). Self-recall always shares its specific subject tokens,
+/// so it is never regressed.
 pub(super) fn directive_intent_aligned(content: &str, query_terms: &[String]) -> bool {
     if query_terms.is_empty() {
         return false;
     }
-    // Presence string: title + a short body head, so a directive phrased only
-    // in the body still contributes its subject/action terms when matching.
     let directive = rule_directive_text(content).to_ascii_lowercase();
 
-    // Shared salient terms (stem-tolerant substring). Dedup on the query
-    // term's stem so a query that repeats a concept doesn't inflate overlap,
-    // and track how many shared terms are DISTINCTIVE (not a generic anchor).
+    // Dedup on the query term's stem so a query that repeats a concept doesn't
+    // inflate overlap, and track how many shared terms are distinctive.
     let mut shared_stems: Vec<String> = Vec::new();
     let mut distinctive_shared = 0usize;
     for term in query_terms {
@@ -143,36 +99,26 @@ pub(super) fn directive_intent_aligned(content: &str, query_terms: &[String]) ->
     }
     let overlap = shared_stems.len();
 
-    // Precision gate: a concern match must rest on at least one SPECIFIC
-    // subject/action token. A shared set made only of generic anchors
-    // (`panic`, `input`, `error`) is the topical adjacency the A/B blamed for
-    // the extra false positives — drop it regardless of count or ratio.
+    // A concern match must rest on at least one specific subject/action token;
+    // a shared set made only of generic anchors is topical adjacency, drop it.
     if distinctive_shared < MIN_DISTINCTIVE_SHARED_TERMS {
         return false;
     }
 
-    // Absolute path: enough shared terms (verb + object), already known to
-    // include a distinctive token.
     if overlap >= MIN_INTENT_DIRECTIVE_OVERLAP {
         return true;
     }
-    // Ratio path: the shared (distinctive) set is at least half a short, focused
-    // query — keeps short intents and the per-rule fan-out of a two-word intent
-    // from over-pruning.
+    // Ratio path: shared set covers at least half a short, focused query.
     let query_ratio = overlap as f64 / query_terms.len() as f64;
     query_ratio >= MIN_INTENT_DIRECTIVE_OVERLAP_RATIO
 }
 
-/// Light, allocation-cheap stemmer for intent-alignment term matching.
-///
-/// Strips the common English inflectional suffixes (`ies`→`y`, `ing`, `es`,
-/// `s`) so a query term and a directive token that differ only by
-/// plural/gerund form fold to the same stem ("batching"→"batch",
-/// "retries"→"retry"). Deliberately NOT a full Porter stemmer: it only needs
-/// to reconcile the surface morphology the alignment gate trips on, and an
-/// over-aggressive stemmer would re-introduce the topical-adjacency overlap
-/// the gate exists to suppress. Guarded by a minimum residual stem length so
-/// short tokens (≤4 chars) are never truncated into noise.
+/// Light stemmer for intent-alignment term matching: strips common English
+/// inflectional suffixes (`ies`→`y`, `ing`, `es`, `s`) so terms differing only
+/// by plural/gerund form fold together ("batching"→"batch"). Deliberately not a
+/// full Porter stemmer — an over-aggressive stemmer would re-introduce the
+/// topical-adjacency overlap the alignment gate suppresses. Tokens ≤4 chars are
+/// never truncated.
 pub(super) fn light_stem(term: &str) -> String {
     const MIN_STEM_LEN: usize = 4;
     if let Some(base) = term.strip_suffix("ies")
@@ -191,42 +137,29 @@ pub(super) fn light_stem(term: &str) -> String {
     term.to_owned()
 }
 
-/// Coarse rule-kind taxonomy used by the time-decay multiplier.
-///
-/// `IndexedRuleChunk` does not yet carry an explicit `kind` column — the
-/// rule corpus only stores `content` + denormalised metadata. So instead
-/// of inventing jcode's literal `MemoryEntry::Kind` enum on the wrong
-/// data model, we infer a coarse bucket from the rule's content. The
-/// audit comment around line 355 already names the practical kinds
-/// observed in production: corrections, slogans, style/lint rules, and
-/// generic preferences/conventions. We mirror those here.
-///
-/// The inferred kind is enough to apply category-aware decay without widening
-/// the index schema.
+/// Coarse rule-kind taxonomy used by the time-decay multiplier. Inferred from
+/// rule content since the index schema carries no explicit `kind` column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleKind {
-    /// "Don't do X", "always Y", "fix: ...", "regression". These are the
-    /// rare, hard-won rules — long memory.
+    /// "Don't do X", "always Y", "fix: ...", "regression". Rare, hard-won
+    /// rules — long memory.
     Correction,
-    /// User taste / project conventions ("we use Drizzle", "naming = X").
-    /// Medium memory.
+    /// User taste / project conventions ("we use Drizzle"). Medium memory.
     Convention,
     /// Style / lint surface ("prefer let over const", formatting). Ages
     /// fastest because codebases reformat constantly.
     Style,
-    /// Slogans / vague guidance ("trust CI", "review carefully") — same
-    /// short half-life as style; the audit comment notes these misfire.
+    /// Slogans / vague guidance ("trust CI") — same short half-life as style.
     Slogan,
     /// Anything we couldn't classify.
     Other,
 }
 
-/// Lightweight content heuristic. Cheap regex-free token checks so we
-/// don't burn CPU per chunk per query.
+/// Cheap regex-free token checks so we don't burn CPU per chunk per query.
 pub fn infer_rule_kind(content: &str) -> RuleKind {
     let lc = content.to_ascii_lowercase();
-    // Correction signals come first — they're the highest-value bucket
-    // and we'd rather over-classify into long memory than evict them.
+    // Correction signals come first — highest-value bucket, and we'd rather
+    // over-classify into long memory than evict.
     const CORRECTION_HINTS: &[&str] = &[
         "don't ",
         "do not ",
@@ -279,17 +212,8 @@ pub fn infer_rule_kind(content: &str) -> RuleKind {
     RuleKind::Other
 }
 
-/// Half-life in days per kind. Borrowed from jcode's
-/// `effective_confidence` table but mapped to difflore's actual rule
-/// taxonomy:
-///
-/// | jcode kind   | difflore kind | half-life |
-/// |--------------|---------------|-----------|
-/// | Correction   | Correction    | 365       |
-/// | Preference   | Convention    | 120       |
-/// | (n/a)        | Style         |  30       |
-/// | Fact         | Slogan        |  30       |
-/// | Entity (def) | Other         |  90       |
+/// Half-life in days per kind: Correction 365, Convention 120, Style 30,
+/// Slogan 30, Other 90.
 const fn half_life_days(kind: RuleKind) -> f32 {
     match kind {
         RuleKind::Correction => 365.0,
@@ -299,14 +223,10 @@ const fn half_life_days(kind: RuleKind) -> f32 {
     }
 }
 
-/// Apply category-aware exponential decay to a raw confidence value.
-///
-/// `effective = raw * 0.5 ^ (age_days / half_life)`
-///
-/// At `age_days = 0` this returns `raw` unchanged. After one half-life
-/// it returns `raw / 2`, etc. Used as the input to the existing
-/// `0.9 + 0.1 * confidence` tie-breaker so old rules naturally lose
-/// their tie-breaker bump.
+/// Apply category-aware exponential decay to a raw confidence value:
+/// `effective = raw * 0.5 ^ (age_days / half_life)`. At `age_days = 0` this
+/// returns `raw` unchanged; after one half-life, `raw / 2`. Feeds the
+/// `0.9 + 0.1 * confidence` tie-breaker so old rules lose their bump.
 pub fn effective_confidence(raw_confidence: f32, kind: &RuleKind, age_days: f32) -> f32 {
     let raw = raw_confidence.clamp(0.0, 1.0);
     let age = age_days.max(0.0);
@@ -354,7 +274,7 @@ mod tests {
 
     #[test]
     fn effective_confidence_at_age_zero_is_identity() {
-        // Wiring relies on age=0.0 being a no-op until ages are plumbed.
+        // age=0.0 must be a no-op for every kind.
         for k in [
             RuleKind::Correction,
             RuleKind::Convention,
@@ -372,11 +292,9 @@ mod tests {
 
     #[test]
     fn age_days_map_decays_old_style_below_fresh_correction_via_options() {
-        // Direct-formula assertion proving the plumbing makes a real
-        // ranking difference. Without the map both rules would land at
-        // the same `0.9 + 0.1 * raw_conf` weight; with the map a
-        // 2-year-old style rule (raw 0.95) loses to a fresh correction
-        // (raw 0.6) — the failure mode jcode's half-life borrows fix.
+        // Without decay both rules land at the same `0.9 + 0.1 * raw_conf`
+        // weight; with it a 2-year-old style rule (raw 0.95) loses to a fresh
+        // correction (raw 0.6).
         let style_old = effective_confidence(0.95, &RuleKind::Style, 730.0);
         let correction_fresh = effective_confidence(0.6, &RuleKind::Correction, 1.0);
         let style_weight = 0.1f64.mul_add(style_old.clamp(0.0, 1.0) as f64, 0.9);

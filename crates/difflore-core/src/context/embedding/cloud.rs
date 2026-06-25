@@ -1,47 +1,31 @@
 use async_trait::async_trait;
 use std::time::Duration;
 
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 use super::{
-    DEFAULT_OPENAI_EMBEDDING_DIM, EMBEDDING_RETRY_DELAYS_MS, Embedder, embedding_http_client,
+    EMBEDDING_RETRY_DELAYS_MS, Embedder, embedding_http_client, parse_embedding_vector,
     retryable_embedding_status,
 };
 
 /// Cloud-managed embedder. POSTs `{ texts: [..] }` to the cloud API's
-/// `/api/embeddings` endpoint, authenticating with the user's existing
-/// CLI session token (same `cloud-auth.db` row that powers
-/// `cloud::client::CloudClient`).
+/// `/api/embeddings` endpoint, authenticating with the user's CLI session token
+/// (the same `cloud-auth.db` row as `cloud::client::CloudClient`).
 ///
-/// This is the happy path for the OSS Free tier — users don't have to
-/// manage an OpenAI key locally; the cloud forwards to its own configured
-/// embedding provider. Failures (network / 401 / 5xx) bubble up as
-/// `CoreError::Internal` so the caller can fall back to local SHA1 after
-/// retry rather than surfacing a hard error.
+/// The Free-tier path: the cloud forwards to its own embedding provider, so
+/// users need no local OpenAI key. Failures (network / 401 / 5xx) bubble up as
+/// `CoreError::Internal` so the caller can fall back to local SHA1 after retry.
 pub struct CloudEmbedder {
     base_url: String,
     token: String,
-    model: String,
-    dim: usize,
     client: reqwest::Client,
 }
 
 impl CloudEmbedder {
     pub fn new(base_url: String, token: String) -> Self {
-        Self::with_model(
-            base_url,
-            token,
-            "text-embedding-3-small".to_owned(),
-            DEFAULT_OPENAI_EMBEDDING_DIM,
-        )
-    }
-
-    pub fn with_model(base_url: String, token: String, model: String, dim: usize) -> Self {
         Self {
             base_url,
             token,
-            model,
-            dim,
             client: embedding_http_client(),
         }
     }
@@ -106,10 +90,7 @@ impl Embedder for CloudEmbedder {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        let body = serde_json::json!({
-            "texts": texts,
-            "model": self.model,
-        });
+        let body = serde_json::json!({ "texts": texts });
         let body = if let Some(rule_ids) = rule_ids {
             let mut value = body;
             value["rule_ids"] = serde_json::json!(rule_ids);
@@ -145,11 +126,9 @@ impl Embedder for CloudEmbedder {
         }
         if !status.is_success() {
             let body_text = resp.text().await.unwrap_or_default();
-            // 409 with `embed_cap_reached` is the Free-tier rule cap. We
-            // surface it as a typed error so the caller can fall back to
-            // lexical retrieval for this single embed call AND record an
-            // activity event for doctor — `Internal(...)` would lose both
-            // signals.
+            // 409 `embed_cap_reached` is the Free-tier rule cap. Surfaced as a
+            // typed error (not `Internal`) so the caller can fall back to
+            // lexical retrieval for this call and record a doctor activity event.
             if status.as_u16() == 409
                 && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body_text)
                 && parsed.get("code").and_then(|c| c.as_str()) == Some("embed_cap_reached")
@@ -168,8 +147,11 @@ impl Embedder for CloudEmbedder {
                         .unwrap_or(0),
                 )
                 .unwrap_or(u32::MAX);
-                crate::activity_stream::record(
-                    crate::activity_stream::ActivityPayload::EmbedCapReached { cap, used },
+                crate::observability::activity_stream::record(
+                    crate::observability::activity_stream::ActivityPayload::EmbedCapReached {
+                        cap,
+                        used,
+                    },
                 );
                 return Err(CoreError::EmbedCapReached { cap, used });
             }
@@ -194,12 +176,7 @@ impl Embedder for CloudEmbedder {
                     .ok_or_else(|| {
                         CoreError::Internal("cloud embedding vector is not an array".into())
                     })
-                    .map(|items| {
-                        items
-                            .iter()
-                            .map(|n| n.as_f64().unwrap_or(0.0) as f32)
-                            .collect::<Vec<f32>>()
-                    })
+                    .and_then(|items| parse_embedding_vector(items, "cloud embedding vector"))
             })
             .collect::<Result<Vec<Vec<f32>>, CoreError>>()?;
         if vectors.len() != texts.len() {
@@ -213,6 +190,6 @@ impl Embedder for CloudEmbedder {
     }
 
     fn dim(&self) -> usize {
-        self.dim
+        0
     }
 }

@@ -1,11 +1,11 @@
 use serde_json::{Value, json};
 
-use crate::models::RememberRuleInput;
-use crate::review_trajectory::TrajectoryStep;
+use crate::domain::models::RememberRuleInput;
+use crate::observability::trajectory::TrajectoryStep;
 use crate::skills;
 
 use super::super::{McpState, build_cost_meta, emit_trajectory_step, estimate_tokens};
-use super::util::{MCP_EMBEDDING_TIMEOUT, drain_mcp_query_outbox, enqueue_mcp_query_outbox};
+use super::serve_stats::{drain_mcp_query_outbox, enqueue_mcp_query_outbox};
 
 const MAX_REMEMBER_TITLE_CHARS: usize = 200;
 
@@ -109,7 +109,18 @@ pub(crate) async fn tool_remember_rule(
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
         .map(String::from);
+    let kind = args
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(String::from);
+    let category = args
+        .get("category")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(String::from);
 
+    let capture_client = "mcp-server";
     let input = RememberRuleInput {
         title: title.to_owned(),
         body: body.to_owned(),
@@ -117,10 +128,20 @@ pub(crate) async fn tool_remember_rule(
         bad_code,
         good_code,
         severity,
+        kind,
+        category,
         // MCP path is always the conversation channel.
         origin: Some("conversation".to_owned()),
+        captured_by_client: Some(capture_client.to_owned()),
     };
 
+    // Warm the configured-GitLab-host cache from the auth DB before detecting
+    // remotes. A fresh MCP-server process starts with an empty host cache; if
+    // remember_rule runs before any recall (search_rules/hook), self-managed
+    // GitLab remotes would otherwise fail to resolve and the rule would be
+    // captured without a repo scope — invisible to the next repo-scoped recall.
+    // Mirrors hook.rs and search_rules.rs.
+    crate::mcp_server::hook::refresh_configured_gitlab_hosts_for_remote_detection().await;
     let detected_repos = crate::mcp_server::hook::detect_git_remote_owner_repos();
 
     let outcome = skills::remember(&state.db, input)
@@ -128,15 +149,21 @@ pub(crate) async fn tool_remember_rule(
         .map_err(|e| (-32603, format!("Failed to remember rule: {e}")))?;
     let skill = &outcome.skill;
 
-    if let Some(repo_full_name) = detected_repos
+    // Route the detected remote through `RepoScope::canonical` so this UPDATE
+    // shares the one normalization gate every other `source_repo` write uses.
+    // The detected value is already canonical, but funnelling it through the
+    // newtype keeps RepoScope the single source_repo write entry point and
+    // fails closed (skips the write) on any non-canonical value rather than
+    // binding a raw String.
+    if let Some(repo_scope) = detected_repos
         .first()
         .map(String::as_str)
         .filter(|r| !r.trim().is_empty())
+        .and_then(crate::infra::git::RepoScope::canonical)
     {
-        // MCP recall is repo-scoped. Without attaching the remembered
-        // conversation rule to the current repo, the next search_rules /
-        // get_rules call filters out the very rule the user just
-        // asked the agent to remember.
+        // Attach the active rule to the current repo now so it recalls within
+        // the repo where the user explicitly asked for the memory.
+        let repo_full_name = repo_scope.as_str();
         let skill_id = skill.id.as_str();
         if let Err(e) = sqlx::query!(
             "UPDATE skills
@@ -151,25 +178,79 @@ pub(crate) async fn tool_remember_rule(
         .execute(&state.db)
         .await
         {
-            eprintln!("[difflore-mcp] remember_rule source_repo update failed: {e}");
+            if crate::infra::env::debug_telemetry() {
+                eprintln!("[difflore-mcp] remember_rule source_repo update failed: {e}");
+            }
         }
     }
 
-    // Re-index the rule store so the very next `search_rules` call
-    // can recall it. Route through the shared project-scoped index refresh
-    // so cloud/SHA1 embedding profiles and repo filtering stay consistent
-    // with CLI recall and MCP search.
-    if let Ok(index_pool) = state.resolve_index_pool().await {
-        if let Err(e) = crate::context::orchestrator::ensure_rules_indexed_with_embedding_timeout(
-            &state.db,
-            &index_pool,
-            Some(MCP_EMBEDDING_TIMEOUT),
-        )
+    let memory_state = skills::rule_status(&state.db, &skill.id)
         .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "unknown".to_owned());
+    let is_active = memory_state == "active";
+
+    // A direct user "remember this" request is treated as approval, so fresh
+    // MCP captures are active and should be indexed for immediate recall.
+    if is_active {
+        let repo_scopes =
+            skills::expand_repo_scopes_with_source_aliases(&state.db, &detected_repos)
+                .await
+                .unwrap_or_else(|_| detected_repos.clone());
+        if !repo_scopes.is_empty()
+            && let Ok(index_pool) = state.resolve_index_pool().await
+            && let Err(e) =
+                crate::context::orchestrator::ensure_rules_indexed_for_repo_scopes_local_embeddings(
+                    &state.db,
+                    &index_pool,
+                    &repo_scopes,
+                )
+                .await
+            && crate::infra::env::debug_telemetry()
         {
-            eprintln!("[difflore-mcp] remember_rule index refresh failed: {e}");
+            eprintln!("[difflore-mcp] remember_rule local index refresh failed: {e}");
         }
     }
+
+    let item_id = format!("rule:{}", skill.id);
+    let show_command = format!("difflore memory show {item_id}");
+    let disable_command = format!("difflore memory disable {item_id}");
+    let capture_status = match (outcome.deduped, is_active) {
+        (false, false) => "captured_pending",
+        (true, false) => "strengthened_pending",
+        (true, true) => "strengthened_active",
+        (false, true) => "captured_active",
+    };
+
+    let confirm = if outcome.deduped {
+        if is_active {
+            format!(
+                "~ strengthened existing active rule **{}** (`{}`). \
+                 It is approved and available to agents. \
+                 Inspect with `{show_command}`.",
+                skill.name, skill.id,
+            )
+        } else {
+            format!(
+                "~ strengthened existing memory rule **{}** (`{}`). \
+                 Inspect with `{show_command}`.",
+                skill.name, skill.id,
+            )
+        }
+    } else {
+        let pattern_hint = if skill.tags.iter().any(|t| t.contains('*')) {
+            "file-pattern scoped"
+        } else {
+            "repo-wide"
+        };
+        format!(
+            "+1 memory rule saved from agent chat as **{}** (`{}`), {pattern_hint}. \
+             I treated the user's explicit remember request as approval, so it is active and available to agents now. \
+             Inspect with `{show_command}`.",
+            skill.name, skill.id,
+        )
+    };
 
     // Soft warning when the user is approaching the daily cap. The agent
     // sees this in the tool result and will (per its description) echo
@@ -177,8 +258,8 @@ pub(crate) async fn tool_remember_rule(
     // doesn't become a silent flood.
     let warn_suffix = if outcome.captures_today >= skills::REMEMBER_WARN_THRESHOLD {
         format!(
-            "\n\n⚠️ {} conversation captures today (cap: {}). \
-             Audit with `difflore status --json`.",
+            "\n\nWarning: {} conversation captures today (cap: {}). \
+             Audit with `difflore memory inbox`.",
             outcome.captures_today,
             skills::REMEMBER_DAILY_LIMIT,
         )
@@ -186,38 +267,12 @@ pub(crate) async fn tool_remember_rule(
         String::new()
     };
 
-    let confirm = if outcome.deduped {
-        // Dedup path — tell the user we strengthened an existing rule
-        // rather than silently swallowing the re-capture or creating a
-        // confusing duplicate row. We don't show "was X" because the
-        // bump is `MIN(1.0, current + 0.05)` — when the current value
-        // is already near the cap the displayed delta is wrong.
-        format!(
-            "Already had a matching rule **{}** (`{}`) — strengthened by +0.05 (now at {:.2} confidence). \
-             Inspect local memory with `difflore status --json`.",
-            skill.name, skill.id, outcome.confidence_after,
-        )
-    } else {
-        let pattern_hint = if skill.tags.iter().any(|t| t.contains('*')) {
-            " (file-pattern scoped)"
-        } else {
-            " (repo-wide)"
-        };
-        format!(
-            "Remembered as **{}** (`{}`) at confidence {:.2}{}.\n\n\
-             The rule is local on this device until your next cloud sync publishes eligible memory with the team. \
-             Next time DiffLore reviews a matching file or your agent calls `search_rules` then `get_rules`, this rule will be in scope. \
-             Inspect local memory with `difflore status --json`.",
-            skill.name, skill.id, outcome.confidence_after, pattern_hint,
-        )
-    };
-
     // Track this conversation capture in the MCP response-size stream.
     let confirm_tokens = estimate_tokens(&confirm) + estimate_tokens(&warn_suffix);
     emit_trajectory_step(&TrajectoryStep::McpResponseSize {
         tool: "remember_rule".to_owned(),
         total_tokens: confirm_tokens,
-        rules_injected: usize::from(!outcome.deduped),
+        rules_injected: usize::from(is_active),
     });
     emit_trajectory_step(&TrajectoryStep::RuleHitByOrigin {
         manual: 0,
@@ -227,7 +282,7 @@ pub(crate) async fn tool_remember_rule(
         cloud: 0,
     });
 
-    // Fire-and-forget telemetry so the cloud Dashboard sees the new rule
+    // Fire-and-forget telemetry so the cloud Dashboard sees the proposal
     // origin in near-real-time. Same outbox-fallback as rule retrieval:
     // logged-out events are persisted locally and drained on next login
     // instead of being silently lost.
@@ -239,10 +294,10 @@ pub(crate) async fn tool_remember_rule(
         let repo_full_name: Option<String> = detected_repos.first().cloned();
         enqueue_mcp_query_outbox(
             &state.db,
-            super::util::McpQueryOutboxEntry {
+            super::serve_stats::McpQueryOutboxEntry {
                 file: "remember_rule",
                 intent: &rule_name,
-                rules_injected: 1,
+                rules_injected: usize::from(is_active),
                 strict_match_count: 0,
                 rule_titles: std::slice::from_ref(&rule_name),
                 rule_ids: std::slice::from_ref(&rule_id),
@@ -264,16 +319,36 @@ pub(crate) async fn tool_remember_rule(
         "_meta": {
             "cost": build_cost_meta(confirm_tokens, None),
             "rule_id": skill.id,
+            "item_id": item_id,
             "origin": skill.origin,
+            "captured_by_client": capture_client,
+            "state": memory_state,
+            "capture_status": capture_status,
             "published": false,
+            "requires_user_approval": !is_active,
+            "served_to_agents": is_active,
             "deduped": outcome.deduped,
             "dedup_window_hit": outcome.dedup_window_hit,
             "confidence": outcome.confidence_after,
             "captures_today": outcome.captures_today,
             "daily_limit": skills::REMEMBER_DAILY_LIMIT,
+            "provenance": {
+                "source": "remember_rule",
+                "origin": skill.origin,
+                "capturedByClient": capture_client,
+                "trustState": memory_state,
+                "servedToAgents": is_active,
+                "requiresUserApproval": !is_active,
+            },
+            "governance": {
+                "show": show_command,
+                "disable": disable_command,
+            },
             "impact": {
-                "rulesAdded": i32::from(!outcome.deduped),
-                "kind": if outcome.deduped { "strengthened" } else { "remember" },
+                "rulesAdded": i32::from(!outcome.deduped && is_active),
+                "draftsProposed": 0,
+                "rulesStrengthened": i32::from(outcome.deduped),
+                "kind": if outcome.deduped { "strengthened" } else { "active_rule" },
             }
         }
     }))

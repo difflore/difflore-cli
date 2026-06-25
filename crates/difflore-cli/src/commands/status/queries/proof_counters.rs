@@ -24,8 +24,8 @@ pub(in crate::commands::status) struct LocalAcceptedProof {
     pub(in crate::commands::status) accepted_outcomes_linked_to_mcp_rule_serve: i64,
     pub(in crate::commands::status) accepted_outcomes_linked_to_edit_attribution: i64,
     pub(in crate::commands::status) estimated_saved_review_minutes: i64,
-    /// Whole-machine accepted outcomes that actually applied. The
-    /// repo-scoped fields above stay stable for existing dashboards.
+    /// Whole-machine accepted outcomes that actually applied (the
+    /// repo-scoped fields above remain repo-scoped).
     pub(in crate::commands::status) accepted_and_applied: i64,
     /// Accepted outcomes whose patch never reached disk.
     pub(in crate::commands::status) accepted_but_failed: i64,
@@ -123,12 +123,15 @@ pub(in crate::commands::status) async fn local_accepted_proof(
     let accepted_outcomes_linked_to_prior_recall = accepted_link_summary.linked_to_prior_recall;
     // This split is whole-machine on purpose; degrade to zero if the
     // auxiliary query fails so the repo-scoped proof still renders.
-    let split = difflore_core::fix_outcomes::split_summary(db, LOCAL_PROOF_WINDOW_DAYS)
-        .await
-        .unwrap_or(difflore_core::fix_outcomes::FixOutcomeSplitSummary {
-            accepted_and_applied: 0,
-            accepted_but_failed: 0,
-        });
+    let split =
+        difflore_core::observability::fix_outcomes::split_summary(db, LOCAL_PROOF_WINDOW_DAYS)
+            .await
+            .unwrap_or(
+                difflore_core::observability::fix_outcomes::FixOutcomeSplitSummary {
+                    accepted_and_applied: 0,
+                    accepted_but_failed: 0,
+                },
+            );
     LocalAcceptedProof {
         window_days: LOCAL_PROOF_WINDOW_DAYS,
         recall_lookback_days: LOCAL_ACCEPTED_RECALL_LOOKBACK_DAYS,
@@ -218,12 +221,13 @@ pub(in crate::commands::status) async fn local_mcp_rule_serves(
     db: &difflore_core::SqlitePool,
     repo_aliases: &[String],
 ) -> LocalMcpRuleServe {
-    if normalized_repo_aliases(repo_aliases).is_empty() {
+    let normalized_aliases = normalized_repo_aliases(repo_aliases);
+    if normalized_aliases.is_empty() {
         return LocalMcpRuleServe::empty();
     }
-    let summary = difflore_core::mcp_rule_serves::summary_for_repos(
+    let summary = difflore_core::observability::mcp_rule_serves::summary_for_repos(
         db,
-        repo_aliases,
+        &normalized_aliases,
         LOCAL_PROOF_WINDOW_DAYS,
     )
     .await

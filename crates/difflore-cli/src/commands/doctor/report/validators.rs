@@ -1,13 +1,11 @@
 use super::formatters::lang_short_label;
 
 /// Self-recall@K: query each sampled rule by the first 8 significant words
-/// of its OWN description and check whether it returns in top-K. Because the
-/// query is a distillation of the rule's own text, this is an OPTIMISTIC
-/// UPPER BOUND, not real-world recall — a local, reproducible sanity check
-/// that the index/embedder/rerank are wired up for the current corpus and
-/// embedder mode, not a benchmark guarantee or precision measurement.
-/// Real-world paraphrase recall needs separate evaluation with natural
-/// task queries; this local check only proves the obvious self-match path.
+/// of its own description and check whether it returns in top-K. Since the
+/// query distils the rule's own text this is an optimistic upper bound, not
+/// real-world recall — a local sanity check that index/embedder/rerank are
+/// wired up, not a benchmark. Real paraphrase recall needs separate
+/// task-query evaluation.
 pub(crate) async fn self_recall_section(pool: &difflore_core::SqlitePool, s: &mut String) {
     use difflore_core::context::{index_db, retrieval, rule_source};
 
@@ -37,12 +35,10 @@ pub(crate) async fn self_recall_section(pool: &difflore_core::SqlitePool, s: &mu
         }
     };
 
-    // Build the measurement index in a throwaway temp dir with the local SHA1
-    // embedder: deterministic, offline, and — unlike a cwd-scoped
-    // `get_pool_for_cwd` + `upsert_rule_chunks` — it never writes the whole
-    // corpus (or its ANN graph) into the real repo's per-project index, and it
-    // can't stall on per-query cloud-embed timeouts. Same setup `difflore eval`
-    // uses, so the two report the same number.
+    // Build the measurement index in a throwaway temp dir with the local
+    // SHA1 embedder: deterministic, offline, never writes into the real
+    // repo's per-project index, and can't stall on cloud-embed timeouts.
+    // Same setup `difflore eval` uses, so the two report the same number.
     let tmp = match tempfile::tempdir() {
         Ok(t) => t,
         Err(e) => {
@@ -62,11 +58,10 @@ pub(crate) async fn self_recall_section(pool: &difflore_core::SqlitePool, s: &mu
         return;
     }
 
-    // Deterministic stride sampling: same N across runs when corpus is
+    // Deterministic stride sampling: same N across runs when the corpus is
     // unchanged, evenly spread over `installed_at DESC` order.
     const N_TARGET: usize = 20;
-    const SELF_RECALL_EMBEDDING_TIMEOUT: std::time::Duration =
-        std::time::Duration::from_millis(2500);
+    const SELF_RECALL_EMBEDDING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
     let step = rules_db.len().div_ceil(N_TARGET).max(1);
     let samples: Vec<_> = rules_db.iter().step_by(step).take(N_TARGET).collect();
 
@@ -101,13 +96,9 @@ pub(crate) async fn self_recall_section(pool: &difflore_core::SqlitePool, s: &mu
     let mut tested = 0usize;
     let mut hits_at_1 = 0usize;
     let mut hits_at_5 = 0usize;
-    // Sum of 1/rank (1-based) for samples whose own rule was returned in
-    // top-K. Divided by `tested` below for MRR — a stricter ranking-quality
-    // signal than @1/@5 alone: it separates a rank-1 hit from one that only
-    // scraped into rank 5.
+    // Sum of 1/rank (1-based) over hits; divided by `tested` below for MRR.
     let mut reciprocal_rank_sum = 0.0f64;
-    // Per-language (samples, @1 hits, @5 hits, reciprocal-rank sum) so the
-    // by-language breakdown can show MRR alongside @1/@5.
+    // Per-language (samples, @1 hits, @5 hits, reciprocal-rank sum).
     let mut per_lang: std::collections::BTreeMap<String, (usize, usize, usize, f64)> =
         std::collections::BTreeMap::new();
     for rule in &samples {
@@ -123,11 +114,10 @@ pub(crate) async fn self_recall_section(pool: &difflore_core::SqlitePool, s: &mu
             .map_or_else(|| "(unknown)".to_owned(), str::to_owned);
         let entry = per_lang.entry(lang_key).or_insert((0, 0, 0, 0.0));
         entry.0 += 1;
-        // Measure the SAME reranked path that recall / fix / MCP / hook use
-        // (`retrieve_rules_for_search`), not raw `retrieve_rules_with_confidence`.
-        // The raw path skips the lexical re-rank that lifts the right rule to
-        // rank 1, so it badly understated @1 (≈35% raw vs ≈85% reranked on the
-        // same corpus). `difflore eval` measures this identical path.
+        // Measure the same reranked path that recall/fix/MCP/hook use
+        // (`retrieve_rules_for_search`), not raw
+        // `retrieve_rules_with_confidence`: the raw path skips the lexical
+        // re-rank and badly understates @1 (≈35% raw vs ≈85% reranked).
         let Ok(scored) = retrieval::retrieve_rules_for_search(
             &index_pool,
             retrieval::RuleSearchRetrievalOptions {
@@ -136,9 +126,11 @@ pub(crate) async fn self_recall_section(pool: &difflore_core::SqlitePool, s: &mu
                 top_k: 5,
                 confidence_map: None,
                 age_days_map: None,
-                target_file: None,
+                effectiveness_map: None,
+                target_scope: None,
                 repo_scopes: &[],
                 ann_enabled: false,
+                local_query_embedding: false,
                 embedding_timeout: Some(SELF_RECALL_EMBEDDING_TIMEOUT),
                 cold_start_retry: false,
                 adaptive_prune: false,
@@ -148,7 +140,6 @@ pub(crate) async fn self_recall_section(pool: &difflore_core::SqlitePool, s: &mu
         else {
             continue;
         };
-        // One scan yields the rank for @1, @5, and MRR.
         if let Some(pos) = scored.iter().position(|sc| sc.skill_id == rule.id) {
             hits_at_5 += 1;
             entry.2 += 1;
@@ -214,8 +205,7 @@ pub(crate) async fn self_recall_section(pool: &difflore_core::SqlitePool, s: &mu
         "  (interpretation: recall sanity only; inspect search/recall `why:` + `source:` lines for precision)"
     );
 
-    // Per-language breakdown gated on enough samples + multi-language corpus
-    // so single-language repos don't get a redundant column.
+    // Skip the per-language breakdown for single-language repos.
     let known_langs_count = per_lang
         .iter()
         .filter(|(k, _)| k.as_str() != "(unknown)")
@@ -254,7 +244,8 @@ pub(crate) async fn self_recall_section(pool: &difflore_core::SqlitePool, s: &mu
             s,
             "  ⚠ low self-recall@5 — retrieval (not corpus) is likely the bottleneck. \
              Current mode may be lexical-only or missing real embeddings; \
-             `difflore cloud login` or `difflore embeddings setup` can enable semantic embeddings. \
+             managed or BYOK semantic embeddings may improve ranking: \
+             `difflore cloud login` or `difflore embeddings setup`. \
              Re-run this section to verify the lift on your own corpus."
         );
     } else if pct1 < 50.0 {
@@ -262,20 +253,14 @@ pub(crate) async fn self_recall_section(pool: &difflore_core::SqlitePool, s: &mu
             s,
             "  ⚠ self-recall@1 lags @5 — the right rule is in the top-5 but ranks below near-misses. \
              Semantic embeddings usually improve ranking quality, but the measured number above is the source of truth. \
-             `difflore cloud login` to enable, or `difflore embeddings setup` for BYOK."
+             Managed vectors start with `difflore cloud login`; BYOK vectors start with `difflore embeddings setup`."
         );
     }
 }
 
-/// Mean reciprocal rank over the `tested` self-recall samples.
-///
-/// `reciprocal_rank_sum` is the running sum of `1/rank` (1-based) for every
-/// sample whose own rule was returned in the top-K; a sample whose rule was
-/// not returned contributes 0. Dividing by `tested` (not by the hit count)
-/// lets misses drag MRR down, so it is a stricter ranking-quality signal
-/// than @1/@5: it separates a corpus that ranks the right rule first from
-/// one that merely lands it inside the top-5. Returns 0.0 when nothing was
-/// tested (no divide-by-zero).
+/// Mean reciprocal rank over the `tested` samples. Dividing by `tested`
+/// (not the hit count) lets misses drag MRR down. Returns 0.0 when nothing
+/// was tested.
 fn self_recall_mrr(reciprocal_rank_sum: f64, tested: usize) -> f64 {
     if tested == 0 {
         0.0
@@ -296,10 +281,10 @@ fn self_recall_mrr_mark(mrr: f64) -> &'static str {
     }
 }
 
-// Empty file_patterns is a recall-killing signature; keep a permanent counter.
+// Counts rules with empty file_patterns, a recall-killing signature.
 pub(super) async fn corpus_health_subsection(pool: &difflore_core::SqlitePool, s: &mut String) {
-    sw!(s, "\n## · Knowledge corpus\n");
-    match difflore_core::db::corpus_health(pool).await {
+    sw!(s, "\n## Local memory\n");
+    match difflore_core::infra::db::corpus_health(pool).await {
         Ok(h) => {
             sw!(s, "- total rules: {}", h.total);
             if !h.by_origin.is_empty() {
@@ -326,14 +311,14 @@ pub(super) async fn corpus_health_subsection(pool: &difflore_core::SqlitePool, s
             );
         }
         Err(e) => {
-            sw!(s, "- corpus probe failed: {e}");
+            sw!(s, "- local memory probe failed: {e}");
         }
     }
 }
 
-// SHA1 fallback embedder produces sims in 0.005–0.02 (looks broken even
-// when ranking is correct). Surface active mode so users correlate weak
-// numbers with this knob.
+// The SHA1 fallback embedder produces sims in 0.005–0.02 (looks broken
+// even when ranking is correct), so surface the active mode to explain
+// weak numbers.
 pub(super) async fn embedder_status_subsection(s: &mut String) {
     embedder_status_subsection_for(
         s,
@@ -348,11 +333,8 @@ fn embedder_status_subsection_for(
     use difflore_core::context::embedding::ActiveEmbedderKind;
 
     match embedder {
-        ActiveEmbedderKind::Cloud { model, dim } => {
-            sw!(
-                s,
-                "- embedder: ✓ cloud-managed configured ({model}, {dim} dims)"
-            );
+        ActiveEmbedderKind::Cloud => {
+            sw!(s, "- embedder: ✓ cloud-managed configured");
             sw!(
                 s,
                 "  (configured mode follows DiffLore's cloud-first embedding priority. \
@@ -383,17 +365,16 @@ fn embedder_status_subsection_for(
                 "  (offline hybrid: local hash + FTS5 BM25. This is deterministic and local, \
                  but less semantic than cloud-managed or BYOK embeddings. \
                  Use the Self-recall section above to measure this corpus; \
-                 `difflore cloud login` or `difflore embeddings setup` can enable semantic embeddings.)"
+                 managed vectors start with `difflore cloud login`; BYOK vectors start with `difflore embeddings setup`.)"
             );
         }
     }
 }
 
-// The active embedder is what *would* be used for new embeds; the index DB
-// records the profile rules were *actually* embedded under. A mismatch (e.g.
-// rules embedded local-lexical, now on cloud — or vice versa) silently
-// disables the vector lane and forces FTS-only retrieval. Surface both so a
-// triage reader correlates weak recall with a stale index, not the corpus.
+// The active embedder is what new embeds would use; the index DB records
+// the profile rules were actually embedded under. A mismatch silently
+// disables the vector lane and forces FTS-only retrieval, so surface both
+// to attribute weak recall to a stale index rather than the corpus.
 pub(super) async fn embedding_profile_match_subsection(s: &mut String) {
     use difflore_core::context::{gather_embedding_diagnostics_with_activity, index_db};
 
@@ -419,7 +400,14 @@ fn embedding_profile_match_subsection_for(
         .index_profile
         .as_deref()
         .unwrap_or("(none — no rules embedded yet)");
-    let match_mark = if diag.profile_match { "✓" } else { "⚠" };
+    let local_agent_index = diag.is_local_agent_index();
+    let match_mark = if diag.profile_match {
+        "✓"
+    } else if local_agent_index {
+        "·"
+    } else {
+        "⚠"
+    };
     sw!(s, "- active embedding profile: `{}`", diag.active_profile);
     sw!(s, "- index embedding profile: `{index_profile}`");
     sw!(
@@ -427,10 +415,19 @@ fn embedding_profile_match_subsection_for(
         "- profile match: {match_mark} {}",
         if diag.profile_match {
             "yes (index embedded under the active profile)"
+        } else if local_agent_index {
+            "local-agent index (MCP/hooks use local query embeddings by design)"
         } else {
             "no (index was embedded under a different profile)"
         }
     );
+    if local_agent_index {
+        sw!(
+            s,
+            "- agent recall: MCP/hooks use the local index/local query embedding path; CLI recall/search/fix refresh provider-backed semantic vectors when they run"
+        );
+        return;
+    }
     if diag.degraded {
         let reason = diag
             .degraded_reason
@@ -475,9 +472,7 @@ mod tests {
 
     #[test]
     fn self_recall_mrr_handles_empty_and_known_sums() {
-        // No samples → 0.0 with no divide-by-zero.
         assert!(self_recall_mrr(0.0, 0).abs() < 1e-9);
-        // Three rank-1 hits → MRR 1.0.
         assert!((self_recall_mrr(3.0, 3) - 1.0).abs() < 1e-9);
         // Ranks 1, 2, and a miss over 3 samples → (1 + 0.5 + 0) / 3 = 0.5.
         assert!((self_recall_mrr(1.5, 3) - 0.5).abs() < 1e-9);
@@ -496,13 +491,7 @@ mod tests {
     #[test]
     fn embedder_status_reports_cloud_configured_without_claiming_reachability() {
         let mut out = String::new();
-        embedder_status_subsection_for(
-            &mut out,
-            &ActiveEmbedderKind::Cloud {
-                model: "text-embedding-3-small".to_owned(),
-                dim: 1536,
-            },
-        );
+        embedder_status_subsection_for(&mut out, &ActiveEmbedderKind::Cloud);
 
         assert!(out.contains("cloud-managed configured"), "{out}");
         assert!(
@@ -603,6 +592,31 @@ mod tests {
         assert!(out.contains("profile_mismatch"), "{out}");
         assert!(out.contains("semantic search can run"), "{out}");
         assert!(!out.contains("FTS-only"), "{out}");
+    }
+
+    #[test]
+    fn embedding_profile_match_explains_expected_local_agent_index() {
+        let mut out = String::new();
+        embedding_profile_match_subsection_for(
+            &mut out,
+            &EmbeddingDiagnostics {
+                active_profile: "cloud:managed".to_owned(),
+                index_profile: Some("sha1:local:128".to_owned()),
+                profile_match: false,
+                degraded: false,
+                degraded_reason: Some("local_agent_index".to_owned()),
+                vector_lane_available: true,
+            },
+        );
+
+        assert!(out.contains("profile match: · local-agent index"), "{out}");
+        assert!(
+            out.contains("MCP/hooks use the local index/local query embedding path"),
+            "{out}"
+        );
+        assert!(!out.contains("WARNING"), "{out}");
+        assert!(!out.contains("ERROR"), "{out}");
+        assert!(!out.contains("restore the vector lane"), "{out}");
     }
 
     #[test]

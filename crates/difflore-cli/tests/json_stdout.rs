@@ -48,8 +48,7 @@ fn yes_json_command_writes_only_parseable_json_to_stdout() {
 }
 
 fn run_git<const N: usize>(cwd: &std::path::Path, args: [&str; N]) {
-    let output = Command::new("git")
-        .current_dir(cwd)
+    let output = difflore_core::infra::git::git_command(cwd)
         .args(args)
         .output()
         .expect("run git");

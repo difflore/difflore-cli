@@ -1,13 +1,12 @@
 #![allow(clippy::unwrap_used)]
 #![allow(unsafe_code)]
-// Informal benchmark for the W3.4 ANN path. Not wired into `cargo bench`
-// (no criterion dep); run with:
+// Synthetic local micro-benchmark for the ANN path. Not wired into
+// `cargo bench` (no criterion dep); run with:
 //   cargo test -p difflore-core --release --test ann_bench -- --nocapture --ignored
 //
-// This file is `#[ignore = "manual benchmark; run with --ignored"]` by default so it doesn't weigh down the
-// regular test matrix. It prints timings for both the HNSW path and a
-// hand-rolled linear cosine scan on the same corpus so we can see the
-// speedup at 1K and 10K chunks.
+// Ignored by default so it doesn't weigh down the regular test matrix. Uses
+// random vectors in one process and compares the HNSW path with a hand-rolled
+// linear cosine scan on the same corpus. This is not a product benchmark.
 use difflore_core::context::ann::AnnIndex;
 use std::time::Instant;
 
@@ -83,7 +82,7 @@ async fn bench_size(n: usize, dim: usize) {
 
     if ann_us_avg > 0 {
         let ratio = lin_us_avg as f64 / ann_us_avg as f64;
-        println!("Speedup: {ratio:.2}x");
+        println!("ANN/linear ratio: {ratio:.2}x");
     }
 
     unsafe {

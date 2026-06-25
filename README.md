@@ -4,102 +4,93 @@
 [![Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-stdio-green.svg)](https://modelcontextprotocol.io)
 
-DiffLore is an open-source CLI that turns past GitHub PR review comments into
-local memory for AI coding agents.
+DiffLore is an open-source CLI that turns past PR/MR review feedback into
+source-backed local rules for AI coding agents.
 
-It imports review feedback your team already wrote, stores the resulting rules
-in local SQLite, and serves the relevant ones to agents through MCP, installed
-hooks, or the CLI.
+It imports review history, stores rules in local SQLite, and serves relevant
+rules through MCP, hooks, and CLI commands before an agent edits code.
+
+## Install
+
+macOS/Linux:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/difflore/difflore-cli/releases/latest/download/difflore-cli-installer.sh | sh
+curl -fsSL https://difflore.dev/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/difflore/difflore-cli/releases/latest/download/difflore-cli-installer.ps1 | iex"
+irm https://difflore.dev/install.ps1 | iex
 ```
 
-Other install paths:
+Update later:
 
 ```bash
-brew install difflore/tap/difflore
-cargo install difflore-cli
-cargo install --git https://github.com/difflore/difflore-cli difflore-cli # unreleased main
+difflore update
 ```
 
-Prerequisites for importing PR reviews: `git` and GitHub CLI `gh`.
-Run `gh auth login` once before importing PR reviews.
+GitHub import needs `git` and `gh auth login`. GitLab import uses a stored PAT:
+
+```bash
+echo "<TOKEN>" | difflore auth gitlab
+```
 
 ## Quickstart
 
-Run the bundled demo without touching a repo:
+Try the demo:
 
 ```bash
 difflore try
 ```
 
-Use it in a GitHub repo:
+Use it in a repo:
 
 ```bash
 cd your-repo
 difflore init
 difflore import-reviews --dry-run
 difflore import-reviews
-difflore recall --diff
 difflore agents install
-```
-
-After setup, your agent can ask DiffLore for review memory before it edits a
-file. You can also preview or apply rule-aware local fixes:
-
-```bash
-difflore fix --preview
+difflore status
+difflore recall --diff
 ```
 
 DiffLore never commits, pushes, opens PRs, or posts GitHub comments.
 
-<p align="center"><img src="assets/demo.svg" alt="DiffLore terminal demo" /></p>
-
-## Common Commands
+## Commands
 
 | Command | Purpose |
-|---|---|
-| `difflore try` | Run the zero-setup demo |
-| `difflore init` | Set up DiffLore for the current repo |
-| `difflore import-reviews` | Import GitHub PR review history |
-| `difflore recall --diff` | Preview memories for the current diff |
-| `difflore fix --preview` | Preview rule-aware local fixes |
-| `difflore status` | Show local memory health and next steps |
-| `difflore agents install` | Wire supported local agents |
-| `difflore doctor --report` | Write a diagnostic report |
+| --- | --- |
+| `difflore try` | Run the demo |
+| `difflore init` | Set up the current repo |
+| `difflore import-reviews` | Import GitHub PR or GitLab MR review history |
+| `difflore agents install` | Wire DiffLore into local agents |
+| `difflore status` | Show readiness and the next command |
+| `difflore memory` | Inspect local rules, drafts, queues, and autopilot state |
+| `difflore memory review` | Review pending local memory |
+| `difflore recall --diff` | Retrieve matching rules for the current diff |
+| `difflore review --diff all` | Review the current diff without modifying files |
+| `difflore fix` | Apply rule-aware local fixes |
+| `difflore capabilities --json` | Print the machine-readable CLI/MCP contract |
 
 Run `difflore --help` for the full command list.
 
-## Local First
+## Agents
 
-The default path is one Rust binary plus local SQLite. No cloud account is
-needed.
+`difflore agents install` configures MCP and hooks for supported local agents.
+Run `difflore agents status` to inspect the current machine.
 
-Data leaves your laptop only when you opt in. The local CLI does not require a
-cloud account.
+Local AI CLI calls that need an LLM backend use `gate4agent`.
 
-- `difflore cloud ...` commands are for optional team workflows.
-- `difflore embeddings setup` can use your own OpenAI-compatible embedding key
-  for semantic recall.
-- `difflore import-reviews --upload` uploads imported review data instead of
-  keeping the import local.
+## Data
 
-If cloud or embeddings are unavailable, local keyword and file-pattern recall
-still works.
+DiffLore is local-first:
 
-## Supported Agents
-
-`difflore agents install` can wire DiffLore into supported local agents such as
-Claude Code, Cursor, Gemini CLI, Windsurf, and MCP-capable CLIs. Run
-`difflore agents status` for the current list on your machine.
+- Rules and activity are stored in local SQLite by default.
+- Cloud sync is optional and explicit through `difflore cloud ...`.
+- MCP is for agent context, retrieval, explanation, and proposals.
+- Approval, rejection, sync, auth, provider setup, and file mutation stay in the CLI.
 
 ## Development
 
@@ -109,22 +100,11 @@ cargo check -p difflore-cli
 cargo test -p difflore-cli
 ```
 
-Merging to `main` does not publish a release. Maintainers publish from a
-release commit by bumping crate versions and `CHANGELOG.md`, then pushing a
-`vX.Y.Z` tag.
-
-On a release tag, GitHub Actions builds GitHub Release artifacts and publishes
-the Homebrew formula. The independent `Publish crates` workflow publishes
-crates.io packages in dependency order, or skips versions that are already
-published. For the first crates.io release, publish the crates manually once or
-temporarily add `CARGO_REGISTRY_TOKEN`; after that, use crates.io Trusted
-Publishing and remove long-lived tokens.
-
-Issues and PRs are welcome. Do not include secrets, private PR text, or
-private code in examples.
+Issues and PRs are welcome. Do not include secrets, private PR text, or private
+code in examples.
 
 For suspected vulnerabilities, email **hello@difflore.dev** instead of opening
-a public issue.
+a public issue. See [SECURITY.md](SECURITY.md).
 
 ## License
 

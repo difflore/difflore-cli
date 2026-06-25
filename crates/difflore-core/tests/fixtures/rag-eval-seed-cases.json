@@ -1,7 +1,7 @@
 {
   "version": 1,
   "status": "seed_fixture",
-  "placementDecision": "The canonical multi-repo RAG harness lives in ../difflore-test-e2e so it can reuse real fork corpora without bloating this OSS runtime repository. This file is the committed smoke fixture: small, stable, and copied into the external harness as the minimum contract.",
+  "placementDecision": "This committed smoke fixture is the minimum offline retrieval contract. Broader evals live outside this repository.",
   "rules": [
     {
       "id": "seed/gin-body-limit-413",

@@ -1,15 +1,16 @@
-use difflore_core::models::RememberRuleInput;
-use difflore_core::reviews::{ReviewCommentRecord, ReviewItemWithComments};
+use difflore_core::domain::models::RememberRuleInput;
+use difflore_core::infra::git::RepoScope;
+use difflore_core::review_store::{ReviewCommentRecord, ReviewItemWithComments};
 use sqlx::SqlitePool;
 
-use crate::commands::review_text::strip_review_markdown_noise;
-use crate::commands::util::exit_err;
 use crate::style;
+use crate::support::review_text::strip_review_markdown_noise;
+use crate::support::util::exit_err;
 
 use super::ValidatedArgs;
 use super::scope::{
-    candidate_scope_paths, file_pattern_from_path, file_patterns_from_path,
-    is_import_review_noise_line, is_review_table_wrapper_line, repo_wide_file_pattern_from_path,
+    candidate_scope_paths, file_patterns_from_path, is_import_review_noise_line,
+    is_review_table_wrapper_line, repo_wide_file_pattern_from_path,
 };
 
 /// Floor for the auto-scaling local memory budget.
@@ -18,24 +19,18 @@ const LOCAL_CANDIDATE_RELATED_FILES_BODY_LIMIT: usize = 12;
 const FALLBACK_REVIEW_DIRECTIVE: &str =
     "capture the repeatable review judgement before accepting this candidate";
 
-// ── Correctness-aware capture confidence ────────────────────────────────────
-//
 // Each surviving high-signal comment is scored on [0.0, 1.0] from a handful
 // of features (directive strength, adoption proxy = resolved thread,
 // reaction approval, later-reply contradiction, bot authorship). The score
-// drives a 3-way route instead of the old "human directive → always active"
-// rule:
+// drives a 3-way route:
 //   * `>= HIGH` → promote to active immediately.
 //   * `[LOW, HIGH)` → leave as a `status='pending'` candidate for review.
 //   * `< LOW`  → drop (don't even draft a candidate).
-// Thresholds are conservative and named so they can be tuned without
-// hunting through the scoring body.
 
 /// At/above this, a captured review memory is auto-activated.
 pub(super) const CAPTURE_CONFIDENCE_HIGH: f32 = 0.62;
 /// Below this, the comment is dropped entirely (too weak/contradicted).
 pub(super) const CAPTURE_CONFIDENCE_LOW: f32 = 0.40;
-
 /// Baseline confidence a comment earns just by clearing the existing
 /// content gate (a real human-or-bot directive sentence, score >= 4).
 /// Tuned so a bare strong directive with no adoption/approval signal lands
@@ -48,16 +43,10 @@ const CAPTURE_BONUS_RESOLVED: f32 = 0.20;
 /// Net-positive reactions (👍 outweighs 👎, or any approval with no
 /// pushback) nudge confidence up.
 const CAPTURE_BONUS_APPROVAL: f32 = 0.10;
-/// Net-negative reactions (👎 strictly outweighs 👍) are a community
-/// *disapproval* signal — the reviewers reacting to the comment voted it
-/// down. Unlike the bonus's mirror, this is a real correctness signal we
-/// must NOT let pass inert: a single down-react on an otherwise strong,
-/// resolved directive shouldn't sink it (the guard requires a *majority*,
-/// not a lone 👎), but a clear net-negative should withhold auto-activation.
-/// Sized so a resolved-but-disapproved directive drops from active into the
-/// pending band (0.50 + 0.20 − 0.15 = 0.55, ≥ LOW so it is reviewed, not
-/// silently dropped), while a bare disapproved directive with no adoption
-/// proxy falls below LOW (0.50 − 0.15 = 0.35) and is dropped as noise.
+/// Net-negative reactions (👎 strictly outweighs 👍) withhold auto-activation.
+/// Sized so a resolved-but-disapproved directive drops into the pending band
+/// (0.50 + 0.20 − 0.15 = 0.55, still ≥ LOW so it is reviewed) while a bare
+/// disapproved directive falls below LOW (0.50 − 0.15 = 0.35) and is dropped.
 const CAPTURE_PENALTY_DISAPPROVAL: f32 = 0.15;
 /// A later reply in the same thread retracting the suggestion ("actually
 /// no", "nvm", "disregard", …) is a strong negative — push below LOW so a
@@ -83,7 +72,23 @@ pub(super) struct LocalCandidateProgress {
     /// Of `candidates_created`, those left as `status='pending'` drafts
     /// because their confidence landed in the medium band.
     pub(super) candidates_pending: usize,
+    /// Comments that distilled to a candidate signature already handled during
+    /// this import run. These are skipped before touching the store, so they do
+    /// not strengthen an existing memory.
+    pub(super) candidates_duplicate_in_run: usize,
+    /// Store-level dedupe into an existing pending memory. This strengthens the
+    /// stored memory instead of writing a duplicate row.
     pub(super) candidates_deduped: usize,
+    /// Re-imported comments whose content already exists as an `active` rule
+    /// (a previously promoted import seen again). Deduped into the approved
+    /// rule WITHOUT strengthening it, so it is tracked apart from
+    /// `candidates_deduped` (which does bump confidence) to avoid reporting an
+    /// untouched rule as "strengthened".
+    pub(super) candidates_matched_active: usize,
+    /// Comments whose re-derived candidate matches a `rejected_signatures`
+    /// tombstone (the user already rejected this exact content). Suppressed
+    /// rather than re-created so an import can't resurrect a rejected draft.
+    pub(super) candidates_suppressed_rejected: u64,
     pub(super) budget: usize,
     pub(super) comments_skipped: usize,
     pub(super) capped: bool,
@@ -157,14 +162,31 @@ fn is_ai_review_summary_noise(lower: &str) -> bool {
         &[
             "coderabbit",
             "code rabbit",
+            // Greptile PR-level summary blocks: header, per-PR confidence
+            // score, and the "Important Files Changed" table. None are reusable
+            // coding conventions; the per-finding inline comments survive.
+            "greptile summary",
+            "confidence score",
+            "important files changed",
             "pull request overview",
             "pr overview",
+            "pr summary",
             "walkthrough",
             "automated review",
             "review skipped",
             "actionable comments posted",
+            "updates since last review",
         ],
     )
+}
+
+/// Instructions addressed to the AI reviewer itself (echoed from `.greptile`
+/// or bot configuration), not coding conventions for the agent. e.g.
+/// "If you propose a fix, please make it concise".
+fn is_reviewer_meta_instruction(lower: &str) -> bool {
+    lower.contains("if you propose a fix")
+        || lower.contains("when reviewing this pr")
+        || lower.contains("as an ai reviewer")
 }
 
 fn is_dependency_maintenance_noise(lower: &str) -> bool {
@@ -288,6 +310,7 @@ fn is_import_review_noise_comment(clean: &str) -> bool {
         || is_acknowledgement_noise(&lower)
         || is_pr_process_noise(&lower)
         || is_weak_question_noise(&lower)
+        || is_reviewer_meta_instruction(&lower)
 }
 
 pub(super) fn is_high_signal_review_comment_for_paths(
@@ -769,16 +792,12 @@ pub(super) fn distilled_rule_statement(content: &str, path: &str) -> String {
     distilled_rule_statement_from_directive(&directive, path)
 }
 
-pub(super) fn distilled_rule_statement_from_directive(directive: &str, path: &str) -> String {
-    let scope = file_pattern_from_path(path).unwrap_or_else(|| {
-        let trimmed = path.trim();
-        if trimmed.is_empty() {
-            "this pattern".to_owned()
-        } else {
-            trimmed.replace('\\', "/")
-        }
-    });
-    format!("When touching `{scope}`, {directive}.")
+pub(super) fn distilled_rule_statement_from_directive(directive: &str, _path: &str) -> String {
+    let statement = directive.trim().trim_end_matches(['.', '!', '?']).trim();
+    if statement.is_empty() {
+        return format!("{FALLBACK_REVIEW_DIRECTIVE}.");
+    }
+    format!("{}.", upper_first_ascii(statement))
 }
 
 fn review_directive(content: &str) -> String {
@@ -955,10 +974,9 @@ fn is_pr_author_response(item: &ReviewItemWithComments, comment: &ReviewCommentR
     pr_author.eq_ignore_ascii_case(comment_author)
 }
 
-/// Whether a comment author name looks like an automated reviewer/bot.
-/// This is NO LONGER a veto — `local_candidate_input` feeds it in as a
-/// small NEGATIVE confidence feature so a bot can still pass on strong,
-/// adopted content (e.g. a specific CodeRabbit directive that was applied).
+/// Whether a comment author name looks like an automated reviewer/bot. Used as
+/// a small negative confidence feature (not a veto), so a bot can still pass on
+/// strong, adopted content.
 fn is_bot_author(author: Option<&str>) -> bool {
     let Some(author) = author.map(str::trim).filter(|s| !s.is_empty()) else {
         return false;
@@ -976,7 +994,7 @@ fn is_bot_author(author: Option<&str>) -> bool {
 }
 
 /// Correctness/durability signal recovered from a comment's metadata JSON
-/// (written by `github_import`). Every field degrades to neutral when the
+/// (written by `ingest::github`). Every field degrades to neutral when the
 /// key is absent so pre-signal imports (and older API shapes) score the
 /// same as a comment that genuinely had no signal.
 #[derive(Debug, Default)]
@@ -1063,17 +1081,11 @@ fn capture_confidence(
     if signal.resolved {
         score += CAPTURE_BONUS_RESOLVED;
     }
-    // Approval / disapproval: keyed on the net thumbs balance among recorded
-    // reactions. Both branches guard on `reactions_total > 0` so a malformed
-    // signal with phantom thumbs but no actual reactions can mint neither.
-    //   * net-positive (👍 > 👎) → approval bonus.
-    //   * net-negative (👎 > 👍) → disapproval penalty. This is NOT a hard
-    //     veto: a single down-react on a strong, resolved directive must not
-    //     sink it, so we require a strict majority (a lone 👎 against a 👍, or
-    //     a tie, yields neither bonus nor penalty). A clear net-negative is a
-    //     real correctness signal, so it must lower confidence rather than
-    //     pass inert — otherwise a community-downvoted-but-resolved directive
-    //     would auto-activate identically to an unopposed one.
+    // Approval / disapproval keyed on the net thumbs balance. Both branches
+    // guard on `reactions_total > 0` so phantom thumbs with no actual reactions
+    // mint neither. A strict majority is required (a lone 👎 or a tie yields
+    // nothing), so a single down-react can't sink a strong resolved directive,
+    // but a clear net-negative still lowers confidence rather than pass inert.
     if signal.reactions_total > 0 {
         if signal.thumbs_up > signal.thumbs_down && signal.thumbs_up > 0 {
             score += CAPTURE_BONUS_APPROVAL;
@@ -1121,16 +1133,15 @@ pub(super) struct LocalCandidate {
 pub(super) fn local_candidate_input(
     item: &ReviewItemWithComments,
     comment: &ReviewCommentRecord,
-    source_repo: &str,
+    source_repo: &RepoScope,
 ) -> Option<LocalCandidate> {
+    let source_repo = source_repo.as_str();
     if is_pr_author_response(item, comment) {
         return None;
     }
-    // NOTE: bot authorship is no longer a blanket veto. It is folded into the
-    // capture-confidence score below as a small negative feature so a bot can
-    // still pass on strong, adopted content. The CONTENT noise pre-filters
-    // (coverage reports, AI summaries, acknowledgements, weak questions,
-    // praise) below still drop genuine noise regardless of source.
+    // Bot authorship is folded into the capture-confidence score below as a
+    // small negative feature rather than a veto. The CONTENT noise pre-filters
+    // below still drop genuine noise regardless of source.
     if is_platform_review_wrapper_comment(&comment.content) {
         return None;
     }
@@ -1201,26 +1212,43 @@ pub(super) fn local_candidate_input(
         .item
         .repo_full_name
         .as_deref()
-        .is_some_and(|repo| !repo.eq_ignore_ascii_case(source_repo));
+        .and_then(|repo| candidate_repo_scope_for_comparison(repo, source_repo))
+        .is_some_and(|repo| repo.as_str() != source_repo);
     let file_patterns = candidate_file_patterns(&scope_paths, widen_for_upstream);
     // Pre-persist secret barrier: the title and body carry reviewer-quoted
     // prose / code snippets that may contain a leaked credential. Scrub it
     // BEFORE the candidate is written to the local SQLite skills store (and
     // lazily embedded), mirroring the cloud's pre-persist `redactSecrets`.
     let input = RememberRuleInput {
-        title: difflore_core::privacy::redact_secrets(&candidate_title(&comment.content, &path)),
-        body: difflore_core::privacy::redact_secrets(&body),
+        title: difflore_core::observability::privacy::redact_secrets(&candidate_title(
+            &comment.content,
+            &path,
+        )),
+        body: difflore_core::observability::privacy::redact_secrets(&body),
         file_patterns,
         bad_code: None,
         good_code: None,
         severity: Some("medium".to_owned()),
+        kind: None,
+        category: None,
         origin: Some("pr_review".to_owned()),
+        captured_by_client: Some("import-reviews".to_owned()),
     };
     Some(LocalCandidate {
         input,
         confidence,
         route,
     })
+}
+
+fn candidate_repo_scope_for_comparison(repo: &str, source_repo: &str) -> Option<RepoScope> {
+    if let Some((host, _)) = source_repo.split_once('/')
+        && host.contains('.')
+        && let Some(scope) = RepoScope::gitlab(host, repo)
+    {
+        return Some(scope);
+    }
+    RepoScope::canonical(repo)
 }
 
 fn candidate_file_patterns(
@@ -1254,36 +1282,22 @@ fn candidate_file_patterns(
     (!patterns.is_empty()).then_some(patterns)
 }
 
-async fn attach_candidate_repo_scope(
-    db: &SqlitePool,
-    skill_id: &str,
-    repo: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query!(
-        "UPDATE skills SET source_repo = ?1 WHERE id = ?2",
-        repo,
-        skill_id,
-    )
-    .execute(db)
-    .await?;
-    Ok(())
-}
-
 pub(super) async fn run_local_candidates(
     db: &SqlitePool,
+    source: &str,
     repo: &str,
-    source_repo: &str,
+    source_repo: &RepoScope,
     max_candidates: usize,
     pr_numbers: &[i32],
     exclude_prs: &std::collections::HashSet<i32>,
 ) -> LocalCandidateProgress {
-    use difflore_core::reviews;
+    use difflore_core::review_store;
     use std::collections::HashSet;
 
-    let items = match reviews::list_by_source_with_comments(
+    let items = match review_store::list_by_source_with_comments(
         db,
-        reviews::ReviewSourceInput {
-            source: "github".into(),
+        review_store::ReviewSourceInput {
+            source: source.into(),
         },
     )
     .await
@@ -1330,27 +1344,50 @@ pub(super) async fn run_local_candidates(
                 continue;
             };
             let signature = local_candidate_dedupe_signature(&input);
-            if !seen_candidate_signatures.insert(signature) {
-                progress.candidates_deduped += 1;
+            // Honour rejection tombstones BEFORE claiming the in-run dedupe
+            // signature. A rejected comment must be skipped WITHOUT consuming
+            // its signature: otherwise a later comment that distills to the
+            // same rule but carries different (non-rejected) source evidence
+            // would be dropped as an in-run duplicate, making whether valid
+            // re-evidence survives depend on comment order. The content-hash
+            // dedup in `remember_inner` only matches *surviving* pending rows,
+            // so a rejected (deleted) draft would otherwise be re-created here.
+            match difflore_core::skills::is_rejected_signature(db, &input).await {
+                Ok(true) => {
+                    progress.candidates_suppressed_rejected += 1;
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    exit_err(&format!("failed to check rejection tombstone: {e}"));
+                }
+            }
+            if seen_candidate_signatures.contains(&signature) {
+                progress.candidates_duplicate_in_run += 1;
                 continue;
             }
+            seen_candidate_signatures.insert(signature);
             // Seed the draft with the gate's capture confidence instead of the
             // flat conversation default, then route: HIGH → promote to active,
             // MEDIUM → leave as a pending candidate for review.
-            match difflore_core::skills::remember_as_candidate_with_confidence(
-                db, input, confidence,
+            match difflore_core::skills::remember_as_candidate_with_confidence_for_repo(
+                db,
+                input,
+                confidence,
+                source_repo,
             )
             .await
             {
                 Ok(outcome) => {
                     if outcome.deduped {
-                        progress.candidates_deduped += 1;
-                    } else {
-                        if let Err(e) =
-                            attach_candidate_repo_scope(db, &outcome.skill.id, repo).await
-                        {
-                            exit_err(&format!("failed to attach local memory to repo: {e}"));
+                        if outcome.matched_existing_active {
+                            // Re-import of an already-approved rule: collapsed
+                            // into the active rule, left untouched (no bump).
+                            progress.candidates_matched_active += 1;
+                        } else {
+                            progress.candidates_deduped += 1;
                         }
+                    } else {
                         match route {
                             CaptureRoute::Active => {
                                 if let Err(e) =
@@ -1383,7 +1420,7 @@ pub(super) async fn run_local_candidates(
     progress
 }
 
-fn local_candidate_dedupe_signature(input: &RememberRuleInput) -> String {
+pub(super) fn local_candidate_dedupe_signature(input: &RememberRuleInput) -> String {
     let rule_statement = input
         .body
         .split("\n\nSource evidence:")
@@ -1406,37 +1443,62 @@ fn normalize_candidate_signature_part(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress) {
+pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress, repo: &str) {
     println!();
-    if progress.candidates_created == 0 && progress.candidates_deduped == 0 {
+    if progress.candidates_created == 0
+        && progress.candidates_deduped == 0
+        && progress.candidates_duplicate_in_run == 0
+        && progress.candidates_matched_active == 0
+    {
+        // Nothing landed AND nothing matched an existing rule. If the only
+        // reason is that every match was a previously-rejected suggestion,
+        // say so plainly rather than nudging the user to widen/upload —
+        // the import worked, it just honored their earlier rejections.
+        if progress.candidates_suppressed_rejected > 0 {
+            println!(
+                "  {} No new local rules — {} previously-rejected suggestion{} skipped.",
+                style::emerald(style::sym::OK),
+                progress.candidates_suppressed_rejected,
+                if progress.candidates_suppressed_rejected == 1 {
+                    ""
+                } else {
+                    "s"
+                },
+            );
+            return;
+        }
         println!(
-            "  {} No local memories created from the imported comments.",
+            "  {} No local rules created from the imported comments.",
             style::pewter(style::sym::BULLET),
         );
-        println!(
-            "  {} Try a larger import window, or use cloud extraction for deeper pattern mining: {}",
+        style::println_wrapped(&format!(
+            "  {} Try a larger import window, or upload reviews so DiffLore can find deeper team patterns.",
             style::pewter(style::sym::BULLET),
-            style::cmd("difflore import-reviews --upload"),
-        );
+        ));
+        println!("    {}", style::cmd("difflore import-reviews --upload"));
+        style::println_wrapped(&format!(
+            "  {} Or see recall fire on a bundled sample in seconds: {}",
+            style::pewter(style::sym::BULLET),
+            style::cmd("difflore try"),
+        ));
         return;
     }
 
     if progress.candidates_created == 0 {
         println!(
-            "  {} No new local review memories created; {} matching existing memor{} strengthened ({} skipped; budget {}).",
+            "  {} No new local review memories created.",
             style::emerald(style::sym::OK),
-            progress.candidates_deduped,
-            if progress.candidates_deduped == 1 {
-                "y"
-            } else {
-                "ies"
-            },
-            progress.comments_skipped,
-            progress.budget,
         );
+        if progress.candidates_deduped > 0 {
+            println!(
+                "  {} strengthened existing memories: {}",
+                style::pewter(style::sym::BULLET),
+                progress.candidates_deduped,
+            );
+        }
     } else {
         println!(
-            "  {} Created {} local review memor{} ({} active, {} pending review; {} deduped, {} skipped; budget {}).",
+            "  {} Created {} local review memor{}.",
             style::emerald(style::sym::OK),
             progress.candidates_created,
             if progress.candidates_created == 1 {
@@ -1444,75 +1506,353 @@ pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress
             } else {
                 "ies"
             },
+        );
+        println!(
+            "  +{} local memory write{} ({} active, {} pending, {} strengthened).",
+            progress.candidates_created,
+            if progress.candidates_created == 1 {
+                ""
+            } else {
+                "s"
+            },
             progress.candidates_activated,
             progress.candidates_pending,
             progress.candidates_deduped,
-            progress.comments_skipped,
-            progress.budget,
+        );
+        println!(
+            "  {} active: {}",
+            style::pewter(style::sym::BULLET),
+            progress.candidates_activated,
+        );
+        if progress.candidates_activated > 0 {
+            style::println_wrapped(&format!(
+                "    already guiding agents for {}.",
+                style::pewter(repo),
+            ));
+        }
+        println!(
+            "  {} pending review: {}",
+            style::pewter(style::sym::BULLET),
+            progress.candidates_pending,
+        );
+        if progress.candidates_pending > 0 {
+            style::println_wrapped("    waiting for you or an agent to inspect before activation.");
+        }
+        println!(
+            "  {} strengthened: {}",
+            style::pewter(style::sym::BULLET),
+            progress.candidates_deduped,
         );
     }
-    if progress.candidates_pending > 0 {
-        // Review held-back drafts with `difflore status`. Drafts auto-activate
-        // after enough adoption signal; there is no manual per-id accept command.
-        let (prefix, command, suffix) = pending_drafts_review_hint(progress.candidates_pending);
+    if progress.candidates_duplicate_in_run > 0 {
         println!(
+            "  {} in-run duplicate comments: {}",
+            style::pewter(style::sym::BULLET),
+            progress.candidates_duplicate_in_run,
+        );
+    }
+    println!(
+        "  {} skipped comments: {}",
+        style::pewter(style::sym::BULLET),
+        progress.comments_skipped,
+    );
+    println!(
+        "  {} local budget: {}",
+        style::pewter(style::sym::BULLET),
+        progress.budget,
+    );
+    if progress.candidates_pending > 0 {
+        let (prefix, command, suffix) = pending_drafts_review_hint(progress.candidates_pending);
+        style::println_wrapped(&format!(
             "  {} {prefix}{}{suffix}",
             style::pewter(style::sym::BULLET),
-            style::cmd(command),
-        );
+            style::cmd(&command),
+        ));
     }
     if progress.candidates_deduped > 0 {
-        println!(
-            "  {} deduped means matching existing memories were strengthened instead of repeated.",
+        style::println_wrapped(&format!(
+            "  {} strengthened means matching existing memories were reinforced instead of repeated.",
             style::pewter(style::sym::BULLET),
-        );
+        ));
+    }
+    if progress.candidates_duplicate_in_run > 0 {
+        style::println_wrapped(&format!(
+            "  {} in-run duplicates matched a candidate already handled in this import and were skipped before touching the store.",
+            style::pewter(style::sym::BULLET),
+        ));
+    }
+    if progress.candidates_matched_active > 0 {
+        style::println_wrapped(&format!(
+            "  {} {} already-active rule{} matched again — left unchanged, not strengthened.",
+            style::pewter(style::sym::BULLET),
+            progress.candidates_matched_active,
+            if progress.candidates_matched_active == 1 {
+                ""
+            } else {
+                "s"
+            },
+        ));
+    }
+    if progress.candidates_suppressed_rejected > 0 {
+        style::println_wrapped(&format!(
+            "  {} {} previously-rejected suggestion{} skipped.",
+            style::pewter(style::sym::BULLET),
+            progress.candidates_suppressed_rejected,
+            if progress.candidates_suppressed_rejected == 1 {
+                ""
+            } else {
+                "s"
+            },
+        ));
     }
     if progress.capped {
-        println!(
-            "  {} hit the local memory budget — raise {} or import targeted PRs with {}.",
+        style::println_wrapped(&format!(
+            "  {} hit the local memory budget.",
             style::pewter(style::sym::BULLET),
+        ));
+        style::println_wrapped(&format!(
+            "    Raise {} or import targeted PRs with {}.",
             style::cmd("--max-prs <N>"),
             style::cmd("--pr <NUMBER>"),
-        );
+        ));
     }
     println!();
-    println!(
-        "  {} Agents can use this memory now:",
-        style::emerald(style::sym::TIP),
-    );
-    for cmd in local_candidate_next_step_commands() {
-        println!("    {}", style::cmd(cmd));
+    if progress.candidates_activated > 0 {
+        println!(
+            "  {} Agents can use approved local memory now:",
+            style::emerald(style::sym::TIP),
+        );
+        for cmd in active_candidate_next_step_commands() {
+            println!("    {}", style::cmd(cmd));
+        }
+        if progress.candidates_pending > 0 {
+            println!(
+                "  {} Review remaining pending memory before agents use it:",
+                style::emerald(style::sym::TIP),
+            );
+            for cmd in pending_candidate_next_step_commands(repo) {
+                println!("    {}", style::cmd(&cmd));
+            }
+        }
+    } else if progress.candidates_pending > 0 {
+        println!(
+            "  {} Review pending memory before agents use it:",
+            style::emerald(style::sym::TIP),
+        );
+        for cmd in pending_candidate_next_step_commands(repo) {
+            println!("    {}", style::cmd(&cmd));
+        }
     }
 }
 
-pub(super) const fn local_candidate_next_step_commands() -> &'static [&'static str] {
+pub(super) const fn active_candidate_next_step_commands() -> &'static [&'static str] {
     &[
         "difflore status",
+        "difflore memory active",
         "difflore recall --diff",
-        "difflore fix --preview",
+        "difflore review --diff all",
+    ]
+}
+
+pub(super) fn pending_candidate_next_step_commands(repo: &str) -> Vec<String> {
+    vec![
+        "difflore memory review".to_owned(),
+        format!("difflore drafts list --repo {repo} --json"),
+        format!("difflore drafts approve --all --repo {repo} --yes"),
     ]
 }
 
 /// Pure copy for the "N medium-confidence drafts held for review" line that
 /// follows a local import. Returned as `(prefix, command, suffix)` so the
-/// caller can wrap the single command token in `style::cmd` while the verifiable
-/// wording stays string-testable.
-///
-/// The command MUST be one that actually exists. `difflore status` lists the
-/// held-back drafts under its "Pending memory drafts" section; the removed
-/// `difflore candidates {list,accept}` verbs now hard-error, so a regression
-/// test pins this helper against ever naming `difflore candidates` again.
-pub(super) fn pending_drafts_review_hint(count: usize) -> (String, &'static str, &'static str) {
+/// caller wraps the command token in `style::cmd` while the wording stays
+/// string-testable. The command must be one that exists, and the wording must
+/// preserve the explicit local review/approval boundary.
+pub(super) fn pending_drafts_review_hint(count: usize) -> (String, String, &'static str) {
     let plural = if count == 1 { "" } else { "s" };
     (
-        format!(
-            "{count} medium-confidence draft{plural} held for review — see them under \"Pending memory drafts\" in "
-        ),
-        "difflore status",
-        ".",
+        format!("{count} medium-confidence draft{plural} held for review; decide in "),
+        "difflore memory review".to_owned(),
+        ", or let an agent inspect with `difflore drafts list --json`.",
     )
 }
 
 pub(super) fn local_candidate_budget(v: &ValidatedArgs) -> usize {
     LOCAL_CANDIDATE_DEFAULT_MIN.max(v.max_prs.saturating_mul(2))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn signal() -> CaptureDurabilitySignal {
+        CaptureDurabilitySignal::default()
+    }
+
+    fn assert_confidence(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 0.000_01,
+            "expected confidence {expected}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn capture_route_uses_inclusive_high_and_low_thresholds() {
+        assert_eq!(
+            route_for_confidence(CAPTURE_CONFIDENCE_HIGH),
+            CaptureRoute::Active
+        );
+        assert_eq!(
+            route_for_confidence(CAPTURE_CONFIDENCE_HIGH - 0.001),
+            CaptureRoute::Candidate
+        );
+        assert_eq!(
+            route_for_confidence(CAPTURE_CONFIDENCE_LOW),
+            CaptureRoute::Candidate
+        );
+        assert_eq!(
+            route_for_confidence(CAPTURE_CONFIDENCE_LOW - 0.001),
+            CaptureRoute::Drop
+        );
+    }
+
+    #[test]
+    fn capture_confidence_routes_resolved_human_directive_to_active() {
+        let signal = CaptureDurabilitySignal {
+            resolved: true,
+            ..signal()
+        };
+
+        let confidence = capture_confidence(4, false, &signal);
+
+        assert_confidence(confidence, 0.70);
+        assert_eq!(route_for_confidence(confidence), CaptureRoute::Active);
+    }
+
+    #[test]
+    fn bare_strong_directive_without_signal_is_quarantined_as_pending() {
+        let confidence = capture_confidence(4, false, &signal());
+
+        assert_confidence(confidence, CAPTURE_CONFIDENCE_BASE);
+        assert_eq!(route_for_confidence(confidence), CaptureRoute::Candidate);
+    }
+
+    #[test]
+    fn capture_confidence_requires_real_reactions_for_approval_bonus() {
+        let phantom_approval = CaptureDurabilitySignal {
+            thumbs_up: 3,
+            thumbs_down: 0,
+            reactions_total: 0,
+            ..signal()
+        };
+        let real_approval = CaptureDurabilitySignal {
+            thumbs_up: 3,
+            thumbs_down: 0,
+            reactions_total: 3,
+            ..signal()
+        };
+
+        assert_confidence(capture_confidence(4, false, &phantom_approval), 0.50);
+        assert_confidence(capture_confidence(4, false, &real_approval), 0.60);
+    }
+
+    #[test]
+    fn capture_confidence_penalizes_clear_disapproval_contradiction_and_bot_authorship() {
+        let signal = CaptureDurabilitySignal {
+            reactions_total: 2,
+            thumbs_up: 0,
+            thumbs_down: 2,
+            later_replies: vec!["Actually, no - ignore that suggestion.".to_owned()],
+            ..signal()
+        };
+
+        let confidence = capture_confidence(4, true, &signal);
+
+        assert!((confidence - 0.0).abs() < f32::EPSILON);
+        assert_eq!(route_for_confidence(confidence), CaptureRoute::Drop);
+    }
+
+    #[test]
+    fn strong_directive_bonus_branch_is_reachable_and_affects_route() {
+        let directive = "Return `StatusNoContent` and add a regression test";
+        let directive_score = directive_candidate_score(directive);
+
+        assert!(
+            directive_score >= 6,
+            "expected directive score >= 6, got {directive_score}"
+        );
+
+        let confidence = capture_confidence(directive_score, false, &signal());
+
+        assert_confidence(confidence, 0.55);
+        assert_eq!(route_for_confidence(confidence), CaptureRoute::Candidate);
+    }
+
+    #[test]
+    fn strong_directive_with_real_approval_can_auto_activate_without_resolved_thread() {
+        let signal = CaptureDurabilitySignal {
+            reactions_total: 1,
+            thumbs_up: 1,
+            thumbs_down: 0,
+            ..signal()
+        };
+
+        let confidence = capture_confidence(6, false, &signal);
+
+        assert_confidence(confidence, 0.65);
+        assert_eq!(route_for_confidence(confidence), CaptureRoute::Active);
+    }
+
+    #[test]
+    fn greptile_summary_block_is_rejected_as_noise() {
+        let summary = clean_review_comment(
+            "<h3>Greptile Summary</h3>\nThis PR adds an SSE channel.\n\
+             <h3>Confidence Score: 4/5</h3>\n<h3>Important Files Changed</h3>",
+        );
+        assert!(
+            is_import_review_noise_comment(&summary),
+            "greptile summary should be rejected: {summary:?}"
+        );
+    }
+
+    #[test]
+    fn greptile_inline_finding_survives_noise_gate() {
+        // After stripping the anchor, a real finding is a reusable convention
+        // and must NOT be filtered — AI-reviewer findings are kept by decision.
+        let finding = clean_review_comment(
+            "<a href=\"https://app.greptile.com/x?V=7\" align=\"top\"></a> \
+             Move the defer Close() to immediately after the successful Open so \
+             the file handle is always released on the error path.",
+        );
+        assert!(
+            !is_import_review_noise_comment(&finding),
+            "clean finding should survive: {finding:?}"
+        );
+        assert!(!finding.contains('<'), "html residue remains: {finding:?}");
+    }
+
+    #[test]
+    fn reviewer_meta_instruction_is_rejected() {
+        let meta = clean_review_comment(
+            "If you propose a fix, please make it concise and limit it to the changed lines.",
+        );
+        assert!(
+            is_import_review_noise_comment(&meta),
+            "reviewer meta-instruction should be rejected: {meta:?}"
+        );
+    }
+
+    #[test]
+    fn local_candidate_progress_keeps_in_run_duplicates_out_of_store_dedupes() {
+        let progress = LocalCandidateProgress {
+            candidates_duplicate_in_run: 1,
+            candidates_deduped: 0,
+            ..LocalCandidateProgress::default()
+        };
+
+        assert_eq!(progress.candidates_duplicate_in_run, 1);
+        assert_eq!(
+            progress.candidates_deduped, 0,
+            "in-run duplicate comments must not be reported as store-level strengthening"
+        );
+    }
 }

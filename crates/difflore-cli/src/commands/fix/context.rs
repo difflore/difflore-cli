@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
-use difflore_core::models::DiffContentRecord;
+use difflore_core::domain::models::DiffContentRecord;
 
-use crate::commands::util::{ensure_project, project_path};
 use crate::runtime::CommandContext;
+use crate::support::util::{ensure_project, project_path};
 
 use super::pr::{PreparePrOptions, PreparedPrFix, prepare_pr_fix};
 use super::scope::{DiffScope, collect_diff, parse_diff_scope};
@@ -32,6 +32,7 @@ pub(super) async fn prepare_fix_context(
     pr_no_checkout: bool,
     pr_allow_dirty: bool,
     pr_yes: bool,
+    pr_read_only: bool,
     pr_preview: bool,
     path_arg: Option<&PathBuf>,
 ) -> anyhow::Result<FixContext> {
@@ -50,6 +51,7 @@ pub(super) async fn prepare_fix_context(
                     no_checkout: pr_no_checkout,
                     allow_dirty: pr_allow_dirty,
                     yes: pr_yes,
+                    read_only: pr_read_only,
                     preview: pr_preview,
                 },
             )
@@ -68,7 +70,7 @@ pub(super) async fn prepare_fix_context(
         .filter(|p| !p.is_dir())
         .map(|p| normalize_target_path(&path, p));
     let path_str = path.to_string_lossy().to_string();
-    let project = ensure_project(&db, &path_str).await;
+    let project = ensure_project(&db, &path_str).await?;
 
     let (mut diff_records, diff_scope, repo_full_name_aliases, repo_full_name, review_id) =
         if let Some(pr) = pr_fix.as_ref() {
@@ -84,8 +86,13 @@ pub(super) async fn prepare_fix_context(
         } else {
             let requested_scope = parse_diff_scope(diff_scope_arg)?;
             let (diff_records, diff_scope) = collect_diff(&path, requested_scope).await?;
+            let configured_gitlab_hosts =
+                difflore_core::ingest::gitlab::auth::configured_hosts().await;
             let repo_full_name_aliases =
-                difflore_core::git::detect_github_repo_full_names(&path_str);
+                difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+                    &path_str,
+                    &configured_gitlab_hosts,
+                );
             let repo_full_name = repo_full_name_aliases.first().cloned();
             (
                 diff_records,
@@ -96,7 +103,7 @@ pub(super) async fn prepare_fix_context(
             )
         };
     if let Some(target) = target_file.as_deref() {
-        diff_records.retain(|record| record.file_path == target);
+        diff_records.retain(|record| record_matches_target_file(record, target));
     }
 
     Ok(FixContext {
@@ -119,11 +126,19 @@ fn normalize_target_path(repo_root: &std::path::Path, path: &std::path::Path) ->
     } else {
         path
     };
-    relative.to_string_lossy().replace('\\', "/")
+    normalize_path_separators(&relative.to_string_lossy())
 }
 
-// Prefer a representative source path so retrieval has a language signal
-// instead of only diff headers and import noise.
+fn normalize_path_separators(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn record_matches_target_file(record: &DiffContentRecord, target_file: &str) -> bool {
+    non_empty_file_path(record).as_deref() == Some(target_file)
+}
+
+// Prefer a real source file so retrieval has a language signal rather than
+// only diff headers and import noise.
 pub(super) fn primary_file_for_retrieval(diff_records: &[DiffContentRecord]) -> Option<String> {
     let first_changed = diff_records.iter().find_map(non_empty_file_path);
     diff_records
@@ -139,12 +154,24 @@ pub(super) fn primary_file_for_retrieval(diff_records: &[DiffContentRecord]) -> 
         .or(first_changed)
 }
 
+/// Every changed file path in the diff, in record order (the authoritative
+/// changeset for retrieval's path-hint boost). Deduped and
+/// blank-filtered; empty when the diff carries no usable paths.
+pub(super) fn changed_files_for_retrieval(diff_records: &[DiffContentRecord]) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    diff_records
+        .iter()
+        .filter_map(non_empty_file_path)
+        .filter(|file| seen.insert(file.clone()))
+        .collect()
+}
+
 fn non_empty_file_path(record: &DiffContentRecord) -> Option<String> {
     let file = record.file_path.trim();
     if file.is_empty() {
         None
     } else {
-        Some(file.to_owned())
+        Some(normalize_path_separators(file))
     }
 }
 
@@ -219,5 +246,48 @@ mod tests {
             primary_file_for_retrieval(&records).as_deref(),
             Some(".changeset/whole-views-wear.md")
         );
+    }
+
+    #[test]
+    fn changed_files_keep_order_dedupe_and_skip_blanks() {
+        let records = vec![
+            diff_record("db/schema/users.sql"),
+            diff_record("  "),
+            diff_record("src/api.ts"),
+            diff_record("db/schema/users.sql"),
+        ];
+        assert_eq!(
+            changed_files_for_retrieval(&records),
+            vec!["db/schema/users.sql".to_owned(), "src/api.ts".to_owned()],
+        );
+        assert!(changed_files_for_retrieval(&[]).is_empty());
+    }
+
+    #[test]
+    fn changed_files_dedupe_normalizes_windows_separators() {
+        let records = vec![
+            diff_record("src\\api.ts"),
+            diff_record("src/api.ts"),
+            diff_record("tests\\api.test.ts"),
+        ];
+
+        assert_eq!(
+            changed_files_for_retrieval(&records),
+            vec!["src/api.ts".to_owned(), "tests/api.test.ts".to_owned()],
+        );
+    }
+
+    #[test]
+    fn target_file_matching_normalizes_record_separators() {
+        let record = diff_record("packages\\form-core\\src\\FieldApi.ts");
+
+        assert!(record_matches_target_file(
+            &record,
+            "packages/form-core/src/FieldApi.ts"
+        ));
+        assert!(!record_matches_target_file(
+            &record,
+            "packages/form-core/src/Other.ts"
+        ));
     }
 }

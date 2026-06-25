@@ -1,13 +1,12 @@
 //! "Proven rule" drilldown: the single rule (repo-scoped, else best-on-machine)
 //! with the most accepted-edit proofs, merging signed local fix outcomes with
-//! agent-hook accepted outcomes. Feeds the `provenRuleDrilldown` envelope key.
-
-use std::collections::HashMap;
+//! agent-hook accepted outcomes.
 
 use super::super::transform::ProvenRuleCandidate;
 use super::proof_counters::{
     LOCAL_ACCEPTED_RECALL_LOOKBACK_DAYS, LOCAL_PROOF_WINDOW_DAYS, normalized_repo_aliases,
 };
+use crate::support::proven_rule::{ProvenRuleRank, fetch_rule_metadata_for_ids};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,13 +33,6 @@ pub(super) struct ProvenRuleDrilldownRow {
     pub(super) source_repo: Option<String>,
     pub(super) accepted_fix_proofs: i64,
     pub(super) sample_file: Option<String>,
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub(super) struct RuleMetadataRow {
-    pub(super) rule_id: String,
-    pub(super) name: String,
-    pub(super) source_repo: Option<String>,
 }
 
 pub(in crate::commands::status) async fn local_proven_rule_drilldown(
@@ -154,16 +146,18 @@ pub(in crate::commands::status) async fn fetch_proven_rule_drilldown(
         .filter(|candidate| candidate.accepted_fix_proofs + candidate.accepted_hook_outcomes > 0)
         .collect();
     candidates.sort_by(|a, b| {
-        let a_total = a.accepted_fix_proofs + a.accepted_hook_outcomes;
-        let b_total = b.accepted_fix_proofs + b.accepted_hook_outcomes;
-        b_total
-            .cmp(&a_total)
-            .then(
-                b.accepted_hook_outcomes_linked_to_prior_recall
-                    .cmp(&a.accepted_hook_outcomes_linked_to_prior_recall),
-            )
-            .then(b.accepted_fix_proofs.cmp(&a.accepted_fix_proofs))
-            .then(a.name.cmp(&b.name))
+        ProvenRuleRank {
+            total: a.accepted_fix_proofs + a.accepted_hook_outcomes,
+            linked_to_prior_recall: a.accepted_hook_outcomes_linked_to_prior_recall,
+            accepted_fix_proofs: a.accepted_fix_proofs,
+            name: &a.name,
+        }
+        .cmp(&ProvenRuleRank {
+            total: b.accepted_fix_proofs + b.accepted_hook_outcomes,
+            linked_to_prior_recall: b.accepted_hook_outcomes_linked_to_prior_recall,
+            accepted_fix_proofs: b.accepted_fix_proofs,
+            name: &b.name,
+        })
     });
 
     candidates
@@ -229,61 +223,6 @@ async fn fetch_signed_proven_rule_rows(
     }
 
     query.fetch_all(db).await.unwrap_or_default()
-}
-
-async fn fetch_rule_metadata_for_ids(
-    db: &difflore_core::SqlitePool,
-    rule_ids: &[String],
-    normalized_repos: Option<&[String]>,
-) -> HashMap<String, RuleMetadataRow> {
-    let ids: Vec<&str> = rule_ids
-        .iter()
-        .map(String::as_str)
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .collect();
-    if ids.is_empty() {
-        return HashMap::new();
-    }
-
-    let id_placeholders = std::iter::repeat_n("?", ids.len())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let repo_filter = normalized_repos
-        .filter(|repos| !repos.is_empty())
-        .map(|repos| {
-            let placeholders = std::iter::repeat_n("?", repos.len())
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("AND LOWER(COALESCE(source_repo, '')) IN ({placeholders})")
-        })
-        .unwrap_or_default();
-    let sql = format!(
-        "SELECT id AS rule_id,
-                COALESCE(NULLIF(name, ''), id) AS name,
-                source_repo AS source_repo
-         FROM skills
-         WHERE id IN ({id_placeholders})
-           AND COALESCE(status, 'active') = 'active'
-           {repo_filter}"
-    );
-    let mut query = sqlx::query_as::<_, RuleMetadataRow>(&sql);
-    for id in ids {
-        query = query.bind(id);
-    }
-    if let Some(repos) = normalized_repos {
-        for repo in repos {
-            query = query.bind(repo);
-        }
-    }
-
-    query
-        .fetch_all(db)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|row| (row.rule_id.clone(), row))
-        .collect()
 }
 
 #[cfg(test)]

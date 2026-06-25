@@ -1,13 +1,16 @@
-use difflore_core::cloud::api_types::{
-    ImportedCommentUpload, ImportedReviewUpload, UploadImportedReviewsRequest,
+use difflore_core::contract::{
+    ImportedCommentEventType, ImportedCommentUpload, ImportedReviewUpload,
+    UploadImportedReviewsRequest,
 };
-use difflore_core::github_import::ImportProgress;
-use difflore_core::reviews::{self, ReviewItemWithComments};
+use difflore_core::infra::git::canonical_gitlab_repo_scope;
+use difflore_core::ingest::github::ImportProgress;
+use difflore_core::ingest::gitlab::auth::normalize_gitlab_host;
+use difflore_core::review_store::{self, ReviewItemWithComments};
 use sqlx::SqlitePool;
 
-use crate::commands::util::exit_err;
 use crate::runtime::CommandContext;
 use crate::style;
+use crate::support::util::exit_err;
 
 const CLOUD_IMPORT_MAX_REVIEWS_PER_BATCH: usize = 20;
 const CLOUD_IMPORT_MAX_COMMENTS_PER_BATCH: usize = 20;
@@ -67,21 +70,130 @@ pub(super) fn source_repo_from_metadata(
     }
 }
 
+pub(super) fn gitlab_host_from_metadata(metadata: Option<&str>) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(metadata?).ok()?;
+    value
+        .get("gitlabHost")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| normalize_gitlab_host(s).ok())
+}
+
+/// Read the inline comment's file path back out of the per-comment metadata
+/// JSON (the `filePath` key written at import time). `None` for top-level
+/// review bodies and comments without a recorded path — losing it here used
+/// to null `file_path` on every uploaded comment, degrading the file-pattern
+/// quality of cloud-extracted rules.
+pub(super) fn comment_file_path_from_metadata(metadata: Option<&str>) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(metadata?).ok()?;
+    value
+        .get("filePath")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+/// Derive the webhook-aligned event type for one imported comment so the
+/// cloud labels `pr_review_comments.event_type` from the CLI's own import
+/// provenance instead of re-deriving it server-side.
+///
+/// Order matters: the GitHub ingest path anchors PR discussion comments to
+/// the first changed file (`sourceKind: "issue_comment"` plus a borrowed
+/// `filePath` in the comment metadata), so the source-kind check must run
+/// before the file-path check or those comments would be mislabeled as
+/// inline review comments. GitLab MR-level discussion notes carry
+/// `sourceKind: "mr_comment"` and map to the same discussion bucket.
+///
+/// Top-level review bodies have neither key (their metadata is durability
+/// signal only, or absent), so they are recognized by the GitHub URL
+/// fragment. `None` means "the local metadata cannot identify the bucket":
+/// the optional field is omitted from the payload and the cloud falls back
+/// to its own derivation, keeping older rows and unknown shapes behaviorally
+/// unchanged.
+pub(super) fn comment_event_type(
+    metadata: Option<&str>,
+    file_path: Option<&str>,
+    comment_url: &str,
+) -> Option<ImportedCommentEventType> {
+    let source_kind = metadata
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|v| {
+            v.get("sourceKind")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        });
+    if matches!(source_kind.as_deref(), Some("issue_comment" | "mr_comment")) {
+        return Some(ImportedCommentEventType::IssueComment);
+    }
+    if file_path.is_some() {
+        return Some(ImportedCommentEventType::PullRequestReviewComment);
+    }
+    let fragment = comment_url
+        .split_once('#')
+        .map_or("", |(_, fragment)| fragment);
+    if fragment.starts_with("pullrequestreview-") {
+        return Some(ImportedCommentEventType::PullRequestReview);
+    }
+    if fragment.starts_with("issuecomment-") {
+        return Some(ImportedCommentEventType::IssueComment);
+    }
+    if fragment.starts_with("discussion_r") {
+        return Some(ImportedCommentEventType::PullRequestReviewComment);
+    }
+    None
+}
+
 pub(super) fn imported_review_upload(
     item: &ReviewItemWithComments,
 ) -> Option<ImportedReviewUpload> {
     let repo_full_name = item.item.repo_full_name.clone()?;
+    let provider = item.item.source.clone();
+    let provider_host = if provider == "gitlab" {
+        gitlab_host_from_metadata(item.item.metadata.as_deref())
+    } else {
+        None
+    };
+    let source_repo_full_name =
+        source_repo_from_metadata(item.item.metadata.as_deref(), &repo_full_name);
+    let upload_repo_full_name = if provider == "gitlab" {
+        provider_host
+            .as_deref()
+            .and_then(|host| canonical_gitlab_repo_scope(host, &repo_full_name))
+            .unwrap_or_else(|| repo_full_name.clone())
+    } else {
+        repo_full_name
+    };
+    let upload_source_repo_full_name = if provider == "gitlab" {
+        source_repo_full_name.and_then(|source_repo| {
+            provider_host
+                .as_deref()
+                .and_then(|host| canonical_gitlab_repo_scope(host, &source_repo))
+        })
+    } else {
+        source_repo_full_name
+    };
     let comments: Vec<ImportedCommentUpload> = item
         .comments
         .iter()
-        .map(|c| ImportedCommentUpload {
-            file_path: None,
-            line_number: c.line_number.unwrap_or(0),
-            content: c.content.clone(),
-            author: c.author.clone(),
-            comment_url: c.comment_url.clone().unwrap_or_default(),
-            thread_id: c.thread_id.clone(),
-            occurred_at: Some(c.created_at.clone()),
+        .map(|c| {
+            let file_path = comment_file_path_from_metadata(c.metadata.as_deref());
+            let comment_url = c.comment_url.clone().unwrap_or_default();
+            ImportedCommentUpload {
+                event_type: comment_event_type(
+                    c.metadata.as_deref(),
+                    file_path.as_deref(),
+                    &comment_url,
+                ),
+                file_path,
+                line_number: c.line_number,
+                content: c.content.clone(),
+                author: c.author.clone(),
+                comment_url,
+                thread_id: c.thread_id.clone(),
+                occurred_at: Some(c.created_at.clone()),
+            }
         })
         .collect();
 
@@ -90,33 +202,52 @@ pub(super) fn imported_review_upload(
     }
 
     Some(ImportedReviewUpload {
-        repo_full_name: repo_full_name.clone(),
-        source_repo_full_name: source_repo_from_metadata(
-            item.item.metadata.as_deref(),
-            &repo_full_name,
-        ),
+        provider: Some(provider),
+        provider_host,
+        repo_full_name: upload_repo_full_name,
+        source_repo_full_name: upload_source_repo_full_name,
         pr_number: item.item.pr_number.unwrap_or(0),
-        pr_title: Some(item.item.file_path.clone()),
+        pr_title: None,
         comments,
     })
+}
+
+pub(super) fn matches_upload_target(
+    item: &ReviewItemWithComments,
+    source: &str,
+    repo: &str,
+    gitlab_host: Option<&str>,
+) -> bool {
+    let Some(item_repo) = item.item.repo_full_name.as_deref() else {
+        return false;
+    };
+
+    if source != "gitlab" {
+        return item_repo == repo;
+    }
+
+    let Some(target_host) = gitlab_host else {
+        return false;
+    };
+    let Some(target_scope) = canonical_gitlab_repo_scope(target_host, repo) else {
+        return false;
+    };
+    let Some(item_host) = gitlab_host_from_metadata(item.item.metadata.as_deref()) else {
+        return false;
+    };
+    canonical_gitlab_repo_scope(&item_host, item_repo).as_deref() == Some(target_scope.as_str())
 }
 
 pub(super) const fn cloud_upload_next_step_commands() -> &'static [(&'static str, &'static str)] {
     &[
         ("difflore cloud sync", "# pull the new rules down"),
-        ("difflore status", "# see the shortest local proof path"),
-        (
-            "difflore recall --diff",
-            "# prove your agent can recall them",
-        ),
+        ("difflore status", "# see what is ready locally"),
+        ("difflore recall --diff", "# check what agents can recall"),
         (
             "difflore cloud impact",
-            "# show recall and accepted-proof value",
+            "# show recall and accepted-edit activity",
         ),
-        (
-            "difflore fix --preview",
-            "# optional local patch suggestions",
-        ),
+        ("difflore review --diff all", "# optional local review"),
     ]
 }
 
@@ -136,10 +267,40 @@ pub(super) fn print_next_steps(uploaded_reviews: usize) {
     }
 }
 
+pub(super) async fn ensure_cloud_session_for_upload(ctx: &CommandContext) -> Result<(), String> {
+    let cloud = ctx.cloud().await;
+
+    // Pre-flight: without a session every batch fails with a generic "failed
+    // batch" line, so bail with one actionable message instead of N silent
+    // auth failures.
+    if !cloud.is_logged_in() {
+        style::report_error(
+            "`--upload` requires a cloud session, but no token is on this machine.",
+            "",
+            &[
+                style::Hint::try_("difflore cloud login".to_owned()),
+                style::Hint::try_(
+                    "rerun `difflore import-reviews --upload` once login completes".to_owned(),
+                ),
+            ],
+        );
+        return Err("not logged in to cloud; `--upload` cannot proceed".to_owned());
+    }
+
+    Ok(())
+}
+
+/// Upload imported reviews for `repo` (filtered to the given import
+/// `source`: "github" or "gitlab"). The payload shape is provider-neutral —
+/// GitHub keeps `owner/repo`, while GitLab uploads canonical
+/// `host/group/project` repo keys so cloud upserts cannot collide across
+/// providers or self-managed hosts.
 pub(super) async fn run_upload(
     ctx: &CommandContext,
     db: &SqlitePool,
+    source: &str,
     repo: &str,
+    gitlab_host: Option<&str>,
     import_result: &ImportProgress,
     json: bool,
 ) -> Result<usize, String> {
@@ -149,10 +310,10 @@ pub(super) async fn run_upload(
         );
     }
 
-    let items = match reviews::list_by_source_with_comments(
+    let items = match review_store::list_by_source_with_comments(
         db,
-        reviews::ReviewSourceInput {
-            source: "github".into(),
+        review_store::ReviewSourceInput {
+            source: source.into(),
         },
     )
     .await
@@ -168,7 +329,7 @@ pub(super) async fn run_upload(
 
     let upload_reviews: Vec<ImportedReviewUpload> = items
         .iter()
-        .filter(|item| item.item.repo_full_name.as_deref() == Some(repo))
+        .filter(|item| matches_upload_target(item, source, repo, gitlab_host))
         .filter_map(imported_review_upload)
         .collect();
 
@@ -177,24 +338,8 @@ pub(super) async fn run_upload(
         return Ok(0);
     }
 
+    ensure_cloud_session_for_upload(ctx).await?;
     let cloud = ctx.cloud().await;
-
-    // Pre-flight: every batch will fail with a generic "failed batch" line if
-    // the user isn't logged in. Bail with a clear actionable message instead
-    // of looping through N silent auth failures.
-    if !cloud.is_logged_in() {
-        style::report_error(
-            "`--upload` requires a cloud session, but no token is on this machine.",
-            "",
-            &[
-                style::Hint::try_("difflore cloud login".to_owned()),
-                style::Hint::try_(
-                    "rerun `difflore import-reviews --upload` once login completes".to_owned(),
-                ),
-            ],
-        );
-        return Err("not logged in to cloud — `--upload` cannot proceed".to_owned());
-    }
 
     let total_reviews = upload_reviews.len();
     let batches = build_upload_batches(&upload_reviews);
@@ -227,10 +372,9 @@ pub(super) async fn run_upload(
     }
 
     if failed_batches == 0 {
-        // Honor --json: success summary belongs only in the structured payload
-        // emitted by `print_import_json`. Printing the human-friendly banner
-        // here would prepend non-JSON text to stdout and break any pipeline
-        // doing `... --json | jq`. Per-batch progress already routes to stderr.
+        // Under --json the success summary belongs only in the structured
+        // payload; printing the human banner here would prepend non-JSON text to
+        // stdout and break `... --json | jq`. Per-batch progress goes to stderr.
         if !json {
             print_next_steps(uploaded_reviews);
         }
@@ -250,4 +394,34 @@ pub(super) async fn run_upload(
         ));
     }
     Ok(uploaded_reviews)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::import_reviews::fixtures;
+
+    #[test]
+    fn imported_review_upload_does_not_use_file_path_as_pr_title() {
+        let item = fixtures::imported_item(Some("user/fork"), None);
+        let upload = imported_review_upload(&item).expect("upload payload");
+
+        assert!(upload.pr_title.is_none());
+        assert_eq!(upload.comments[0].file_path.as_deref(), None);
+    }
+
+    #[test]
+    fn imported_review_upload_omits_unknown_line_number() {
+        let mut item = fixtures::imported_item(Some("user/fork"), None);
+        item.comments[0].line_number = None;
+
+        let upload = imported_review_upload(&item).expect("upload payload");
+        let value = serde_json::to_value(&upload.comments[0]).expect("comment serializes");
+
+        assert_eq!(upload.comments[0].line_number, None);
+        assert!(
+            value.get("lineNumber").is_none(),
+            "unknown lines must be omitted instead of serialized as 0"
+        );
+    }
 }

@@ -13,12 +13,14 @@ pub(crate) struct RuleTrustEvidence {
 pub(crate) type RuleTrustMap = HashMap<String, RuleTrustEvidence>;
 
 const TRUST_EVIDENCE_TTL: Duration = Duration::from_secs(60);
+const TRUST_EVIDENCE_FAILURE_TTL: Duration = Duration::from_secs(10);
 const TRUST_EVIDENCE_TIMEOUT: Duration = Duration::from_secs(3);
 const HOOK_TRUST_EVIDENCE_TIMEOUT: Duration = Duration::from_millis(2500);
 
 #[derive(Debug, Default)]
 struct TrustEvidenceCache {
     fetched_at: Option<Instant>,
+    failed_at: Option<Instant>,
     map: RuleTrustMap,
 }
 
@@ -35,6 +37,9 @@ async fn fetch_cloud_top_rule_trust_evidence_with_timeout(
     cloud: &CloudClient,
     timeout: Duration,
 ) -> RuleTrustMap {
+    if !crate::infra::env::mcp_cloud_reads_enabled() {
+        return RuleTrustMap::new();
+    }
     if !cloud.is_logged_in() {
         return RuleTrustMap::new();
     }
@@ -48,11 +53,20 @@ async fn fetch_cloud_top_rule_trust_evidence_with_timeout(
         {
             return guard.map.clone();
         }
+        if let Some(failed_at) = guard.failed_at
+            && failed_at.elapsed() < TRUST_EVIDENCE_FAILURE_TTL
+        {
+            return guard.map.clone();
+        }
         (!guard.map.is_empty()).then(|| guard.map.clone())
     };
 
     let Ok(Ok(top_rules)) = tokio::time::timeout(timeout, cloud.get_impact_top_rules()).await
     else {
+        let mut guard = cache()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.failed_at = Some(Instant::now());
         return stale.unwrap_or_default();
     };
 
@@ -76,6 +90,7 @@ async fn fetch_cloud_top_rule_trust_evidence_with_timeout(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.fetched_at = Some(Instant::now());
+        guard.failed_at = None;
         guard.map.clone_from(&map);
     }
 
@@ -88,7 +103,10 @@ pub(crate) async fn fetch_default_cloud_top_rule_trust_evidence_for_hook() -> Ru
 }
 
 pub(crate) fn format_trust_evidence(proof: &RuleTrustEvidence) -> Option<String> {
-    let rate = proof.trust_rate?;
+    let rate = proof.trust_rate?.clamp(0.0, 1.0);
+    if !rate.is_finite() {
+        return None;
+    }
     let pct = (rate * 100.0).round() as i64;
     if proof.cited_count > 0 {
         Some(format!("trust {pct}% ({} cited)", proof.cited_count))

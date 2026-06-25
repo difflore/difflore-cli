@@ -1,21 +1,18 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(unsafe_code)]
-//! End-to-end gate test for `DIFFLORE_CAPTURE=false` on the
-//! observations outbox.
+//! End-to-end gate test for `DIFFLORE_CAPTURE=false` on the observations
+//! outbox.
 //!
-//! Sibling of `cloud_capture_gate.rs`: when the env var is set to the
-//! literal `"false"`, `ObservationEmitter::enqueue` must be a no-op —
-//! no row enters `observation_events`. The product has two outbox
-//! queues (`cloud_outbox` for trajectory/mcp telemetry and
-//! `observation_events` for PostToolUse observations); both have to
-//! gate at enqueue so the privacy promise the CLI's
-//! `difflore cloud privacy` notice makes stays whole.
+//! When the env var is the literal `"false"`,
+//! `ObservationEmitter::enqueue` must be a no-op — no row enters
+//! `observation_events`. Both outbox queues (`cloud_outbox` and
+//! `observation_events`) gate at enqueue so the `difflore cloud privacy`
+//! promise holds.
 //!
-//! Lives in its own integration-test binary for the same reason the
-//! sibling does: setting an env var inside a unit test would race with
-//! parallel-running siblings. Cargo gives every `tests/*.rs` file a
-//! dedicated process, and this file holds exactly one test, so the env
-//! mutation cannot leak.
+//! Lives in its own test binary because setting an env var would race
+//! with parallel siblings; Cargo runs each `tests/*.rs` in a dedicated
+//! process and this file holds exactly one test, so the mutation can't
+//! leak.
 
 use chrono::{TimeZone, Utc};
 use difflore_core::cloud::capture::DIFFLORE_CAPTURE_ENV;
@@ -26,10 +23,8 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 async fn row_count(db_path: &std::path::Path) -> i64 {
-    // Open a separate read-only connection to the same DB file so we
-    // don't have to crack open the emitter's pool accessor (which is
-    // crate-internal). Mirrors how the sibling cloud_capture_gate test
-    // uses a directly-built `:memory:` pool.
+    // Open a separate read-only connection to the same DB file, avoiding
+    // the crate-internal emitter pool accessor.
     let opts = SqliteConnectOptions::new()
         .filename(db_path)
         .create_if_missing(false)

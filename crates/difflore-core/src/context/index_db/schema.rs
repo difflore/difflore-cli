@@ -1,7 +1,7 @@
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 use std::path::PathBuf;
 
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 pub(super) const INDEX_DB_NAME: &str = "context-index.db";
 
@@ -13,8 +13,8 @@ pub struct IndexedRuleChunk {
     pub skill_id: String,
     pub content: String,
     pub embedding: Vec<f32>,
-    /// Iter-9 (2026-04-18). JSON-serialised glob list, NULL = universal.
-    /// Used by `retrieve_rules_with_confidence` cascade to drop rules whose
+    /// JSON-serialised glob list, NULL = universal. Used by the
+    /// `retrieve_rules_with_confidence` cascade to drop rules whose
     /// patterns don't match the file the agent is editing.
     pub file_patterns: Option<String>,
     /// Denormalised from the `skills` row's tags so retrieval can filter on
@@ -25,14 +25,9 @@ pub struct IndexedRuleChunk {
     pub repo_scope: Option<String>,
 }
 
-/// Metadata pre-filter for `query_rule_chunks` / `fts_search`. Each field is
-/// optional and acts as an **AND** clause: when set, rows must match the
-/// given value. `repo_scope` is exact when present; callers that inject
-/// rules into agents should pass the current repo/project and avoid
-/// unscoped fallback.
-///
-/// Keep the struct `Default`able so call sites that don't care can pass
-/// `QueryFilter::default()` without naming every field.
+/// Metadata pre-filter for `query_rule_chunks` / `fts_search`. Each set field
+/// is an AND clause; `repo_scope` matches exactly. Callers injecting rules
+/// into agents should pass the current repo and avoid unscoped fallback.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueryFilter {
     pub language: Option<String>,
@@ -40,9 +35,7 @@ pub struct QueryFilter {
 }
 
 impl QueryFilter {
-    /// True when the filter has no effect (both fields unset). This means
-    /// callers are intentionally querying the current per-project index
-    /// without metadata filters.
+    /// True when the filter has no effect (both fields unset).
     pub const fn is_empty(&self) -> bool {
         self.language.is_none() && self.repo_scope.is_none()
     }
@@ -51,15 +44,13 @@ impl QueryFilter {
 /// Per-project path: `~/.difflore/projects/{hash}/context-index.db`.
 /// Public so supporting tools can target the same file the runtime opens.
 pub fn index_db_path_for_project(project_hash: &str) -> PathBuf {
-    crate::db::project_index_dir(project_hash).join(INDEX_DB_NAME)
+    crate::infra::db::project_index_dir(project_hash).join(INDEX_DB_NAME)
 }
 
 /// Retired global path: `~/.difflore/context-index.db`. Used only by the
 /// startup guard to fail closed when a pre-split DB is present.
 pub(crate) fn retired_global_index_db_path() -> Result<PathBuf, CoreError> {
-    Ok(crate::paths::data_home()
-        .map_err(CoreError::Internal)?
-        .join(INDEX_DB_NAME))
+    Ok(crate::infra::paths::data_home()?.join(INDEX_DB_NAME))
 }
 
 pub(super) fn embedding_to_blob(emb: &[f32]) -> Vec<u8> {
@@ -80,14 +71,12 @@ pub(super) fn blob_to_embedding(blob: &[u8]) -> Result<Vec<f32>, CoreError> {
 }
 
 /// Idempotent ALTER that swallows the "duplicate column" error but surfaces
-/// everything else. Used for each new nullable column added after the
-/// initial schema shipped — this is the standard path because we do NOT
-/// rely on numbered migration files for the per-project index DB (it is
-/// created programmatically).
-// non-macro: query! prepares against the migration DB which already has
-// these columns; SQLite has no `ADD COLUMN IF NOT EXISTS`, so prepare
-// would always fail. Runtime ALTER on a fresh per-project index DB is
-// the intended path here.
+/// everything else, for nullable columns added after the initial schema. The
+/// per-project index DB is created programmatically, not via numbered
+/// migrations.
+// Uses runtime `query` (not `query!`): SQLite has no `ADD COLUMN IF NOT
+// EXISTS`, and the macro would prepare against the migration DB that already
+// has these columns and always fail.
 async fn ensure_column(
     pool: &SqlitePool,
     table: &str,
@@ -106,10 +95,9 @@ async fn ensure_column(
     Ok(())
 }
 
-/// Open a fresh pool at an arbitrary path and run the chunk-table DDL.
-/// Used by both `get_pool_for_project` (cached path) and the migration
-/// utility (one-shot path). Factored out so both paths share the same
-/// journal mode, column list, and idempotent ALTER behaviour.
+/// Open a fresh pool at an arbitrary path and run the chunk-table DDL. Shared
+/// by `get_pool_for_project` (cached) and the migration utility (one-shot) so
+/// both use the same journal mode, columns, and idempotent ALTERs.
 pub(crate) async fn open_pool_at(path: &std::path::Path) -> Result<SqlitePool, CoreError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -127,8 +115,8 @@ pub(crate) async fn open_pool_at(path: &std::path::Path) -> Result<SqlitePool, C
         .await
         .map_err(|e| CoreError::Internal(format!("failed to open index db: {e}")))?;
 
-    // Create index-specific tables (this is a separate DB from the main app DB).
-    // Metadata columns stay nullable so backfill is optional.
+    // Index-specific tables (separate DB from the main app DB). Metadata
+    // columns stay nullable so backfill is optional.
     sqlx::query!(
         "CREATE TABLE IF NOT EXISTS rule_chunks (
             id TEXT PRIMARY KEY,
@@ -144,22 +132,18 @@ pub(crate) async fn open_pool_at(path: &std::path::Path) -> Result<SqlitePool, C
     .await
     .map_err(|e| CoreError::Internal(format!("index db migration failed: {e}")))?;
 
-    // Idempotent ALTERs for users with a pre-existing index DB. SQLite
-    // raises "duplicate column" if the column already exists; `ensure_column`
-    // swallows that case while propagating other errors.
+    // Idempotent ALTERs for pre-existing index DBs; `ensure_column` swallows
+    // the "duplicate column" error and propagates the rest.
     ensure_column(&pool, "rule_chunks", "file_patterns", "TEXT").await?;
     ensure_column(&pool, "rule_chunks", "language", "TEXT").await?;
     ensure_column(&pool, "rule_chunks", "repo_scope", "TEXT").await?;
 
-    // FTS5 virtual table for keyword baseline retrieval. Lives alongside
-    // `rule_chunks` (same DB, separate table). Tokenizer: porter
-    // stemmer + unicode61 folding so `parsing` / `parsed` / `parses` all
-    // collapse to the same token.
+    // FTS5 virtual table for keyword retrieval. Porter stemmer + unicode61
+    // folding collapse `parsing`/`parsed`/`parses` to one token.
     //
-    // Because `rule_chunks.id` is a TEXT primary key (not an INTEGER
-    // rowid), we can't pipe it directly into FTS5's rowid. Instead we
-    // carry the id in a `chunk_id UNINDEXED` column and join back to
-    // `rule_chunks` via that column at query time.
+    // `rule_chunks.id` is a TEXT primary key, not an INTEGER rowid, so it
+    // can't be FTS5's rowid; carry it in `chunk_id UNINDEXED` and join back
+    // to `rule_chunks` at query time.
     sqlx::query!(
         "CREATE VIRTUAL TABLE IF NOT EXISTS rule_chunks_fts USING fts5(
             chunk_id UNINDEXED,

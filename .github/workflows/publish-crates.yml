@@ -66,7 +66,6 @@ jobs:
           set -euo pipefail
           metadata="$(cargo metadata --no-deps --format-version=1)"
           echo "core=$(jq -r '.packages[] | select(.name == "difflore-core") | .version' <<<"${metadata}")" >> "$GITHUB_OUTPUT"
-          echo "tui=$(jq -r '.packages[] | select(.name == "difflore-tui") | .version' <<<"${metadata}")" >> "$GITHUB_OUTPUT"
           echo "cli=$(jq -r '.packages[] | select(.name == "difflore-cli") | .version' <<<"${metadata}")" >> "$GITHUB_OUTPUT"
 
       - name: Check crates.io publish status
@@ -85,14 +84,11 @@ jobs:
           }
 
           core_published="$(check_version difflore-core "${{ steps.crate-versions.outputs.core }}")"
-          tui_published="$(check_version difflore-tui "${{ steps.crate-versions.outputs.tui }}")"
           cli_published="$(check_version difflore-cli "${{ steps.crate-versions.outputs.cli }}")"
 
           echo "core=${core_published}" >> "$GITHUB_OUTPUT"
-          echo "tui=${tui_published}" >> "$GITHUB_OUTPUT"
           echo "cli=${cli_published}" >> "$GITHUB_OUTPUT"
           echo "difflore-core published: ${core_published}"
-          echo "difflore-tui published: ${tui_published}"
           echo "difflore-cli published: ${cli_published}"
 
       - name: Package difflore-core
@@ -103,7 +99,7 @@ jobs:
         run: cargo package --workspace --no-verify
 
       - name: Resolve crates.io auth mode
-        if: ${{ env.DRY_RUN != 'true' && (steps.crates-status.outputs.core != 'true' || steps.crates-status.outputs.tui != 'true' || steps.crates-status.outputs.cli != 'true') }}
+        if: ${{ env.DRY_RUN != 'true' && (steps.crates-status.outputs.core != 'true' || steps.crates-status.outputs.cli != 'true') }}
         id: crates-auth-mode
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -117,7 +113,7 @@ jobs:
           fi
 
       - name: Authenticate with crates.io Trusted Publishing
-        if: ${{ env.DRY_RUN != 'true' && steps.crates-auth-mode.outputs.has_static_token != 'true' && (steps.crates-status.outputs.core != 'true' || steps.crates-status.outputs.tui != 'true' || steps.crates-status.outputs.cli != 'true') }}
+        if: ${{ env.DRY_RUN != 'true' && steps.crates-auth-mode.outputs.has_static_token != 'true' && (steps.crates-status.outputs.core != 'true' || steps.crates-status.outputs.cli != 'true') }}
         id: crates-auth
         uses: rust-lang/crates-io-auth-action@v1
 
@@ -128,31 +124,7 @@ jobs:
         run: cargo publish -p difflore-core
 
       - name: Wait for crates.io to index difflore-core
-        if: ${{ env.DRY_RUN != 'true' && steps.crates-status.outputs.tui != 'true' }}
-        run: sleep 60
-
-      - name: Package difflore-tui
-        if: ${{ env.DRY_RUN != 'true' && steps.crates-status.outputs.tui != 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for attempt in {1..20}; do
-            if cargo package -p difflore-tui; then
-              exit 0
-            fi
-            echo "::warning::difflore-core is not visible in the crates.io index yet; retrying (${attempt}/20)."
-            sleep 30
-          done
-          exit 1
-
-      - name: Publish difflore-tui
-        if: ${{ env.DRY_RUN != 'true' && steps.crates-status.outputs.tui != 'true' }}
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.crates-auth.outputs.token }}
-        run: cargo publish -p difflore-tui
-
-      - name: Wait for crates.io to index difflore-tui
-        if: ${{ env.DRY_RUN != 'true' && steps.crates-status.outputs.cli != 'true' }}
+        if: ${{ env.DRY_RUN != 'true' && steps.crates-status.outputs.core != 'true' && steps.crates-status.outputs.cli != 'true' }}
         run: sleep 60
 
       - name: Package difflore-cli
@@ -164,7 +136,7 @@ jobs:
             if cargo package -p difflore-cli; then
               exit 0
             fi
-            echo "::warning::difflore-tui is not visible in the crates.io index yet; retrying (${attempt}/20)."
+            echo "::warning::difflore-core is not visible in the crates.io index yet; retrying (${attempt}/20)."
             sleep 30
           done
           exit 1

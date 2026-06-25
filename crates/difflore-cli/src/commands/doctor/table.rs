@@ -1,8 +1,6 @@
-//! Doctor table renderer.
-//!
-//! Aligned-column status surface — replaces the prose markdown for
-//! the default `difflore doctor` invocation. The richer markdown
-//! report stays behind `--report` for bug-report paste-ins.
+//! Doctor table renderer: the aligned-column status surface for the default
+//! `difflore doctor` invocation (the richer markdown report stays behind
+//! `--report`).
 //!
 //! Rows are grouped into three sections:
 //!
@@ -10,26 +8,31 @@
 //!   Blocks core value       — recall cannot run (DB / corpus broken)
 //!   Optional improvements   — provider, MCP wiring, daemon, git hooks
 //!
-//! Empty sections are omitted. The footer collapses to a single
-//! `next:` action line pointing at the highest-priority blocker (or,
-//! if all-green, at `difflore recall --diff`).
+//! Empty sections are omitted. The footer collapses to a single `next:`
+//! action line pointing at the highest-priority blocker (or, if all-green,
+//! at `difflore recall --diff`).
 //!
-//! This module is pure presentation: it consumes the precomputed
-//! [`probes::Findings`] struct and never touches a live data source, so
-//! every shaper below can be exercised against a hand-built findings
-//! value without mocking core.
+//! Pure presentation: consumes a precomputed [`probes::Findings`] and never
+//! touches a live data source, so shapers can be tested against a hand-built
+//! findings value.
 
 use colored::Colorize;
 
+use super::embedding_degradation::{
+    SUSTAINED_TRANSIENT_FALLBACK_THRESHOLD, is_persistent_embedding_degradation,
+    should_count_embedding_degradation,
+};
 use super::memory_snapshot;
 use super::probes::{
-    self, CloudProbe, DaemonProbe, EmbedderProbe, Findings, GitHookState, ProjectDbProbe,
-    ProviderProbe,
+    self, CloudProbe, DaemonProbe, DaemonProbeState, EmbedderProbe, Findings, GateCaptureProbe,
+    GitHookState, ProjectDbProbe, ProviderProbe,
 };
-use crate::mcp_install;
+use super::util::age_label_ms;
+use crate::installer;
 use crate::style;
+use difflore_core::infra::crypto::{KeyseedStatus, MasterKeyStorageStatus};
 
-const RULE: &str = "─────────────────────────────────────────";
+const RULE: &str = "-----------------------------------------";
 const LABEL_W: usize = 17;
 
 /// Visual marker for a row — orthogonal to `Severity`. A `Ready` row
@@ -42,8 +45,7 @@ enum Status {
     Err,
 }
 
-/// Section a row belongs to. Drives both grouping in the human
-/// renderer and the `severity` field on the JSON-style row.
+/// Section a row belongs to; drives grouping in the renderer.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Severity {
     Blocker,
@@ -66,13 +68,11 @@ struct Row {
     status: Status,
     label: &'static str,
     value: String,
-    /// Optional follow-up `▸` lines rendered indented under the row.
-    /// For blockers, the first hint should lead with the consequence
-    /// ("agents can't fix without a provider — run `difflore providers setup`").
+    /// Follow-up lines rendered indented under the row. For blockers, the
+    /// first hint should lead with the consequence.
     hints: Vec<String>,
-    /// Single repair command suggested as the `next:` action when this
-    /// row is the highest-priority blocker. None for rows that have
-    /// no actionable repair (already-green rows, Optional notices).
+    /// Repair command suggested as the `next:` action when this row is the
+    /// highest-priority blocker. `None` when there's no actionable repair.
     repair: Option<String>,
 }
 
@@ -94,30 +94,277 @@ pub(crate) async fn render_table(ctx: &crate::runtime::CommandContext) -> String
     render_findings(&findings)
 }
 
-/// Shape a fully-probed [`Findings`] into the doctor surface string.
-/// Split from `render_table` so tests can feed a hand-built findings
-/// value without any live data source.
+/// Shape a fully-probed [`Findings`] into the doctor surface string. Split
+/// from `render_table` so tests can feed a hand-built findings value.
 fn render_findings(findings: &Findings) -> String {
     let rows = vec![
         binary_row(&findings.binary_version),
+        secrets_row(&findings.master_key_storage),
         project_db_row(&findings.project_db),
         mcp_row(&findings.mcp),
         provider_row(&findings.provider),
         cloud_row(&findings.cloud),
         embedder_row(&findings.embedder),
         git_hooks_row(&findings.git_hooks),
+        recall_trace_row(&findings.recall_trace),
+        gate_capture_row(&findings.gate_capture),
         daemon_row(&findings.daemon),
     ];
-    // "What we've learned" preview — `render` collapses to an empty
-    // string when the snapshot is empty (fresh install / no ready
-    // repo memory), so the doctor surface is unchanged in that case.
+    // "What we've learned" preview — renders to "" when the snapshot is empty
+    // (fresh install / no ready repo memory).
     let snapshot_block = memory_snapshot::render(&findings.memory_snapshot);
     render_rows(&rows, &snapshot_block)
+}
+
+fn gate_capture_row(probe: &GateCaptureProbe) -> Row {
+    match &probe.status {
+        crate::session_mine::trigger::GateCaptureStatus::Ready => Row::ready_ok(
+            "capture",
+            "session learning ready | recall unaffected".to_owned(),
+        ),
+        crate::session_mine::trigger::GateCaptureStatus::Paused {
+            reason,
+            retry_after_ms,
+            ..
+        } => {
+            let mut hints = vec![
+                "recall still works; only new session learning capture paused".to_owned(),
+                format!("reason: {}", short_detail(reason)),
+            ];
+            if *retry_after_ms > 0 {
+                hints.push(format!(
+                    "next automatic retry in {}",
+                    duration_label_ms(*retry_after_ms)
+                ));
+            }
+            Row {
+                severity: Severity::Optional,
+                status: Status::Warn,
+                label: "capture",
+                value: "capture paused | recall unaffected".to_owned(),
+                hints,
+                repair: Some("difflore doctor --report".to_owned()),
+            }
+        }
+    }
+}
+
+fn recall_trace_row(
+    summary: &difflore_core::observability::injection_log::InjectionPathSummary,
+) -> Row {
+    let mut hints = Vec::new();
+    hints.push("machine-wide 24h trace; not scoped to the current repo".to_owned());
+    if let Some(detail) = summary.detail.as_deref() {
+        hints.push(detail.to_owned());
+    }
+    if !summary.dropped_by_reason.is_empty() {
+        hints.push(format!(
+            "drop reasons: {}",
+            format_count_map(&summary.dropped_by_reason)
+        ));
+    }
+    if !summary.injected_by_path.is_empty() {
+        hints.push(format!(
+            "injected paths: {}",
+            format_count_map(&summary.injected_by_path)
+        ));
+    }
+    if let Some(path) = summary.path.as_ref() {
+        hints.push(format!("trace log: {}", path.display()));
+    }
+
+    let status = if recall_trace_has_abnormal_drop_reason(&summary.dropped_by_reason) {
+        Status::Warn
+    } else {
+        Status::Ok
+    };
+    let value = if summary.count_24h == 0 {
+        "no recall trace events in 24h".to_owned()
+    } else {
+        format!(
+            "{} event{} | {} rule{} injected",
+            summary.count_24h,
+            if summary.count_24h == 1 { "" } else { "s" },
+            summary.total_rules_injected,
+            if summary.total_rules_injected == 1 {
+                ""
+            } else {
+                "s"
+            },
+        )
+    };
+
+    Row {
+        severity: Severity::Optional,
+        status,
+        label: "recall trace",
+        value,
+        hints,
+        repair: None,
+    }
+}
+
+fn recall_trace_has_abnormal_drop_reason(
+    dropped_by_reason: &std::collections::BTreeMap<String, usize>,
+) -> bool {
+    dropped_by_reason
+        .keys()
+        .any(|reason| !is_benign_recall_trace_drop_reason(reason))
+}
+
+fn is_benign_recall_trace_drop_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "recent_duplicate"
+            | "pre_read_disabled"
+            | "non_mutating_tool"
+            | "missing_target_file"
+            | "retrieval_empty"
+            | "no_repo_scope"
+            | "short_circuit"
+            | "not_applicable"
+            | "disabled"
+    )
+}
+
+fn format_count_map(map: &std::collections::BTreeMap<String, usize>) -> String {
+    map.iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn binary_row(version: &str) -> Row {
     // Always Ready: if the binary couldn't run, we wouldn't be here.
     Row::ready_ok("binary", format!("v{version}"))
+}
+
+fn secrets_row(status: &MasterKeyStorageStatus) -> Row {
+    match status {
+        MasterKeyStorageStatus::EnvOverride => Row::ready_ok(
+            "secrets",
+            "DIFFLORE_MASTER_KEY override (32-byte hex)".to_owned(),
+        ),
+        MasterKeyStorageStatus::DebugFileOverride { path } => Row::ready_ok(
+            "secrets",
+            format!("debug master-key file ({})", path.display()),
+        ),
+        MasterKeyStorageStatus::KeyringReady => {
+            Row::ready_ok("secrets", "OS keyring master key".to_owned())
+        }
+        MasterKeyStorageStatus::KeyringWillCreate => Row::ready_ok(
+            "secrets",
+            "OS keyring available | master key will be created on first secret".to_owned(),
+        ),
+        MasterKeyStorageStatus::KeyringInvalid(error) => Row {
+            severity: Severity::Optional,
+            status: Status::Err,
+            label: "secrets",
+            value: "OS keyring entry invalid".to_owned(),
+            hints: vec![
+                format!("stored master key is not a valid 32-byte hex key: {error}"),
+                "re-authenticate cloud/provider credentials after repairing the keyring entry"
+                    .to_owned(),
+            ],
+            repair: None,
+        },
+        MasterKeyStorageStatus::LocalFallback {
+            keyring_error,
+            keyseed,
+        } => local_fallback_secrets_row(keyring_error, keyseed),
+        MasterKeyStorageStatus::CiRequiresExplicitKey { keyring_error } => Row {
+            severity: Severity::Optional,
+            status: Status::Err,
+            label: "secrets",
+            value: "OS keyring unavailable on CI".to_owned(),
+            hints: vec![
+                format!("keyring error: {}", short_detail(keyring_error)),
+                "set DIFFLORE_MASTER_KEY=<64-char-hex> for CI/headless secret storage".to_owned(),
+            ],
+            repair: None,
+        },
+    }
+}
+
+fn local_fallback_secrets_row(keyring_error: &str, keyseed: &KeyseedStatus) -> Row {
+    let (status, value) = match keyseed {
+        KeyseedStatus::Present {
+            permissions_ok: Some(true),
+            ..
+        } => (
+            Status::Warn,
+            "local fallback | keyseed present (0600)".to_owned(),
+        ),
+        KeyseedStatus::Present {
+            permissions_ok: Some(false),
+            ..
+        } => (
+            Status::Warn,
+            "local fallback | keyseed present (permissions need repair)".to_owned(),
+        ),
+        KeyseedStatus::Present { .. } => {
+            (Status::Warn, "local fallback | keyseed present".to_owned())
+        }
+        KeyseedStatus::Missing { .. } => (
+            Status::Warn,
+            "local fallback | keyseed will be created on first secret".to_owned(),
+        ),
+        KeyseedStatus::Invalid { .. } => {
+            (Status::Err, "local fallback | keyseed invalid".to_owned())
+        }
+        KeyseedStatus::Unreadable { .. } => (
+            Status::Err,
+            "local fallback | keyseed unreadable".to_owned(),
+        ),
+        KeyseedStatus::Unavailable { .. } => (
+            Status::Err,
+            "local fallback | keyseed unavailable".to_owned(),
+        ),
+    };
+    let mut hints = vec![
+        format!("OS keyring unavailable: {}", short_detail(keyring_error)),
+        "fallback secrets are derived from a persisted 32-byte random keyseed".to_owned(),
+    ];
+    hints.extend(keyseed_hints(keyseed));
+    Row {
+        severity: Severity::Optional,
+        status,
+        label: "secrets",
+        value,
+        hints,
+        repair: None,
+    }
+}
+
+fn keyseed_hints(status: &KeyseedStatus) -> Vec<String> {
+    match status {
+        KeyseedStatus::Present { path, .. } => vec![format!("keyseed: {}", path.display())],
+        KeyseedStatus::Missing { path } => {
+            vec![format!("will create {} with mode 0600", path.display())]
+        }
+        KeyseedStatus::Invalid { path, error, .. }
+        | KeyseedStatus::Unreadable { path, error, .. } => {
+            vec![format!("{}: {}", path.display(), short_detail(error))]
+        }
+        KeyseedStatus::Unavailable { error } => vec![short_detail(error)],
+    }
+}
+
+fn short_detail(detail: &str) -> String {
+    const MAX: usize = 140;
+    let first = detail.lines().next().unwrap_or(detail).trim();
+    let mut chars = first.chars();
+    let truncated: String = chars.by_ref().take(MAX).collect();
+    if chars.next().is_none() {
+        first.to_owned()
+    } else {
+        format!("{truncated}...")
+    }
+}
+
+fn duration_label_ms(ms: i64) -> String {
+    let label = age_label_ms(ms);
+    label.strip_suffix(" ago").unwrap_or(&label).to_owned()
 }
 
 fn project_db_row(probe: &ProjectDbProbe) -> Row {
@@ -143,7 +390,7 @@ fn project_db_row(probe: &ProjectDbProbe) -> Row {
             label: "project db",
             value: "no memory indexed".to_owned(),
             hints: vec![
-                "recall returns nothing without memory: seed the corpus first".to_owned(),
+                "recall returns nothing without memory: import review history first".to_owned(),
                 "difflore status   (shows the shortest local path for this repo)".to_owned(),
                 "difflore import-reviews --max-prs 50".to_owned(),
             ],
@@ -197,16 +444,16 @@ fn project_db_row(probe: &ProjectDbProbe) -> Row {
 
     let (value, import_cmd) = match repo_full_name {
         Some(repo) => (
-            format!("0 memories for {repo} · {total_rules} on this machine"),
+            format!("0 memories for {repo} | {total_rules} on this machine"),
             format!("difflore import-reviews --repo {repo}"),
         ),
         None => (
-            format!("{total_rules} memories on this machine · no GitHub repo detected"),
+            format!("{total_rules} memories on this machine | no supported repo remote detected"),
             "difflore status".to_owned(),
         ),
     };
     let mut hints = vec![
-        "no current-repo memory is ready; doctor will not show unrelated repo proof here"
+        "no current-repo memory is ready; doctor will not show unrelated repo activity here"
             .to_owned(),
         "difflore status   (shows the repo-scoped value path)".to_owned(),
     ];
@@ -232,17 +479,17 @@ fn project_db_row(probe: &ProjectDbProbe) -> Row {
     }
 }
 
-fn mcp_row(snapshot: &mcp_install::McpStatusSnapshot) -> Row {
+fn mcp_row(snapshot: &installer::McpStatusSnapshot) -> Row {
     let installed: Vec<&str> = snapshot
         .clients
         .iter()
-        .filter(|c| matches!(c.state, mcp_install::InstallState::Installed))
+        .filter(|c| matches!(c.state, installer::InstallState::Installed))
         .map(|c| c.name)
         .collect();
     let conflicting_clients: Vec<&str> = snapshot
         .clients
         .iter()
-        .filter(|c| matches!(c.state, mcp_install::InstallState::Conflict))
+        .filter(|c| matches!(c.state, installer::InstallState::Conflict))
         .map(|c| c.name)
         .collect();
     let conflicts = conflicting_clients.len();
@@ -253,27 +500,27 @@ fn mcp_row(snapshot: &mcp_install::McpStatusSnapshot) -> Row {
             c.detected
                 && matches!(
                     c.state,
-                    mcp_install::InstallState::NotInstalled | mcp_install::InstallState::Unknown
+                    installer::InstallState::NotInstalled | installer::InstallState::Unknown
                 )
         })
         .map(|c| c.name.to_owned())
         .collect();
     let record_state = snapshot.canonical_record.state;
-    let record_ok = matches!(record_state, mcp_install::CanonicalRecordState::Present);
+    let record_ok = matches!(record_state, installer::CanonicalRecordState::Present);
     let diagnosis_hints = mcp_diagnosis_hints(snapshot.diagnosis.as_ref(), &installed);
     let runtime_state = snapshot.runtime_probe.as_ref().map(|probe| probe.state);
     if matches!(
         runtime_state,
-        Some(mcp_install::RuntimeProbeState::Failed | mcp_install::RuntimeProbeState::Timeout)
+        Some(installer::RuntimeProbeState::Failed | installer::RuntimeProbeState::Timeout)
     ) {
         let runtime_label = match runtime_state {
-            Some(mcp_install::RuntimeProbeState::Failed) => "runtime failed",
-            Some(mcp_install::RuntimeProbeState::Timeout) => "runtime timeout",
+            Some(installer::RuntimeProbeState::Failed) => "runtime failed",
+            Some(installer::RuntimeProbeState::Timeout) => "runtime timeout",
             _ => "runtime unavailable",
         };
         return Row {
             severity: Severity::Blocker,
-            status: if matches!(runtime_state, Some(mcp_install::RuntimeProbeState::Timeout)) {
+            status: if matches!(runtime_state, Some(installer::RuntimeProbeState::Timeout)) {
                 Status::Warn
             } else {
                 Status::Err
@@ -298,7 +545,7 @@ fn mcp_row(snapshot: &mcp_install::McpStatusSnapshot) -> Row {
         // gate), the agent path is still working for those clients —
         // demote to Optional/Warn so the header doesn't tell the user
         // their core value is blocked when it isn't.
-        let runtime_healthy = matches!(runtime_state, Some(mcp_install::RuntimeProbeState::Ok),);
+        let runtime_healthy = matches!(runtime_state, Some(installer::RuntimeProbeState::Ok),);
         let some_clients_ok = !installed.is_empty();
         let (severity, status) = if runtime_healthy && some_clients_ok {
             (Severity::Blocker, Status::Warn)
@@ -334,7 +581,7 @@ fn mcp_row(snapshot: &mcp_install::McpStatusSnapshot) -> Row {
                 format!("0 installed · {} detected", drift.len())
             },
             hints: vec![
-                "agents can recall team memory once wired; CLI commands work either way".to_owned(),
+                "agents can request team rules once wired; CLI commands work either way".to_owned(),
                 "difflore init".to_owned(),
             ]
             .into_iter()
@@ -396,7 +643,7 @@ fn format_mcp_conflict_value(installed: &[&str], conflicting_clients: &[&str]) -
 }
 
 fn mcp_diagnosis_hints(
-    diagnosis: Option<&mcp_install::McpStatusDiagnosis>,
+    diagnosis: Option<&installer::McpStatusDiagnosis>,
     installed: &[&str],
 ) -> Vec<String> {
     let Some(diagnosis) = diagnosis else {
@@ -426,14 +673,12 @@ fn mcp_diagnosis_hints(
     hints
 }
 
-const fn mcp_canonical_record_state_label(
-    state: mcp_install::CanonicalRecordState,
-) -> &'static str {
+const fn mcp_canonical_record_state_label(state: installer::CanonicalRecordState) -> &'static str {
     match state {
-        mcp_install::CanonicalRecordState::Missing => "missing",
-        mcp_install::CanonicalRecordState::Present => "present",
-        mcp_install::CanonicalRecordState::Stale => "stale",
-        mcp_install::CanonicalRecordState::Conflict => "conflict",
+        installer::CanonicalRecordState::Missing => "missing",
+        installer::CanonicalRecordState::Present => "present",
+        installer::CanonicalRecordState::Stale => "stale",
+        installer::CanonicalRecordState::Conflict => "conflict",
     }
 }
 
@@ -448,7 +693,8 @@ fn provider_row(probe: &ProviderProbe) -> Row {
             value: "db unavailable".to_owned(),
             hints: vec![
                 "provider list lives in the project DB which failed to open".to_owned(),
-                "difflore doctor --report   (full diagnostic for the issue tracker)".to_owned(),
+                "difflore doctor --report -   (copy/paste diagnostic for the issue tracker)"
+                    .to_owned(),
             ],
             repair: None,
         },
@@ -493,32 +739,30 @@ fn cloud_row(probe: &CloudProbe) -> Row {
     match probe {
         CloudProbe::LoggedIn { plan, team_name } => {
             let suffix = match team_name.as_deref() {
-                Some(team) => format!(" · team: {team}"),
+                Some(team) => format!(" | team: {team}"),
                 None => String::new(),
             };
-            // Embedding-aware plan line. Free shows that managed embedding
-            // has a plan cap, but avoids printing an exact number here
-            // because the default doctor row has no fresh cap/usage cache.
-            // Cap hits themselves are surfaced by the embedder row and
-            // doctor report from activity_stream telemetry.
+            // Free notes the managed-embedding cap but prints no exact number
+            // (the default doctor row has no fresh cap/usage cache; cap hits
+            // are surfaced by the embedder row from telemetry).
             let embedding_suffix = if plan.eq_ignore_ascii_case("free") {
-                " · managed embedding cap · upgrade or embeddings setup"
+                " | managed embedding cap | upgrade or embeddings setup"
             } else {
-                " · unlimited embedding"
+                " | unlimited embedding"
             };
             Row::ready_ok(
                 "cloud",
-                format!("logged in · plan: {plan}{suffix}{embedding_suffix}"),
+                format!("logged in | plan: {plan}{suffix}{embedding_suffix}"),
             )
         }
         CloudProbe::NotLoggedIn => Row {
             severity: Severity::Optional,
             status: Status::Warn,
             label: "cloud",
-            value: "not logged in".to_owned(),
+            value: "local runtime".to_owned(),
             hints: vec![
-                "log in to enable team sync, dashboard, and cloud extractions".to_owned(),
-                "difflore cloud login".to_owned(),
+                "team sync, dashboard, and uploaded review analysis: difflore cloud login"
+                    .to_owned(),
             ],
             repair: None,
         },
@@ -529,8 +773,14 @@ fn embedder_row(probe: &EmbedderProbe) -> Row {
     let recent = recent_embedding_degradation(&probe.activity_tail);
     let row = embedder_row_from_kind(&probe.kind, &recent);
     if let Some(diag) = &probe.diagnostics
-        && let Some(row) = embedder_row_from_diagnostics(diag)
+        && let Some(mut row) = embedder_row_from_diagnostics(diag)
     {
+        if recent.any() {
+            row.hints.insert(
+                0,
+                format!("recent embedding degradation: {}", recent.summary()),
+            );
+        }
         return row;
     }
     row
@@ -539,13 +789,16 @@ fn embedder_row(probe: &EmbedderProbe) -> Row {
 #[derive(Default)]
 struct RecentEmbeddingDegradation {
     fallback_count: usize,
+    persistent_fallback_count: usize,
     cap_count: usize,
     latest_reason: Option<String>,
 }
 
 impl RecentEmbeddingDegradation {
     const fn any(&self) -> bool {
-        self.fallback_count > 0 || self.cap_count > 0
+        self.persistent_fallback_count > 0
+            || self.cap_count > 0
+            || self.fallback_count >= SUSTAINED_TRANSIENT_FALLBACK_THRESHOLD
     }
 
     fn summary(&self) -> String {
@@ -565,18 +818,26 @@ impl RecentEmbeddingDegradation {
 }
 
 fn recent_embedding_degradation(
-    events: &[difflore_core::activity_stream::ActivityEvent],
+    events: &[difflore_core::observability::activity_stream::ActivityEvent],
 ) -> RecentEmbeddingDegradation {
     let mut summary = RecentEmbeddingDegradation::default();
+    let now_ms = chrono::Utc::now().timestamp_millis();
     for event in events {
         match &event.payload {
-            difflore_core::activity_stream::ActivityPayload::EmbeddingFallback { reason } => {
+            difflore_core::observability::activity_stream::ActivityPayload::EmbeddingFallback {
+                reason,
+            } if should_count_embedding_degradation(event.ts_ms, reason, now_ms) => {
                 summary.fallback_count += 1;
+                if is_persistent_embedding_degradation(reason) {
+                    summary.persistent_fallback_count += 1;
+                }
                 if summary.latest_reason.is_none() {
                     summary.latest_reason = Some(reason.clone());
                 }
             }
-            difflore_core::activity_stream::ActivityPayload::EmbedCapReached { .. } => {
+            difflore_core::observability::activity_stream::ActivityPayload::EmbedCapReached {
+                ..
+            } => {
                 summary.cap_count += 1;
             }
             _ => {}
@@ -591,13 +852,13 @@ fn embedder_row_from_kind(
 ) -> Row {
     use difflore_core::context::embedding::ActiveEmbedderKind;
     match kind {
-        ActiveEmbedderKind::Cloud { .. } => {
+        ActiveEmbedderKind::Cloud => {
             if recent.any() {
                 return Row {
                     severity: Severity::Optional,
                     status: Status::Warn,
                     label: "embedder",
-                    value: "cloud-managed · semantic search configured · recent keyword fallback"
+                    value: "cloud-managed | semantic search configured | recent keyword fallback"
                         .to_owned(),
                     hints: vec![
                         format!("recent embedding degradation: {}", recent.summary()),
@@ -610,7 +871,7 @@ fn embedder_row_from_kind(
                     repair: None,
                 };
             }
-            Row::ready_ok("embedder", "cloud-managed · semantic search".to_owned())
+            Row::ready_ok("embedder", "cloud-managed | semantic search".to_owned())
         }
         ActiveEmbedderKind::Byok { provider_host, .. } => {
             let host = provider_host.clone();
@@ -620,7 +881,7 @@ fn embedder_row_from_kind(
                     status: Status::Warn,
                     label: "embedder",
                     value: format!(
-                        "BYOK · {host} · semantic search configured · recent keyword fallback"
+                        "BYOK | {host} | semantic search configured | recent keyword fallback"
                     ),
                     hints: vec![
                         format!("recent embedding degradation: {}", recent.summary()),
@@ -632,18 +893,18 @@ fn embedder_row_from_kind(
                     repair: None,
                 };
             }
-            Row::ready_ok("embedder", format!("BYOK · {host} · semantic search"))
+            Row::ready_ok("embedder", format!("BYOK | {host} | semantic search"))
         }
         ActiveEmbedderKind::Sha1 => Row {
             severity: Severity::Optional,
             status: Status::Warn,
             label: "embedder",
-            value: "semantic search: off · using fast keyword matching".to_owned(),
+            value: "semantic recall: local keyword fallback".to_owned(),
             hints: vec![
-                "recall still works; semantic search is optional".to_owned(),
-                "difflore cloud login".to_owned(),
-                "or bring your own embedding provider".to_owned(),
-                "difflore embeddings setup".to_owned(),
+                "recall still works, but match quality may be lower than semantic vectors"
+                    .to_owned(),
+                "managed semantic recall: difflore cloud login".to_owned(),
+                "advanced/BYOK: difflore embeddings setup".to_owned(),
             ],
             repair: None,
         },
@@ -653,6 +914,9 @@ fn embedder_row_from_kind(
 fn embedder_row_from_diagnostics(
     diag: &difflore_core::context::EmbeddingDiagnostics,
 ) -> Option<Row> {
+    if diag.is_local_agent_index() {
+        return None;
+    }
     if !diag.degraded {
         return None;
     }
@@ -668,9 +932,9 @@ fn embedder_row_from_diagnostics(
         _ => "index is out of date",
     };
     let value = if diag.vector_lane_available {
-        format!("semantic index needs attention · {display_reason}")
+        format!("semantic index needs attention | {display_reason}")
     } else {
-        format!("semantic index is paused · {display_reason}")
+        format!("semantic index is paused | {display_reason}")
     };
     let repair_hint = match reason {
         "provider_fallback" => {
@@ -747,16 +1011,41 @@ fn git_hooks_row(state: &GitHookState) -> Row {
 fn daemon_row(probe: &DaemonProbe) -> Row {
     // A stale pid is cleaned in `probes`; if cleanup succeeded, report the
     // daemon as informationally off rather than warning forever.
-    match probe {
-        DaemonProbe::Running => Row {
+    let cloud_pending = probe.cloud_pending.unwrap_or(0);
+    let observation_pending = probe.observation_pending.unwrap_or(0);
+    let spill_count = probe.hook_spill_count.unwrap_or(0);
+    let backlog = cloud_pending + observation_pending + i64::try_from(spill_count).unwrap_or(0);
+    let mut hints = Vec::new();
+    if let Some(ms) = probe.heartbeat_age_ms {
+        hints.push(format!("heartbeat: {}", age_label_ms(ms)));
+    }
+    if let Some(ms) = probe.last_drain_age_ms {
+        let attempted = probe.last_attempted.unwrap_or(0);
+        let confirmed = probe.last_confirmed.unwrap_or(0);
+        hints.push(format!(
+            "last drain: {} ({attempted} attempted, {confirmed} confirmed)",
+            age_label_ms(ms)
+        ));
+    }
+    if backlog > 0 {
+        hints.push(
+            "queued work drains in the background; run `difflore cloud sync --include-observations --include-candidates --include-telemetry` for an immediate pass"
+                .to_owned(),
+        );
+    }
+
+    match probe.state {
+        DaemonProbeState::Running => Row {
             severity: Severity::Optional,
             status: Status::Ok,
             label: "daemon",
-            value: "running".to_owned(),
-            hints: vec![],
+            value: format!(
+                "running | cloud={cloud_pending} observation={observation_pending} spill={spill_count}"
+            ),
+            hints,
             repair: None,
         },
-        DaemonProbe::StaleCleanupFailed => Row {
+        DaemonProbeState::StaleCleanupFailed => Row {
             // Only reached when the cleanup attempt failed (locked
             // file etc.). Still optional surface, but flagged as Err
             // because the on-disk state needs a hand.
@@ -764,19 +1053,31 @@ fn daemon_row(probe: &DaemonProbe) -> Row {
             status: Status::Err,
             label: "daemon",
             value: "stale pid (cleanup failed)".to_owned(),
-            hints: vec![
-                "remove the stale DiffLore daemon pid file or rerun the command".to_owned(),
-            ],
+            hints: {
+                let mut h = hints;
+                h.push("remove the stale DiffLore daemon pid file or rerun the command".to_owned());
+                h
+            },
             repair: None,
         },
-        DaemonProbe::NotRunning => Row {
-            // Daemon is optional; CLI/MCP invocations drain the SQLite outbox.
-            // Backlogs are handled by the slow-drain warning instead.
+        DaemonProbeState::NotRunning => Row {
+            // No queued work means the daemon can remain off. With backlog or
+            // spill files present, flag it so the user sees why uploads lag.
             severity: Severity::Optional,
-            status: Status::Ok,
+            status: if backlog > 0 {
+                Status::Warn
+            } else {
+                Status::Ok
+            },
             label: "daemon",
-            value: "off (not needed)".to_owned(),
-            hints: vec![],
+            value: if backlog > 0 {
+                format!(
+                    "off | queued cloud={cloud_pending} observation={observation_pending} spill={spill_count}"
+                )
+            } else {
+                "off (no queued uploads)".to_owned()
+            },
+            hints,
             repair: None,
         },
     }
@@ -799,7 +1100,6 @@ fn render_rows(rows: &[Row], snapshot_block: &str) -> String {
             continue;
         }
         if wrote_any_section {
-            // Blank line between sections so the headings breathe.
             out.push('\n');
         }
         wrote_any_section = true;
@@ -813,17 +1113,13 @@ fn render_rows(rows: &[Row], snapshot_block: &str) -> String {
             render_row_into(&mut out, row);
         }
     }
-    // "What we've learned" preview — skipped entirely when the corpus
-    // is empty (helper returns ""), so the doctor surface for a fresh
-    // install is unchanged.
     if !snapshot_block.is_empty() {
         out.push_str(snapshot_block);
     }
     out.push_str(&format!("{}\n", style::pewter(RULE)));
 
-    // Footer: section-style `Next` per the redesign brief. The single
-    // line under it is the highest-priority blocker's repair command,
-    // or the canonical "now what?" command when nothing's blocking.
+    // Footer: the highest-priority blocker's repair command, or the canonical
+    // "now what?" command when nothing's blocking.
     let next_blocker = rows
         .iter()
         .find(|r| r.severity == Severity::Blocker && r.repair.is_some());
@@ -844,21 +1140,26 @@ fn render_row_into(out: &mut String, row: &Row) {
         Status::Warn => style::amber(style::sym::WARN).to_string(),
         Status::Err => style::danger(style::sym::ERR).to_string(),
     };
+    // Value column starts after "  " (2) + glyph (1) + " " (1) + label (LABEL_W)
+    // + " " (1). Fold long values under that column instead of at column 0.
+    const VALUE_COL: usize = LABEL_W + 5;
     out.push_str(&format!(
         "  {} {:<width$} {}\n",
         glyph,
         row.label,
-        row.value,
+        style::wrap_after_column(&row.value, VALUE_COL),
         width = LABEL_W
     ));
     for hint in &row.hints {
+        // Hint text starts after "  " (2) + pad (LABEL_W+4) + tip (1) + " " (1).
+        const HINT_COL: usize = LABEL_W + 8;
         out.push_str(&format!(
             "  {space:<pad$}{tip} {hint}\n",
             space = "",
             // 2 leading + 1 glyph + 1 space (= 4) before label area.
             pad = LABEL_W + 4,
             tip = style::emerald(style::sym::TIP),
-            hint = style::pewter(hint),
+            hint = style::pewter(&style::wrap_after_column(hint, HINT_COL)),
         ));
     }
 }
@@ -866,12 +1167,17 @@ fn render_row_into(out: &mut String, row: &Row) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Severity, Status, embedder_row_from_diagnostics, embedder_row_from_kind,
-        recent_embedding_degradation,
+        EmbedderProbe, GateCaptureProbe, Severity, Status, embedder_row,
+        embedder_row_from_diagnostics, embedder_row_from_kind, gate_capture_row, recall_trace_row,
+        recent_embedding_degradation, secrets_row,
     };
-    use difflore_core::activity_stream::{ActivityEvent, ActivityPayload};
     use difflore_core::context::EmbeddingDiagnostics;
     use difflore_core::context::embedding::ActiveEmbedderKind;
+    use difflore_core::infra::crypto::{KeyseedStatus, MasterKeyStorageStatus};
+    use difflore_core::observability::activity_stream::{ActivityEvent, ActivityPayload};
+    use difflore_core::observability::injection_log::InjectionPathSummary;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
     fn assert_ready_ok(row: &super::Row, label: &'static str) {
         assert_eq!(row.label, label);
@@ -880,19 +1186,175 @@ mod tests {
     }
 
     fn event(payload: ActivityPayload) -> ActivityEvent {
-        ActivityEvent { ts_ms: 1, payload }
+        ActivityEvent {
+            ts_ms: chrono::Utc::now().timestamp_millis(),
+            payload,
+        }
+    }
+
+    fn old_event(payload: ActivityPayload) -> ActivityEvent {
+        ActivityEvent {
+            ts_ms: chrono::Utc::now().timestamp_millis()
+                - super::super::embedding_degradation::EMBEDDING_DEGRADATION_WINDOW_MS
+                - 1,
+            payload,
+        }
     }
 
     fn no_recent() -> super::RecentEmbeddingDegradation {
         super::RecentEmbeddingDegradation::default()
     }
 
+    fn recall_trace_summary(reasons: &[(&str, usize)]) -> InjectionPathSummary {
+        let mut dropped_by_reason = BTreeMap::new();
+        for (reason, count) in reasons {
+            dropped_by_reason.insert((*reason).to_owned(), *count);
+        }
+        InjectionPathSummary {
+            count_24h: reasons.iter().map(|(_, count)| *count).sum(),
+            dropped_by_reason,
+            ..InjectionPathSummary::default()
+        }
+    }
+
+    #[test]
+    fn recall_trace_row_keeps_benign_drop_reasons_green_and_visible() {
+        let row = recall_trace_row(&recall_trace_summary(&[
+            ("recent_duplicate", 2),
+            ("pre_read_disabled", 1),
+            ("non_mutating_tool", 1),
+            ("retrieval_empty", 3),
+            ("no_repo_scope", 1),
+        ]));
+
+        assert_eq!(row.label, "recall trace");
+        assert!(matches!(row.severity, Severity::Optional));
+        assert!(matches!(row.status, Status::Ok));
+        assert!(
+            row.hints
+                .iter()
+                .any(|hint| hint.contains("drop reasons:") && hint.contains("retrieval_empty=3")),
+            "hints: {:?}",
+            row.hints
+        );
+    }
+
+    #[test]
+    fn recall_trace_row_warns_for_abnormal_or_unknown_drop_reasons() {
+        for reason in ["retrieval_error", "parse_error", "unknown", "future_reason"] {
+            let row = recall_trace_row(&recall_trace_summary(&[(reason, 1)]));
+            assert!(
+                matches!(row.status, Status::Warn),
+                "{reason} should warn; row value={}",
+                row.value
+            );
+        }
+    }
+
+    #[test]
+    fn gate_capture_row_surfaces_paused_capture_as_optional_warning() {
+        let row = gate_capture_row(&GateCaptureProbe {
+            status: crate::session_mine::trigger::GateCaptureStatus::Paused {
+                since_ts: 100,
+                reason: "codex unauthorized".to_owned(),
+                retry_after_ms: 60_000,
+            },
+        });
+
+        assert_eq!(row.label, "capture");
+        assert!(matches!(row.severity, Severity::Optional));
+        assert!(matches!(row.status, Status::Warn));
+        assert!(row.value.contains("capture paused"));
+        assert!(row.value.contains("recall unaffected"));
+        assert!(
+            row.hints
+                .iter()
+                .any(|hint| hint.contains("only new session learning capture paused"))
+        );
+    }
+
+    #[test]
+    fn secrets_row_reports_keyring_ready() {
+        let row = secrets_row(&MasterKeyStorageStatus::KeyringReady);
+        assert_ready_ok(&row, "secrets");
+        assert!(row.value.contains("OS keyring"), "value: {}", row.value);
+    }
+
+    #[test]
+    fn secrets_row_reports_debug_master_key_file() {
+        let row = secrets_row(&MasterKeyStorageStatus::DebugFileOverride {
+            path: PathBuf::from("/tmp/difflore/master-key"),
+        });
+
+        assert_ready_ok(&row, "secrets");
+        assert!(
+            row.value.contains("debug master-key file"),
+            "value: {}",
+            row.value
+        );
+        assert!(
+            row.value.contains("/tmp/difflore/master-key"),
+            "value: {}",
+            row.value
+        );
+    }
+
+    #[test]
+    fn secrets_row_warns_for_local_fallback_with_keyseed() {
+        let row = secrets_row(&MasterKeyStorageStatus::LocalFallback {
+            keyring_error: "secret service unavailable".to_owned(),
+            keyseed: KeyseedStatus::Present {
+                path: PathBuf::from("/tmp/difflore/keyseed"),
+                permissions_ok: Some(true),
+            },
+        });
+
+        assert_eq!(row.label, "secrets");
+        assert!(matches!(row.severity, Severity::Optional));
+        assert!(matches!(row.status, Status::Warn));
+        assert!(
+            row.value.contains("keyseed present"),
+            "value: {}",
+            row.value
+        );
+        assert!(
+            row.hints.iter().any(|hint| hint.contains("32-byte random")),
+            "hints: {:?}",
+            row.hints
+        );
+        assert!(
+            row.hints
+                .iter()
+                .any(|hint| hint.contains("/tmp/difflore/keyseed")),
+            "hints: {:?}",
+            row.hints
+        );
+    }
+
+    #[test]
+    fn secrets_row_errors_for_invalid_local_keyseed() {
+        let row = secrets_row(&MasterKeyStorageStatus::LocalFallback {
+            keyring_error: "secret service unavailable".to_owned(),
+            keyseed: KeyseedStatus::Invalid {
+                path: PathBuf::from("/tmp/difflore/keyseed"),
+                error: "expected 64 lowercase hex characters".to_owned(),
+                permissions_ok: Some(true),
+            },
+        });
+
+        assert_eq!(row.label, "secrets");
+        assert!(matches!(row.severity, Severity::Optional));
+        assert!(matches!(row.status, Status::Err));
+        assert!(
+            row.value.contains("keyseed invalid"),
+            "value: {}",
+            row.value
+        );
+    }
+
     #[test]
     fn embedder_row_cloud_managed() {
-        let kind = ActiveEmbedderKind::Cloud {
-            model: "text-embedding-3-small".to_owned(),
-            dim: 1536,
-        };
+        let kind = ActiveEmbedderKind::Cloud;
         let row = embedder_row_from_kind(&kind, &no_recent());
         assert_ready_ok(&row, "embedder");
         assert!(row.value.contains("cloud-managed"), "value: {}", row.value);
@@ -900,10 +1362,7 @@ mod tests {
 
     #[test]
     fn embedder_row_warns_when_cloud_recently_fell_back() {
-        let kind = ActiveEmbedderKind::Cloud {
-            model: "text-embedding-3-small".to_owned(),
-            dim: 1536,
-        };
+        let kind = ActiveEmbedderKind::Cloud;
         let recent = recent_embedding_degradation(&[
             event(ActivityPayload::EmbeddingFallback {
                 reason: "network".into(),
@@ -932,6 +1391,69 @@ mod tests {
     }
 
     #[test]
+    fn embedder_row_ignores_historical_transient_fallback() {
+        let kind = ActiveEmbedderKind::Cloud;
+        let recent =
+            recent_embedding_degradation(&[old_event(ActivityPayload::EmbeddingFallback {
+                reason: "timeout".into(),
+            })]);
+        let row = embedder_row_from_kind(&kind, &recent);
+
+        assert_ready_ok(&row, "embedder");
+        assert!(
+            !row.value.contains("recent keyword fallback"),
+            "value: {}",
+            row.value
+        );
+    }
+
+    #[test]
+    fn embedder_row_ignores_brief_transient_fallbacks_below_threshold() {
+        let kind = ActiveEmbedderKind::Cloud;
+        let recent = recent_embedding_degradation(&[
+            event(ActivityPayload::EmbeddingFallback {
+                reason: "timeout".into(),
+            }),
+            event(ActivityPayload::EmbeddingFallback {
+                reason: "network".into(),
+            }),
+            event(ActivityPayload::EmbeddingFallback {
+                reason: "timeout".into(),
+            }),
+        ]);
+        let row = embedder_row_from_kind(&kind, &recent);
+
+        assert_ready_ok(&row, "embedder");
+        assert!(
+            !row.value.contains("recent keyword fallback"),
+            "value: {}",
+            row.value
+        );
+    }
+
+    #[test]
+    fn embedder_row_warns_on_sustained_transient_fallbacks() {
+        let kind = ActiveEmbedderKind::Cloud;
+        let events = (0..super::SUSTAINED_TRANSIENT_FALLBACK_THRESHOLD)
+            .map(|_| {
+                event(ActivityPayload::EmbeddingFallback {
+                    reason: "timeout".into(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let recent = recent_embedding_degradation(&events);
+        let row = embedder_row_from_kind(&kind, &recent);
+
+        assert!(matches!(row.severity, Severity::Optional));
+        assert!(matches!(row.status, Status::Warn));
+        assert!(
+            row.value.contains("recent keyword fallback"),
+            "value: {}",
+            row.value
+        );
+    }
+
+    #[test]
     fn embedder_row_byok_default_host() {
         let kind = ActiveEmbedderKind::Byok {
             provider_host: "api.openai.com".to_owned(),
@@ -941,7 +1463,7 @@ mod tests {
         let row = embedder_row_from_kind(&kind, &no_recent());
         assert_ready_ok(&row, "embedder");
         assert!(
-            row.value.starts_with("BYOK · api.openai.com"),
+            row.value.starts_with("BYOK | api.openai.com"),
             "value: {}",
             row.value
         );
@@ -954,15 +1476,20 @@ mod tests {
             model: "text-embedding-3-small".to_owned(),
             dim: 1536,
         };
-        let recent = recent_embedding_degradation(&[event(ActivityPayload::EmbeddingFallback {
-            reason: "timeout".into(),
-        })]);
+        let events = (0..super::SUSTAINED_TRANSIENT_FALLBACK_THRESHOLD)
+            .map(|_| {
+                event(ActivityPayload::EmbeddingFallback {
+                    reason: "timeout".into(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let recent = recent_embedding_degradation(&events);
         let row = embedder_row_from_kind(&kind, &recent);
         assert!(matches!(row.severity, Severity::Optional));
         assert!(matches!(row.status, Status::Warn));
         assert!(
             row.value
-                .contains("BYOK · embed.example.com · semantic search configured"),
+                .contains("BYOK | embed.example.com | semantic search configured"),
             "value: {}",
             row.value
         );
@@ -1010,11 +1537,46 @@ mod tests {
     }
 
     #[test]
+    fn embedder_row_keeps_recent_degradation_when_diagnostics_warn() {
+        let probe = EmbedderProbe {
+            kind: ActiveEmbedderKind::Cloud,
+            activity_tail: vec![event(ActivityPayload::EmbeddingFallback {
+                reason: "forbidden".into(),
+            })],
+            diagnostics: Some(EmbeddingDiagnostics {
+                active_profile: "cloud:text-embedding-3-small:1536".to_owned(),
+                index_profile: Some("sha1:local:128".to_owned()),
+                profile_match: false,
+                degraded: true,
+                degraded_reason: Some("profile_mismatch".to_owned()),
+                vector_lane_available: true,
+            }),
+        };
+
+        let row = embedder_row(&probe);
+
+        assert!(matches!(row.status, Status::Warn));
+        assert!(
+            row.hints
+                .iter()
+                .any(|hint| hint.contains("recent embedding degradation: 1 fallback")),
+            "{:?}",
+            row.hints
+        );
+        assert!(
+            row.hints
+                .iter()
+                .any(|hint| hint.contains("difflore embeddings status")),
+            "{:?}",
+            row.hints
+        );
+    }
+
+    #[test]
     fn embedder_row_surfaces_force_rebuild_for_profile_mismatch() {
-        // A profile/dimension mismatch is exactly the case the force-rebuild
-        // command recovers: the lazy `recall --diff` refresh is freshness-gated
-        // and can skip a same-count inconsistency, so doctor must point users at
-        // `difflore embeddings rebuild` here.
+        // A profile/dimension mismatch needs force-rebuild: the lazy
+        // `recall --diff` refresh is freshness-gated and can skip a same-count
+        // inconsistency, so doctor must point at `difflore embeddings rebuild`.
         let row = embedder_row_from_diagnostics(&EmbeddingDiagnostics {
             active_profile: "cloud:text-embedding-3-small:1536".to_owned(),
             index_profile: Some("sha1:local:128".to_owned()),
@@ -1030,6 +1592,23 @@ mod tests {
                 .any(|hint| hint.contains("difflore embeddings rebuild")),
             "{:?}",
             row.hints
+        );
+    }
+
+    #[test]
+    fn embedder_row_does_not_warn_on_expected_local_agent_index() {
+        let row = embedder_row_from_diagnostics(&EmbeddingDiagnostics {
+            active_profile: "cloud:managed".to_owned(),
+            index_profile: Some("sha1:local:128".to_owned()),
+            profile_match: false,
+            degraded: false,
+            degraded_reason: Some("local_agent_index".to_owned()),
+            vector_lane_available: true,
+        });
+
+        assert!(
+            row.is_none(),
+            "local-agent MCP/hook index must not override the healthy embedder row"
         );
     }
 
@@ -1056,7 +1635,7 @@ mod tests {
         };
         let row = embedder_row_from_kind(&kind, &no_recent());
         assert!(
-            row.value.contains("BYOK · embed.example.com"),
+            row.value.contains("BYOK | embed.example.com"),
             "value: {}",
             row.value
         );
@@ -1070,12 +1649,12 @@ mod tests {
         assert!(matches!(row.severity, Severity::Optional));
         assert!(matches!(row.status, Status::Warn));
         assert!(
-            row.value.contains("semantic search: off"),
+            row.value.contains("local keyword fallback"),
             "value: {}",
             row.value
         );
         assert!(
-            row.hints.iter().any(|h| h.contains("semantic search")),
+            row.hints.iter().any(|h| h.contains("match quality")),
             "hints: {:?}",
             row.hints
         );
