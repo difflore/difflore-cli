@@ -1,15 +1,14 @@
 //! Pre-flight guards for the post-install import offer.
 //!
-//! The offer only makes sense in a narrow context: a real git repo that
-//! we can resolve a `owner/repo` slug for, on an interactive terminal,
-//! with `gh` already installed. Anything else and we silently skip —
+//! The scan only makes sense in a narrow context: a real git repo that
+//! we can resolve a `owner/repo` slug for, with `gh` already installed.
+//! Anything else and we silently skip —
 //! the install flow's success line should still feel clean.
 //!
 //! Each guard returns a [`Result<(), SkipReason>`] so [`run_guards`] can
 //! chain them in priority order without nested matches.
 
 use std::path::Path;
-use std::process::Command;
 
 use super::opts::PostInstallScanOpts;
 use super::outcome::SkipReason;
@@ -19,15 +18,13 @@ use super::outcome::SkipReason;
 /// shell. Lets test scripts opt out without needing a `--no-*` flag.
 pub const SKIP_ENV_VAR: &str = "DIFFLORE_SKIP_POST_INSTALL_SCAN";
 
-/// CI env vars we treat as "not a real user terminal" regardless of tty
-/// state. The list is intentionally short — every entry is an absolute
-/// boolean ("we're in CI"), not a hint. Buildkite/Drone/Travis follow
-/// the same `CI=true` convention so the first check catches them too.
+/// CI env vars we treat as "not a real user terminal" regardless of tty state.
+/// Buildkite/Drone/Travis follow the `CI=true` convention, so the first entry
+/// catches them too.
 const CI_ENV_VARS: &[&str] = &["CI", "GITHUB_ACTIONS", "GITLAB_CI"];
 
-/// Inputs to [`run_guards_with`]. The production [`run_guards`] entry
-/// point fills these from real env + tty checks; tests provide
-/// deterministic fixtures.
+/// Inputs to [`run_guards_with`]. [`run_guards`] fills these from real env +
+/// tty checks; tests provide deterministic fixtures.
 #[derive(Debug, Clone, Copy)]
 pub struct GuardSignals {
     pub stdin_is_tty: bool,
@@ -39,10 +36,8 @@ pub struct GuardSignals {
     pub explicit_skip: bool,
 }
 
-/// Pure decision: do any of the guards trip? Returns the first failing
-/// reason in priority order so the caller can act on it. Priority order
-/// mirrors "blame for the skip" — explicit user skip first, then
-/// "you're in CI", then objective preconditions.
+/// Pure decision: returns the first failing reason in priority order — explicit
+/// user skip first, then CI, then objective preconditions.
 pub const fn run_guards_with(
     signals: GuardSignals,
     non_interactive: bool,
@@ -53,7 +48,7 @@ pub const fn run_guards_with(
     if signals.in_ci {
         return Err(SkipReason::RunningInCi);
     }
-    if non_interactive || !signals.stdin_is_tty || !signals.stdout_is_tty {
+    if non_interactive {
         return Err(SkipReason::NonInteractive);
     }
     if !signals.is_git_repo {
@@ -71,11 +66,9 @@ pub const fn run_guards_with(
 /// Production entry point. Probes the real env / fs / PATH using `opts`
 /// and runs [`run_guards_with`] on the result.
 pub fn run_guards(opts: &PostInstallScanOpts) -> Result<(), SkipReason> {
-    use std::io::IsTerminal;
-
     let signals = GuardSignals {
-        stdin_is_tty: std::io::stdin().is_terminal(),
-        stdout_is_tty: std::io::stdout().is_terminal(),
+        stdin_is_tty: false,
+        stdout_is_tty: false,
         gh_on_path: which::which("gh").is_ok(),
         is_git_repo: is_git_repo(&opts.cwd),
         has_github_remote: has_github_remote(&opts.cwd),
@@ -95,9 +88,8 @@ fn detect_explicit_skip() -> bool {
     }
 }
 
-/// True iff any common CI env var is set to a truthy value. We don't
-/// just check "present" because a vendor that sets `CI=` (empty) should
-/// not trigger; the convention is `CI=true`.
+/// True iff any common CI env var is set to a truthy value. Presence alone
+/// isn't enough: a vendor that sets `CI=` (empty) must not trigger.
 fn detect_ci() -> bool {
     CI_ENV_VARS
         .iter()
@@ -108,27 +100,23 @@ fn is_truthy(v: &str) -> bool {
     matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
 }
 
-/// Cheap "are we in a git repo?" probe. We can't rely on a `.git` dir
-/// because git worktrees use a `.git` *file*. Shelling out to
-/// `git rev-parse` is the canonical answer.
+/// Probe for a git repo via `git rev-parse`. A `.git` dir check is unreliable
+/// because git worktrees use a `.git` file.
 fn is_git_repo(cwd: &Path) -> bool {
-    let Ok(output) = Command::new("git")
+    let Ok(output) = difflore_core::infra::git::git_command(cwd)
         .args(["rev-parse", "--is-inside-work-tree"])
-        .current_dir(cwd)
         .output()
     else {
         return false;
     };
-    output.status.success()
-        && String::from_utf8_lossy(&output.stdout).trim() == "true"
+    output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true"
 }
 
-/// True iff `git remote get-url origin` succeeds and the result parses
-/// as a GitHub `owner/repo` slug. We delegate parsing to core so we
-/// stay in sync with `difflore import-reviews`'s own resolution.
+/// True iff the origin remote parses as a GitHub `owner/repo` slug. Parsing is
+/// delegated to core to stay in sync with `difflore import-reviews`.
 fn has_github_remote(cwd: &Path) -> bool {
     let path = cwd.to_string_lossy().into_owned();
-    difflore_core::github_import::detect_repo_from_remote(&path).is_ok()
+    difflore_core::ingest::github::detect_repo_from_remote(&path).is_ok()
 }
 
 #[cfg(test)]
@@ -154,9 +142,7 @@ mod tests {
 
     #[test]
     fn explicit_skip_short_circuits_everything() {
-        // Set every other failure mode too — explicit_skip still wins so
-        // a user who exported the env var never sees the prompt even on
-        // an otherwise-pristine machine.
+        // With every other failure mode set, explicit_skip still wins.
         let mut s = base_signals();
         s.explicit_skip = true;
         s.in_ci = true;
@@ -175,28 +161,20 @@ mod tests {
     }
 
     #[test]
-    fn non_interactive_flag_or_pipe_skips_with_non_interactive_reason() {
+    fn non_interactive_flag_skips_with_non_interactive_reason() {
         // Caller asked for non-interactive explicitly.
         assert_eq!(
             run_guards_with(base_signals(), true),
             Err(SkipReason::NonInteractive)
         );
+    }
 
-        // Or stdin is piped.
+    #[test]
+    fn piped_stdio_does_not_block_background_scan() {
         let mut s = base_signals();
         s.stdin_is_tty = false;
-        assert_eq!(
-            run_guards_with(s, false),
-            Err(SkipReason::NonInteractive)
-        );
-
-        // Or stdout is piped.
-        let mut s = base_signals();
         s.stdout_is_tty = false;
-        assert_eq!(
-            run_guards_with(s, false),
-            Err(SkipReason::NonInteractive)
-        );
+        assert_eq!(run_guards_with(s, false), Ok(()));
     }
 
     #[test]

@@ -1,4 +1,6 @@
-use difflore_core::reviews::{ReviewCommentRecord, ReviewItemWithComments};
+use difflore_core::review_store::{ReviewCommentRecord, ReviewItemWithComments};
+
+use crate::support::file_ext::{is_review_file_extension, is_source_code_extension};
 
 pub(super) fn is_import_review_noise_line(line: &str) -> bool {
     let trimmed = line
@@ -60,23 +62,50 @@ pub(super) fn is_review_table_wrapper_line(line: &str) -> bool {
 pub(super) fn is_high_leverage_scope_path(path: &str) -> bool {
     let lower = path.replace('\\', "/").to_ascii_lowercase();
     let file = lower.rsplit('/').next().unwrap_or(lower.as_str());
-    lower.starts_with(".github/workflows/")
-        || matches!(
-            file,
-            "go.mod"
-                | "go.sum"
-                | "cargo.toml"
-                | "cargo.lock"
-                | "package.json"
-                | "package-lock.json"
-                | "pnpm-lock.yaml"
-                | "yarn.lock"
-                | "bun.lockb"
-                | "uv.lock"
-                | "poetry.lock"
-                | "requirements.txt"
-                | "dockerfile"
-        )
+    lower.starts_with(".github/workflows/") || is_manifest_filename(file)
+}
+
+fn is_manifest_filename(file_name: &str) -> bool {
+    let lower = file_name.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "go.mod"
+            | "go.sum"
+            | "cargo.toml"
+            | "cargo.lock"
+            | "package.json"
+            | "package-lock.json"
+            | "pnpm-lock.yaml"
+            | "yarn.lock"
+            | "bun.lockb"
+            | "uv.lock"
+            | "poetry.lock"
+            | "requirements.txt"
+            | "dockerfile"
+    )
+}
+
+fn source_scope_extension(path: &str) -> Option<String> {
+    let normalized = path.trim().trim_start_matches("./").replace('\\', "/");
+    let (_, ext_raw) = normalized.rsplit_once('.')?;
+    if ext_raw.is_empty() || ext_raw.contains('/') || ext_raw.contains('\\') {
+        return None;
+    }
+    let ext = ext_raw.to_ascii_lowercase();
+    is_review_file_extension(&ext).then_some(ext)
+}
+
+fn has_source_scope_anchor(paths: &[String]) -> bool {
+    paths
+        .iter()
+        .any(|path| !is_high_leverage_scope_path(path) && source_scope_extension(path).is_some())
+}
+
+fn drop_manifest_scope_when_source_anchor_exists(mut paths: Vec<String>) -> Vec<String> {
+    if has_source_scope_anchor(&paths) {
+        paths.retain(|path| !is_high_leverage_scope_path(path));
+    }
+    paths
 }
 
 pub(super) fn file_pattern_from_path(path: &str) -> Option<String> {
@@ -97,7 +126,7 @@ pub(super) fn repo_wide_file_pattern_from_path(path: &str) -> Option<String> {
         return None;
     }
     let ext = ext_raw.to_ascii_lowercase();
-    if !is_repo_wide_import_extension(&ext) {
+    if !is_source_code_extension(&ext) {
         return None;
     }
     Some(format!("**/*.{ext}"))
@@ -112,22 +141,7 @@ pub(super) fn file_patterns_from_path(path: &str) -> Vec<String> {
     }
     let normalized = trimmed.replace('\\', "/");
     let file_name = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
-    let exact_manifest = matches!(
-        file_name,
-        "go.mod"
-            | "go.sum"
-            | "Cargo.toml"
-            | "Cargo.lock"
-            | "package.json"
-            | "package-lock.json"
-            | "pnpm-lock.yaml"
-            | "yarn.lock"
-            | "bun.lockb"
-            | "uv.lock"
-            | "poetry.lock"
-            | "requirements.txt"
-            | "Dockerfile"
-    );
+    let exact_manifest = is_manifest_filename(file_name);
     if exact_manifest {
         let pat = if let Some((dir, _)) = normalized.rsplit_once('/') {
             format!("{dir}/**/{file_name}")
@@ -159,7 +173,7 @@ pub(super) fn file_patterns_from_path(path: &str) -> Vec<String> {
         format!("{dir}/**/*.{ext}")
     };
     let mut out = vec![narrow];
-    // Monorepo broadening for sibling packages with the same file shape.
+    // Monorepo broadening for sibling packages with the same shape.
     for prefix in ["packages/", "apps/", "crates/", "pkg/", "examples/"] {
         if let Some(rest) = normalized.strip_prefix(prefix)
             && rest.contains('/')
@@ -173,78 +187,6 @@ pub(super) fn file_patterns_from_path(path: &str) -> Vec<String> {
         }
     }
     out
-}
-
-fn is_review_file_extension(ext: &str) -> bool {
-    matches!(
-        ext,
-        "c" | "cc"
-            | "cpp"
-            | "cxx"
-            | "h"
-            | "hpp"
-            | "cs"
-            | "go"
-            | "java"
-            | "js"
-            | "jsx"
-            | "mjs"
-            | "cjs"
-            | "ts"
-            | "tsx"
-            | "mts"
-            | "cts"
-            | "py"
-            | "rb"
-            | "rs"
-            | "swift"
-            | "kt"
-            | "kts"
-            | "php"
-            | "vue"
-            | "svelte"
-            | "json"
-            | "toml"
-            | "yaml"
-            | "yml"
-            | "md"
-            | "sql"
-            | "sh"
-            | "ps1"
-            | "xml"
-            | "txtar"
-    )
-}
-
-fn is_repo_wide_import_extension(ext: &str) -> bool {
-    matches!(
-        ext,
-        "c" | "cc"
-            | "cpp"
-            | "cxx"
-            | "h"
-            | "hpp"
-            | "cs"
-            | "go"
-            | "java"
-            | "js"
-            | "jsx"
-            | "mjs"
-            | "cjs"
-            | "ts"
-            | "tsx"
-            | "mts"
-            | "cts"
-            | "py"
-            | "rb"
-            | "rs"
-            | "swift"
-            | "kt"
-            | "kts"
-            | "php"
-            | "vue"
-            | "svelte"
-    )
 }
 
 fn normalize_review_file_path(value: &str) -> Option<String> {
@@ -335,7 +277,7 @@ pub(super) fn candidate_scope_paths(
     for path in review_file_paths_from_content(&comment.content) {
         push_path(&path);
     }
-    paths
+    drop_manifest_scope_when_source_anchor_exists(paths)
 }
 
 fn comment_file_path(comment: &ReviewCommentRecord) -> Option<String> {
@@ -347,4 +289,72 @@ fn comment_file_path(comment: &ReviewCommentRecord) -> Option<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToOwned::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use difflore_core::review_store::ReviewItemRecord;
+
+    fn review_item(file_path: &str) -> ReviewItemWithComments {
+        ReviewItemWithComments {
+            item: ReviewItemRecord {
+                id: "item-1".to_owned(),
+                session_id: None,
+                project_id: None,
+                file_path: file_path.to_owned(),
+                diff_content: String::new(),
+                status: "open".to_owned(),
+                source: "github".to_owned(),
+                source_kind: "pull_request".to_owned(),
+                external_review_id: Some("1".to_owned()),
+                repo_full_name: Some("owner/repo".to_owned()),
+                pr_number: Some(1),
+                author: Some("reviewer".to_owned()),
+                synced_at: None,
+                metadata: None,
+                created_at: "2026-06-15 00:00:00".to_owned(),
+                reviewed_at: None,
+            },
+            comments: Vec::new(),
+        }
+    }
+
+    fn review_comment(content: &str) -> ReviewCommentRecord {
+        ReviewCommentRecord {
+            id: "comment-1".to_owned(),
+            review_item_id: "item-1".to_owned(),
+            external_comment_id: Some("c1".to_owned()),
+            line_number: None,
+            content: content.to_owned(),
+            author: Some("reviewer".to_owned()),
+            comment_url: Some("https://example.test/review".to_owned()),
+            thread_id: None,
+            metadata: None,
+            created_at: "2026-06-15 00:00:00".to_owned(),
+        }
+    }
+
+    #[test]
+    fn candidate_scope_paths_drop_manifest_when_source_anchor_exists() {
+        let item = review_item("package.json");
+        let comment = review_comment(
+            "Use the base media component in `src/components/developers/Hero.tsx`; \
+             package.json changed only because the PR touched dependencies.",
+        );
+
+        let paths = candidate_scope_paths(&item, &comment);
+
+        assert_eq!(paths, vec!["src/components/developers/Hero.tsx"]);
+    }
+
+    #[test]
+    fn candidate_scope_paths_keep_manifest_without_source_anchor() {
+        let item = review_item("package.json");
+        let comment = review_comment("Keep dependency versions aligned in `package.json`.");
+
+        let paths = candidate_scope_paths(&item, &comment);
+
+        assert_eq!(paths, vec!["package.json"]);
+    }
 }

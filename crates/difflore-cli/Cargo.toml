@@ -1,6 +1,6 @@
 [package]
 name = "difflore-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # Two binaries ship from this crate (`difflore` + the `difflore-hook` shim), so
 # `cargo run -p difflore-cli` is ambiguous without this. CI's "Verify plugin
@@ -9,7 +9,7 @@ edition = "2024"
 default-run = "difflore"
 rust-version = "1.87"
 authors = ["Zachary <hello@difflore.dev>"]
-description = "Your AI coding agent, taught by your team's PR reviews — a local-first, open-source MCP server that turns past review comments into rules your agent follows automatically."
+description = "Your AI coding agent learned public code, not your team's private decisions. difflore turns past PR reviews into source-backed local rules."
 documentation = "https://github.com/difflore/difflore-cli"
 homepage = "https://difflore.dev"
 repository = "https://github.com/difflore/difflore-cli"
@@ -24,9 +24,6 @@ path-guid = "B72FEA10-74D1-48FC-9059-26EE114089D6"
 license = false
 eula = false
 
-[package.metadata.dist]
-formula = "difflore"
-
 [lib]
 name = "difflore_cli"
 path = "src/lib.rs"
@@ -39,12 +36,15 @@ path = "src/main.rs"
 name = "difflore-hook"
 path = "src/bin/difflore-hook.rs"
 
+[[bin]]
+name = "difflore-launcher"
+path = "src/bin/difflore-launcher.rs"
+
 [dependencies]
 # Path + version: `path` for local workspace dev, `version` for crates.io
 # resolution after publish. Both required — cargo publish rejects path-only.
-# Publish order on each release: difflore-core → difflore-tui → difflore-cli.
-difflore-core = { path = "../difflore-core", version = "0.1.0" }
-difflore-tui = { path = "../difflore-tui", version = "0.1.0" }
+# Publish order on each release: difflore-core → difflore-cli.
+difflore-core = { path = "../difflore-core", version = "0.2.0" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", default-features = false, features = [
   "fs",
@@ -60,6 +60,7 @@ tokio = { version = "1", default-features = false, features = [
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+futures-util = "0.3"
 sqlx = { version = "0.8", default-features = false, features = [
   "runtime-tokio",
   "sqlite",
@@ -74,7 +75,6 @@ colored = "3"
 which = "8"
 gate4agent = "0.2"
 dirs = "6"
-tower-lsp = "0.20"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 anyhow = "1"
 thiserror = "2"
@@ -88,6 +88,23 @@ rand = "0.10"
 sha1 = "0.10"
 tempfile = "3"
 toml = "0.8"
+# East-Asian-width-aware display-width for wrapping/spinner repaint so CJK
+# (zh/ja) content wraps and clears at the correct cell count.
+unicode-width = "0.1"
+# Query the real controlling terminal's cell width (Windows console API / TIOCGWINSZ)
+# instead of relying solely on $COLUMNS, which Windows shells don't export.
+terminal_size = "0.4"
+
+# Unix-only: `setsid(2)` in the detached hook-daemon spawn's `pre_exec` hook.
+# Already in the dependency tree transitively; declaring it here is free.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 

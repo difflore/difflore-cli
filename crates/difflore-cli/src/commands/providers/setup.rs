@@ -1,16 +1,9 @@
 //! Interactive provider picker.
 //!
-//! Local review providers are agent CLIs the user already has logged in
-//! on their machine — Claude Code, Codex, Gemini, OpenCode. We don't
-//! prompt for API keys: cloud-side review uses cloud-managed keys, and
-//! the local CLI exists to reuse the user's existing agent auth, not to
-//! be another place where keys live.
-//!
-//! Detection (driven by `gate4agent`):
-//!   • Claude Code CLI    (`claude`   on PATH)
-//!   • Codex CLI          (`codex`    on PATH)
-//!   • Gemini CLI         (`gemini`   on PATH)
-//!   • `OpenCode` CLI     (`opencode` on PATH)
+//! Providers are local agent CLIs (Claude Code, Codex, Gemini, OpenCode)
+//! detected on PATH via `gate4agent`. We never prompt for API keys: the
+//! local CLI reuses the user's existing agent auth rather than storing
+//! keys of its own.
 
 use crate::style;
 use std::collections::HashMap;
@@ -19,44 +12,24 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use colored::Colorize;
 use gate4agent::CliTool;
 
-use difflore_core::models::{ProviderAddInput, ProviderSetActiveInput};
+use difflore_core::domain::models::{ProviderAddInput, ProviderSetActiveInput};
 
-/// Default model per tool. Empty string means "let the CLI pick its own
-/// default" — the right move for tools whose CLI defaults already track
-/// the latest available model (Codex, `OpenCode`). For Claude we pin a
-/// sensible Sonnet alias to match the rest of difflore's review path.
-const fn default_model_for(tool: CliTool) -> &'static str {
-    match tool {
-        CliTool::ClaudeCode => "claude-sonnet-4-6",
-        CliTool::Gemini => "gemini-2.5-pro",
-        CliTool::Codex | CliTool::OpenCode => "",
-    }
-}
+use super::tools::{
+    binary_for, build_model_mapping, default_model_for, provider_display_label, provider_name_for,
+};
 
-const fn binary_for(tool: CliTool) -> &'static str {
-    match tool {
-        CliTool::ClaudeCode => "claude",
-        CliTool::Codex => "codex",
-        CliTool::Gemini => "gemini",
-        CliTool::OpenCode => "opencode",
-    }
-}
-
-const fn provider_name_for(tool: CliTool) -> &'static str {
-    match tool {
-        CliTool::ClaudeCode => "claude-cli",
-        CliTool::Codex => "codex-cli",
-        CliTool::Gemini => "gemini-cli",
-        CliTool::OpenCode => "opencode-cli",
-    }
-}
-
+// Order here drives both the picker's numbering and the default choice
+// (the first tool detected on PATH wins). Codex is listed first so it is the
+// recommended default when present.
 const ALL_AGENT_TOOLS: [CliTool; 4] = [
-    CliTool::ClaudeCode,
     CliTool::Codex,
+    CliTool::ClaudeCode,
     CliTool::Gemini,
     CliTool::OpenCode,
 ];
+
+const PROVIDER_LABEL_WIDTH: usize = 14;
+const PROVIDER_STATUS_WIDTH: usize = 11;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum SetupOutcome {
@@ -72,7 +45,7 @@ pub async fn run_setup(db: &difflore_core::SqlitePool) -> SetupOutcome {
         );
         println!(
             "  Use {} for scripted configuration.",
-            style::cmd("difflore providers add --tool <claude|codex|gemini|opencode>")
+            style::cmd("difflore providers add --tool <codex|claude|gemini|opencode>")
         );
         return SetupOutcome::Skipped;
     }
@@ -87,29 +60,7 @@ pub async fn run_setup(db: &difflore_core::SqlitePool) -> SetupOutcome {
     println!();
 
     for (idx, (tool, present)) in detected.iter().enumerate() {
-        let n = idx + 1;
-        if *present {
-            println!(
-                "  {}) {}",
-                style::ok(&n.to_string()),
-                format!(
-                    "{:<14}     {} detected - reuses your existing auth, zero extra setup",
-                    tool.to_string(),
-                    style::sym::OK
-                )
-                .bold()
-            );
-        } else {
-            println!(
-                "  {}  {}",
-                style::pewter(style::sym::BULLET),
-                style::pewter(&format!(
-                    "{:<14}     not on PATH, install `{}` to enable",
-                    tool.to_string(),
-                    binary_for(*tool)
-                ))
-            );
-        }
+        print_provider_picker_line(idx + 1, *tool, *present);
     }
     println!();
 
@@ -118,8 +69,8 @@ pub async fn run_setup(db: &difflore_core::SqlitePool) -> SetupOutcome {
         .position(|(_, present)| *present)
         .map(|i| i + 1);
     let Some(default) = default else {
-        crate::commands::util::exit_err(
-            "no agent CLI detected on PATH. Install one of `claude`, `codex`, `gemini`, or `opencode`, then re-run setup.",
+        crate::support::util::exit_err(
+            "no agent CLI detected on PATH. Install one of `codex`, `claude`, `gemini`, or `opencode`, then re-run setup.",
         );
     };
     let default_tool = detected[default - 1].0;
@@ -133,14 +84,14 @@ pub async fn run_setup(db: &difflore_core::SqlitePool) -> SetupOutcome {
     let parsed: usize = if let Ok(n) = choice.parse() {
         n
     } else {
-        crate::commands::util::exit_err(&format!(
+        crate::support::util::exit_err(&format!(
             "{choice:?} is not a valid choice. Expected 1..={}.",
             ALL_AGENT_TOOLS.len()
         ));
     };
 
     if !(1..=ALL_AGENT_TOOLS.len()).contains(&parsed) {
-        crate::commands::util::exit_err(&format!(
+        crate::support::util::exit_err(&format!(
             "{parsed} is out of range. Expected 1..={}.",
             ALL_AGENT_TOOLS.len()
         ));
@@ -148,13 +99,73 @@ pub async fn run_setup(db: &difflore_core::SqlitePool) -> SetupOutcome {
 
     let (tool, present) = detected[parsed - 1];
     if !present {
-        crate::commands::util::exit_err(&format!(
+        crate::support::util::exit_err(&format!(
             "{tool} CLI not detected. Install `{}` first.",
             binary_for(tool)
         ));
     }
     setup_agent_cli(db, tool).await;
     SetupOutcome::Configured
+}
+
+fn provider_picker_parts(
+    index: usize,
+    tool: CliTool,
+    present: bool,
+) -> (String, String, String, String) {
+    let marker = if present {
+        format!("{index})")
+    } else {
+        style::sym::BULLET.to_owned()
+    };
+    let label = format!(
+        "{:<width$}",
+        provider_display_label(tool),
+        width = PROVIDER_LABEL_WIDTH
+    );
+    let status = format!(
+        "{:<width$}",
+        if present {
+            "OK detected"
+        } else {
+            "not on PATH"
+        },
+        width = PROVIDER_STATUS_WIDTH
+    );
+    let detail = if present {
+        "reuses your existing auth, zero extra setup".to_owned()
+    } else {
+        format!("install `{}` to enable", binary_for(tool))
+    };
+    (marker, label, status, detail)
+}
+
+#[cfg(test)]
+fn provider_picker_plain_line(index: usize, tool: CliTool, present: bool) -> String {
+    let (marker, label, status, detail) = provider_picker_parts(index, tool, present);
+    format!("  {marker:<2} {label}  {status} - {detail}")
+}
+
+fn print_provider_picker_line(index: usize, tool: CliTool, present: bool) {
+    let (marker, label, status, detail) = provider_picker_parts(index, tool, present);
+    let marker = format!("{marker:<2}");
+    if present {
+        println!(
+            "  {} {}  {} - {}",
+            style::ok(&marker),
+            label.bold(),
+            style::ok(&status),
+            detail.bold()
+        );
+    } else {
+        println!(
+            "  {} {}  {} - {}",
+            style::pewter(&marker),
+            style::pewter(&label),
+            style::pewter(&status),
+            style::pewter(&detail)
+        );
+    }
 }
 
 async fn setup_agent_cli(db: &difflore_core::SqlitePool, tool: CliTool) {
@@ -164,9 +175,7 @@ async fn setup_agent_cli(db: &difflore_core::SqlitePool, tool: CliTool) {
         style::pewter(&model_default_hint(tool, default_model))
     );
     let model_input = prompt(&model_prompt_label(tool, default_model), default_model);
-    let mut mapping = HashMap::new();
-    mapping.insert("review".into(), model_input.clone());
-    mapping.insert("default".into(), model_input.clone());
+    let mapping = build_model_mapping(&model_input);
 
     let summary = if model_input.is_empty() {
         format!("{tool} CLI (CLI-default model)")
@@ -177,7 +186,7 @@ async fn setup_agent_cli(db: &difflore_core::SqlitePool, tool: CliTool) {
     save_provider(
         db,
         provider_name_for(tool),
-        difflore_core::review::agent_cli_sentinel(tool),
+        difflore_core::review_engine::agent_cli_sentinel(tool),
         mapping,
         summary,
     )
@@ -211,7 +220,7 @@ async fn save_provider(
     model_mapping: HashMap<String, String>,
     human_summary: String,
 ) {
-    let added = match difflore_core::providers::add(
+    let added = match difflore_core::infra::providers::add(
         db,
         ProviderAddInput {
             name: name.to_owned(),
@@ -223,7 +232,7 @@ async fn save_provider(
     {
         Ok(p) => p,
         Err(e) => {
-            crate::commands::util::exit_err(&format!(
+            crate::support::util::exit_err(&format!(
                 "failed to save provider: {e}\n  Run {} to inspect local DB / migration state.\n  Local data lives at {} — back up before any recovery action.",
                 style::cmd("difflore doctor"),
                 style::pewter("~/.difflore/data.db")
@@ -231,7 +240,7 @@ async fn save_provider(
         }
     };
 
-    if let Err(e) = difflore_core::providers::set_active(
+    if let Err(e) = difflore_core::infra::providers::set_active(
         db,
         ProviderSetActiveInput {
             id: added.id.clone(),
@@ -240,10 +249,10 @@ async fn save_provider(
     )
     .await
     {
-        eprintln!(
-            "{} provider saved but failed to mark active: {e}",
-            style::warn("warning:")
-        );
+        crate::support::util::exit_err(&format!(
+            "provider saved but failed to mark active: {e}\n  Run {} to inspect local DB / migration state.",
+            style::cmd("difflore doctor")
+        ));
     }
 
     println!();
@@ -262,7 +271,17 @@ fn prompt(label: &str, default: &str) -> String {
     }
     io::stdout().flush().ok();
     let mut line = String::new();
-    io::stdin().lock().read_line(&mut line).ok();
+    match io::stdin().lock().read_line(&mut line) {
+        Ok(0) => {
+            crate::support::util::exit_err(&format!(
+                "stdin closed while reading {label}; provider setup cancelled."
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            crate::support::util::exit_err(&format!("failed to read {label} from stdin: {e}"));
+        }
+    }
     let trimmed = trim_prompt_line(&line);
     if trimmed.is_empty() {
         default.to_owned()
@@ -278,7 +297,10 @@ fn trim_prompt_line(line: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_model_for, model_default_hint, model_prompt_label, trim_prompt_line};
+    use super::{
+        default_model_for, model_default_hint, model_prompt_label, provider_picker_plain_line,
+        trim_prompt_line,
+    };
     use gate4agent::CliTool;
 
     #[test]
@@ -300,5 +322,30 @@ mod tests {
         assert!(codex_default.is_empty());
         assert!(model_prompt_label(CliTool::Codex, codex_default).contains("CLI default"));
         assert!(model_default_hint(CliTool::Codex, codex_default).contains("choose its own"));
+    }
+
+    #[test]
+    fn provider_picker_rows_align_status_column() {
+        let rows = [
+            provider_picker_plain_line(1, CliTool::Codex, true),
+            provider_picker_plain_line(2, CliTool::ClaudeCode, true),
+            provider_picker_plain_line(3, CliTool::Gemini, false),
+            provider_picker_plain_line(4, CliTool::OpenCode, false),
+        ];
+        let status_columns: Vec<usize> = rows
+            .iter()
+            .map(|row| {
+                row.find("OK detected")
+                    .or_else(|| row.find("not on PATH"))
+                    .expect("status column")
+            })
+            .collect();
+        assert!(
+            status_columns.windows(2).all(|pair| pair[0] == pair[1]),
+            "status columns should align: {rows:#?}"
+        );
+        assert!(rows[0].contains("Codex CLI"));
+        assert!(rows[2].contains("Gemini CLI"));
+        assert!(rows[3].contains("OpenCode CLI"));
     }
 }

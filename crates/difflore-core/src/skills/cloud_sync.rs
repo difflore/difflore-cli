@@ -1,20 +1,18 @@
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::errors::CoreError;
-use crate::models::{
+use crate::domain::models::{
     AddExampleInput, ListExamplesInput, RemoveExampleInput, RuleExampleRecord, SkillRecord,
     SkillRepoAddInput, SkillRepoRecord, SkillRepoRemoveInput, UpdateConfidenceInput,
 };
+use crate::error::CoreError;
 
 use super::{SkillRepoRow, SkillRow};
 
-/// Pick the cloud-side text the local `skills.description` column should
-/// hold. Cloud `rules_cloud` has both `description` (a summary) and
-/// `content` (the full body), but the local schema only stores
-/// `description`. Store the full `content` when present so the desktop
-/// hash matches cloud's `/rules/sync` contract (`sha256(rule.content)`)
-/// and retrieval/indexing gets the richest rule text.
+/// Pick the text for the local `skills.description` column. The local schema
+/// only stores `description`, so store the full cloud `content` when present:
+/// this keeps the desktop hash matching cloud's `/rules/sync` contract
+/// (`sha256(rule.content)`) and gives retrieval the richest rule text.
 fn effective_description(rule: &crate::cloud::sync::SyncedRule) -> String {
     if !rule.content.trim().is_empty() {
         return rule.content.clone();
@@ -22,11 +20,10 @@ fn effective_description(rule: &crate::cloud::sync::SyncedRule) -> String {
     rule.description.clone()
 }
 
-/// Derive the local `confidence_score` for a synced cloud rule from its
-/// `cluster-size:N` / `severity:X` tags. Returns `None` when neither
-/// signal is present so the caller leaves the column at the DB default
-/// (0.7). See `crate::context::rule_source::confidence_from_tags` for
-/// the actual mapping (singletons → 0.55, big clusters → 0.9).
+/// Derive `confidence_score` for a synced cloud rule from its
+/// `cluster-size:N` / `severity:X` tags. Returns `None` when neither signal is
+/// present so the caller leaves the column at the DB default (0.7). The mapping
+/// lives in `crate::context::rule_source::confidence_from_tags`.
 fn effective_confidence(rule: &crate::cloud::sync::SyncedRule) -> Option<f64> {
     let tags_json = serde_json::to_string(&rule.tags).ok()?;
     crate::context::rule_source::confidence_from_tags(&tags_json)
@@ -128,22 +125,23 @@ pub async fn backfill_skills_confidence_from_tags(db: &sqlx::SqlitePool) -> crat
         if (new_score - current).abs() < 0.001 {
             continue;
         }
-        let _ = sqlx::query!(
+        let result = sqlx::query!(
             "UPDATE skills SET confidence_score = ?1 WHERE id = ?2",
             new_score,
             id
         )
         .execute(db)
-        .await;
-        updated += 1;
+        .await?;
+        if result.rows_affected() == 1 {
+            updated += 1;
+        }
     }
     Ok(updated)
 }
 
-/// Cloud review memory is agent-agnostic: once a team rule is synced
-/// locally, Codex/Cursor/Gemini should get the same protection Claude
-/// gets. Older syncs wrote only `enabled_for_claude=1`, which made the
-/// CLI look full of rules while Codex MCP recall returned nothing.
+/// Enable every synced cloud rule for all agents. Cloud review memory is
+/// agent-agnostic: once a team rule is synced, Codex/Cursor/Gemini should get
+/// the same protection Claude gets.
 pub async fn backfill_cloud_rules_enabled_for_all_agents(
     db: &sqlx::SqlitePool,
 ) -> crate::Result<u64> {
@@ -171,9 +169,11 @@ async fn apply_cloud_source_repo(
     skill_id: &str,
     incoming_repo: Option<&str>,
 ) -> crate::Result<()> {
-    let Some(incoming_repo) = incoming_repo.map(str::trim).filter(|repo| !repo.is_empty()) else {
+    let Some(incoming_repo_scope) = incoming_repo.and_then(crate::infra::git::RepoScope::canonical)
+    else {
         return Ok(());
     };
+    let incoming_repo = incoming_repo_scope.as_str();
 
     let updated = sqlx::query(
         "UPDATE skills
@@ -228,16 +228,21 @@ async fn apply_cloud_source_repo(
 }
 
 async fn refresh_rule_index_after_sync(db: &sqlx::SqlitePool) {
-    let project_hash = crate::db::project_hash_from_root(&crate::db::current_project_root());
+    let project_hash =
+        crate::infra::db::project_hash_from_root(&crate::infra::db::current_project_root());
     let index_pool = match crate::context::index_db::get_pool_for_project(&project_hash).await {
         Ok(pool) => pool,
         Err(e) => {
-            eprintln!("[difflore] cloud sync rule-index refresh skipped: {e}");
+            if crate::infra::env::debug_cloud() {
+                eprintln!("[difflore] cloud sync rule-index refresh skipped: {e}");
+            }
             return;
         }
     };
     if let Err(e) = crate::context::orchestrator::ensure_rules_indexed(db, &index_pool).await {
-        eprintln!("[difflore] cloud sync rule-index refresh failed: {e}");
+        if crate::infra::env::debug_cloud() {
+            eprintln!("[difflore] cloud sync rule-index refresh failed: {e}");
+        }
     }
 }
 
@@ -254,17 +259,15 @@ pub async fn apply_sync_result(
         let engines_json = serde_json::to_string(&rule.engines)?;
         let tags_json = serde_json::to_string(&rule.tags)?;
         let directory = cloud_rule_directory_name(&rule.id);
-        // Iter-9: persist file_patterns so the local cascade can use them.
         let file_patterns_json = if rule.file_patterns.is_empty() {
             None
         } else {
             Some(serde_json::to_string(&rule.file_patterns)?)
         };
         let description = effective_description(rule);
-        // 2026-04-20: capture cloud-side origin when present. Falls back
-        // to "cloud" so audit pages still distinguish remotely-fetched
-        // rules from locally-typed ones — the migration default of
-        // `manual` would lie in this case.
+        // Fall back to "cloud" so audit pages distinguish remotely-fetched
+        // rules from locally-typed ones (the migration default of `manual`
+        // would mislabel them).
         let origin = rule.origin.clone().unwrap_or_else(|| "cloud".to_owned());
         let directory_param = directory.as_str();
         sqlx::query(
@@ -289,7 +292,7 @@ pub async fn apply_sync_result(
                 updated_at = excluded.updated_at,
                 origin = excluded.origin,
                 status = 'active'
-             WHERE skills.source = 'cloud'",
+             WHERE skills.source = 'cloud' OR skills.cloud_id = excluded.id",
         )
         .bind(&rule.id)
         .bind(&rule.name)
@@ -307,11 +310,9 @@ pub async fn apply_sync_result(
         .execute(&mut *tx)
         .await?;
         apply_cloud_source_repo(&mut tx, &rule.id, rule.source_repo.as_deref()).await?;
-        // 2026-04-27: stamp confidence_score from cluster-size/severity
-        // tags. Only when tags carry an evidence signal AND the row is
-        // still at the historic DB default (0.7 ± 0.001) — leaves
-        // user-customized scores like 0.1 (rejected) or 0.85 (boosted)
-        // untouched on resync.
+        // Stamp confidence_score from cluster-size/severity tags only when the
+        // row is still at the DB default (0.7 ± 0.001), so user-customized
+        // scores like 0.1 (rejected) or 0.85 (boosted) survive resync.
         if let Some(conf) = effective_confidence(rule) {
             let _ = sqlx::query!(
                 "UPDATE skills SET confidence_score = ?1 \
@@ -341,7 +342,7 @@ pub async fn apply_sync_result(
              updated_at = ?11,
              origin = COALESCE(?12, origin),
              status = 'active'
-             WHERE id = ?13 AND source = 'cloud'",
+             WHERE id = ?13 AND (source = 'cloud' OR cloud_id = ?13)",
         )
         .bind(&rule.name)
         .bind(&description)
@@ -383,11 +384,10 @@ pub async fn apply_sync_result(
 
     tx.commit().await?;
 
-    // Self-heal: re-stamp confidence_score on rows still at the
-    // historic 0.7 default but with cluster-size/severity tags. Cheap,
-    // idempotent, runs once per sync — gives users with already-synced
-    // corpora the new ranking weights without waiting for cloud-side
-    // updated_at to bump.
+    // Self-heal: re-stamp confidence_score on rows still at the 0.7 default but
+    // with cluster-size/severity tags. Idempotent; runs once per sync so
+    // already-synced corpora get the new ranking weights without waiting for a
+    // cloud-side updated_at bump.
     let _ = backfill_skills_confidence_from_tags(db).await;
     if sync_changed {
         refresh_rule_index_after_sync(db).await;
@@ -396,14 +396,13 @@ pub async fn apply_sync_result(
     Ok(())
 }
 
-/// Lightweight metadata for recall/search flows. Returns just enough to
-/// explain why a rule surfaced
-/// (`file_patterns` + canonical `source_repo`). Uses dynamic SQL so it doesn't pin
-/// the sqlx offline cache to current schema.
+/// Metadata explaining why a rule surfaced in recall/search:
+/// `file_patterns` plus canonical `source_repo`.
 #[derive(Debug, Clone, Default)]
 pub struct SearchSkillMeta {
     pub file_patterns: Vec<String>,
     pub source_repo: Option<String>,
+    pub origin: Option<String>,
 }
 
 pub async fn fetch_search_meta(
@@ -414,20 +413,35 @@ pub async fn fetch_search_meta(
     if ids.is_empty() {
         return out;
     }
-    let Ok(ids_json) = serde_json::to_string(ids) else {
-        return out;
+    let ids_json = match serde_json::to_string(ids) {
+        Ok(json) => json,
+        Err(e) => {
+            // Surface the degraded result instead of returning an empty map
+            // indistinguishable from 'no rows': scope-sensitive consumers like
+            // export_rules_markdown silently drop every rule otherwise.
+            if crate::infra::env::debug_cloud() {
+                eprintln!("[difflore] fetch_search_meta id serialization failed: {e}");
+            }
+            return out;
+        }
     };
-    let Ok(rows) = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
-        "SELECT id, file_patterns, source_repo
+    let rows = match sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>)>(
+        "SELECT id, file_patterns, source_repo, origin
            FROM skills WHERE id IN (SELECT value FROM json_each(?1))",
     )
     .bind(ids_json)
     .fetch_all(pool)
     .await
-    else {
-        return out;
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            if crate::infra::env::debug_cloud() {
+                eprintln!("[difflore] fetch_search_meta query failed: {e}");
+            }
+            return out;
+        }
     };
-    for (id, file_patterns_raw, source_repo) in rows {
+    for (id, file_patterns_raw, source_repo, origin) in rows {
         let file_patterns: Vec<String> = file_patterns_raw
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok())
@@ -437,6 +451,7 @@ pub async fn fetch_search_meta(
             SearchSkillMeta {
                 file_patterns,
                 source_repo,
+                origin,
             },
         );
     }
@@ -458,13 +473,10 @@ pub async fn list_review_standards(db: &sqlx::SqlitePool) -> crate::Result<Vec<S
     Ok(rows.into_iter().map(SkillRecord::from).collect())
 }
 
-/// List skills across **all types** but **active status only** —
-/// pending candidates and soft-deleted rows are filtered out at the
-/// SQL level.
-///
-/// "all" means all `type`s, not all statuses. Several callers rely on this
-/// active-only filter and pair it with their own pending checks; if you change
-/// the WHERE clause, audit those call sites.
+/// List skills across all `type`s but active status only; pending candidates
+/// and soft-deleted rows are filtered out in SQL. Several callers rely on this
+/// active-only filter and pair it with their own pending checks, so audit them
+/// if you change the WHERE clause.
 pub async fn list_all_skills(db: &sqlx::SqlitePool) -> crate::Result<Vec<SkillRecord>> {
     let rows = sqlx::query_as!(
         SkillRow,
@@ -479,8 +491,30 @@ pub async fn list_all_skills(db: &sqlx::SqlitePool) -> crate::Result<Vec<SkillRe
     Ok(rows.into_iter().map(SkillRecord::from).collect())
 }
 
-pub async fn export_rules_markdown(db: &sqlx::SqlitePool) -> crate::Result<String> {
+/// Render the active rules **in the given repo scopes** as one Markdown
+/// document. A rule participates when its canonical `source_repo` matches a
+/// detected scope, or when it is an explicit local rule (`source = 'local'`
+/// with no `source_repo`). An empty `repo_scopes` therefore yields only
+/// explicit local rules — never the whole machine corpus. This filter is a
+/// deliberate behavior narrowing: the previous unscoped export leaked every
+/// project's rules to whichever agent read it, violating the project-scope
+/// invariant.
+pub async fn export_rules_markdown(
+    db: &sqlx::SqlitePool,
+    repo_scopes: &[String],
+) -> crate::Result<String> {
     let skills = list_all_skills(db).await?;
+    let all_ids: Vec<String> = skills.iter().map(|s| s.id.clone()).collect();
+    let meta = fetch_search_meta(db, &all_ids).await;
+    let skills: Vec<_> = skills
+        .into_iter()
+        .filter(|skill| {
+            let source_repo = meta.get(&skill.id).and_then(|m| m.source_repo.as_deref());
+            let scope = crate::context::rule_source::repo_scope_from_source_repo(source_repo);
+            crate::export::collect::repo_scope_matches(scope.as_deref(), repo_scopes)
+                || crate::export::collect::is_explicit_local_rule(&skill.source, source_repo)
+        })
+        .collect();
     if skills.is_empty() {
         return Ok("# Project Rules\n\n_No rules found._\n".to_owned());
     }
@@ -492,7 +526,7 @@ pub async fn export_rules_markdown(db: &sqlx::SqlitePool) -> crate::Result<Strin
     let mut md = String::from("# Project Rules\n");
 
     for (i, skill) in skills.iter().enumerate() {
-        md.push_str(&format!("\n## {}\n\n", skill.name));
+        md.push_str(&format!("\n## {}\n\n", markdown_heading_text(&skill.name)));
         md.push_str(&format!("{}\n", skill.description));
 
         if let Some(cp) = &skill.check_prompt
@@ -506,11 +540,11 @@ pub async fn export_rules_markdown(db: &sqlx::SqlitePool) -> crate::Result<Strin
         {
             md.push_str("\n### Examples\n");
             for ex in examples {
-                md.push_str("\n❌ Bad:\n```\n");
-                md.push_str(&ex.bad_code);
-                md.push_str("\n```\n\n✅ Good:\n```\n");
-                md.push_str(&ex.good_code);
-                md.push_str("\n```\n");
+                let fence = markdown_code_fence([ex.bad_code.as_str(), ex.good_code.as_str()]);
+                md.push_str("\n❌ Bad:\n");
+                push_markdown_code_block(&mut md, &fence, &ex.bad_code);
+                md.push_str("\n✅ Good:\n");
+                push_markdown_code_block(&mut md, &fence, &ex.good_code);
                 if let Some(desc) = &ex.description
                     && !desc.is_empty()
                 {
@@ -525,6 +559,47 @@ pub async fn export_rules_markdown(db: &sqlx::SqlitePool) -> crate::Result<Strin
     }
 
     Ok(md)
+}
+
+fn markdown_heading_text(value: &str) -> String {
+    let heading = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if heading.is_empty() {
+        "Untitled rule".to_owned()
+    } else {
+        heading
+    }
+}
+
+fn markdown_code_fence<'a>(blocks: impl IntoIterator<Item = &'a str>) -> String {
+    let longest = blocks
+        .into_iter()
+        .map(longest_backtick_run)
+        .max()
+        .unwrap_or(0);
+    "`".repeat(longest.saturating_add(1).max(3))
+}
+
+fn longest_backtick_run(value: &str) -> usize {
+    let mut longest = 0;
+    let mut current = 0;
+    for ch in value.chars() {
+        if ch == '`' {
+            current += 1;
+            longest = longest.max(current);
+        } else {
+            current = 0;
+        }
+    }
+    longest
+}
+
+fn push_markdown_code_block(md: &mut String, fence: &str, code: &str) {
+    md.push_str(fence);
+    md.push('\n');
+    md.push_str(code.trim_end_matches(['\r', '\n']));
+    md.push('\n');
+    md.push_str(fence);
+    md.push('\n');
 }
 
 pub async fn repos_list(db: &sqlx::SqlitePool) -> crate::Result<Vec<SkillRepoRecord>> {
@@ -574,11 +649,8 @@ pub async fn repos_remove(db: &sqlx::SqlitePool, input: SkillRepoRemoveInput) ->
     Ok(())
 }
 
-/// Return value of `update_confidence` so the caller can render a
-/// before/after message ("rule X: 0.65 → 0.70"). 2026-04-25: previously
-/// returned `()`, which made the feedback loop feel inert from the
-/// user's POV. The before/name fields piggy-back on the SELECT we now
-/// do anyway to compute the clamped after value.
+/// Return value of `update_confidence` so the caller can render a before/after
+/// message ("rule X: 0.65 → 0.70").
 #[derive(Debug, Clone)]
 pub struct ConfidenceChange {
     pub before: f64,
@@ -637,7 +709,7 @@ pub async fn update_confidence(
     .await?;
     let row = existing.ok_or_else(|| {
         CoreError::NotFound(format!(
-            "rule '{}' not found — cannot apply {} feedback. Run `difflore status --json` to inspect current local memory ids.",
+            "rule '{}' not found; cannot apply {} feedback. Run `difflore status --json` to inspect current local memory ids.",
             input.skill_id, input.signal
         ))
     })?;

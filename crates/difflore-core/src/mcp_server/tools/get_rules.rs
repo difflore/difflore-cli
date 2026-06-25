@@ -1,11 +1,12 @@
 use serde_json::{Value, json};
 
-use crate::review_trajectory::TrajectoryStep;
+use crate::observability::trajectory::TrajectoryStep;
 
+use super::super::serve_render::{RuleServe, serve_and_record, serve_record_err_prefix};
 use super::super::{
     McpState, build_cost_meta, emit_trajectory_step, estimate_tokens, rule_hits_by_origin,
 };
-use super::util::{
+use super::evidence::{
     fetch_skills_by_ids, parse_file_patterns, render_full_rule_with_examples,
     strict_file_match_count_for_ids,
 };
@@ -61,8 +62,8 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
         .await
         .map_err(|e| (-32603, format!("Failed to fetch rules: {e}")))?;
 
-    // Load examples in one batch keyed by the *present* skill ids so we
-    // don't waste a round trip on IDs that won't render anyway.
+    // Batch-load examples keyed by the present skill ids only, so we
+    // don't round-trip on IDs that won't render.
     let present_ids: Vec<String> = ids
         .iter()
         .filter(|id| meta_map.contains_key(id.as_str()))
@@ -94,9 +95,7 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
                     })
                     .unwrap_or_default();
                 // Surface source_repo at the top level so an agent
-                // reading the JSON doesn't have to grep the embedded
-                // "Source: " line in `body`. Same provenance the rest
-                // of difflore prints as "<- learned from <repo>".
+                // need not grep the "Source: " line in `body`.
                 results.push(json!({
                     "id": row.id,
                     "title": row.name,
@@ -126,47 +125,39 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
     })?;
 
     let tokens_used = estimate_tokens(&text);
+    // Telemetry-only here (repo_full_name attribution), but warm the host cache
+    // anyway so the recorded scope is accurate for self-managed GitLab on a
+    // cold-cache MCP process. Mirrors the other tool detect sites.
+    crate::mcp_server::hook::refresh_configured_gitlab_hosts_for_remote_detection().await;
     let detected_repos = crate::mcp_server::hook::detect_git_remote_owner_repos();
     let detail_query = format!("get_rules:{}", ids.join(","));
     let strict_match_count = strict_file_match_count_for_ids(&meta_map, &present_ids, file);
-    if let Err(e) = crate::mcp_rule_serves::record(
+    let served_event = serve_and_record(
         &state.db,
-        &crate::mcp_rule_serves::McpRuleServeInput {
+        RuleServe {
             tool: "get_rules",
             session_id: Some(session_id),
+            event_session_id: session_id,
             repo_full_name: detected_repos.first().map(String::as_str),
-            file_path: file,
-            query_text: &detail_query,
+            target_file: file,
+            query: &detail_query,
             rule_ids: &present_ids,
             top_k: i64::try_from(ids.len()).unwrap_or(i64::MAX),
             strict_match_count,
             estimated_tokens: i64::try_from(tokens_used).unwrap_or(i64::MAX),
         },
+        serve_record_err_prefix("[difflore-mcp] get_rules serve record failed"),
     )
-    .await
-    {
-        eprintln!("[difflore-mcp] get_rules serve record failed: {e}");
-    }
+    .await;
     {
         let cloud = state.cloud.clone();
-        let served_event = crate::cloud::observations::ObservationEvent::McpRuleServed {
-            tool: "get_rules".to_owned(),
-            session_id: session_id.to_owned(),
-            repo_full_name: detected_repos.first().cloned(),
-            file_path: file.map(ToOwned::to_owned),
-            query_hash: crate::mcp_rule_serves::query_hash(&detail_query),
-            rule_ids: present_ids.clone(),
-            top_k: i64::try_from(ids.len()).unwrap_or(i64::MAX),
-            was_empty: present_ids.is_empty(),
-            strict_match_count,
-            estimated_tokens: i64::try_from(tokens_used).unwrap_or(i64::MAX),
-            served_at: chrono::Utc::now(),
-        };
         tokio::spawn(async move {
             if let Err(e) =
                 crate::cloud::observations::enqueue_and_flush_default(served_event, &cloud).await
             {
-                eprintln!("[difflore-mcp] get_rules served event failed: {e}");
+                if crate::infra::env::debug_telemetry() {
+                    eprintln!("[difflore-mcp] get_rules served event failed: {e}");
+                }
             }
         });
     }
@@ -178,9 +169,9 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
     let origin_step = rule_hits_by_origin(&state.db, &present_ids).await;
     emit_trajectory_step(&origin_step);
 
-    // Detail-layer tool: the response IS the full payload already, so
-    // there is no narrower response to save against. Emit `tokens_used`
-    // only — this still lets the agent compare session-level spend.
+    // Detail-layer tool: the response is already the full payload, so
+    // there's no narrower response to measure savings against; emit
+    // `tokens_used` only.
     Ok(json!({
         "content": [{ "type": "text", "text": text }],
         "_meta": {

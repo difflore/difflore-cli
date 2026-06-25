@@ -1,44 +1,49 @@
-//! Inputs to [`super::maybe_offer_import_reviews`].
-//!
-//! Kept in its own module so test harnesses can construct an
-//! [`PostInstallScanOpts`] without pulling the whole module surface.
+//! Inputs to [`super::maybe_offer_import_reviews`], in their own module so
+//! test harnesses can construct a [`PostInstallScanOpts`] without pulling in
+//! the whole module surface.
 
 use std::path::PathBuf;
 
-/// Default `--max-prs` for the post-install offer. Small enough to keep
-/// the implied wait under ~2 minutes on a real PR-history repo; large
-/// enough to almost always yield at least one extracted candidate.
-pub const DEFAULT_MAX_PRS: u32 = 5;
+/// Default `--max-prs` for the bounded post-install import.
+pub const DEFAULT_MAX_PRS: u32 = 50;
 
-/// Knobs for the post-install "import last N PRs?" offer. All fields are
-/// public so the eventual one-line call site in `mcp_install/install.rs`
-/// can use struct-update syntax without needing a builder.
+/// Only look at recently merged PRs during install-time seeding.
+pub const DEFAULT_SINCE_DAYS: i64 = 120;
+
+/// Hidden child-process wall-clock budget for the background import.
+pub const DEFAULT_WALL_TIMEOUT_SECS: u64 = 20;
+
+/// Knobs for the post-install "import last N PRs?" offer.
 #[derive(Debug, Clone)]
 pub struct PostInstallScanOpts {
-    /// Working directory the offer operates against. The guard layer
-    /// uses this to detect the git repo + the gh-resolvable owner/repo.
-    /// Almost always `std::env::current_dir()?` at the call site.
+    /// Working directory the offer operates against; used to detect the git
+    /// repo and the gh-resolvable owner/repo.
     pub cwd: PathBuf,
 
-    /// When set, skip the prompt and treat the offer as declined. Lets
-    /// the install path force-skip in scripts / `--no-interactive` mode
-    /// without having to inspect ttys at the call site.
+    /// When set, skip the prompt and treat the offer as declined (for scripts
+    /// and `--no-interactive` mode).
     pub non_interactive: bool,
 
-    /// How many recent PRs to import on Yes. Forwarded as
-    /// `difflore import-reviews --max-prs <N>`.
+    /// How many recent PRs to import in the bounded background worker.
     pub max_prs: u32,
+
+    /// How many days of history to include.
+    pub since_days: i64,
+
+    /// Child-process wall-clock cap, in seconds.
+    pub wall_timeout_secs: u64,
 }
 
 impl PostInstallScanOpts {
-    /// Build a default opts bundle for `cwd`. Equivalent to the most
-    /// common call site: "interactive, in this cwd, default cap".
+    /// Build a default opts bundle for `cwd`: interactive, default cap.
     #[must_use]
     pub const fn for_cwd(cwd: PathBuf) -> Self {
         Self {
             cwd,
             non_interactive: false,
             max_prs: DEFAULT_MAX_PRS,
+            since_days: DEFAULT_SINCE_DAYS,
+            wall_timeout_secs: DEFAULT_WALL_TIMEOUT_SECS,
         }
     }
 }

@@ -2,8 +2,9 @@
   "mcpServers": {
     "difflore": {
       "type": "stdio",
-      "command": "difflore",
-      "args": ["mcp-server"]
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/scripts/difflore-mcp.js"],
+      "note": "Starts `difflore mcp-server` through the plugin runtime locator. Set DIFFLORE_BINARY to an absolute path for explicit local debugging."
     }
   }
 }

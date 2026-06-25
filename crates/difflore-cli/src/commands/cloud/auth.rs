@@ -6,8 +6,8 @@
 //! GitHub CLI), persists/saves the cloud tokens, and records the
 //! per-device registration state surfaced by `difflore cloud status`.
 //!
-//! The public entry points (`handle_login_dispatch`, `try_login_dispatch`,
-//! `handle_logout`) stay in [`super`]; they call into the helpers here.
+//! The public entry points (`handle_login_dispatch`, `handle_logout`) stay in
+//! [`super`]; they call into the helpers here.
 
 use std::path::PathBuf;
 
@@ -38,7 +38,9 @@ struct CloudGithubLoginResponse {
 }
 
 fn device_registration_state_path() -> Result<PathBuf, String> {
-    Ok(difflore_core::paths::data_home()?.join(DEVICE_REGISTRATION_FILE))
+    Ok(difflore_core::infra::paths::data_home()
+        .map_err(|e| e.to_string())?
+        .join(DEVICE_REGISTRATION_FILE))
 }
 
 pub(super) fn load_device_registration_state() -> Option<DeviceRegistrationState> {
@@ -144,7 +146,7 @@ pub(super) async fn try_login_dispatch_with_github(
     }
 
     let has_flag = token_flag.as_ref().is_some_and(|s| !s.trim().is_empty());
-    let has_env = difflore_core::env::var(difflore_core::env::DIFFLORE_CLOUD_TOKEN)
+    let has_env = difflore_core::infra::env::var(difflore_core::infra::env::DIFFLORE_CLOUD_TOKEN)
         .is_some_and(|v| !v.trim().is_empty());
     let stdin_piped = !std::io::stdin().is_terminal();
     let stdout_tty = std::io::stdout().is_terminal();
@@ -157,7 +159,8 @@ pub(super) async fn try_login_dispatch_with_github(
             "DIFFLORE_CLOUD_TOKEN",
             "cloud token",
             "difflore cloud login",
-        );
+        )
+        .map_err(|e| format!("{e:#}"))?;
         return try_handle_login(&resolved).await;
     }
 
@@ -192,8 +195,11 @@ pub(super) async fn try_login_dispatch_with_github(
                 cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                 match signal {
                     Ok(()) => {
-                        break join.await.unwrap_or_else(|e| Err(format!("Login worker panicked after cancellation: {e}")))
-                            .and(Err("Login cancelled.".to_owned()));
+                        break match join.await {
+                            Ok(Ok(res)) => Ok(res),
+                            Ok(Err(_)) => Err("Login cancelled.".to_owned()),
+                            Err(e) => Err(format!("Login worker panicked after cancellation: {e}")),
+                        };
                     }
                     Err(e) => {
                         break Err(format!("Failed to listen for Ctrl+C: {e}"));
@@ -328,6 +334,20 @@ async fn try_handle_login(token: &str) -> Result<(), String> {
     try_handle_login_with_refresh(token, None).await
 }
 
+fn token_rejected_recovery_message(previous_login_restored: bool) -> String {
+    let previous_login_line = if previous_login_restored {
+        "Your previous login (if any) was preserved."
+    } else {
+        "Could not restore the previous token state after rejection; check the warning above and retry login."
+    };
+    format!(
+        "Token rejected by cloud (auth probe failed).\n\n  \
+         Mint a fresh one by re-running `difflore cloud login` (browser flow).\n  \
+         If the cloud is unreachable, retry later - local CLI features keep working offline.\n  \
+         {previous_login_line}"
+    )
+}
+
 async fn try_handle_login_with_refresh(
     token: &str,
     refresh_token: Option<&str>,
@@ -358,6 +378,7 @@ async fn try_handle_login_with_refresh(
             }
             None => difflore_core::cloud::client::CloudClient::clear_token().await,
         };
+        let previous_login_restored = restore_result.is_ok();
         if let Err(e) = restore_result {
             eprintln!(
                 "  {} could not restore previous token state after rejection: {e}",
@@ -367,13 +388,7 @@ async fn try_handle_login_with_refresh(
         // Cloud has no manual mint UI; tokens are only issued through
         // the browser handshake (/cli-auth). Direct the user to re-run
         // login rather than pointing at a non-existent settings page.
-        return Err(
-            "Token rejected by cloud (auth probe failed).\n\n  \
-             Mint a fresh one by re-running `difflore cloud login` (browser flow).\n  \
-             If the cloud is unreachable, retry later — local CLI features keep working offline.\n  \
-             Your previous login (if any) was preserved."
-                .to_owned(),
-        );
+        return Err(token_rejected_recovery_message(previous_login_restored));
     }
 
     println!("{} Cloud token saved.", style::ok(style::sym::OK));
@@ -448,31 +463,28 @@ async fn try_handle_login_with_refresh(
     if let Some(line) =
         super::agent_usage_pending_upload_line(super::load_agent_usage_summary().await.as_ref())
     {
-        println!("  Proof uploads: {}", style::pewter(&line));
+        println!("  Activity uploads: {}", style::pewter(&line));
     }
 
     println!();
-    // Onboarding bridge. The original close hard-coded `difflore cloud sync`,
-    // which is the right next step only for users joining an existing
-    // team. A first-device-on-a-fresh-team user has nothing to sync —
-    // they need to *create* rules first via import-reviews. Surface both
-    // paths with one line each so the user picks based on their context
-    // without bouncing back to `difflore init` to figure it out.
+    // Surface both onboarding paths: `cloud sync` for users joining an
+    // existing team, `import-reviews` for a first device on a fresh team
+    // that has nothing to sync yet.
     println!("  {} What's next:", style::emerald(style::sym::TIP));
     println!(
         "    {}                {}",
         style::cmd("difflore cloud sync"),
-        style::pewter("# joining a team — pull existing rules"),
+        style::pewter("joining a team - pull existing memories"),
     );
     println!(
         "    {}      {}",
         style::cmd("difflore import-reviews --upload"),
-        style::pewter("# first device — turn PR review history into rules"),
+        style::pewter("first device - turn PR review history into memories"),
     );
     println!(
         "    {}                {}",
         style::cmd("difflore init --check"),
-        style::pewter("# see your full readiness state"),
+        style::pewter("see your full readiness state"),
     );
     Ok(())
 }
@@ -524,7 +536,7 @@ impl BrowserLoginSignals {
 }
 
 fn env_nonempty(key: &str) -> bool {
-    difflore_core::env::var(key).is_some_and(|value| !value.trim().is_empty())
+    difflore_core::infra::env::var(key).is_some_and(|value| !value.trim().is_empty())
 }
 
 const fn browser_login_blocker(
@@ -665,6 +677,16 @@ mod tests {
         assert!(message.contains("gh auth login"));
         assert!(!message.contains("--token <TOKEN>"));
         assert!(!message.contains("DIFFLORE_CLOUD_TOKEN"));
+    }
+
+    #[test]
+    fn rejected_token_message_only_claims_previous_login_preserved_after_restore_success() {
+        let restored = token_rejected_recovery_message(true);
+        assert!(restored.contains("Your previous login (if any) was preserved."));
+
+        let not_restored = token_rejected_recovery_message(false);
+        assert!(not_restored.contains("Could not restore the previous token state"));
+        assert!(!not_restored.contains("was preserved"));
     }
 
     #[test]

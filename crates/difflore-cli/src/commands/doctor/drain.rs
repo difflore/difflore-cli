@@ -22,8 +22,7 @@ use difflore_core::cloud::outbox::{DrainSummary, OutboxQueue};
 use crate::runtime::CommandContext;
 use crate::style;
 
-/// Outcome bundle for `run_drain` so the caller can render either the
-/// human or JSON surface from a single struct.
+/// Outcome bundle for `run_drain`, rendered to either the human or JSON surface.
 #[derive(Debug)]
 pub(crate) struct DrainOutcome {
     pub(crate) cloud_outbox: DrainSummary,
@@ -70,7 +69,7 @@ pub(crate) fn parse_older_than(raw: &str) -> Result<Duration, String> {
         "m" => n.checked_mul(60),
         other => {
             return Err(format!(
-                "--older-than unit '{other}' not recognised — use d, h, or m"
+                "--older-than unit '{other}' not recognised; use d, h, or m"
             ));
         }
     }
@@ -78,19 +77,18 @@ pub(crate) fn parse_older_than(raw: &str) -> Result<Duration, String> {
     Ok(Duration::from_secs(secs))
 }
 
-/// Drive a drain (dry-run by default) and return the outcome. Caller
-/// renders. The function itself is silent so doctor's two output
-/// surfaces (text + JSON) can share it without an I/O side-effect race.
+/// Drive a drain (dry-run by default) and return the outcome. Silent so
+/// doctor's text + JSON surfaces can share it without an I/O side-effect race.
 pub(crate) async fn run_drain(
     ctx: &CommandContext,
     older_than: Duration,
     dry_run: bool,
 ) -> Result<DrainOutcome, String> {
-    // Refuse the write path without a saved cloud session. Dry-run still
-    // works while logged out so users can inspect counts.
+    // Refuse the write path without a saved cloud session; dry-run still works
+    // logged out so users can inspect counts.
     if !dry_run && !ctx.cloud().await.is_logged_in() {
         return Err("refusing to drain without a saved cloud session. \
-             Run `difflore cloud login` first — re-queueing rows that 401 \
+             Run `difflore cloud login` first; re-queueing rows that 401 \
              helps nobody."
             .to_owned());
     }
@@ -106,11 +104,10 @@ pub(crate) async fn run_drain(
         .map_err(|e| format!("drain cloud_outbox: {e}"))?;
 
     let observation_events = match ObservationEmitter::open_default().await {
-        Ok(emitter) => {
-            emitter
-                .drain_abandoned_older_than(cutoff_ms, dry_run)
-                .await?
-        }
+        Ok(emitter) => emitter
+            .drain_abandoned_older_than(cutoff_ms, dry_run)
+            .await
+            .map_err(|e| format!("drain observation_events: {e}"))?,
         // No observations DB on disk means this queue has nothing to drain.
         Err(_) => DrainSummary::default(),
     };
@@ -167,7 +164,7 @@ pub(crate) fn render_outcome(outcome: &DrainOutcome, json: bool) {
     );
 
     print_queue_breakdown("team sync queue", &outcome.cloud_outbox);
-    print_queue_breakdown("agent evidence queue", &outcome.observation_events);
+    print_queue_breakdown("agent activity queue", &outcome.observation_events);
 
     let queues = outcome.queues_touched();
     let total = outcome.total();

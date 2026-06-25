@@ -10,22 +10,24 @@
 
 use clap::FromArgMatches;
 
+pub mod agent_exec;
 pub mod cli;
+pub mod clients;
 pub mod commands;
 mod dispatch;
 pub mod error;
-pub mod hook_cache;
-pub mod hook_forward;
-pub mod hook_runtime;
-pub mod hooks;
-pub mod mcp_install;
+pub mod hook;
+pub mod installer;
+pub mod post_install_scan;
 pub mod runtime;
+pub mod session_mine;
 pub mod style;
+mod support;
 
-use cli::{Cli, Commands, StatusLane};
+use cli::{Cli, Commands, MemoryCommands, StatusLane};
 
 pub async fn run() {
-    // Detect color support once so paint helpers stay cheap afterwards.
+    // Detect color support once so paint helpers stay cheap.
     let _ = style::detect_color_support();
 
     let matches = cli::build_cli().get_matches();
@@ -35,47 +37,48 @@ pub async fn run() {
             e.exit();
         }
     };
-    // Cached startup gate: provider/cloud checks are best-effort
-    // and never block command execution.
-    let _ = difflore_core::startup::ensure_ready(false).await;
 
-    // Retired layout migration guard: new installs create per-project
-    // indexes directly. If an old global `context-index.db` is present,
-    // the guard fails closed and leaves the file untouched. Keep this
-    // best-effort so startup can continue with rebuilt per-project state.
+    let command = match cli.command {
+        Some(command) => command,
+        None => Commands::Status {
+            json: false,
+            lane: StatusLane::All,
+        },
+    };
+
+    // These commands must not pay the startup gate: the hook daemon and
+    // background autopilot are internal workers, while capabilities is a fast
+    // local contract read.
+    if matches!(
+        command,
+        Commands::HookDaemon { .. }
+            | Commands::OutboxDaemon { .. }
+            | Commands::Memory {
+                command: Some(MemoryCommands::Autopilot {
+                    background: true,
+                    ..
+                }),
+                ..
+            }
+            | Commands::Capabilities { .. }
+    ) {
+        Box::pin(dispatch::dispatch(command)).await;
+        return;
+    }
+
+    // Cached startup gate: provider/cloud checks are best-effort and never
+    // block command execution.
+    let _ = difflore_core::infra::startup::ensure_ready(false).await;
+
+    // Legacy layout migration guard. If an old global `context-index.db` is
+    // present, the guard fails closed and leaves the file untouched; kept
+    // best-effort so startup continues with rebuilt per-project state.
     if let Err(e) = difflore_core::migration::run_if_needed().await {
         eprintln!(
-            "[difflore] warning: retired per-project index migration refused old state ({e}). \
+            "warning: DiffLore skipped an old index migration ({e}). \
              Run `difflore doctor --report` to inspect."
         );
     }
 
-    let command = if let Some(command) = cli.command {
-        command
-    } else {
-        // First-run state machine: bare `difflore` can still run the
-        // wizard/welcome once, then falls through to the compact status
-        // surface instead of opening a separate TUI.
-        match commands::welcome::first_run_path(cli.no_interactive).await {
-            commands::welcome::FirstRunPath::LaunchWizard => {
-                if !commands::welcome::run_wizard().await.should_continue_tui() {
-                    return;
-                }
-            }
-            commands::welcome::FirstRunPath::ShowWelcome => {
-                if !commands::welcome::show_welcome_then_continue()
-                    .await
-                    .should_continue_tui()
-                {
-                    return;
-                }
-            }
-            commands::welcome::FirstRunPath::Skip => {}
-        }
-        Commands::Status {
-            json: false,
-            lane: StatusLane::All,
-        }
-    };
     Box::pin(dispatch::dispatch(command)).await;
 }

@@ -14,118 +14,224 @@
 //! 4. The cloud clusters those rows into draft `candidate_rules` with
 //!    `origin = 'session_mined'` and `requires_human_approval = true`.
 
+use std::fmt::Write as _;
+
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-/// Cap on `title` (chars, not bytes). Matches the existing
-/// `Observation::title` convention so cloud-side renderers can share
-/// truncation logic.
+use crate::infra::git::RepoScope;
+
+/// Cap on `title`, in chars not bytes. Matches `Observation::title` so
+/// cloud-side renderers share truncation logic.
 pub const TITLE_MAX_CHARS: usize = 120;
 
-/// Cap on `body` (chars, not bytes). 2 KB is enough for a 3-5 sentence
-/// rule body with a snippet; anything longer is almost certainly the
-/// raw transcript text the gate failed to compress.
+/// Cap on `body`, in chars not bytes. 2 KB fits a 3-5 sentence body with a
+/// snippet; longer almost always means the gate failed to compress the
+/// transcript.
 pub const BODY_MAX_CHARS: usize = 2000;
 
-/// Maximum number of file glob patterns we will accept from the gate.
-/// 1-3 is the sweet spot: a single broad glob is too noisy, more than
-/// three usually means the gate failed to localise the rule.
+/// Maximum file globs accepted from the gate. More than 3 usually means
+/// the gate failed to localise the rule.
 pub const MAX_FILE_PATTERNS: usize = 3;
 
-/// Stable origin tag for the candidate-rule pipeline.
 pub const ORIGIN: &str = "session_mined";
 
-/// Wire format for one session-mined candidate. Serialised verbatim
-/// into `cloud_outbox.payload_json` under `kind =
-/// "session_mined_candidate"`.
-///
-/// Every field except `gate_verdict` carries a hard local invariant —
-/// see the `validate` method and the constructor builders below.
-/// `source_repo` is the load-bearing one: it MUST be derived from the
-/// current git remote / cwd and never empty, otherwise the candidate
-/// has no Project Scope and the cloud has no way to attribute it.
+/// Wire format for one session-mined candidate, serialised into
+/// `cloud_outbox.payload_json` under `kind = "session_mined_candidate"`.
+/// Every field except `gate_verdict` carries a local invariant enforced by
+/// `validate` and the constructor.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionMinedCandidate {
-    /// Platform session id from the hook stdin payload (Claude Code
-    /// `session_id`, Cursor session uuid, …). Empty string is *not*
-    /// accepted — cloud-side dedup keys on this.
+    /// Platform session id from the hook payload. Never empty — cloud-side
+    /// dedup keys on this.
     pub session_id: String,
-    /// Unix-ms at the moment the gate produced its verdict.
+    /// Unix-ms when the gate produced its verdict.
     pub ts_ms: i64,
-    /// `owner/repo` for the GitHub remote, or the cwd basename as a
-    /// fallback for non-GitHub repos. Never empty; rejected if the
-    /// builder can't determine a repo identity for the current
-    /// workspace.
+    /// Canonical repo scope (`owner/repo` for GitHub, `host/group/project` for
+    /// GitLab). Never empty, otherwise the candidate has no Project Scope and
+    /// the cloud cannot attribute it. The wire field stays a bare string for
+    /// payload compatibility, but the only way to populate it is via
+    /// [`SessionMinedCandidate::try_new`], which requires a [`RepoScope`] — so
+    /// this column shares the single canonicalization gate every other
+    /// `source_repo` write goes through (the structural fix for the recurring
+    /// host-dimension scope bug).
     pub source_repo: String,
-    /// Single-line title, ≤ [`TITLE_MAX_CHARS`] chars. The gate is
-    /// instructed to write this as a behavioural rule (imperative or
-    /// declarative); rendering on the cloud side adds prefixes like
-    /// "Remember:" so we don't double them.
+    /// Single-line title, ≤ [`TITLE_MAX_CHARS`] chars. Written as a bare
+    /// behavioural rule; the cloud adds prefixes like "Remember:".
     pub title: String,
-    /// Multi-sentence rule body, ≤ [`BODY_MAX_CHARS`] chars. Usually
-    /// 2-5 sentences plus an optional code snippet.
+    /// Rule body, ≤ [`BODY_MAX_CHARS`] chars.
     pub body: String,
-    /// 1-3 file globs, never empty. Cloud-side cascade ordering keys
-    /// on these (rules whose patterns match the target file surface
-    /// first), so a candidate with zero patterns can never be served.
+    /// 1-3 file globs, never empty. Cloud cascade ordering keys on these,
+    /// so a patternless candidate can never be served.
     pub file_patterns: Vec<String>,
-    /// Provider:model identifier for the gate call, e.g.
-    /// `"claude:haiku"`. Used for audits + future per-model recall.
+    /// Provider:model for the gate call, e.g. `"claude:haiku"`.
     pub gate_model: String,
-    /// `"KEEP"` for a brand-new rule, or `"MERGE:<id>"` where `<id>` is
-    /// the cloud rule id the gate decided to extend. Cloud applies
-    /// the MERGE shape against the named rule's body; KEEP becomes a
-    /// fresh `candidate_rules` row.
+    /// `"KEEP"` for a new rule, or `"MERGE:<id>"` to extend the named cloud
+    /// rule's body.
     pub gate_verdict: String,
     /// 16-char hex sha256 of `source_repo|title|body`. Stable across
-    /// retries so the cloud can dedup duplicate outbox uploads of the
-    /// same candidate.
+    /// retries so the cloud can dedup duplicate uploads.
     pub content_hash: String,
-    /// Origin discriminator on the wire, always [`ORIGIN`].
+    /// Wire discriminator, always [`ORIGIN`].
     pub origin: String,
-    /// Draft gate; session-mined candidates require human approval.
     pub requires_human_approval: bool,
+    #[serde(
+        default,
+        rename = "localTriage",
+        alias = "local_triage",
+        deserialize_with = "deserialize_local_triage_lossy",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub local_triage: Option<SessionMinedLocalTriage>,
+    #[serde(
+        default,
+        rename = "localEvidence",
+        alias = "local_evidence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub local_evidence: Option<SessionMinedLocalEvidence>,
 }
 
-/// Errors a [`SessionMinedCandidate`] can fail validation with.
-/// Returned by the constructor / `validate` so the worker can swallow
-/// invalid candidates without retrying through the outbox.
+fn deserialize_local_triage_lossy<'de, D>(
+    deserializer: D,
+) -> Result<Option<SessionMinedLocalTriage>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_value(value).ok())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMinedLocalTriageStatus {
+    SupersededBy,
+    ClusteredInto,
+    DroppedLowSignal,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMinedLocalTriage {
+    pub status: SessionMinedLocalTriageStatus,
+    pub reason: String,
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    pub at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMinedLocalEvidence {
+    pub distinct_evidence_count: usize,
+    pub updated_at: i64,
+}
+
+impl SessionMinedLocalTriage {
+    pub fn new(
+        status: SessionMinedLocalTriageStatus,
+        reason: &str,
+        reference: Option<&str>,
+        at: i64,
+    ) -> Result<Self, CandidateError> {
+        if matches!(status, SessionMinedLocalTriageStatus::Unknown) {
+            return Err(CandidateError::InvalidLocalTriageStatus);
+        }
+        let reason = reason.trim().to_owned();
+        if reason.is_empty() {
+            return Err(CandidateError::MissingLocalTriageReason);
+        }
+        if at <= 0 {
+            return Err(CandidateError::InvalidLocalTriageAt);
+        }
+        let reference = reference
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        if matches!(
+            status,
+            SessionMinedLocalTriageStatus::SupersededBy
+                | SessionMinedLocalTriageStatus::ClusteredInto
+        ) && reference.is_none()
+        {
+            return Err(CandidateError::MissingLocalTriageRef);
+        }
+
+        Ok(Self {
+            status,
+            reason,
+            reference,
+            at,
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), CandidateError> {
+        if matches!(self.status, SessionMinedLocalTriageStatus::Unknown) {
+            return Ok(());
+        }
+        if self.reason.trim().is_empty() {
+            return Err(CandidateError::MissingLocalTriageReason);
+        }
+        if self.at <= 0 {
+            return Err(CandidateError::InvalidLocalTriageAt);
+        }
+        if matches!(
+            self.status,
+            SessionMinedLocalTriageStatus::SupersededBy
+                | SessionMinedLocalTriageStatus::ClusteredInto
+        ) && self
+            .reference
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            return Err(CandidateError::MissingLocalTriageRef);
+        }
+        Ok(())
+    }
+}
+
+/// Validation failures for a [`SessionMinedCandidate`]. Returned by the
+/// constructor and `validate` so the worker can drop invalid candidates
+/// without retrying through the outbox.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CandidateError {
-    /// `source_repo` is empty or whitespace-only. The Project Scope
-    /// Invariant says: drop the candidate, don't enqueue a scopeless row.
     #[error("session-mined candidate is missing source_repo — drop")]
     MissingSourceRepo,
-    /// `session_id` is empty. Without a session id the cloud cannot
-    /// dedup or attribute the candidate.
     #[error("session-mined candidate is missing session_id — drop")]
     MissingSessionId,
-    /// `title` empty or longer than [`TITLE_MAX_CHARS`].
     #[error("session-mined candidate title invalid (empty or > {TITLE_MAX_CHARS} chars)")]
     InvalidTitle,
-    /// `body` empty or longer than [`BODY_MAX_CHARS`].
     #[error("session-mined candidate body invalid (empty or > {BODY_MAX_CHARS} chars)")]
     InvalidBody,
-    /// `file_patterns` empty or > [`MAX_FILE_PATTERNS`].
     #[error("session-mined candidate must carry 1-{MAX_FILE_PATTERNS} file patterns")]
     InvalidFilePatterns,
-    /// `gate_model` empty.
     #[error("session-mined candidate is missing gate_model")]
     MissingGateModel,
-    /// `gate_verdict` empty / not `"KEEP"` / not `"MERGE:<id>"`.
     #[error("session-mined candidate gate_verdict must be 'KEEP' or 'MERGE:<id>'")]
     InvalidGateVerdict,
-    /// `requires_human_approval` was set to `false`.
     #[error("session-mined candidates must keep requires_human_approval = true")]
     NotDraft,
-    /// `origin` is anything other than [`ORIGIN`].
     #[error("session-mined candidate has wrong origin (expected {ORIGIN})")]
     WrongOrigin,
+    #[error("session-mined candidate local triage status is invalid")]
+    InvalidLocalTriageStatus,
+    #[error("session-mined candidate local triage reason is missing")]
+    MissingLocalTriageReason,
+    #[error("session-mined candidate local triage ref is missing")]
+    MissingLocalTriageRef,
+    #[error("session-mined candidate local triage timestamp is invalid")]
+    InvalidLocalTriageAt,
+    #[error("session-mined candidate local triage ref points at itself")]
+    SelfReferentialLocalTriageRef,
 }
 
 impl SessionMinedCandidate {
-    /// Build a new candidate from gate output. Truncates title/body to
-    /// the documented caps, derives the content hash, and pins the
-    /// origin and draft flag. Callers must drop invalid candidates.
+    /// Build a candidate from gate output: truncates title/body to the
+    /// caps, derives the content hash, and pins origin + draft flag.
     pub fn try_new(args: SessionMinedCandidateArgs) -> Result<Self, CandidateError> {
         let SessionMinedCandidateArgs {
             session_id,
@@ -142,8 +248,13 @@ impl SessionMinedCandidate {
         if session_id.is_empty() {
             return Err(CandidateError::MissingSessionId);
         }
-        let source_repo = source_repo.trim().to_owned();
-        if source_repo.is_empty() {
+        // `source_repo` arrives as a `RepoScope`, so the canonical/non-empty
+        // invariant is already enforced by the newtype's constructor — there is
+        // no path to build a candidate from a raw, unnormalized String. We keep
+        // a defensive empty check for symmetry with `validate`, which also runs
+        // on candidates rehydrated from the outbox wire format.
+        let source_repo = source_repo.into_string();
+        if source_repo.trim().is_empty() {
             return Err(CandidateError::MissingSourceRepo);
         }
         let title = truncate_chars(title.trim(), TITLE_MAX_CHARS);
@@ -186,13 +297,13 @@ impl SessionMinedCandidate {
             content_hash,
             origin: ORIGIN.to_owned(),
             requires_human_approval: true,
+            local_triage: None,
+            local_evidence: None,
         })
     }
 
-    /// Re-validate an existing candidate. Used by the outbox
-    /// dispatcher before posting so a corrupted row (e.g. tampered
-    /// payload, wrong-origin row migrated in) never reaches the
-    /// cloud endpoint.
+    /// Re-validate before posting so a corrupted or wrong-origin row never
+    /// reaches the cloud endpoint.
     pub fn validate(&self) -> Result<(), CandidateError> {
         if self.session_id.trim().is_empty() {
             return Err(CandidateError::MissingSessionId);
@@ -221,18 +332,36 @@ impl SessionMinedCandidate {
         if !self.requires_human_approval {
             return Err(CandidateError::NotDraft);
         }
+        if let Some(triage) = &self.local_triage {
+            triage.validate()?;
+            if matches!(
+                triage.status,
+                SessionMinedLocalTriageStatus::SupersededBy
+                    | SessionMinedLocalTriageStatus::ClusteredInto
+            ) && triage
+                .reference
+                .as_deref()
+                .is_some_and(|reference| reference.trim() == self.content_hash)
+            {
+                return Err(CandidateError::SelfReferentialLocalTriageRef);
+            }
+        }
         Ok(())
     }
 }
 
-/// Builder bundle accepted by [`SessionMinedCandidate::try_new`]. Kept
-/// as a struct (rather than a long argument list) so future fields
-/// can be added without breaking call sites.
+/// Builder bundle accepted by [`SessionMinedCandidate::try_new`].
+///
+/// `source_repo` is a [`RepoScope`], not a raw `String`: the session-mined
+/// candidate is one of the five `skills.source_repo` write entry points, and
+/// routing it through the newtype makes `RepoScope` the single normalization
+/// gate for every one of them. A caller cannot construct a candidate from an
+/// unnormalized remote string.
 #[derive(Debug, Clone)]
 pub struct SessionMinedCandidateArgs {
     pub session_id: String,
     pub ts_ms: i64,
-    pub source_repo: String,
+    pub source_repo: RepoScope,
     pub title: String,
     pub body: String,
     pub file_patterns: Vec<String>,
@@ -250,10 +379,9 @@ fn is_valid_verdict(verdict: &str) -> bool {
     false
 }
 
-/// `sha256(source_repo|title|body)[:16]` as lowercase hex. Mirrors
-/// the 16-char convention used by `Observation::content_hash` and
-/// `remember_rule` so cloud-side dedup logic doesn't need a separate
-/// hash family.
+/// `sha256(source_repo|title|body)[:16]` as lowercase hex. Mirrors the
+/// 16-char convention of `Observation::content_hash` and `remember_rule`
+/// so cloud-side dedup shares one hash family.
 pub fn compute_content_hash(source_repo: &str, title: &str, body: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(source_repo.as_bytes());
@@ -264,7 +392,7 @@ pub fn compute_content_hash(source_repo: &str, title: &str, body: &str) -> Strin
     let digest = hasher.finalize();
     let mut hex = String::with_capacity(16);
     for byte in digest.iter().take(8) {
-        hex.push_str(&format!("{byte:02x}"));
+        let _ = write!(&mut hex, "{byte:02x}");
     }
     hex
 }
@@ -286,7 +414,7 @@ mod tests {
         SessionMinedCandidateArgs {
             session_id: "sess_test".to_owned(),
             ts_ms: 1_714_000_000_000,
-            source_repo: "owner/repo".to_owned(),
+            source_repo: RepoScope::canonical("owner/repo").expect("canonical scope"),
             title: "Prefer typed deserialization over Value::as_str".to_owned(),
             body: "When parsing oRPC payloads, deserialize into a concrete struct \
                    instead of walking serde_json::Value with as_str()."
@@ -308,12 +436,17 @@ mod tests {
     }
 
     #[test]
-    fn try_new_rejects_missing_source_repo() {
-        // Scopeless candidates are dropped, never enqueued.
-        let mut a = args();
-        a.source_repo = String::new();
-        let err = SessionMinedCandidate::try_new(a).unwrap_err();
-        assert_eq!(err, CandidateError::MissingSourceRepo);
+    fn source_repo_cannot_be_constructed_from_empty_or_noncanonical_string() {
+        // The `MissingSourceRepo` gap is now structurally unreachable: the
+        // candidate's `source_repo` is a `RepoScope`, and `RepoScope::canonical`
+        // refuses empty / unnormalized input, so there is no way to even build
+        // the args for a scopeless candidate.
+        assert!(RepoScope::canonical("").is_none());
+        assert!(RepoScope::canonical("   ").is_none());
+        assert!(RepoScope::canonical("not a repo").is_none());
+        // A valid canonical scope still round-trips into the candidate.
+        let cand = SessionMinedCandidate::try_new(args()).expect("valid");
+        assert_eq!(cand.source_repo, "owner/repo");
     }
 
     #[test]
@@ -409,7 +542,6 @@ mod tests {
 
     #[test]
     fn wire_shape_serializes_with_snake_case_keys() {
-        // Lock the snake_case wire contract used by the cloud endpoint.
         let cand = SessionMinedCandidate::try_new(args()).unwrap();
         let value = serde_json::to_value(&cand).expect("serialize");
         for required in [
@@ -429,5 +561,54 @@ mod tests {
         }
         assert_eq!(value["requires_human_approval"], true);
         assert_eq!(value["origin"], ORIGIN);
+        assert!(value.get("localTriage").is_none());
+        assert!(value.get("local_triage").is_none());
+    }
+
+    #[test]
+    fn local_triage_uses_camel_case_wire_key_and_accepts_legacy_alias() {
+        let mut cand = SessionMinedCandidate::try_new(args()).unwrap();
+        cand.local_triage = Some(SessionMinedLocalTriage {
+            status: SessionMinedLocalTriageStatus::DroppedLowSignal,
+            reason: "single-session implementation detail".to_owned(),
+            reference: None,
+            at: 1_714_000_000_001,
+        });
+
+        let value = serde_json::to_value(&cand).expect("serialize");
+        assert_eq!(
+            value["localTriage"]["status"],
+            serde_json::json!("dropped_low_signal")
+        );
+        assert!(value.get("local_triage").is_none());
+
+        let mut legacy = value;
+        legacy["local_triage"] = legacy["localTriage"].clone();
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .remove("localTriage");
+        let decoded: SessionMinedCandidate =
+            serde_json::from_value(legacy).expect("legacy alias decodes");
+        assert_eq!(
+            decoded.local_triage.expect("triage").status,
+            SessionMinedLocalTriageStatus::DroppedLowSignal
+        );
+    }
+
+    #[test]
+    fn validate_rejects_self_referential_triage_ref() {
+        let mut cand = SessionMinedCandidate::try_new(args()).unwrap();
+        cand.local_triage = Some(SessionMinedLocalTriage {
+            status: SessionMinedLocalTriageStatus::ClusteredInto,
+            reason: "self reference would hide the canonical".to_owned(),
+            reference: Some(cand.content_hash.clone()),
+            at: 1_714_000_000_001,
+        });
+
+        assert_eq!(
+            cand.validate().unwrap_err(),
+            CandidateError::SelfReferentialLocalTriageRef
+        );
     }
 }

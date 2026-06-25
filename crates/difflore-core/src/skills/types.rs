@@ -1,5 +1,6 @@
-use crate::models::{SkillRecord, SkillRepoRecord};
+use crate::domain::models::{SkillRecord, SkillRepoRecord};
 
+#[cfg(test)]
 #[allow(clippy::many_single_char_names)] // reason: base64 nibbles a/b/c/d are conventional
 pub(crate) fn decode_base64_lossy(input: &str) -> String {
     let cleaned: String = input.chars().filter(|c| !c.is_whitespace()).collect();
@@ -47,6 +48,60 @@ pub(crate) fn decode_base64_lossy(input: &str) -> String {
         }
     }
     String::from_utf8_lossy(&bytes).to_string()
+}
+
+/// Fetch a single `skills` row by id and map it to a [`SkillRecord`].
+///
+/// Generic over the executor so both a `&SqlitePool` and a transaction
+/// (`&mut *tx`) can call it. Holds the canonical 22-column `SkillRow`
+/// projection once so the `WHERE id = ?1` variant isn't copy-pasted across the
+/// crud / remember / local / candidate paths.
+///
+/// The column list is still spelled out inline rather than hoisted to a
+/// `const`: the `query_as!` macro parses its SQL as a string literal at
+/// macro-expansion time and can't interpolate a `const`, and a runtime
+/// `query_as` would forfeit the compile-time schema check these queries rely
+/// on. Centralising the lookup here is the behaviour-preserving way to remove
+/// the duplication.
+pub(crate) async fn fetch_skill_row_by_id<'e, E>(
+    executor: E,
+    id: &str,
+) -> crate::Result<SkillRecord>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let row = sqlx::query_as!(
+        SkillRow,
+        "SELECT id, name, source, directory, version, description, type, \
+         engines, tags, trigger, check_prompt, repo_owner, repo_name, repo_branch, readme_url, \
+         enabled_for_codex, enabled_for_claude, enabled_for_gemini, enabled_for_cursor, \
+         installed_at, updated_at, origin FROM skills WHERE id = ?1",
+        id
+    )
+    .fetch_one(executor)
+    .await?;
+    Ok(SkillRecord::from(row))
+}
+
+/// Like [`fetch_skill_row_by_id`] but returns `None` when no row matches.
+pub(crate) async fn fetch_skill_row_by_id_optional<'e, E>(
+    executor: E,
+    id: &str,
+) -> crate::Result<Option<SkillRecord>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let row = sqlx::query_as!(
+        SkillRow,
+        "SELECT id, name, source, directory, version, description, type, \
+         engines, tags, trigger, check_prompt, repo_owner, repo_name, repo_branch, readme_url, \
+         enabled_for_codex, enabled_for_claude, enabled_for_gemini, enabled_for_cursor, \
+         installed_at, updated_at, origin FROM skills WHERE id = ?1",
+        id
+    )
+    .fetch_optional(executor)
+    .await?;
+    Ok(row.map(SkillRecord::from))
 }
 
 #[derive(sqlx::FromRow)]
@@ -114,12 +169,17 @@ fn parse_engines_column(raw: &str) -> Vec<String> {
                 .filter(|engine| is_known_engine(engine))
                 .collect();
             if fallback.is_empty() {
-                eprintln!("[difflore] malformed skills.engines JSON ({e}); falling back to claude");
+                eprintln!("warning: DiffLore could not read skills.engines; using claude.");
+                if crate::infra::env::debug_telemetry() {
+                    eprintln!("[difflore] malformed skills.engines JSON: {e}");
+                }
                 vec!["claude".to_owned()]
             } else {
-                eprintln!(
-                    "[difflore] malformed skills.engines JSON ({e}); parsed legacy list syntax"
-                );
+                if crate::infra::env::debug_telemetry() {
+                    eprintln!(
+                        "[difflore] malformed skills.engines JSON ({e}); parsed legacy list syntax"
+                    );
+                }
                 fallback
             }
         }
@@ -153,6 +213,7 @@ impl From<SkillRepoRow> for SkillRepoRecord {
     }
 }
 
+#[cfg(test)]
 pub(crate) struct SkillFrontmatter {
     pub(crate) r#type: Option<String>,
     pub(crate) tags: Option<Vec<String>>,
@@ -180,6 +241,7 @@ pub(crate) fn parse_list_value(value: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn parse_skill_frontmatter(content: &str) -> SkillFrontmatter {
     let mut fm = SkillFrontmatter {
         r#type: None,

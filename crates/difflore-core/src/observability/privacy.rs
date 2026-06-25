@@ -1,35 +1,31 @@
 pub const PRIVATE_REDACTION: &str = "[redacted private content]";
 
-/// Marker substituted in place of every redacted secret by [`redact_secrets`].
-/// Kept byte-for-byte identical to the cloud's `SECRET_REDACTION_PLACEHOLDER`
-/// (`redact-secrets.ts`) so a rule that round-trips through either side reads
-/// the same.
+/// Marker substituted for every redacted secret by [`redact_secrets`]. Kept
+/// byte-for-byte identical to the cloud's `SECRET_REDACTION_PLACEHOLDER`
+/// (`redact-secrets.ts`) so a rule reads the same on either side.
 pub const SECRET_REDACTION_PLACEHOLDER: &str = "‹redacted-secret›";
 
 /// Conservative pre-persist secret redaction for locally-drafted rule text.
 ///
-/// This is the Rust analogue of the cloud's `redactSecrets` in
-/// `difflore-cloud/src/lib/redact-secrets.ts`; it mirrors the SAME secret
-/// classes so a rule drafted locally is scrubbed before it is written to the
-/// SQLite skills store (and lazily embedded), exactly as the cloud scrubs
-/// before persisting/embedding a candidate. The classes, in priority order:
+/// Rust analogue of the cloud's `redactSecrets`
+/// (`difflore-cloud/src/lib/redact-secrets.ts`); mirrors the SAME secret
+/// classes so a locally-drafted rule is scrubbed identically before it is
+/// written to the SQLite skills store. Classes, in priority order:
 ///
 ///   1. Provider-prefixed credentials + JWTs — redacted on shape alone
 ///      (`gh[opsu]_…`, `github_pat_…`, `sk-…`, `xox[baprs]-…`, `AKIA…`,
 ///      JWT `eyJ….….…`).
-///   2. `Bearer <token>` (HTTP Authorization style) — unless the token is a
-///      plain code reference.
+///   2. `Bearer <token>` — unless the token is a plain code reference.
 ///   3. `<keyword> [:=] <value>` assignments for api_key / access_token /
 ///      refresh_token / id_token / auth_token / bearer_token / client_secret /
 ///      webhook_secret / secret / password / passwd / pwd — redacted ONLY when
-///      the value both carries secret-like entropy AND is not a code reference.
+///      the value carries secret-like entropy AND is not a code reference.
 ///
-/// Conservative by design: it runs over real review prose and quoted code
-/// snippets, so a false positive silently corrupts a legitimate rule. The
-/// keyword-assignment class therefore never fires on `config.apiKey`,
-/// `process.env.API_KEY`, `getToken()`, or a plain identifier; the prefix/JWT
-/// classes fire only on their distinctive high-entropy shape. Plain prose, git
-/// SHAs, and UUIDs are left untouched (see the unit tests).
+/// Conservative by design: it runs over real review prose, so a false positive
+/// silently corrupts a legitimate rule. The keyword class never fires on
+/// `config.apiKey`, `process.env.API_KEY`, `getToken()`, or a plain identifier;
+/// prefix/JWT classes fire only on their distinctive high-entropy shape. Plain
+/// prose, git SHAs, and UUIDs are left untouched (see the unit tests).
 #[must_use]
 pub fn redact_secrets(text: &str) -> String {
     if text.is_empty() {
@@ -61,12 +57,10 @@ pub fn redact_secrets(text: &str) -> String {
             if let Some(m) = match_named_secret_assign(&chars, i) {
                 let value: String = chars[m.value_start..m.value_end].iter().collect();
                 if !looks_like_code_reference(&value) && has_secret_entropy(&value) {
-                    // `chars[i..value_start]` already carries the keyword,
-                    // operator, whitespace, AND the opening quote (value_start
-                    // sits just past it). Emit that, the placeholder, then a
-                    // symmetric closing quote — mirroring the cloud's
-                    // `${prefix}${openQuote}${PLACEHOLDER}${openQuote}`. The
-                    // ORIGINAL closing quote is consumed via `match_end`.
+                    // `chars[i..value_start]` carries the keyword, operator,
+                    // whitespace, AND the opening quote; emit that, the
+                    // placeholder, then a symmetric closing quote. The original
+                    // closing quote is consumed via `match_end`.
                     out.extend(chars[i..m.value_start].iter());
                     out.push_str(SECRET_REDACTION_PLACEHOLDER);
                     if let Some(q) = m.open_quote {
@@ -83,16 +77,14 @@ pub fn redact_secrets(text: &str) -> String {
     out
 }
 
-/// A char is part of the `\w`-class token alphabet shared by the cloud regexes
-/// (`[\w.~+/=-]` plus the prefix/JWT alphabets). Used for `\b` boundary checks
-/// so we only start a match at a real token boundary, never mid-identifier.
+/// A char in the `[\w.~+/=-]` token alphabet shared with the cloud regexes,
+/// used for `\b` boundary checks so a match only starts at a token boundary.
 const fn is_token_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '~' | '+' | '/' | '=' | '-')
 }
 
-/// `\w` (word) char for the `\b` boundaries the cloud regexes use: ASCII
-/// alphanumeric or underscore. A match may only begin where the previous char
-/// is NOT a word char (start-of-string counts as a boundary).
+/// `\w` (word) char for `\b` boundaries: ASCII alphanumeric or underscore. A
+/// match may only begin where the previous char is not a word char.
 const fn is_word_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
@@ -101,9 +93,8 @@ fn at_word_boundary(chars: &[char], i: usize) -> bool {
     i == 0 || !is_word_char(chars[i - 1])
 }
 
-/// Length (in chars) of the maximal secret-token run `[\w.~+/=-]+` starting at
-/// `start`. Mirrors the cloud `SECRET_TOKEN = [\w.~+/=-]{12,}` (the `{12,}`
-/// length gate is applied by callers).
+/// Length (in chars) of the maximal `[\w.~+/=-]+` run at `start`. Mirrors the
+/// cloud `SECRET_TOKEN`; the `{12,}` length gate is applied by callers.
 fn secret_token_len(chars: &[char], start: usize) -> usize {
     let mut end = start;
     while end < chars.len() && is_token_char(chars[end]) {
@@ -112,9 +103,9 @@ fn secret_token_len(chars: &[char], start: usize) -> usize {
     end - start
 }
 
-/// Try to match a provider-prefixed credential or JWT at `start`, returning the
-/// end index (exclusive) on success. Each arm also enforces the trailing `\b`
-/// the cloud regex requires, so `AKIA…` embedded in a longer token is rejected.
+/// Match a provider-prefixed credential or JWT at `start`, returning the
+/// exclusive end index. Each arm enforces the trailing `\b` the cloud regex
+/// requires, so e.g. `AKIA…` embedded in a longer token is rejected.
 fn match_known_prefix_secret(chars: &[char], start: usize) -> Option<usize> {
     // gh[opsu]_[A-Za-z0-9]{20,}
     if let Some(&[g, h, t, u]) = chars.get(start..start + 4) {
@@ -156,17 +147,12 @@ fn match_known_prefix_secret(chars: &[char], start: usize) -> Option<usize> {
             }
         }
     }
-    // AKIA[0-9A-Z]{16} — case-sensitive prefix, then exactly 16 uppercase/digit
-    // chars and a trailing boundary.
+    // AKIA[0-9A-Z]{16,} — case-sensitive prefix, then at least 16
+    // uppercase/digit chars and a trailing boundary.
     if starts_with_chars(chars, start, "AKIA") {
-        let body_start = start + 4;
-        let end = body_start + 16;
-        if end <= chars.len()
-            && chars[body_start..end]
-                .iter()
-                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-            && (end >= chars.len() || !is_word_char(chars[end]))
-        {
+        if let Some(end) = match_prefix_run(chars, start + "AKIA".len(), 16, |c| {
+            c.is_ascii_uppercase() || c.is_ascii_digit()
+        }) {
             return Some(end);
         }
     }
@@ -179,8 +165,7 @@ fn match_known_prefix_secret(chars: &[char], start: usize) -> Option<usize> {
     None
 }
 
-/// True when `chars[start..]` begins with the ASCII `prefix` (case-sensitive),
-/// compared char-by-char so no allocation is needed per probe.
+/// True when `chars[start..]` begins with the ASCII `prefix` (case-sensitive).
 fn starts_with_chars(chars: &[char], start: usize, prefix: &str) -> bool {
     for (idx, pc) in (start..).zip(prefix.chars()) {
         if chars.get(idx) != Some(&pc) {
@@ -214,11 +199,13 @@ fn match_prefix_run(
     while end < chars.len() && pred(chars[end]) {
         end += 1;
     }
-    // The run stops at the first char failing `pred`. Every arm's `pred`
-    // already accepts the full `\w`-superset its `\b` cares about (alnum, `_`,
-    // `-`), so stopping here IS the trailing word-boundary the cloud regex
-    // requires — no extra check needed.
-    (end - body_start >= min).then_some(end)
+    if end - body_start < min {
+        return None;
+    }
+    if end < chars.len() && is_word_char(chars[end]) {
+        return None;
+    }
+    Some(end)
 }
 
 /// JWT: three `[\w-]{10,}` segments separated by literal dots, starting at the
@@ -247,9 +234,7 @@ fn match_jwt(chars: &[char], start: usize) -> Option<usize> {
 }
 
 /// `Bearer\s+<token>` — returns `(prefix_end, token_end)` where `prefix_end` is
-/// the index just past the whitespace (start of the token). The token is the
-/// `[\w.~+/=-]{12,}` run; trailing `\b` is implied because the run stops at the
-/// first non-token char.
+/// the start of the token. The token is the `[\w.~+/=-]{12,}` run.
 fn match_bearer_secret(chars: &[char], start: usize) -> Option<(usize, usize)> {
     let head: String = chars
         .get(start..(start + 6).min(chars.len()))?
@@ -367,11 +352,10 @@ fn match_named_secret_assign(chars: &[char], start: usize) -> Option<NamedAssign
 }
 
 /// True when a keyword-assignment / Bearer value is plainly a code reference
-/// rather than a literal secret — e.g. `config.apiKey`, `process.env.API_KEY`,
-/// `req.body.clientSecret`, `getPassword()`, or a plain word identifier. Mirrors
-/// the cloud `looksLikeCodeReference`. A high-entropy token like `A1b2C3d4E5f6`
-/// has interior digits and so fails the word-identifier arm, falling through as
-/// a secret.
+/// rather than a literal secret — e.g. `config.apiKey`, `getPassword()`, or a
+/// plain word identifier. Mirrors the cloud `looksLikeCodeReference`. A
+/// high-entropy token like `A1b2C3d4E5f6` has interior digits, so it fails the
+/// word-identifier arm and falls through as a secret.
 fn looks_like_code_reference(value: &str) -> bool {
     // Call / index expression: getPassword(), tokens[0].
     if value.contains(['(', ')', '[', ']']) {
@@ -483,75 +467,6 @@ pub fn strip_private_tagged_regions(input: &str) -> String {
     out
 }
 
-pub fn redact_secretish_tokens(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut token = String::new();
-
-    for ch in input.chars() {
-        if ch.is_whitespace() {
-            push_redacted_token(&mut out, &token);
-            token.clear();
-            out.push(ch);
-        } else {
-            token.push(ch);
-        }
-    }
-    push_redacted_token(&mut out, &token);
-    out
-}
-
-fn push_redacted_token(out: &mut String, token: &str) {
-    if token.is_empty() {
-        return;
-    }
-    let trimmed = token.trim_matches(|c: char| {
-        matches!(
-            c,
-            '"' | '\'' | '`' | ',' | ';' | ':' | ')' | '(' | ']' | '[' | '{' | '}'
-        )
-    });
-    if looks_secretish(trimmed) {
-        let prefix_len = token.find(trimmed).unwrap_or(0);
-        let suffix_start = prefix_len + trimmed.len();
-        out.push_str(&token[..prefix_len]);
-        if let Some((key, _)) = trimmed.split_once('=') {
-            out.push_str(key);
-            out.push('=');
-        }
-        out.push_str(PRIVATE_REDACTION);
-        out.push_str(&token[suffix_start..]);
-    } else {
-        out.push_str(token);
-    }
-}
-
-fn looks_secretish(token: &str) -> bool {
-    let lower = token.to_ascii_lowercase();
-    let value = lower
-        .split_once('=')
-        .map_or(lower.as_str(), |(_, value)| value);
-    if value.starts_with("sk-") && value.len() >= 16 {
-        return true;
-    }
-    if value.starts_with("ghp_")
-        || value.starts_with("gho_")
-        || value.starts_with("ghu_")
-        || value.starts_with("ghs_")
-        || value.starts_with("github_pat_")
-    {
-        return value.len() >= 20;
-    }
-    let raw = token
-        .split_once('=')
-        .map_or(token, |(_, value)| value)
-        .trim();
-    raw.len() >= 20
-        && raw.starts_with("AKIA")
-        && raw
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-}
-
 fn next_private_open_tag(lower: &str, cursor: usize) -> Option<(usize, &str, &str)> {
     PRIVATE_TAG_PAIRS
         .iter()
@@ -593,25 +508,6 @@ mod tests {
         let out = strip_private_tagged_regions("safe <private>do not store");
 
         assert_eq!(out, "safe [redacted private content]");
-    }
-
-    #[test]
-    fn redact_secretish_tokens_redacts_common_raw_tokens() {
-        let out = redact_secretish_tokens(
-            "openai=sk-proj-abcdefghijklmnopqrstuvwxyz ghp_abcdefghijklmnopqrstuvwxyz AKIAABCDEFGHIJKLMNOP",
-        );
-
-        assert_eq!(
-            out,
-            "openai=[redacted private content] [redacted private content] [redacted private content]"
-        );
-    }
-
-    #[test]
-    fn redact_secretish_tokens_keeps_short_false_positives() {
-        let out = redact_secretish_tokens("use sk-test in docs and ticket ghp_short");
-
-        assert_eq!(out, "use sk-test in docs and ticket ghp_short");
     }
 
     // ── redact_secrets: one assertion per secret class, plus guards ──────────
@@ -669,9 +565,20 @@ mod tests {
 
     #[test]
     fn redacts_aws_akia_key() {
-        // AKIA + exactly 16 uppercase/digit chars.
+        // Canonical AWS access key id shape: AKIA + 16 uppercase/digit chars.
         let key = "AKIAIOSFODNN7EXAMPLE";
         assert_redacted(&format!("aws id {key} here"), key);
+    }
+
+    #[test]
+    fn redacts_long_aws_akia_like_key() {
+        let key = "AKIAIOSFODNN7EXAMPLE1";
+        assert_redacted(&format!("aws id {key} here"), key);
+    }
+
+    #[test]
+    fn does_not_partially_redact_akia_embedded_in_longer_word() {
+        assert_untouched("aws id AKIAIOSFODNN7EXAMPLElower here");
     }
 
     #[test]

@@ -6,17 +6,51 @@
 # when you've touched doc examples.
 t = "nextest run --workspace --all-targets"
 
+# Local mirrors of the GitHub Actions Rust gates. These inherit the repo-level
+# `-D warnings` rustflags below, so local cargo runs fail on the same warnings
+# that CI treats as errors.
+ci-check = "check --workspace --all-targets"
+ci-clippy = "clippy --workspace --all-targets -- -D warnings"
+ci-dist = "run -p difflore-cli -- dist verify"
+ci-doc = "test --workspace --doc"
+ci-test = "nextest run --workspace --all-targets --profile ci"
+
+[build]
+# rustc 1.96.0 on Windows (MSVC) ICEs during *incremental* codegen for this
+# workspace — STATUS_STACK_BUFFER_OVERRUN (0xC0000409) inside
+# `incr_result_hashing` while linking difflore-core/difflore-cli. Full,
+# non-incremental builds compile cleanly, so disable incremental until a fixed
+# toolchain ships. Incremental only speeds up local rebuilds; CI runs fresh, so
+# this costs nothing there.
+incremental = false
+
 [env]
 # Use the sqlx offline cache (./.sqlx) so `cargo check` / `cargo build` do not
 # require a live SQLite database at compile time. Developers can still point
 # DATABASE_URL at a real DB and run `cargo sqlx prepare` to regenerate cache.
 SQLX_OFFLINE = "true"
 
+# The OpenAPI spec moved from the difflore-core crate root to
+# contracts/openapi-spec.json. `openapi_contract::generate_types!` takes the
+# path as an argument, but the companion `api!` macro hard-codes a lookup of
+# "openapi-spec.json" relative to CARGO_MANIFEST_DIR (walking up parent
+# dirs); this env var is the only way to redirect it. The relative path is
+# joined to each compiling crate's manifest dir — only difflore-core invokes
+# these macros, so it resolves to crates/difflore-core/contracts/.
+OPENAPI_SPEC_PATH = "contracts/openapi-spec.json"
+
+# GitHub Actions runs `cargo check` and `nextest` with `RUSTFLAGS=-D warnings`,
+# and clippy with `-- -D warnings`. Keep local cargo behavior equally strict so
+# CI-only warning failures reproduce before push.
+[target.'cfg(all())']
+rustflags = ["-D", "warnings"]
+
 # Windows main-thread default stack is 1 MB — too small for `difflore dist
 # verify` and similar paths that recurse over the include_str!-bound skill
 # tree at startup. CI on windows-latest hit STATUS_STACK_BUFFER_OVERRUN
 # (0xC0000409) at exactly that point. Bump to 16 MB so deep static-data
 # walks don't blow the stack. Linux + macOS use 8 MB by default; this
-# only affects MSVC builds.
+# only affects MSVC builds. Keep `-D warnings` here too because target-specific
+# rustflags take precedence over the cfg(all) warning policy above.
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "link-arg=/STACK:16777216"]
+rustflags = ["-D", "warnings", "-C", "link-arg=/STACK:16777216"]

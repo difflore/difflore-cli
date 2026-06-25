@@ -15,11 +15,12 @@
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::path::PathBuf;
 use tokio::fs;
 
-use crate::errors::CoreError;
-use crate::paths;
+use crate::error::CoreError;
+use crate::infra::paths;
 
 /// Five minutes — balances "skip the probe on the next N commands after a
 /// fresh one" (common case) with "surface real drift within seconds" (when
@@ -37,26 +38,44 @@ pub struct StartupStatus {
     pub provider_ok_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_ok_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_not_logged_in_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_base_url: Option<String>,
 }
 
 impl StartupStatus {
-    /// Are all probe timestamps newer than `now - TTL`? `provider_ok_at`
-    /// and `cloud_ok_at` are considered fresh when present and recent;
-    /// `None` means the probe was never run (e.g. not logged in yet) and
-    /// is NOT treated as stale — we don't want to re-ping the cloud on
-    /// every invocation just because the user isn't signed in.
+    /// Are all probe timestamps newer than `now - TTL`? A missing provider
+    /// timestamp means the provider probe failed and should be retried. Cloud
+    /// is fresh when it either succeeded or was explicitly skipped because the
+    /// user was not logged in; a logged-in cloud probe failure leaves both
+    /// timestamps absent so the next invocation retries.
     fn is_fresh(&self, now: DateTime<Utc>) -> bool {
         let ttl = Duration::minutes(STARTUP_TTL_MINUTES);
-        let migrations_fresh = (now - self.migrations_applied_at) < ttl;
-        let provider_fresh = self.provider_ok_at.is_none_or(|t| (now - t) < ttl);
-        let cloud_fresh = self.cloud_ok_at.is_none_or(|t| (now - t) < ttl);
+        let is_recent = |ts: DateTime<Utc>| (now - ts) < ttl;
+        let migrations_fresh = is_recent(self.migrations_applied_at);
+        let provider_fresh = self.provider_ok_at.is_some_and(is_recent);
+        let cloud_origin_matches = self.cloud_origin_matches_current();
+        let cloud_fresh = cloud_origin_matches
+            && (self.cloud_ok_at.is_some_and(is_recent)
+                || self.cloud_not_logged_in_at.is_some_and(is_recent));
         migrations_fresh && provider_fresh && cloud_fresh
+    }
+
+    fn cloud_origin_matches_current(&self) -> bool {
+        let has_cloud_probe = self.cloud_ok_at.is_some() || self.cloud_not_logged_in_at.is_some();
+        if !has_cloud_probe {
+            return true;
+        }
+        self.cloud_base_url
+            .as_deref()
+            .is_some_and(|url| url == crate::cloud::client::CloudClient::resolve_cloud_url())
     }
 }
 
 /// `~/.difflore/startup-cache.json` (overridable via `DIFFLORE_HOME`).
 fn cache_path() -> Result<PathBuf, CoreError> {
-    let dir = paths::data_home().map_err(CoreError::Internal)?;
+    let dir = paths::data_home()?;
     Ok(dir.join("startup-cache.json"))
 }
 
@@ -99,19 +118,19 @@ async fn run_full_check() -> Result<StartupStatus, CoreError> {
 
     // Migrations — re-running is a no-op when everything is already
     // applied, so the cost is a single metadata query.
-    let _pool = crate::db::init_db().await.map_err(CoreError::Internal)?;
+    let db = crate::infra::db::init_db().await?;
 
     // Recover any cloud-outbox rows that got stuck in 'processing' after
     // a crashed drain (e.g. SIGKILL'd hook). Anything older than 60 s is
     // bounced back to 'pending' so the next drain can retry. Failures
     // are logged but never block startup — a stale outbox row costs at
     // most one retry's worth of duplicate work on the cloud side.
-    if let Ok(pool) = crate::db::init_db().await {
-        let queue = crate::cloud::outbox::OutboxQueue::new(pool);
-        if let Err(e) = queue
-            .reset_stale(crate::cloud::outbox::DEFAULT_STALE_SECONDS)
-            .await
-        {
+    let queue = crate::cloud::outbox::OutboxQueue::new(db.clone());
+    if let Err(e) = queue
+        .reset_stale(crate::cloud::outbox::DEFAULT_STALE_SECONDS)
+        .await
+    {
+        if crate::infra::env::debug_cloud() {
             eprintln!("[difflore] cloud_outbox reset_stale skipped: {e}");
         }
     }
@@ -120,8 +139,7 @@ async fn run_full_check() -> Result<StartupStatus, CoreError> {
     // provider table?" — the `list()` query walks the same rows as the
     // CLI would. Failures are recorded as `None` so the next invocation
     // retries.
-    let db = crate::db::init_db().await.map_err(CoreError::Internal)?;
-    let provider_ok_at = match crate::providers::list(&db).await {
+    let provider_ok_at = match crate::infra::providers::list(&db).await {
         Ok(_) => Some(now),
         Err(_) => None,
     };
@@ -129,24 +147,15 @@ async fn run_full_check() -> Result<StartupStatus, CoreError> {
     // Cloud reachability: only exercised when the user is logged in.
     // A logged-out user has no cloud to ping, and we leave the field
     // unset so `is_fresh` treats it as "not applicable".
-    let cloud_ok_at = {
+    let cloud_base_url = crate::cloud::client::CloudClient::resolve_cloud_url();
+    let (cloud_ok_at, cloud_not_logged_in_at) = {
         let client = crate::cloud::client::CloudClient::create().await;
         if client.is_logged_in() {
-            // Simple HEAD-equivalent: we don't have a dedicated ping
-            // endpoint, so call the cheapest logged-in-required probe
-            // we do have. On any error we record `None` and move on.
-            // The `recall_past_verdicts` surface already swallows
-            // network failures and returns `Ok(vec![])`, which makes
-            // it a perfect cache-probe proxy.
-            // Minimal probe: a fixed sentinel query that satisfies the
-            // server-side `min(1)` validation on `queryText`. Empty
-            // string used to be accepted but the Zod schema now requires
-            // ≥1 char; using `"_ping_"` keeps this a no-op-on-the-data
-            // round-trip while no longer spamming a 400 to stderr on
-            // every CLI command. We don't care about the contents of
-            // the response — we only care that the round-trip succeeded.
-            let req = crate::cloud::api_types::RecallPastVerdictsRequest {
-                embedding: Vec::new(),
+            // No dedicated ping endpoint, so probe with the cheapest
+            // logged-in call we have. The `"_ping_"` sentinel satisfies
+            // the server's `min(1)` validation on `queryText`; only the
+            // round-trip succeeding matters, not the response body.
+            let req = crate::contract::RecallPastVerdictsRequest {
                 query_text: Some("_ping_".to_owned()),
                 repo_id: None,
                 scope: "personal".to_owned(),
@@ -155,11 +164,11 @@ async fn run_full_check() -> Result<StartupStatus, CoreError> {
                 target_file: None,
             };
             match client.recall_past_verdicts(req).await {
-                Ok(_) => Some(now),
-                Err(_) => None,
+                Ok(_) => (Some(now), None),
+                Err(_) => (None, None),
             }
         } else {
-            None
+            (None, Some(now))
         }
     };
 
@@ -168,6 +177,8 @@ async fn run_full_check() -> Result<StartupStatus, CoreError> {
         migrations_applied_at: now,
         provider_ok_at,
         cloud_ok_at,
+        cloud_not_logged_in_at,
+        cloud_base_url: Some(cloud_base_url),
     };
     write_cache(&status).await?;
     Ok(status)
@@ -183,6 +194,17 @@ async fn run_full_check() -> Result<StartupStatus, CoreError> {
 /// etc.) where we want the next command to see the post-change state
 /// immediately, not up to 5 minutes later.
 pub async fn ensure_ready(force: bool) -> Result<StartupStatus, CoreError> {
+    ensure_ready_with_full_check(force, run_full_check).await
+}
+
+async fn ensure_ready_with_full_check<F, Fut>(
+    force: bool,
+    full_check: F,
+) -> Result<StartupStatus, CoreError>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<StartupStatus, CoreError>>,
+{
     let now = Utc::now();
     if !force {
         if let Some(cached) = MEMORY_CACHE.lock().await.as_ref()
@@ -197,7 +219,7 @@ pub async fn ensure_ready(force: bool) -> Result<StartupStatus, CoreError> {
             return Ok(cached);
         }
     }
-    let status = run_full_check().await?;
+    let status = full_check().await?;
     *MEMORY_CACHE.lock().await = Some(status.clone());
     Ok(status)
 }
@@ -205,6 +227,10 @@ pub async fn ensure_ready(force: bool) -> Result<StartupStatus, CoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     /// Serialise the two cache-dependent tests in this module. They
     /// share `startup-cache.json` and the global `data.db` migration
@@ -215,18 +241,71 @@ mod tests {
     /// across `await` points is supported by `tokio::sync::Mutex`.
     static CACHE_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+    fn test_status(at: DateTime<Utc>) -> StartupStatus {
+        StartupStatus {
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            migrations_applied_at: at,
+            provider_ok_at: Some(at),
+            cloud_ok_at: None,
+            cloud_not_logged_in_at: Some(at),
+            cloud_base_url: Some(crate::cloud::client::CloudClient::resolve_cloud_url()),
+        }
+    }
+
     #[test]
-    fn is_fresh_handles_missing_probes() {
+    fn is_fresh_accepts_logged_out_cloud_skip() {
+        let now = Utc::now();
+        let status = StartupStatus {
+            version: "0.1.0".into(),
+            migrations_applied_at: now,
+            provider_ok_at: Some(now),
+            cloud_ok_at: None,
+            cloud_not_logged_in_at: Some(now),
+            cloud_base_url: Some(crate::cloud::client::CloudClient::resolve_cloud_url()),
+        };
+        assert!(status.is_fresh(now));
+    }
+
+    #[test]
+    fn is_fresh_rejects_cloud_probe_from_unknown_origin() {
+        let now = Utc::now();
+        let status = StartupStatus {
+            version: "0.1.0".into(),
+            migrations_applied_at: now,
+            provider_ok_at: Some(now),
+            cloud_ok_at: None,
+            cloud_not_logged_in_at: Some(now),
+            cloud_base_url: None,
+        };
+        assert!(!status.is_fresh(now));
+    }
+
+    #[test]
+    fn is_fresh_retries_missing_provider_probe() {
         let now = Utc::now();
         let status = StartupStatus {
             version: "0.1.0".into(),
             migrations_applied_at: now,
             provider_ok_at: None,
-            cloud_ok_at: None,
+            cloud_ok_at: Some(now),
+            cloud_not_logged_in_at: None,
+            cloud_base_url: Some(crate::cloud::client::CloudClient::resolve_cloud_url()),
         };
-        // Missing probes shouldn't render the cache stale — a logged-
-        // out user legitimately has no cloud timestamp.
-        assert!(status.is_fresh(now));
+        assert!(!status.is_fresh(now));
+    }
+
+    #[test]
+    fn is_fresh_retries_failed_logged_in_cloud_probe() {
+        let now = Utc::now();
+        let status = StartupStatus {
+            version: "0.1.0".into(),
+            migrations_applied_at: now,
+            provider_ok_at: Some(now),
+            cloud_ok_at: None,
+            cloud_not_logged_in_at: None,
+            cloud_base_url: Some(crate::cloud::client::CloudClient::resolve_cloud_url()),
+        };
+        assert!(!status.is_fresh(now));
     }
 
     #[test]
@@ -237,6 +316,8 @@ mod tests {
             migrations_applied_at: now - Duration::minutes(STARTUP_TTL_MINUTES + 1),
             provider_ok_at: Some(now),
             cloud_ok_at: Some(now),
+            cloud_not_logged_in_at: None,
+            cloud_base_url: Some(crate::cloud::client::CloudClient::resolve_cloud_url()),
         };
         assert!(!status.is_fresh(now));
     }
@@ -249,6 +330,8 @@ mod tests {
             migrations_applied_at: now,
             provider_ok_at: Some(now),
             cloud_ok_at: Some(now - Duration::minutes(STARTUP_TTL_MINUTES + 1)),
+            cloud_not_logged_in_at: None,
+            cloud_base_url: Some(crate::cloud::client::CloudClient::resolve_cloud_url()),
         };
         assert!(!status.is_fresh(now));
     }
@@ -256,40 +339,64 @@ mod tests {
     #[tokio::test]
     async fn ensure_ready_caches_between_calls() {
         let _guard = CACHE_SERIAL.lock().await;
-        let _home = crate::db::shared_test_home();
+        *MEMORY_CACHE.lock().await = None;
 
-        // Force one fresh probe so we're comparing against a known
-        // baseline rather than whatever the previous test left in the
-        // shared cache file.
-        let first = ensure_ready(true).await.expect("first call");
+        let first_status = test_status(Utc::now());
+        let first = ensure_ready_with_full_check(true, || {
+            let first_status = first_status.clone();
+            async move { Ok(first_status) }
+        })
+        .await
+        .expect("first call");
         let first_ts = first.migrations_applied_at;
 
         // Second call should return the cached status — same timestamp.
-        let second = ensure_ready(false).await.expect("second call");
+        let full_check_calls = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&full_check_calls);
+        let second = ensure_ready_with_full_check(false, || async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(test_status(Utc::now() + Duration::seconds(1)))
+        })
+        .await
+        .expect("second call");
         assert_eq!(
             second.migrations_applied_at, first_ts,
             "second call should come from cache, not re-run"
         );
+        assert_eq!(
+            full_check_calls.load(Ordering::SeqCst),
+            0,
+            "fresh memory cache must skip the full startup check"
+        );
+        *MEMORY_CACHE.lock().await = None;
     }
 
     #[tokio::test]
     async fn ensure_ready_force_refreshes_cache() {
         let _guard = CACHE_SERIAL.lock().await;
-        let _home = crate::db::shared_test_home();
+        *MEMORY_CACHE.lock().await = None;
 
-        let first = ensure_ready(false).await.expect("first call");
+        let first_status = test_status(Utc::now());
+        let first = ensure_ready_with_full_check(true, || {
+            let first_status = first_status.clone();
+            async move { Ok(first_status) }
+        })
+        .await
+        .expect("first call");
         let first_ts = first.migrations_applied_at;
 
-        // Tiny sleep so the recorded timestamps are actually different.
-        // We don't want this test to be timing-sensitive, so we use
-        // millisecond-level resolution via tokio::time::sleep.
-        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
-
-        let second = ensure_ready(true).await.expect("force call");
+        let second_status = test_status(first_ts + Duration::milliseconds(1));
+        let second = ensure_ready_with_full_check(true, || {
+            let second_status = second_status.clone();
+            async move { Ok(second_status) }
+        })
+        .await
+        .expect("force call");
         assert!(
             second.migrations_applied_at > first_ts,
             "force=true must re-run the full check (got {} vs {first_ts})",
             second.migrations_applied_at
         );
+        *MEMORY_CACHE.lock().await = None;
     }
 }

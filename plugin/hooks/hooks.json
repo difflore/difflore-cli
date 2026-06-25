@@ -1,25 +1,13 @@
 {
-  "description": "DiffLore lifecycle hooks — inject team rules into Claude Code as it writes code",
+  "description": "DiffLore lifecycle hooks — inject team rules into Codex as it writes code",
   "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Read",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; command -v difflore-hook >/dev/null 2>&1 && difflore-hook --client claude-code || true",
-            "timeout": 2000
-          }
-        ]
-      }
-    ],
     "PostToolUse": [
       {
-        "matcher": "Edit|MultiEdit|Write",
+        "matcher": "apply_patch|Bash|Read|Write|Edit|MultiEdit",
         "hooks": [
           {
             "type": "command",
-            "command": "export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; command -v difflore-hook >/dev/null 2>&1 && difflore-hook --client claude-code || true",
+            "command": "node \"${PLUGIN_ROOT}/scripts/difflore-hook.js\"",
             "timeout": 5000
           }
         ]
@@ -31,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; command -v difflore-hook >/dev/null 2>&1 && difflore-hook --client claude-code || true",
+            "command": "node \"${PLUGIN_ROOT}/scripts/difflore-hook.js\"",
             "timeout": 10000
           }
         ]
@@ -42,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; command -v difflore-hook >/dev/null 2>&1 && difflore-hook --client claude-code || true",
+            "command": "node \"${PLUGIN_ROOT}/scripts/difflore-hook.js\"",
             "timeout": 5000
           }
         ]
@@ -53,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; command -v difflore-hook >/dev/null 2>&1 && difflore-hook --client claude-code || true",
+            "command": "node \"${PLUGIN_ROOT}/scripts/difflore-hook.js\"",
             "timeout": 10000
           }
         ]
@@ -64,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\"; command -v difflore-hook >/dev/null 2>&1 && difflore-hook --client claude-code || true",
+            "command": "node \"${PLUGIN_ROOT}/scripts/difflore-hook.js\"",
             "timeout": 10000
           }
         ]

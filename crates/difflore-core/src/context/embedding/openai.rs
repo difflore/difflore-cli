@@ -1,13 +1,11 @@
 use async_trait::async_trait;
 
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
-use super::{Embedder, embedding_http_client};
+use super::{Embedder, embedding_http_client, parse_embedding_vector};
 
-/// OpenAI-compatible embedding provider.
-///
-/// Works with any backend that speaks the `OpenAI` `/embeddings` shape
-/// (`OpenAI`, Azure `OpenAI`, Together, `DeepInfra`, etc.).
+/// Embedding provider for any backend that speaks the `OpenAI` `/embeddings`
+/// shape (`OpenAI`, Azure `OpenAI`, Together, `DeepInfra`, etc.).
 pub struct OpenAICompatEmbedder {
     pub base_url: String,
     pub api_key: String,
@@ -60,12 +58,10 @@ fn provider_status_error(status: reqwest::StatusCode) -> CoreError {
 impl Embedder for OpenAICompatEmbedder {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, CoreError> {
         let url = self.endpoint();
-        // We deliberately do NOT send a `dimensions` parameter: many valid
-        // OpenAI-compatible models (e.g. text-embedding-ada-002) and strict
-        // local providers reject it, which would break configs whose `--dim`
-        // already matches the model's native size. Instead we validate the
-        // returned length below, so a mismatched `--dim` surfaces a clear error
-        // rather than silently storing wrong-length vectors.
+        // Deliberately no `dimensions` parameter: many valid OpenAI-compatible
+        // models (e.g. text-embedding-ada-002) and strict local providers reject
+        // it. Instead we validate the returned length below, so a mismatched
+        // `--dim` surfaces a clear error rather than wrong-length vectors.
         let body = serde_json::json!({
             "model": self.model,
             "input": text,
@@ -88,21 +84,18 @@ impl Embedder for OpenAICompatEmbedder {
             .await
             .map_err(|e| CoreError::Internal(format!("embedding response parse error: {e}")))?;
 
-        let vec = json
+        let embedding = json
             .get("data")
             .and_then(|d| d.get(0))
             .and_then(|d| d.get("embedding"))
             .and_then(|e| e.as_array())
             .ok_or_else(|| {
                 CoreError::Internal("embedding response missing data[0].embedding".into())
-            })?
-            .iter()
-            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
-            .collect::<Vec<f32>>();
+            })?;
+        let vec = parse_embedding_vector(embedding, "embedding response data[0].embedding")?;
 
         // Refuse a length that disagrees with the configured profile rather than
-        // storing mismatched-length vectors under a `byok:<host>:<model>:<dim>`
-        // profile. The actionable message points at the fix.
+        // storing mismatched-length vectors under a `byok:…` profile.
         if vec.len() != self.dim {
             return Err(CoreError::Internal(format!(
                 "embedding provider returned {} dimensions but {} are configured; \
@@ -124,8 +117,8 @@ impl Embedder for OpenAICompatEmbedder {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        // OpenAI-compatible APIs accept batched `input`, which keeps BYOK indexing
-        // inside the bounded recall/fix/MCP timeouts.
+        // Batched `input` keeps BYOK indexing inside the bounded recall/fix/MCP
+        // timeouts.
         let body = serde_json::json!({
             "model": self.model,
             "input": texts,
@@ -157,21 +150,44 @@ impl Embedder for OpenAICompatEmbedder {
         }
         // OpenAI returns each item with an `index`; order is normally preserved
         // but we sort defensively so vectors line up with the input texts.
+        // Some compatible providers omit `index` entirely; keep response order
+        // in that case. Mixed explicit/missing indices are ambiguous.
+        let explicit_index_count = data
+            .iter()
+            .filter(|item| {
+                item.get("index")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some()
+            })
+            .count();
+        let use_explicit_indices = match explicit_index_count {
+            0 => false,
+            n if n == data.len() => true,
+            _ => {
+                return Err(CoreError::Internal(
+                    "embedding response mixed explicit and missing indices".into(),
+                ));
+            }
+        };
         let mut indexed: Vec<(usize, Vec<f32>)> = Vec::with_capacity(data.len());
-        for item in data {
-            let index = item
-                .get("index")
-                .and_then(serde_json::Value::as_u64)
-                .map_or(indexed.len(), |i| i as usize);
-            let vector = item
+        for (position, item) in data.iter().enumerate() {
+            let index = if use_explicit_indices {
+                item.get("index")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|i| usize::try_from(i).ok())
+                    .ok_or_else(|| {
+                        CoreError::Internal("embedding response item has invalid index".into())
+                    })?
+            } else {
+                position
+            };
+            let embedding = item
                 .get("embedding")
                 .and_then(|e| e.as_array())
                 .ok_or_else(|| {
                     CoreError::Internal("embedding response item missing embedding array".into())
-                })?
-                .iter()
-                .map(|v| v.as_f64().unwrap_or(0.0) as f32)
-                .collect::<Vec<f32>>();
+                })?;
+            let vector = parse_embedding_vector(embedding, "embedding response item embedding")?;
             if vector.len() != self.dim {
                 return Err(CoreError::Internal(format!(
                     "embedding provider returned {} dimensions but {} are configured; \
@@ -183,7 +199,17 @@ impl Embedder for OpenAICompatEmbedder {
             }
             indexed.push((index, vector));
         }
-        indexed.sort_by_key(|(index, _)| *index);
+        if use_explicit_indices {
+            indexed.sort_by_key(|(index, _)| *index);
+            for (expected, (index, _)) in indexed.iter().enumerate() {
+                if *index != expected {
+                    return Err(CoreError::Internal(
+                        "embedding response indices were duplicated, missing, or out of range"
+                            .into(),
+                    ));
+                }
+            }
+        }
         Ok(indexed.into_iter().map(|(_, vector)| vector).collect())
     }
 

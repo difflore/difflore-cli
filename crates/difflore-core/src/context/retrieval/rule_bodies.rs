@@ -1,22 +1,13 @@
 //! Full-body rendering of recalled rules for the `difflore recall --json`
 //! surface.
 //!
-//! `recall` retrieves rule *chunks* (`ScoredRuleChunk`: id + indexed body +
-//! score) and lightweight display metadata (`file_patterns`, `source_repo`).
-//! That is enough to rank and headline a hit, but the indexed body text rarely
-//! carries the rule's bad/good code examples — those live in the
-//! `rule_examples` table, which recall never read. As a result
-//! `recall --json` surfaced only titles/previews with the fix/bad/good bodies
-//! NULL, so an agent consuming recall saw headlines but not the actual team
-//! memory.
-//!
-//! This module closes that gap by reusing the SAME public code-spec renderer
-//! the MCP `get_rules` detail path uses
-//! ([`crate::context::rule_render::render_code_spec`]) plus the public example
-//! loader ([`crate::context::rule_source::load_rule_examples_batch`]). It is
-//! the DB-backed counterpart to the DB-free `rule_render` module: it fetches
-//! the renderable skill columns + examples and projects them into a
-//! [`RenderedRuleBody`] the CLI can serialise directly.
+//! Recall retrieves rule chunks plus light display metadata, but the rule's
+//! bad/good code examples live in the `rule_examples` table that recall never
+//! reads. This module fetches those columns and renders a full body by reusing
+//! the same code-spec renderer as the MCP `get_rules` detail path
+//! ([`crate::context::rule_render::render_code_spec`]) and the example loader
+//! ([`crate::context::rule_source::load_rule_examples_batch`]), projecting them
+//! into a [`RenderedRuleBody`] the CLI can serialise directly.
 
 use std::collections::HashMap;
 
@@ -24,11 +15,11 @@ use sqlx::SqlitePool;
 
 use crate::context::rule_render::{RuleRenderInput, render_code_spec};
 use crate::context::rule_source::{RuleExample, load_rule_examples_batch};
-use crate::errors::CoreError;
+use crate::error::CoreError;
 
 /// A single bad/good example pair surfaced on a recalled rule. Mirrors the
-/// `rule_examples` row shape the MCP `get_rules` tool already returns, so the
-/// recall `--json` and `get_rules` example surfaces stay aligned.
+/// `rule_examples` row shape the MCP `get_rules` tool returns, keeping the
+/// recall `--json` and `get_rules` example surfaces aligned.
 #[derive(Debug, Clone)]
 pub struct RenderedRuleExample {
     pub bad_code: String,
@@ -47,13 +38,11 @@ impl From<&RuleExample> for RenderedRuleExample {
 }
 
 /// The full, agent-consumable body of a recalled rule: the rendered code-spec
-/// `body` (the same template `get_rules` emits), the structured examples, and
-/// the supplementary `check`/`trigger`/`origin`/`confidence` fields that the
-/// chunk-only recall path could not see.
+/// `body`, the structured examples, and the `check`/`trigger`/`origin`/
+/// `confidence` fields the chunk-only recall path could not see.
 #[derive(Debug, Clone)]
 pub struct RenderedRuleBody {
-    /// Full code-spec markdown body (contract / validation matrix / cases /
-    /// self-check / provenance), rendered by `render_code_spec`.
+    /// Full code-spec markdown body rendered by `render_code_spec`.
     pub body: String,
     pub origin: String,
     pub confidence: f64,
@@ -66,9 +55,8 @@ pub struct RenderedRuleBody {
 }
 
 impl RenderedRuleBody {
-    /// First example's `bad_code`, trimmed, when present and non-empty. This is
-    /// the authoritative "bad" snippet (straight from the `rule_examples`
-    /// table) that the chunk-only heuristic could not reliably recover.
+    /// First example's `bad_code`, trimmed, when present and non-empty — the
+    /// authoritative "bad" snippet straight from the `rule_examples` table.
     #[must_use]
     pub fn first_bad_code(&self) -> Option<String> {
         self.examples
@@ -89,11 +77,9 @@ impl RenderedRuleBody {
     }
 }
 
-/// Renderable columns for a single skill. Runtime `sqlx::query_as` (not the
-/// `query!` macro) so adding this read doesn't require regenerating the offline
-/// `.sqlx/` cache — the same escape hatch the age-decay loader in
-/// `rule_source` documents. `trigger` is backtick-quoted (reserved word),
-/// mirroring the MCP `fetch_skills_by_ids` SELECT.
+/// Renderable columns for a single skill. Uses runtime `sqlx::query_as` (not
+/// the `query!` macro) so this read doesn't require regenerating the offline
+/// `.sqlx/` cache. `trigger` is backtick-quoted because it is a reserved word.
 #[derive(sqlx::FromRow)]
 struct RenderRow {
     id: String,
@@ -115,13 +101,9 @@ fn parse_file_patterns(raw: Option<&str>) -> Vec<String> {
     serde_json::from_str::<Vec<String>>(raw).unwrap_or_default()
 }
 
-/// Fetch and render the full body (code-spec + structured examples + fix/check
-/// fields) for each active skill id, keyed by id. Ids that don't resolve to an
-/// active skill are simply absent from the returned map, so the caller can fall
-/// back to its chunk-only display for stale index entries.
-///
-/// Reuses the public renderers so recall and MCP `get_rules` show the same
-/// code spec and rule examples.
+/// Fetch and render the full body for each active skill id, keyed by id. Ids
+/// that don't resolve to an active skill are absent from the map, so the caller
+/// can fall back to its chunk-only display for stale index entries.
 pub async fn render_full_rule_bodies(
     pool: &SqlitePool,
     ids: &[String],
@@ -246,7 +228,7 @@ mod tests {
 
     async fn test_db() -> SqlitePool {
         use std::str::FromStr;
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let opts = sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:")
             .unwrap()
             .foreign_keys(true);
@@ -255,7 +237,7 @@ mod tests {
             .connect_with(opts)
             .await
             .unwrap();
-        crate::db::run_migrations(&pool).await.unwrap();
+        crate::infra::db::run_migrations(&pool).await.unwrap();
         pool
     }
 
@@ -310,8 +292,15 @@ mod tests {
         assert!(
             rendered
                 .body
-                .contains("## Rule rule-cap-bodies — Cap request bodies")
+                .contains("## Rule rule-cap-bodies - Cap request bodies")
         );
+        assert!(
+            rendered
+                .body
+                .contains("- MUST: Cap request bodies with MaxBytesReader.")
+        );
+        assert!(!rendered.body.contains("When touching"));
+        assert!(!rendered.body.contains("**/*.go"));
         assert!(rendered.body.contains("### Cases"));
         assert!(rendered.body.contains("data, _ := io.ReadAll(r.Body)"));
         assert!(

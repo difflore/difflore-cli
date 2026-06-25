@@ -1,19 +1,17 @@
 //! "What the AI has learned" preview for `difflore doctor`.
 //!
-//! Renders a compact section under the readiness table showing total
-//! rule count, top source repositories by rule count, and the most
-//! recently learned rules. Mirrors the trust-building surface that
-//! `difflore init` shows on first run — `doctor` is the natural place
-//! to re-confirm the corpus when the user is troubleshooting.
+//! Renders a compact section under the readiness table showing total rule
+//! count, top source repositories, and the most recently learned rules.
 //!
-//! Both DB queries are best-effort: any error returns an empty result
-//! and the section silently shrinks or disappears entirely. We never
-//! turn a render-time DB hiccup into a user-visible failure here.
+//! All DB queries are best-effort: any error returns an empty result and the
+//! section silently shrinks, never surfacing a render-time DB hiccup as a
+//! user-visible failure.
 
-use crate::commands::util::format_recall_edit_proof_breakdown;
 use crate::style;
+use crate::support::proven_rule::{ProvenRuleRank, fetch_rule_metadata_for_ids};
+use crate::support::util::format_recall_edit_proof_breakdown;
 use difflore_core::cloud::observations::ObservationUploadIssue;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 type ProvenRow = (Option<String>, String, Option<String>, i64, Option<String>);
 
@@ -61,13 +59,6 @@ struct ProvenRuleCandidate {
     sample_file: Option<String>,
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
-struct RuleMetadataRow {
-    rule_id: String,
-    name: String,
-    source_repo: Option<String>,
-}
-
 /// Local proof that surfaced rules are making it into agent replies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentCitationProof {
@@ -87,8 +78,8 @@ pub(crate) struct MemorySnapshot {
     pub(crate) agent_citation: Option<AgentCitationProof>,
 }
 
-/// Load the snapshot from the live project DB. Best-effort: any DB
-/// error collapses to defaults so the doctor table still renders.
+/// Load the snapshot from the live project DB. Any DB error collapses to
+/// defaults so the doctor table still renders.
 #[cfg(test)]
 pub(crate) async fn load(pool: &difflore_core::SqlitePool) -> MemorySnapshot {
     let total_rules = sqlx::query_scalar!(
@@ -112,10 +103,9 @@ pub(crate) async fn load(pool: &difflore_core::SqlitePool) -> MemorySnapshot {
     }
 }
 
-/// Load the memory snapshot for the current repo / unique upstream alias.
-/// Unlike the global loader used in tests, this does not fall back to other
-/// repos: doctor should not show unrelated proof after it has established a
-/// current repo scope.
+/// Load the memory snapshot scoped to the current repo / upstream aliases.
+/// Unlike [`load`], this never falls back to other repos, so doctor shows no
+/// unrelated proof once a repo scope is established.
 pub(crate) async fn load_for_repo(
     pool: &difflore_core::SqlitePool,
     repo_aliases: &[String],
@@ -125,8 +115,8 @@ pub(crate) async fn load_for_repo(
         return MemorySnapshot::default();
     }
 
+    let total_rules = fetch_total_rules_for(pool, &normalized).await;
     let top_repos = fetch_top_repos_for(pool, Some(&normalized)).await;
-    let total_rules = top_repos.iter().map(|repo| repo.count).sum();
     let recent = fetch_recent_for(pool, Some(&normalized)).await;
     let proven = fetch_proven_scoped(pool, &normalized).await;
     MemorySnapshot {
@@ -186,6 +176,29 @@ async fn fetch_top_repos_for(
         .collect()
 }
 
+async fn fetch_total_rules_for(
+    pool: &difflore_core::SqlitePool,
+    normalized_repos: &[String],
+) -> i64 {
+    if normalized_repos.is_empty() {
+        return 0;
+    }
+    let placeholders = std::iter::repeat_n("?", normalized_repos.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT COUNT(*) FROM skills \
+         WHERE source_repo IS NOT NULL AND source_repo != '' \
+           AND COALESCE(status, 'active') = 'active' \
+           AND LOWER(source_repo) IN ({placeholders})"
+    );
+    let mut query = sqlx::query_scalar::<_, i64>(&sql);
+    for repo in normalized_repos {
+        query = query.bind(repo);
+    }
+    query.fetch_one(pool).await.unwrap_or_default()
+}
+
 #[cfg(test)]
 async fn fetch_recent(pool: &difflore_core::SqlitePool) -> Vec<RecentRule> {
     fetch_recent_for(pool, None).await
@@ -226,8 +239,11 @@ async fn fetch_recent_for(
 
 #[cfg(test)]
 fn current_repo_aliases() -> Vec<String> {
-    let root = difflore_core::db::current_project_root();
-    difflore_core::git::detect_github_repo_full_names(&root.to_string_lossy())
+    let root = difflore_core::infra::db::current_project_root();
+    difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+        &root.to_string_lossy(),
+        &[],
+    )
 }
 
 #[cfg(test)]
@@ -260,30 +276,21 @@ async fn fetch_proven_scoped(
     if normalized_repo_aliases.is_empty() {
         return Vec::new();
     }
-    // Hook/agent outcomes currently do not carry a canonical target repo.
-    // In a repo-scoped doctor snapshot, fail closed and show only signed local
-    // fix proof from rules whose source_repo matches this repo/upstream alias.
+    // Hook/agent outcomes carry no canonical target repo, so a repo-scoped
+    // snapshot fails closed and shows only signed local fix proof from rules
+    // whose source_repo matches this repo/upstream alias.
     let hook_summaries = Vec::new();
     fetch_proven_with_hook_summaries(pool, Some(normalized_repo_aliases), &hook_summaries).await
 }
 
+/// Test stub: the test-only [`fetch_proven`] global path never feeds real
+/// agent-hook outcomes, so this returns an empty set. Production scopes proof
+/// via [`load_for_repo`] / [`fetch_proven_scoped`], which carry no hook
+/// summaries at all.
 #[cfg(test)]
 async fn fetch_hook_accepted_rule_summaries()
 -> Vec<difflore_core::cloud::observations::AcceptedFixOutcomeRuleSummary> {
-    #[cfg(test)]
-    {
-        Vec::new()
-    }
-    #[cfg(not(test))]
-    {
-        match difflore_core::cloud::observations::ObservationEmitter::open_default().await {
-            Ok(emitter) => emitter
-                .accepted_fix_outcome_rule_summaries(30, 7)
-                .await
-                .unwrap_or_default(),
-            Err(_) => Vec::new(),
-        }
-    }
+    Vec::new()
 }
 
 async fn fetch_proven_with_hook_summaries(
@@ -385,14 +392,18 @@ async fn fetch_proven_with_hook_summaries(
         .collect();
 
     out.sort_by(|a, b| {
-        b.accepted_count
-            .cmp(&a.accepted_count)
-            .then(
-                b.accepted_hook_outcomes_linked_to_prior_recall
-                    .cmp(&a.accepted_hook_outcomes_linked_to_prior_recall),
-            )
-            .then(b.accepted_fix_proofs.cmp(&a.accepted_fix_proofs))
-            .then(a.name.cmp(&b.name))
+        ProvenRuleRank {
+            total: a.accepted_count,
+            linked_to_prior_recall: a.accepted_hook_outcomes_linked_to_prior_recall,
+            accepted_fix_proofs: a.accepted_fix_proofs,
+            name: &a.name,
+        }
+        .cmp(&ProvenRuleRank {
+            total: b.accepted_count,
+            linked_to_prior_recall: b.accepted_hook_outcomes_linked_to_prior_recall,
+            accepted_fix_proofs: b.accepted_fix_proofs,
+            name: &b.name,
+        })
     });
     out.truncate(2);
     out
@@ -416,7 +427,16 @@ async fn fetch_signed_proven_rows(
                 COALESCE(NULLIF(s.name, ''), f.rule_name) AS name, \
                 s.source_repo AS source_repo, \
                 COUNT(*) AS accepted_count, \
-                MAX(NULLIF(f.file_path, '')) AS sample_file \
+                (SELECT NULLIF(f2.file_path, '') \
+                   FROM fix_outcomes f2 \
+                   LEFT JOIN skills s2 ON s2.id = f2.rule_id \
+                  WHERE f2.accepted = 1 AND f2.applied_ok = 1 \
+                    AND NULLIF(f2.file_path, '') IS NOT NULL \
+                    AND s2.id IS s.id \
+                    AND COALESCE(NULLIF(s2.name, ''), f2.rule_name) = COALESCE(NULLIF(s.name, ''), f.rule_name) \
+                    AND s2.source_repo IS s.source_repo \
+                  ORDER BY f2.created_at DESC, f2.id DESC \
+                  LIMIT 1) AS sample_file \
          FROM fix_outcomes f \
          LEFT JOIN skills s ON s.id = f.rule_id \
          WHERE f.accepted = 1 AND f.applied_ok = 1 \
@@ -432,61 +452,6 @@ async fn fetch_signed_proven_rows(
         }
     }
     query.fetch_all(pool).await.unwrap_or_default()
-}
-
-async fn fetch_rule_metadata_for_ids(
-    pool: &difflore_core::SqlitePool,
-    rule_ids: &[String],
-    normalized_repos: Option<&[String]>,
-) -> HashMap<String, RuleMetadataRow> {
-    let ids: Vec<&str> = rule_ids
-        .iter()
-        .map(String::as_str)
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .collect();
-    if ids.is_empty() {
-        return HashMap::new();
-    }
-
-    let id_placeholders = std::iter::repeat_n("?", ids.len())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let repo_filter = normalized_repos
-        .filter(|repos| !repos.is_empty())
-        .map(|repos| {
-            let placeholders = std::iter::repeat_n("?", repos.len())
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("AND LOWER(COALESCE(source_repo, '')) IN ({placeholders})")
-        })
-        .unwrap_or_default();
-    let sql = format!(
-        "SELECT id AS rule_id, \
-                COALESCE(NULLIF(name, ''), id) AS name, \
-                source_repo AS source_repo \
-         FROM skills \
-         WHERE id IN ({id_placeholders}) \
-           AND COALESCE(status, 'active') = 'active' \
-           {repo_filter}"
-    );
-    let mut query = sqlx::query_as::<_, RuleMetadataRow>(&sql);
-    for id in ids {
-        query = query.bind(id);
-    }
-    if let Some(repos) = normalized_repos {
-        for repo in repos {
-            query = query.bind(repo);
-        }
-    }
-
-    query
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|row| (row.rule_id.clone(), row))
-        .collect()
 }
 
 fn recall_command_for_proven(rule: &ProvenRule) -> String {
@@ -507,27 +472,12 @@ fn quote_arg(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\\\""))
 }
 
+/// Test stub: the test-only [`load`] path never asserts on agent-citation
+/// proof, so this returns `None`. Production's [`load_for_repo`] sets
+/// `agent_citation: None` directly and never calls this.
 #[cfg(test)]
 async fn fetch_agent_citation_proof() -> Option<AgentCitationProof> {
-    #[cfg(test)]
-    {
-        None
-    }
-    #[cfg(not(test))]
-    {
-        let summary = difflore_core::cloud::observations::actual_citation_summary_default(7)
-            .await
-            .ok()?;
-        if summary.actual_citations == 0 && summary.rule_fires == 0 {
-            return None;
-        }
-        Some(AgentCitationProof {
-            actual_citations: summary.actual_citations,
-            rule_fires: summary.rule_fires,
-            pending_uploads: summary.pending_uploads,
-            pending_upload_issue: summary.pending_upload_issue,
-        })
-    }
+    None
 }
 
 fn agent_citation_line(proof: &AgentCitationProof) -> String {
@@ -555,18 +505,18 @@ fn agent_citation_recovery_line(proof: &AgentCitationProof) -> Option<String> {
     let message = match proof.pending_upload_issue {
         Some(ObservationUploadIssue::MissingCloudScope) => format!(
             "{} {}",
-            style::pewter("proof queued safely; refresh login once:"),
+            style::pewter("activity queued safely; refresh login once:"),
             style::cmd("difflore cloud login")
         ),
         Some(ObservationUploadIssue::RateLimited) => {
             style::pewter("cloud rate limit hit; uploads will retry automatically").to_string()
         }
         Some(ObservationUploadIssue::InvalidBatch) => {
-            style::pewter("cloud observation schema rejected these proof uploads").to_string()
+            style::pewter("cloud rejected these activity uploads").to_string()
         }
         Some(ObservationUploadIssue::ServerRejected) => format!(
             "{} {}",
-            style::pewter("inspect proof upload rejection:"),
+            style::pewter("inspect activity upload rejection:"),
             style::cmd("difflore doctor --report")
         ),
         Some(ObservationUploadIssue::Unknown) | None => format!(
@@ -578,24 +528,20 @@ fn agent_citation_recovery_line(proof: &AgentCitationProof) -> Option<String> {
     Some(message)
 }
 
-/// Render the snapshot. Returns an empty string when the corpus is
-/// empty so the caller can append unconditionally without producing a
-/// hollow heading.
+/// Render the snapshot, returning an empty string for an empty corpus so the
+/// caller can append unconditionally without a hollow heading.
 pub(crate) fn render(snapshot: &MemorySnapshot) -> String {
     if snapshot.total_rules == 0 {
         return String::new();
     }
-    // Match the readiness rhythm: 10-char label column, two-space
-    // indent. We deliberately do NOT re-use the doctor table's 17-char
-    // width — the snapshot is denser and the shorter column matches the
-    // `init` block that establishes the convention for memory rows.
+    // 10-char label column to match the denser `init` memory block, not the
+    // doctor table's 17-char width.
     const LABEL_W: usize = 10;
     let mut out = String::new();
     out.push('\n');
     out.push_str(&format!("  {}\n", style::pewter("Memory snapshot")));
 
-    // Top repos line. Show up to 3 inline, collapse the remainder into
-    // `+N more` so dense projects don't blow out the column width.
+    // Up to 3 repos inline; collapse the rest into `+N more`.
     let repos_line = if snapshot.top_repos.is_empty() {
         style::pewter(&format!(
             "{} rule{} · no source_repo set",
@@ -615,9 +561,8 @@ pub(crate) fn render(snapshot: &MemorySnapshot) -> String {
         if extra > 0 {
             line.push_str(&format!("  +{extra} more"));
         }
-        // Repo names are identifiers/values, not runnable commands; render
-        // as a plain value so they match the other doctor row values
-        // (binary version, memory counts) instead of the blue command color.
+        // Repo names are values, not commands; render plain to match other
+        // doctor row values rather than the blue command color.
         line
     };
     out.push_str(&format!(
@@ -627,8 +572,7 @@ pub(crate) fn render(snapshot: &MemorySnapshot) -> String {
         width = LABEL_W,
     ));
 
-    // Recent rules: 3 lines each prefixed with `·`, suffixed with the
-    // origin repo (same `← from <repo>` framing as `init`).
+    // Recent rules: each prefixed with `·`, suffixed with the origin repo.
     if !snapshot.recent.is_empty() {
         for (i, rule) in snapshot.recent.iter().enumerate() {
             let label = if i == 0 { "newest" } else { "" };
@@ -714,7 +658,7 @@ fn accepted_proof_label(rule: &ProvenRule) -> String {
     ));
     if rule.accepted_hook_outcomes_linked_to_prior_recall > 0 {
         detail.push(format!(
-            "{} linked to prior rule-use proof{}",
+            "{} linked to prior memory recall{}",
             rule.accepted_hook_outcomes_linked_to_prior_recall,
             format_recall_edit_proof_breakdown(
                 rule.accepted_hook_outcomes_linked_to_rule_recall,
@@ -725,7 +669,7 @@ fn accepted_proof_label(rule: &ProvenRule) -> String {
     }
 
     format!(
-        "{} accepted proof{} ({})",
+        "{} accepted outcome{} ({})",
         rule.accepted_count,
         if rule.accepted_count == 1 { "" } else { "s" },
         detail.join(" + ")
@@ -951,13 +895,13 @@ mod tests {
             "2026-05-04T10:00:00Z",
         )
         .await;
-        sqlx::query!(
+        sqlx::query(
             "INSERT INTO fix_outcomes \
              (id, rule_id, rule_name, file_path, accepted, applied_ok, created_at) \
              VALUES \
-             ('f1', 'g1', 'Return 413 for body size limit errors', 'binding/binding.go', 1, 1, '2026-05-05T10:00:00Z'), \
-             ('f2', 'g1', 'Return 413 for body size limit errors', 'binding/binding.go', 1, 1, '2026-05-05T11:00:00Z'), \
-             ('f3', 'g1', 'Return 413 for body size limit errors', 'binding/binding.go', 0, 1, '2026-05-05T12:00:00Z')",
+             ('f1', 'g1', 'Return 413 for body size limit errors', 'z_older.go', 1, 1, '2026-05-05T10:00:00Z'), \
+             ('f2', 'g1', 'Return 413 for body size limit errors', 'a_newer.go', 1, 1, '2026-05-05T11:00:00Z'), \
+             ('f3', 'g1', 'Return 413 for body size limit errors', 'ignored_rejected.go', 0, 1, '2026-05-05T12:00:00Z')",
         )
         .execute(&pool)
         .await
@@ -969,17 +913,14 @@ mod tests {
         assert_eq!(snap.proven[0].accepted_count, 2);
         assert_eq!(snap.proven[0].accepted_fix_proofs, 2);
         assert_eq!(snap.proven[0].accepted_hook_outcomes, 0);
-        assert_eq!(
-            snap.proven[0].sample_file.as_deref(),
-            Some("binding/binding.go")
-        );
+        assert_eq!(snap.proven[0].sample_file.as_deref(), Some("a_newer.go"));
         let rendered = render(&snap);
         assert!(rendered.contains("proven"));
         assert!(rendered.contains("Return 413 for body size limit errors"));
         assert!(rendered.contains("2 accepted fixes"));
         assert!(
             rendered.contains(
-                "difflore recall \"Return 413 for body size limit errors\" --file \"binding/binding.go\" --top-k 3"
+                "difflore recall \"Return 413 for body size limit errors\" --file \"a_newer.go\" --top-k 3"
             ),
             "rendered = {rendered}"
         );
@@ -1040,9 +981,9 @@ mod tests {
             proven,
             ..MemorySnapshot::default()
         });
-        assert!(rendered.contains("2 accepted proofs"));
+        assert!(rendered.contains("2 accepted outcomes"));
         assert!(rendered.contains("2 agent/hook outcomes"));
-        assert!(rendered.contains("1 linked to prior rule-use proof (1 MCP serve)"));
+        assert!(rendered.contains("1 linked to prior memory recall (1 agent recall)"));
         assert!(!rendered.contains("difflore rules explain"));
     }
 
@@ -1065,7 +1006,7 @@ mod tests {
         assert!(rendered.contains("1 actual citation"));
         assert!(rendered.contains("3 memory fires in 7d"));
         assert!(rendered.contains("1 pending upload"));
-        assert!(rendered.contains("proof queued safely"));
+        assert!(rendered.contains("activity queued safely"));
         assert!(rendered.contains("refresh login once"));
         assert!(rendered.contains("difflore cloud login"));
     }

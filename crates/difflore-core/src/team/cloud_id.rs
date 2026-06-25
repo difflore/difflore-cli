@@ -1,9 +1,9 @@
 use openapi_contract::api;
 use uuid::Uuid;
 
-use crate::cloud::api_types::RuleDetail;
 use crate::cloud::client::CloudClient;
-use crate::errors::CoreError;
+use crate::contract::RuleDetail;
+use crate::error::CoreError;
 
 use super::types::LocalRuleUploadRow;
 
@@ -122,10 +122,8 @@ pub(super) async fn resolve_cloud_rule_id_for_unpublish(
 }
 
 pub(super) fn build_rule_create_body(row: &LocalRuleUploadRow) -> serde_json::Value {
-    // Cloud requires `content >= 1 char`. Conversation rules store the
-    // full body in `description` already; deliberate `rules add` rules
-    // may have an empty description, so fall back to the rule name
-    // (always non-empty by validation).
+    // Cloud requires `content >= 1 char`. `rules add` rules may have an empty
+    // description, so fall back to the rule name (always non-empty).
     let content = if row.description.trim().is_empty() {
         row.name.clone()
     } else {
@@ -139,8 +137,6 @@ pub(super) fn build_rule_create_body(row: &LocalRuleUploadRow) -> serde_json::Va
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_default();
 
-    // Cloud's `type` enum is `'skill' | 'review_standard'`; our local
-    // rules use either, so pass through as-is.
     serde_json::json!({
         "name": row.name,
         "type": row.rule_type,
@@ -151,7 +147,6 @@ pub(super) fn build_rule_create_body(row: &LocalRuleUploadRow) -> serde_json::Va
         "tags": tags,
         "trigger": row.trigger,
         "checkPrompt": row.check_prompt,
-        // This path is called only as part of an explicit team publish.
         // Mark the cloud copy team-visible up front so the following
         // `/rules/team/publish` promotion can attach it to the team.
         "visibility": "team",
@@ -161,20 +156,15 @@ pub(super) fn build_rule_create_body(row: &LocalRuleUploadRow) -> serde_json::Va
     })
 }
 
-/// Bridge a local-only rule into the cloud's UUID-keyed `rules_cloud`
-/// table so it can subsequently be promoted to a team. The cloud's
-/// `/rules/team/publish` endpoint only knows how to *promote* an
-/// existing-on-cloud rule — it can't ingest a new rule body. So when the
-/// caller hands us a slug-form local id, we:
-///   1. POST `/rules` with the local row's fields → cloud assigns a UUID
-///   2. Rewrite the local row's id (and child `rule_examples.skill_id`)
-///      to the new UUID inside a single transaction with deferred FK
-///      checks so a crash mid-rewrite leaves the DB consistent
-///   3. Return the UUID to the caller for the subsequent publish call
-///
-/// UUID-form ids pass through unchanged — useful both for cloud-synced
-/// rules being re-promoted and for hypothetical future code paths that
-/// pre-mint UUIDs locally.
+/// Bridge a local-only rule into the cloud's UUID-keyed `rules_cloud` table so
+/// it can be promoted to a team, since `/rules/team/publish` only promotes an
+/// existing cloud rule and can't ingest a new body. For a slug-form local id:
+/// POST `/rules` to mint a UUID, then rewrite the local row's id and EVERY
+/// child row that references it — `rule_examples.skill_id`,
+/// `rule_events.skill_id`, and `fix_outcomes.rule_id`, the three tables with a
+/// FK to `skills(id)` — to that UUID in one transaction with deferred FK
+/// checks (so a crash mid-rewrite leaves the DB consistent), and return it.
+/// UUID-form ids pass through unchanged.
 pub(super) async fn ensure_cloud_rule_id(
     pool: &sqlx::SqlitePool,
     client: &CloudClient,
@@ -210,10 +200,9 @@ pub(super) async fn ensure_cloud_rule_id(
         )));
     }
 
-    // Migrate the local row to the cloud-assigned UUID inside a single
-    // transaction. Defer FK checks until commit so we can rewrite the
-    // child `rule_examples.skill_id` and the parent `skills.id` in
-    // either order without tripping the FK constraint mid-transaction.
+    // Defer FK checks until commit so the child `rule_examples.skill_id` and
+    // parent `skills.id` can be rewritten in either order without tripping the
+    // FK constraint mid-transaction.
     let mut tx = pool
         .begin()
         .await
@@ -231,6 +220,33 @@ pub(super) async fn ensure_cloud_rule_id(
     .execute(&mut *tx)
     .await
     .map_err(|e| CoreError::Internal(format!("update rule_examples: {e}")))?;
+    // `rule_events` also has a FK to `skills(id)`; leaving its rows pointed at
+    // the old id makes the deferred FK check fail at commit (error 787), which
+    // previously broke `cloud publish` for any rule that had recall/serve
+    // history. Rewrite it too.
+    //
+    // These two rewrites use the runtime `sqlx::query` (not the compile-checked
+    // `query!` macro) on purpose: the macro would require committing new SQLx
+    // offline-cache entries, and these trivial `UPDATE ... WHERE` statements
+    // don't warrant that cache churn.
+    sqlx::query("UPDATE rule_events SET skill_id = ?1 WHERE skill_id = ?2")
+        .bind(new_id.as_str())
+        .bind(local_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| CoreError::Internal(format!("update rule_events: {e}")))?;
+    // `fix_outcomes.rule_id` is the third (and final) FK referencing
+    // `skills(id)` (ON DELETE SET NULL). A rule with accepted/rejected fix
+    // history has rows here; without this rewrite the deferred FK check still
+    // fails at commit (787). The three updated tables —
+    // `rule_examples`, `rule_events`, `fix_outcomes` — are the complete set of
+    // FK children of `skills(id)` in the schema.
+    sqlx::query("UPDATE fix_outcomes SET rule_id = ?1 WHERE rule_id = ?2")
+        .bind(new_id.as_str())
+        .bind(local_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| CoreError::Internal(format!("update fix_outcomes: {e}")))?;
     sqlx::query!("UPDATE skills SET id = ?1 WHERE id = ?2", new_id, local_id)
         .execute(&mut *tx)
         .await

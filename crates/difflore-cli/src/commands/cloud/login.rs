@@ -6,8 +6,15 @@
 //!   2. Generate a cryptographic `state` nonce.
 //!   3. Open the user's browser at
 //!      `<cloud>/cli-auth?redirect_uri=...&state=...`.
-//!   4. Wait for a single `GET /callback?token=...&state=...` request,
+//!   4. Wait for a single `/callback` request carrying `token`/`state`,
 //!      verify state, and hand the token back to `main.rs`.
+//!
+//! The secret is read from the **POST body** when the browser submits one
+//! (`Content-Type: application/x-www-form-urlencoded`), which keeps the bearer
+//! and refresh token out of the request line — and therefore out of any
+//! loopback request-line logging. A `GET ...?token=...` query is still accepted
+//! as a fallback for clients that can only navigate, but the POST body is
+//! preferred for confidentiality of the secret in transit on loopback.
 //!
 //! Hard timeout: 120 s. After success we hold the listener for ~500 ms so
 //! the browser tab can render the "you can close this tab" page, then
@@ -30,7 +37,6 @@ use tiny_http::{Header, Response, Server};
 const FLOW_TIMEOUT_SECS: u64 = 120;
 const POST_SUCCESS_LINGER_MS: u64 = 500;
 
-/// Result of a successful browser flow.
 pub struct BrowserLoginResult {
     pub token: String,
     pub refresh_token: Option<String>,
@@ -42,6 +48,43 @@ struct CallbackQuery {
     refresh_token: Option<String>,
     state: Option<String>,
     error: Option<String>,
+}
+
+impl CallbackQuery {
+    /// Overlay `other` (the POST body) onto `self` (the query string): any
+    /// field present in the body wins, so the POST-delivered secret is
+    /// preferred while a query fallback still populates absent fields.
+    fn merge(self, other: Self) -> Self {
+        Self {
+            token: other.token.or(self.token),
+            refresh_token: other.refresh_token.or(self.refresh_token),
+            state: other.state.or(self.state),
+            error: other.error.or(self.error),
+        }
+    }
+}
+
+/// Read a form-urlencoded request body (used for the preferred POST callback).
+/// Bounded read so a hostile loopback client can't exhaust memory; non-form
+/// requests (e.g. a plain GET navigation) yield an empty string and fall back
+/// to the query parser. Errors are swallowed — a missing/oversized body simply
+/// means no fields are contributed from the body.
+fn read_form_body(req: &mut tiny_http::Request) -> String {
+    use std::io::Read as _;
+
+    let is_form = req
+        .headers()
+        .iter()
+        .any(|h| h.field.equiv("Content-Type") && h.value.as_str().contains("urlencoded"));
+    if !is_form {
+        return String::new();
+    }
+
+    // Tokens are small; 64 KiB is generous and caps untrusted input.
+    const MAX_BODY: u64 = 64 * 1024;
+    let mut buf = String::new();
+    let _ = req.as_reader().take(MAX_BODY).read_to_string(&mut buf);
+    buf
 }
 
 fn parse_callback_query(qs: &str) -> CallbackQuery {
@@ -65,10 +108,98 @@ fn parse_callback_query(qs: &str) -> CallbackQuery {
     parsed
 }
 
-/// Test-only helper: runs the same callback server loop, but takes a
-/// pre-bound `Server` and known `state`, and exposes the worker thread's
-/// receiver so tests can drive a synthetic browser request and assert on
-/// the outcome without spinning up a real browser.
+/// Outcome of handling a single inbound HTTP request on the callback server.
+///
+/// The HTTP response has already been written for every variant; the caller
+/// only decides whether to keep listening or terminate the flow.
+enum CallbackOutcome {
+    /// Non-terminal request (404 probe, missing state, missing token). Keep
+    /// listening for the real `/callback` hit.
+    KeepListening,
+    /// Successful callback — the browser was told to close its tab.
+    Token(BrowserLoginResult),
+    /// Terminal failure (server-reported error or state mismatch). The flow
+    /// is over and the message should bubble up to the caller.
+    Failed(String),
+}
+
+/// Handle one inbound request on the callback server.
+///
+/// Parses the query, validates the `state` nonce, and extracts the token,
+/// writing the appropriate HTTP response before returning. This is the single
+/// per-request code path shared by the production loop and the test harness so
+/// tests drive the same logic the browser flow runs.
+fn handle_callback_request(mut req: tiny_http::Request, expected_state: &str) -> CallbackOutcome {
+    let url = req.url().to_owned();
+    if !url.starts_with("/callback") {
+        let _ = req.respond(html_response(404, "<h1>404</h1>"));
+        return CallbackOutcome::KeepListening;
+    }
+
+    // Prefer the POST body (form-encoded) so the secret never appears in the
+    // request line; fall back to the query string for navigation-only clients.
+    // The body must be read before `req.respond` consumes the request.
+    let body = read_form_body(&mut req);
+    let qs = url.split_once('?').map_or("", |(_, q)| q);
+    let parsed = parse_callback_query(qs).merge(parse_callback_query(&body));
+
+    if let Some(e) = parsed.error {
+        let body = format!(
+            "<h1>Login cancelled</h1><p>{}</p><p>You can close this tab.</p>",
+            htmlescape(&e)
+        );
+        let _ = req.respond(html_response(200, &body));
+        return CallbackOutcome::Failed(format!("Authorization failed: {e}"));
+    }
+
+    let Some(got) = parsed.state else {
+        let _ = req.respond(html_response(
+            400,
+            "<h1>Missing state</h1><p>This callback is invalid.</p>",
+        ));
+        return CallbackOutcome::KeepListening;
+    };
+
+    // Constant-time compare to avoid a `==` length-leak if a future state
+    // encoding becomes variable-length.
+    if !ct_eq(&got, expected_state) {
+        let _ = req.respond(html_response(
+            400,
+            "<h1>State mismatch</h1><p>Possible CSRF — request rejected.</p>",
+        ));
+        return CallbackOutcome::Failed(
+            "State mismatch in callback — refusing to save token (possible CSRF).".into(),
+        );
+    }
+
+    let token = match parsed.token {
+        Some(t) if !t.is_empty() => t,
+        _ => {
+            let _ = req.respond(html_response(
+                400,
+                "<h1>Missing token</h1><p>This callback is invalid.</p>",
+            ));
+            return CallbackOutcome::KeepListening;
+        }
+    };
+
+    let _ = req.respond(html_response(
+        200,
+        "<h1>Logged in</h1><p>You can close this tab and return to your terminal.</p>",
+    ));
+    CallbackOutcome::Token(BrowserLoginResult {
+        token,
+        refresh_token: parsed.refresh_token,
+    })
+}
+
+/// Test-only callback loop over a pre-bound `Server` and known `state`,
+/// exposing the worker thread's receiver so tests can drive a synthetic
+/// browser request without a real browser.
+///
+/// Drives the same [`handle_callback_request`] code path as the production
+/// flow, then flattens the [`BrowserLoginResult`] down to its token so the
+/// test harness can assert on a plain `Result<String, String>`.
 #[cfg(test)]
 fn run_callback_loop(
     server: Server,
@@ -94,40 +225,22 @@ fn run_callback_loop(
                     return;
                 }
             };
-            let url = req.url().to_owned();
-            if !url.starts_with("/callback") {
-                let _ = req.respond(html_response(404, "<h1>404</h1>"));
-                continue;
-            }
-            let qs = url.split_once('?').map_or("", |(_, q)| q);
-            let parsed = parse_callback_query(qs);
-            let Some(got) = parsed.state else {
-                let _ = req.respond(html_response(400, "<h1>missing state</h1>"));
-                continue;
-            };
-            if !ct_eq(&got, &expected_state) {
-                let _ = req.respond(html_response(400, "<h1>state mismatch</h1>"));
-                let _ = tx.send(Err("State mismatch in callback.".into()));
-                return;
-            }
-            let token = match parsed.token {
-                Some(t) if !t.is_empty() => t,
-                _ => {
-                    let _ = req.respond(html_response(400, "<h1>missing token</h1>"));
-                    continue;
+            match handle_callback_request(req, &expected_state) {
+                CallbackOutcome::KeepListening => {}
+                CallbackOutcome::Token(result) => {
+                    let _ = tx.send(Ok(result.token));
+                    return;
                 }
-            };
-            let _ = req.respond(html_response(200, "<h1>ok</h1>"));
-            let _ = tx.send(Ok(token));
-            return;
+                CallbackOutcome::Failed(msg) => {
+                    let _ = tx.send(Err(msg));
+                    return;
+                }
+            }
         }
     });
     rx
 }
 
-/// Thin wrapper around the central `endpoints::web_origin_from` so the
-/// browser login flow can keep its callsite signature stable while the
-/// stripping rule lives in one place.
 fn web_origin(api_base: &str) -> String {
     difflore_core::cloud::endpoints::web_origin_from(api_base)
 }
@@ -152,9 +265,8 @@ pub(crate) fn run_browser_login_with_cancel(
     let origin = web_origin(api_base);
     let state = random_state();
 
-    // 0.0.0.0 would be a (small) cross-machine exposure; bind explicitly to
-    // loopback. `:0` lets the OS pick a free port and also conveniently rules
-    // out the rare case of a stale server still squatting a hard-coded port.
+    // Bind loopback (not 0.0.0.0) to avoid cross-machine exposure; `:0` lets
+    // the OS pick a free port instead of squatting a hard-coded one.
     let server = Server::http("127.0.0.1:0")
         .map_err(|e| format!("Failed to start localhost callback server: {e}"))?;
 
@@ -176,17 +288,15 @@ pub(crate) fn run_browser_login_with_cancel(
         eprintln!("warning: could not auto-open browser ({e}). Open the URL above manually.");
     }
 
-    // Drive the request loop on a worker thread so the main thread can
-    // enforce the wall-clock timeout via mpsc::recv_timeout.
+    // Worker thread runs the request loop so the main thread can enforce the
+    // wall-clock timeout via mpsc::recv_timeout.
     let (tx, rx) = mpsc::channel::<Result<BrowserLoginResult, String>>();
     let expected_state = state;
     let server_cancel = Arc::clone(cancel);
 
     std::thread::spawn(move || {
-        // Loop just long enough to find one /callback hit. Anything else
-        // (favicon probes, port scanners, etc.) gets a 404 and we keep
-        // listening — we only consider the flow done when we see /callback
-        // *with* matching state.
+        // Loop until one /callback hit with matching state. Anything else
+        // (favicon probes, port scanners) gets a 404 and we keep listening.
         let deadline = Instant::now() + Duration::from_secs(FLOW_TIMEOUT_SECS);
         loop {
             if server_cancel.load(Ordering::Relaxed) {
@@ -211,73 +321,21 @@ pub(crate) fn run_browser_login_with_cancel(
                 }
             };
 
-            let url = req.url().to_owned();
-            if !url.starts_with("/callback") {
-                let _ = req.respond(html_response(404, "<h1>404</h1>"));
-                continue;
-            }
-
-            // Parse query string. tiny_http gives us the raw target line.
-            let qs = url.split_once('?').map_or("", |(_, q)| q);
-            let parsed = parse_callback_query(qs);
-
-            if let Some(e) = parsed.error {
-                let body = format!(
-                    "<h1>Login cancelled</h1><p>{}</p><p>You can close this tab.</p>",
-                    htmlescape(&e)
-                );
-                let _ = req.respond(html_response(200, &body));
-                let _ = tx.send(Err(format!("Authorization failed: {e}")));
-                return;
-            }
-
-            let Some(got) = parsed.state else {
-                let _ = req.respond(html_response(
-                    400,
-                    "<h1>Missing state</h1><p>This callback is invalid.</p>",
-                ));
-                continue;
-            };
-
-            // Constant-time-ish comparison; state is short so the cost of a
-            // simple eq is acceptable, but we still avoid a `==` length-leak
-            // on the off-chance a future state encoding becomes variable-length.
-            if !ct_eq(&got, &expected_state) {
-                let _ = req.respond(html_response(
-                    400,
-                    "<h1>State mismatch</h1><p>Possible CSRF — request rejected.</p>",
-                ));
-                let _ = tx.send(Err(
-                    "State mismatch in callback — refusing to save token (possible CSRF).".into(),
-                ));
-                return;
-            }
-
-            let token = match parsed.token {
-                Some(t) if !t.is_empty() => t,
-                _ => {
-                    let _ = req.respond(html_response(
-                        400,
-                        "<h1>Missing token</h1><p>This callback is invalid.</p>",
-                    ));
-                    continue;
+            match handle_callback_request(req, &expected_state) {
+                CallbackOutcome::KeepListening => {}
+                CallbackOutcome::Token(result) => {
+                    // Linger so the browser receives the body before we tear the
+                    // listener down; otherwise fast browsers see ECONNRESET and
+                    // render a "site can't be reached" page despite the 200.
+                    std::thread::sleep(Duration::from_millis(POST_SUCCESS_LINGER_MS));
+                    let _ = tx.send(Ok(result));
+                    return;
                 }
-            };
-
-            let _ = req.respond(html_response(
-                200,
-                "<h1>Logged in</h1><p>You can close this tab and return to your terminal.</p>",
-            ));
-            // Linger so the browser actually receives the body before we
-            // tear the listener down. Without this, fast browsers
-            // occasionally see ECONNRESET and render a "site can't be
-            // reached" page even though we did 200 them.
-            std::thread::sleep(Duration::from_millis(POST_SUCCESS_LINGER_MS));
-            let _ = tx.send(Ok(BrowserLoginResult {
-                token,
-                refresh_token: parsed.refresh_token,
-            }));
-            return;
+                CallbackOutcome::Failed(msg) => {
+                    let _ = tx.send(Err(msg));
+                    return;
+                }
+            }
         }
     });
 
@@ -376,8 +434,7 @@ fn htmlescape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Constant-time-ish string equality. Both args are short ASCII so this is
-/// purely defensive.
+/// Constant-time string equality, used defensively for the state nonce.
 fn ct_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
@@ -467,6 +524,46 @@ mod tests {
     fn callback_success_path() {
         let res = drive_callback("token=tok-abc&state=hello", "hello").unwrap();
         assert_eq!(res, "tok-abc");
+    }
+
+    /// Drive a synthetic POST `/callback` whose token lives in the
+    /// form-urlencoded body (not the request line) — the preferred path that
+    /// keeps the secret out of loopback request-line logs.
+    fn drive_callback_post(body: &str, expected_state: &str) -> Result<String, String> {
+        let server = Server::http("127.0.0.1:0").expect("bind");
+        let port = server.server_addr().to_ip().unwrap().port();
+        let rx = run_callback_loop(server, expected_state.to_owned());
+
+        let body = body.to_owned();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            use std::net::TcpStream;
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let req = format!(
+                "POST /callback HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+                 Content-Type: application/x-www-form-urlencoded\r\n\
+                 Content-Length: {len}\r\nConnection: close\r\n\r\n{body}",
+                len = body.len(),
+            );
+            let _ = s.write_all(req.as_bytes());
+        });
+
+        rx.recv_timeout(Duration::from_secs(5))
+            .map_err(|_| "no result".to_owned())
+            .and_then(|r| r)
+    }
+
+    #[test]
+    fn callback_success_via_post_body() {
+        let res = drive_callback_post("token=tok-post&state=hello", "hello").unwrap();
+        assert_eq!(res, "tok-post");
+    }
+
+    #[test]
+    fn callback_post_body_state_is_validated() {
+        let res = drive_callback_post("token=tok-post&state=WRONG", "hello");
+        assert!(res.is_err(), "got {res:?}");
+        assert!(res.unwrap_err().contains("State mismatch"));
     }
 
     #[test]

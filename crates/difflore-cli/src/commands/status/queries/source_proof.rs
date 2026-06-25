@@ -1,8 +1,8 @@
-//! Source-proof resolution for a rule: where the rule originally came from
-//! (a PR review comment / candidate-promotion event), used by the value-loop
-//! evidence chain to prove a rule was *learned* from one PR and later *served*
-//! into a different one. Pure scoring/normalisation helpers live alongside the
-//! SQL so the fuzzy review-comment fallback stays in one place.
+//! Source-proof resolution for a rule: where the rule originally came from (a
+//! PR review comment / candidate-promotion event), used to prove a rule was
+//! learned from one PR and later served into a different one. Scoring and
+//! normalisation helpers sit alongside the SQL so the fuzzy review-comment
+//! fallback stays in one place.
 
 use super::super::transform::{normalize_repo, pr_number_for_value_loop};
 
@@ -27,7 +27,7 @@ pub(super) async fn fetch_rule_source_proof(
     rule_id: &str,
     accepted_file_path: Option<&str>,
 ) -> Option<difflore_core::skills::CandidateSourceProof> {
-    let rows = sqlx::query_scalar!(
+    let rows = match sqlx::query_scalar!(
         r#"SELECT metadata AS "metadata!: String"
          FROM rule_events
          WHERE skill_id = ?1
@@ -39,7 +39,13 @@ pub(super) async fn fetch_rule_source_proof(
     )
     .fetch_all(db)
     .await
-    .ok()?;
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            debug_query_failure("source-proof event lookup", Some(rule_id), &e);
+            return None;
+        }
+    };
 
     if let Some(proof) = rows.into_iter().find_map(|raw| {
         let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -59,7 +65,7 @@ async fn fetch_rule_source_proof_from_skill_and_reviews(
     rule_id: &str,
     accepted_file_path: Option<&str>,
 ) -> Option<difflore_core::skills::CandidateSourceProof> {
-    let row = sqlx::query_as::<_, SkillSourceProofRow>(
+    let row = match sqlx::query_as::<_, SkillSourceProofRow>(
         "SELECT name,
                 description,
                 source_repo
@@ -70,7 +76,14 @@ async fn fetch_rule_source_proof_from_skill_and_reviews(
     .bind(rule_id)
     .fetch_optional(db)
     .await
-    .ok()??;
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => return None,
+        Err(e) => {
+            debug_query_failure("skill source-proof lookup", Some(rule_id), &e);
+            return None;
+        }
+    };
 
     if let Some(mut proof) = difflore_core::skills::parse_candidate_source_proof(&row.description) {
         if proof.source.is_none() {
@@ -160,7 +173,10 @@ async fn fetch_review_source_candidates(
     .bind(source_repo)
     .fetch_all(db)
     .await
-    .unwrap_or_default()
+    .unwrap_or_else(|e| {
+        debug_query_failure("review-comment source candidate lookup", None, &e);
+        Vec::new()
+    })
 }
 
 fn exact_review_source_repo(source_repo: Option<&str>) -> Option<String> {
@@ -272,7 +288,7 @@ fn source_with_pr_from_comment_or_repo(
     Some(format!("{repo}#{pr}"))
 }
 
-fn github_repo_from_url_local(url: &str) -> Option<&str> {
+fn github_repo_from_url_local(url: &str) -> Option<String> {
     let after_host = url.split_once("github.com/")?.1;
     let mut parts = after_host.split('/');
     let owner = parts.next()?.trim();
@@ -280,7 +296,7 @@ fn github_repo_from_url_local(url: &str) -> Option<&str> {
     if owner.is_empty() || repo.is_empty() {
         return None;
     }
-    after_host.get(..owner.len() + 1 + repo.len())
+    Some(format!("{owner}/{repo}"))
 }
 
 fn github_pr_from_url_local(url: &str) -> Option<i64> {
@@ -298,10 +314,26 @@ fn github_pr_from_url_local(url: &str) -> Option<i64> {
 fn review_excerpt(content: &str) -> String {
     const LIMIT: usize = 240;
     let compact = content.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.len() <= LIMIT {
+    if compact.chars().count() <= LIMIT {
         compact
     } else {
         format!("{}...", compact.chars().take(LIMIT).collect::<String>())
+    }
+}
+
+fn debug_query_failure(label: &str, rule_id: Option<&str>, error: &dyn std::fmt::Display) {
+    if !difflore_core::infra::env::debug_telemetry() {
+        return;
+    }
+    match rule_id {
+        Some(rule_id) => {
+            eprintln!(
+                "[difflore.status.source_proof] {label} failed for rule `{rule_id}`: {error}"
+            );
+        }
+        None => {
+            eprintln!("[difflore.status.source_proof] {label} failed: {error}");
+        }
     }
 }
 
@@ -309,6 +341,28 @@ fn review_excerpt(content: &str) -> String {
 mod tests {
     use super::super::test_support::{insert_skill_only, value_loop_pool};
     use super::*;
+
+    #[tokio::test]
+    async fn source_proof_query_failures_fail_closed_to_none() {
+        // A failed DB query must degrade to "no source proof" (fail-safe),
+        // distinct from a successful query that found no evidence. Closing
+        // the pool forces the underlying `fetch_all` / `fetch_optional`
+        // queries to error, exercising the logged fail-closed paths.
+        let pool = value_loop_pool().await;
+        pool.close().await;
+
+        let proof = fetch_rule_source_proof(&pool, "comment-rule", Some("docs/readme.md")).await;
+        assert!(
+            proof.is_none(),
+            "source-proof query failures must degrade to no evidence rather than a silent success path"
+        );
+
+        let candidates = fetch_review_source_candidates(&pool, Some("acme/widgets")).await;
+        assert!(
+            candidates.is_empty(),
+            "review-comment candidate query failures must degrade to an empty list"
+        );
+    }
 
     #[tokio::test]
     async fn review_comment_source_proof_fallback_must_match_accepted_file() {

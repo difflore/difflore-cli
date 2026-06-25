@@ -2,15 +2,14 @@ use serde_json::{Value, json};
 use sqlx::SqlitePool;
 
 use super::super::{McpState, build_cost_meta, estimate_tokens};
-use super::util::{MCP_TEXT_ARG_CHAR_LIMIT, validate_mcp_text_arg};
+use super::validate::{MCP_TEXT_ARG_CHAR_LIMIT, validate_mcp_text_arg};
 
-// ── plan_pr (Layer 1 plan-time predictor) ──────────────────────────
+// plan_pr (Layer 1 plan-time predictor): given an issue/PR description,
+// predict likely file categories, median file count, and closest historical
+// PRs from the local review corpus.
 //
-// Given an issue/PR description, predict likely file categories, median
-// file count, and closest historical PRs from the local review corpus.
-//
-// Data source: local SQLite `review_items` rows from
-// `difflore import-reviews`, grouped by `(repo_full_name, pr_number)`.
+// Data source: local SQLite `review_items` rows from `difflore
+// import-reviews`, grouped by `(repo_full_name, pr_number)`.
 
 /// One historical PR record reconstructed from `review_items`.
 #[derive(Debug, Clone)]
@@ -112,7 +111,7 @@ pub(crate) fn categorise_path(path: &str) -> String {
 }
 
 /// Pull historical PRs out of local `SQLite`. Each row in `review_items`
-/// represents one PR's representative file (see `github_import.rs`).
+/// represents one PR's representative file (see `ingest/github`).
 /// We GROUP BY (`repo_full_name`, `pr_number`) so future schemas with
 /// many rows per PR still aggregate correctly.
 pub(crate) async fn load_pr_corpus(db: &SqlitePool) -> Vec<HistoricalPr> {
@@ -128,9 +127,12 @@ pub(crate) async fn load_pr_corpus(db: &SqlitePool) -> Vec<HistoricalPr> {
         return Vec::new();
     }
 
-    // Pull the first comment body per review_item so the TF-IDF text
-    // has more signal than just the file_path. Cheap (one extra query)
-    // and keeps the function pure-SQL.
+    let item_ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
+    let comments_by_item = first_review_comments_by_item(db, &item_ids).await;
+
+    // Pull the first comment body per review_item so the TF-IDF text has
+    // more signal than just the file_path. This remains best-effort corpus
+    // enrichment: a comment lookup failure degrades to file-path text.
     let mut by_pr: std::collections::BTreeMap<(String, i32), HistoricalPr> =
         std::collections::BTreeMap::new();
     for row in rows {
@@ -149,9 +151,9 @@ pub(crate) async fn load_pr_corpus(db: &SqlitePool) -> Vec<HistoricalPr> {
                 tokens: Vec::new(),
             });
         push_plan_file(&mut entry.files, &file_path);
-        // Also fold the file_path itself into the text — for
-        // GitHub-imported rows, file_path doubles as PR title when
-        // there are no inline comments.
+        // Also fold the file_path itself into the text. Imported rows without
+        // a real path anchor may leave this empty, and the comment-body pass
+        // below carries the useful review text.
         if !entry.text.is_empty() {
             entry.text.push(' ');
         }
@@ -161,17 +163,10 @@ pub(crate) async fn load_pr_corpus(db: &SqlitePool) -> Vec<HistoricalPr> {
         // TF-IDF vector reflects what reviewers said, not just file
         // names. Skip silently on failure — corpus quality is
         // best-effort.
-        if let Ok(Some(body)) = sqlx::query_scalar!(
-            "SELECT content FROM review_comments WHERE review_item_id = ?1 \
-             ORDER BY created_at ASC LIMIT 1",
-            item_id
-        )
-        .fetch_optional(db)
-        .await
-        {
+        if let Some(body) = comments_by_item.get(&item_id) {
             entry.text.push(' ');
-            entry.text.push_str(&body);
-            for path in extract_review_file_paths(&body) {
+            entry.text.push_str(body);
+            for path in extract_review_file_paths(body) {
                 push_plan_file(&mut entry.files, &path);
             }
         }
@@ -189,6 +184,33 @@ pub(crate) async fn load_pr_corpus(db: &SqlitePool) -> Vec<HistoricalPr> {
         pr.tokens = toks;
     }
     out
+}
+
+async fn first_review_comments_by_item(
+    db: &SqlitePool,
+    item_ids: &[String],
+) -> std::collections::HashMap<String, String> {
+    if item_ids.is_empty() {
+        return std::collections::HashMap::new();
+    }
+    let Ok(ids_json) = serde_json::to_string(item_ids) else {
+        return std::collections::HashMap::new();
+    };
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT review_item_id, content FROM review_comments \
+         WHERE review_item_id IN (SELECT value FROM json_each(?1)) \
+         ORDER BY review_item_id ASC, created_at ASC, id ASC",
+    )
+    .bind(ids_json)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    let mut by_item = std::collections::HashMap::new();
+    for (item_id, body) in rows {
+        by_item.entry(item_id).or_insert(body);
+    }
+    by_item
 }
 
 async fn enrich_corpus_from_skill_descriptions(
@@ -706,6 +728,11 @@ pub(crate) async fn tool_plan_pr(state: &McpState, args: &Value) -> Result<Value
         .map_or(5, |v| v.clamp(1, 20) as usize);
 
     let corpus = load_pr_corpus(&state.db).await;
+    // Warm the configured-GitLab-host cache before detecting remotes so a fresh
+    // MCP-server process that calls plan_pr before any recall can still resolve
+    // self-managed GitLab scopes; otherwise the corpus scoping falls empty.
+    // Mirrors hook.rs / search_rules.rs / remember_rule.rs.
+    crate::mcp_server::hook::refresh_configured_gitlab_hosts_for_remote_detection().await;
     let detected_repos = crate::mcp_server::hook::detect_git_remote_owner_repos();
 
     if corpus.is_empty() {
@@ -773,8 +800,7 @@ pub(crate) async fn tool_plan_pr(state: &McpState, args: &Value) -> Result<Value
         }));
     }
 
-    // Format prediction for the agent. Keep it dense — predict.py's
-    // human renderer is the reference shape.
+    // Format prediction for the agent. Keep it dense.
     let median = prediction
         .get("predicted_file_count_median")
         .and_then(Value::as_u64)
@@ -878,6 +904,7 @@ pub(crate) async fn tool_plan_pr(state: &McpState, args: &Value) -> Result<Value
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::review_store::{AddCommentInput, EnsureItemInput, add_comment, ensure_item};
 
     #[test]
     fn extract_review_file_paths_reads_related_files_and_review_tables() {
@@ -998,6 +1025,119 @@ Please inspect `binding/binding_test.go` and ignore `Context.PDF` plus `maps.Cop
     fn pr_number_from_source_reads_github_source_label() {
         assert_eq!(pr_number_from_source("gin-gonic/gin#4542"), Some(4542));
         assert_eq!(pr_number_from_source("not-a-pr"), None);
+    }
+
+    #[tokio::test]
+    async fn load_pr_corpus_uses_batched_first_review_comments() {
+        let db = migrated_pool().await;
+        let first_item = ensure_item(&db, make_review_item("item-1", "src/lib.rs", 42))
+            .await
+            .expect("insert first review item");
+        let second_item = ensure_item(&db, make_review_item("item-2", "README.md", 42))
+            .await
+            .expect("insert second review item");
+
+        let later = add_comment(
+            &db,
+            make_comment_input(&first_item.id, "Later body. Related files: src/later.rs"),
+        )
+        .await
+        .expect("insert later comment");
+        let first = add_comment(
+            &db,
+            make_comment_input(&first_item.id, "First body. Related files: src/first.rs"),
+        )
+        .await
+        .expect("insert first comment");
+        add_comment(
+            &db,
+            make_comment_input(
+                &second_item.id,
+                "Second body. Related files: tests/second_test.rs",
+            ),
+        )
+        .await
+        .expect("insert second item comment");
+
+        sqlx::query("UPDATE review_comments SET created_at = ?1 WHERE id = ?2")
+            .bind("2026-01-02 00:00:00")
+            .bind(&later.id)
+            .execute(&db)
+            .await
+            .expect("pin later comment time");
+        sqlx::query("UPDATE review_comments SET created_at = ?1 WHERE id = ?2")
+            .bind("2026-01-01 00:00:00")
+            .bind(&first.id)
+            .execute(&db)
+            .await
+            .expect("pin first comment time");
+
+        let corpus = load_pr_corpus(&db).await;
+
+        assert_eq!(corpus.len(), 1);
+        let pr = &corpus[0];
+        assert_eq!(pr.repo, "owner/repo");
+        assert_eq!(pr.pr_number, 42);
+        assert!(pr.text.contains("First body"));
+        assert!(!pr.text.contains("Later body"));
+        assert!(pr.text.contains("Second body"));
+        assert!(pr.files.contains(&"src/lib.rs".to_owned()));
+        assert!(pr.files.contains(&"README.md".to_owned()));
+        assert!(pr.files.contains(&"src/first.rs".to_owned()));
+        assert!(pr.files.contains(&"tests/second_test.rs".to_owned()));
+        assert!(!pr.files.contains(&"src/later.rs".to_owned()));
+    }
+
+    async fn migrated_pool() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open sqlite pool");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("apply migrations");
+        sqlx::query(
+            "INSERT INTO projects (id, name, path) VALUES ('project-1', 'demo', '/tmp/demo')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed project");
+        pool
+    }
+
+    fn make_review_item(id: &str, file_path: &str, pr_number: i32) -> EnsureItemInput {
+        EnsureItemInput {
+            id: Some(id.to_owned()),
+            session_id: None,
+            project_id: "project-1".to_owned(),
+            file_path: file_path.to_owned(),
+            diff_content: String::new(),
+            status: "accepted".to_owned(),
+            source: "github".to_owned(),
+            source_kind: "pull_request".to_owned(),
+            external_review_id: Some(format!("review-{id}")),
+            repo_full_name: Some("owner/repo".to_owned()),
+            pr_number: Some(pr_number),
+            author: Some("reviewer".to_owned()),
+            synced_at: Some("2026-01-01 00:00:00".to_owned()),
+            metadata: None,
+            reviewed_at: None,
+        }
+    }
+
+    fn make_comment_input(review_item_id: &str, content: &str) -> AddCommentInput {
+        AddCommentInput {
+            review_item_id: review_item_id.to_owned(),
+            external_comment_id: None,
+            line_number: Some(1),
+            content: content.to_owned(),
+            author: Some("reviewer".to_owned()),
+            comment_url: None,
+            thread_id: None,
+            metadata: None,
+        }
     }
 
     fn test_pr(pr_number: i32, text: &str, files: &[&str]) -> HistoricalPr {

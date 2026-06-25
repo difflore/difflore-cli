@@ -31,9 +31,8 @@ pub async fn stats(db: &sqlx::SqlitePool) -> crate::Result<RulesStats> {
         .fetch_one(db)
         .await?;
 
-    // Per-origin breakdown, sorted by count desc so the dominant
-    // channel surfaces first. Pending candidates are excluded — the
-    // stats dashboard reflects the live rule corpus.
+    // Per-origin breakdown. Only active rules count: the dashboard
+    // reflects the live corpus, not pending candidates.
     let by_origin_rows = sqlx::query!(
         "SELECT origin, COUNT(*) AS c FROM skills WHERE status = 'active' \
          GROUP BY origin ORDER BY c DESC, origin ASC",
@@ -50,10 +49,8 @@ pub async fn stats(db: &sqlx::SqlitePool) -> crate::Result<RulesStats> {
 
     let conversation_captures_today = count_captures_today(db, "conversation").await?;
 
-    // Top 5 rules by confidence, restricted to conversation-origin rules
-    // that have been bumped above the 0.6 base. These are the ones the
-    // user (or agent) re-captured — a strong signal of "this matters".
-    // Limit 5 to keep terminal output digestible.
+    // Top conversation-origin rules bumped above the 0.6 base, i.e.
+    // re-captured ones — a signal they matter.
     let top_rows = sqlx::query!(
         "SELECT id, name, origin, confidence_score FROM skills \
          WHERE origin = 'conversation' AND confidence_score > 0.6 \
@@ -81,11 +78,9 @@ pub async fn stats(db: &sqlx::SqlitePool) -> crate::Result<RulesStats> {
     })
 }
 
-/// How many conversation-channel captures landed today. Used both for
-/// the rate-limit warn threshold and for surfacing `captures_today` on
-/// the outcome so callers can render guidance like "12/50 today, getting
-/// close to the cap". Returns 0 for non-conversation origins (the rate
-/// limit only protects against agent runaway).
+/// Count today's conversation-channel captures, used for the rate-limit
+/// threshold and `captures_today` reporting. Returns 0 for non-conversation
+/// origins, which the rate limit does not protect against.
 pub async fn count_captures_today(db: &sqlx::SqlitePool, origin: &str) -> crate::Result<i64> {
     if origin != "conversation" {
         return Ok(0);

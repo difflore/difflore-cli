@@ -1,9 +1,6 @@
-// Lightweight per-rule attribution lookup: given the rule ids that
-// drove a `fix` recall, return their `source_repo` so the report can
-// say "learned from gin-gonic/gin" next to each rule. Cheap on cold
-// caches because matched recall sets are small (top-K), and best-effort
-// — any DB error degrades gracefully to an empty map so the user-facing
-// flow keeps working.
+// Per-rule attribution lookup: given the rule ids that drove a `fix` recall,
+// return their `source_repo` so the report can say "learned from
+// gin-gonic/gin". Best-effort — any DB error degrades to an empty map.
 use std::collections::HashMap;
 
 use difflore_core::SqlitePool;
@@ -18,10 +15,8 @@ pub(super) async fn fetch_rule_source_repos(
     if rule_ids.is_empty() {
         return out;
     }
-    // Build a parameter list — sqlx doesn't expand Vec into IN(?, ?, …)
-    // for SQLite, so we render placeholders ourselves. Rule ids are uuids
-    // produced by our pipeline so they're not user input; still bind via
-    // parameters for safety.
+    // sqlx doesn't expand Vec into IN(?, ?, …) for SQLite, so render the
+    // placeholders ourselves and bind each id as a parameter.
     let placeholders = std::iter::repeat_n("?", rule_ids.len())
         .collect::<Vec<_>>()
         .join(", ");
@@ -39,9 +34,9 @@ pub(super) async fn fetch_rule_source_repos(
             }
         }
         Err(e) => {
-            // Best-effort: surface once via stderr (recall already prints to
-            // stderr on debug paths) but never fail the fix flow.
-            eprintln!("[attribution] source_repo lookup failed: {e}");
+            if difflore_core::infra::env::debug_telemetry() {
+                eprintln!("[attribution] source_repo lookup failed: {e}");
+            }
         }
     }
     out

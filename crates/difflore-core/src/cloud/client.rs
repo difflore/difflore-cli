@@ -1,18 +1,17 @@
+use crate::error::InternalResultExt as _;
 use openapi_contract::sse::SseStream;
-use openapi_contract::{ApiClient, ApiError, Method};
+use openapi_contract::{ApiClient, ApiError, ApiRequest, Method, api};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
-/// Cloud-client debug noise (network errors on degraded paths) is gated
-/// behind `DIFFLORE_DEBUG_CLOUD=1`. The default is silent: when cloud is
-/// unavailable, every degraded endpoint here returns an empty/false sentinel
-/// and the caller carries on — printing the raw reqwest error to stderr just
-/// confuses users who are already getting a friendlier message from
-/// `format_cloud_err` at the top-level command. Devs flip the env var on to
-/// trace transport-layer issues.
+/// Whether `DIFFLORE_DEBUG_CLOUD=1` is set. Off by default so degraded
+/// cloud paths stay silent (each returns an empty/false sentinel); the
+/// raw reqwest error would only confuse users who already see a friendlier
+/// top-level message. Devs flip it on to trace transport issues.
 fn cloud_debug_enabled() -> bool {
-    crate::env::debug_cloud()
+    crate::infra::env::debug_cloud()
 }
 
 static AUTH_POOL_CACHE: tokio::sync::Mutex<Option<HashMap<PathBuf, SqlitePool>>> =
@@ -23,8 +22,6 @@ const AUTH_REFRESH_TOKEN_KEY: &str = "refresh_token";
 /// Cloud origin a saved token / refresh-token was issued for.
 const AUTH_HOST_KEY: &str = "token_host";
 const CLI_CLIENT_ID: &str = "difflore-cli";
-const PAST_VERDICT_RECALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
-const PAST_VERDICT_RETRY_DELAYS_MS: &[u64] = &[100, 300, 700];
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,27 +34,31 @@ struct TokenRefreshResponse {
 /// transport error.
 #[derive(Clone, Copy)]
 enum SendPhase {
-    /// The first send, before any token refresh.
     Initial,
-    /// The single post-refresh retry send.
     Retry,
 }
 
 /// Percent-encode characters that would break routing when an id is
 /// interpolated into one URL path segment.
 fn escape_path_id(s: &str) -> String {
-    s.replace('%', "%25")
-        .replace('/', "%2F")
-        .replace('#', "%23")
-        .replace('?', "%3F")
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                let _ = write!(&mut out, "%{byte:02X}");
+            }
+        }
+    }
+    out
 }
 
-/// Scrub every known auth token (≥8 chars) from a cloud-response body before it
-/// is logged or surfaced in an error. A hostile / compromised cloud could echo
-/// the bearer OR refresh token back inside an error body; without this the CLI
-/// would faithfully print the token to stderr / a returned error string. Tokens
-/// under 8 chars are skipped (false positives on common substrings; real tokens
-/// are always longer).
+/// Replace every known auth token (≥8 chars) in a cloud-response body
+/// before it is logged or surfaced, so a compromised cloud echoing the
+/// bearer/refresh token back can't leak it to stderr or an error string.
+/// Tokens under 8 chars are skipped to avoid redacting common substrings.
 fn scrub_tokens_from_body(body: &str, tokens: &[Option<&str>]) -> String {
     let mut out = body.to_owned();
     for &token in tokens.iter().flatten() {
@@ -75,23 +76,63 @@ fn truncate_for_error(body: &str, max_chars: usize) -> String {
     body.chars().take(max_chars).collect()
 }
 
-/// Distilled fingerprint of an upload that returned a non-2xx HTTP
-/// response. Held by [`OutboxFailure::Http`] so the outbox can write
-/// a human-greppable `last_error` (e.g. `"401 Unauthorized: …"`)
-/// instead of the historic — and useless — `"upload returned
-/// non-2xx"`.
+fn format_structured_api_error(label: &str, status: u16, body: &str) -> String {
+    let raw = format!("returned {status}: {body}");
+    crate::domain::origins::format_api_error_from_status(label, &raw, status)
+        .unwrap_or_else(|| format!("{label} returned {status}: {body}"))
+}
+
+fn build_api_url(base_url: &str, path: &str, query: Option<&str>) -> String {
+    let mut url = format!("{}{}", base_url.trim_end_matches('/'), path);
+    if let Some(qs) = query {
+        url.push('?');
+        url.push_str(qs);
+    }
+    url
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mcp_query_body(
+    file: &str,
+    intent: Option<&str>,
+    rules_injected: usize,
+    strict_match_count: usize,
+    rule_titles: &[String],
+    rule_ids: &[String],
+    client_label: Option<&str>,
+    repo_full_name: Option<&str>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "file": file,
+        "intent": intent,
+        "rulesInjected": rules_injected,
+        "strictMatchCount": strict_match_count,
+        "ruleTitles": rule_titles,
+        "ruleIds": rule_ids,
+        "client": client_label.unwrap_or("mcp-server"),
+    });
+    if let Some(repo) = repo_full_name
+        .map(str::trim)
+        .filter(|repo| !repo.is_empty())
+    {
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert(
+                "repoFullName".to_owned(),
+                serde_json::Value::String(repo.to_owned()),
+            );
+        }
+    }
+    body
+}
+
+/// Fingerprint of an upload that returned a non-2xx HTTP response, held
+/// by [`OutboxFailure::Http`] so the outbox can write a greppable
+/// `last_error` (e.g. `"401 Unauthorized: …"`).
 ///
-/// `body_snippet` is the first ~200 chars of the response body with
-/// all runs of whitespace collapsed to a single space. The body is
-/// stored only inside this struct and only ever written into the
-/// local SQLite `last_error` column — it is never logged to
-/// stdout/stderr — so a stack-trace echo from the cloud cannot leak
-/// into a user's foreground output.
-///
-/// The response body is opaque to the client and could echo a token or
-/// other sensitive blob. Known auth tokens are scrubbed before the snippet is
-/// stored. Treat `last_error` as locally trusted diagnostic data, not as
-/// something to forward to third parties without review.
+/// `body_snippet` is the first ~200 chars of the body, whitespace
+/// collapsed and known auth tokens scrubbed. It is written only into the
+/// local SQLite `last_error` column, never to stdout/stderr, so a cloud
+/// stack-trace echo cannot leak into foreground output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HttpFailure {
     pub status: u16,
@@ -99,35 +140,27 @@ pub(crate) struct HttpFailure {
     pub body_snippet: String,
 }
 
-/// Outcome of a fire-and-forget POST whose dispatcher wants the
-/// status + body details (not just success/failure). Two flavours so
-/// the outbox can distinguish "the cloud rejected this with 401"
-/// from "we never reached the cloud" — collapsing the two used to
-/// hide stale-auth incidents inside a generic transport-error
-/// bucket.
+/// Outcome of a fire-and-forget POST whose dispatcher wants status +
+/// body details. The two variants let the outbox distinguish "cloud
+/// rejected this with 401" from "we never reached the cloud" — collapsing
+/// them would hide stale-auth incidents in a generic transport bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OutboxFailure {
     Http(HttpFailure),
-    /// Transport / DNS / TLS / timeout — the request never produced
-    /// a status code. The payload is the lossy `reqwest::Error`
-    /// description (already includes the underlying `kind`).
+    /// Transport / DNS / TLS / timeout — the request never produced a
+    /// status code. Payload is the `reqwest::Error` description.
     Transport(String),
 }
 
 impl OutboxFailure {
-    /// Format the failure into the spec-mandated shape for the
-    /// `cloud_outbox.last_error` column:
+    /// Format the failure for the `cloud_outbox.last_error` column.
     ///
-    /// * `Http(401, "Unauthorized", "{\"error\":\"…\"}")` →
-    ///   `"401 Unauthorized: {\"error\":\"…\"}"`
-    /// * `Http(500, "Internal Server Error", "")` →
-    ///   `"500 Internal Server Error"`
-    /// * `Transport("…connection refused…")` →
-    ///   `"transport: …connection refused…"`
+    /// * `Http(401, "Unauthorized", "{…}")` → `"401 Unauthorized: {…}"`
+    /// * `Http(500, "Internal Server Error", "")` → `"500 Internal Server Error"`
+    /// * `Transport("…connection refused…")` → `"transport: …connection refused…"`
     ///
-    /// The shape is deliberately greppable: `last_error LIKE '4__ %'`
-    /// finds every client-class HTTP failure across the queue, and
-    /// the leading status code parses with a one-line `awk`.
+    /// The shape is greppable: `last_error LIKE '4__ %'` matches every
+    /// client-class HTTP failure and the leading status code parses easily.
     pub fn format_for_outbox_last_error(&self) -> String {
         match self {
             Self::Http(http) => {
@@ -140,22 +173,17 @@ impl OutboxFailure {
                     )
                 }
             }
-            // Transport-class sentinel — distinct from any
-            // `{status_code} {reason}` shape so `classify_upload_issue`
-            // and grep can tell them apart at a glance.
+            // Transport-class sentinel, distinct from any
+            // `{status_code} {reason}` shape so callers can tell them apart.
             Self::Transport(msg) => format!("transport: {msg}"),
         }
     }
 }
 
-/// Collapse all runs of ASCII whitespace (including tabs / CR / LF)
-/// to a single space and truncate to at most `max_chars` Unicode
-/// scalar values, never splitting a UTF-8 codepoint. Returns an
-/// owned `String` because SQLite stores TEXT as UTF-8 and
-/// `last_error` is bounded by `outbox_core::truncate` downstream
-/// anyway. Used for HTTP body fragments embedded in `last_error` so
-/// a JSON error blob with embedded newlines still fits on a single
-/// grep line.
+/// Collapse all ASCII whitespace runs to a single space and truncate to
+/// at most `max_chars` Unicode scalar values (never splitting a
+/// codepoint). Keeps an HTTP body fragment on a single grep line in
+/// `last_error`.
 pub(crate) fn normalize_body_snippet(body: &str, max_chars: usize) -> String {
     let collapsed: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() <= max_chars {
@@ -165,15 +193,14 @@ pub(crate) fn normalize_body_snippet(body: &str, max_chars: usize) -> String {
 }
 
 use crate::context::types::PastVerdict;
-use crate::crypto::{decrypt_secret, encrypt_secret};
+use crate::infra::crypto::{decrypt_secret, encrypt_secret};
 
-use super::endpoints::pricing_url;
-
-use super::api_types::{
+use crate::contract::{
     GetTrajectoryResponse, ImpactBannerDto, ImpactCoverageDto, ImpactFixScorecardDto,
-    ImpactTopRulesDto, ImpactWeeklyDto, PastVerdictDto, RecallPastVerdictsRequest,
-    RecordAcceptedEditRequest, RecordAcceptedEditResponse, RecordReviewMetricsRequest,
-    SaveTrajectoryRequest, UploadImportedReviewsRequest,
+    ImpactTopRulesDto, ImpactWeeklyDto, ObservationIngestResult, PastVerdictDto,
+    RecallPastVerdictsRequest, RecordAcceptedEditRequest, RecordAcceptedEditResponse,
+    RecordReviewMetricsRequest, SaveTrajectoryRequest, SessionMinedCandidateIngestResult,
+    UploadImportedReviewsRequest,
 };
 
 #[derive(Clone)]
@@ -181,6 +208,69 @@ pub struct CloudClient {
     client: reqwest::Client,
     base_url: String,
     token: Option<String>,
+}
+
+struct TokenRefreshClient {
+    client: reqwest::Client,
+    base_url: String,
+}
+
+impl ApiClient for TokenRefreshClient {
+    fn request(
+        &self,
+        method: Method,
+        path: &str,
+        query: Option<&str>,
+        body: Option<String>,
+    ) -> impl Future<Output = Result<reqwest::Response, ApiError>> + Send {
+        let url = build_api_url(&self.base_url, path, query);
+        let client = self.client.clone();
+        async move {
+            let mut req = client.request(method.as_reqwest(), &url);
+            if let Some(body) = body {
+                req = req.header("content-type", "application/json").body(body);
+            }
+            req.send().await.map_err(ApiError::from)
+        }
+    }
+
+    fn request_stream(
+        &self,
+        method: Method,
+        path: &str,
+        query: Option<&str>,
+    ) -> impl Future<Output = Result<SseStream, ApiError>> + Send {
+        let url = build_api_url(&self.base_url, path, query);
+        let client = self.client.clone();
+        async move {
+            let resp = client
+                .request(method.as_reqwest(), &url)
+                .send()
+                .await
+                .map_err(ApiError::from)?;
+            Ok(SseStream::new(Box::pin(resp.bytes_stream())))
+        }
+    }
+}
+
+fn format_token_refresh_error(error: ApiError, refresh_token: &str) -> String {
+    match error {
+        ApiError::Http(e) => format!("network error: {e}"),
+        ApiError::Serialization(e) => format!("decode error: {e}"),
+        ApiError::Api { status, message } => {
+            let body = scrub_tokens_from_body(&message, &[Some(refresh_token)]);
+            format!("returned {status}: {}", truncate_for_error(&body, 500))
+        }
+        ApiError::Defined {
+            status,
+            code,
+            message,
+        } => {
+            let body =
+                scrub_tokens_from_body(&format!("{code}: {message}"), &[Some(refresh_token)]);
+            format!("returned {status}: {}", truncate_for_error(&body, 500))
+        }
+    }
 }
 
 impl Default for CloudClient {
@@ -216,13 +306,13 @@ impl CloudClient {
         super::endpoints::api_base()
     }
 
-    fn auth_db_path() -> Result<PathBuf, String> {
+    fn auth_db_path() -> crate::Result<PathBuf> {
         // Route through `paths::data_home()` so `DIFFLORE_HOME` controls
         // tests and self-host setups.
-        Ok(crate::paths::data_home()?.join("cloud-auth.db"))
+        Ok(crate::infra::paths::data_home()?.join("cloud-auth.db"))
     }
 
-    pub async fn auth_pool() -> Result<SqlitePool, String> {
+    pub async fn auth_pool() -> crate::Result<SqlitePool> {
         let path = Self::auth_db_path()?;
         let mut guard = AUTH_POOL_CACHE.lock().await;
         let cache = guard.get_or_insert_with(HashMap::new);
@@ -231,7 +321,7 @@ impl CloudClient {
         }
 
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(parent).map_err(crate::CoreError::Io)?;
             crate::infra::db::restrict_to_owner(parent, true);
         }
 
@@ -243,14 +333,14 @@ impl CloudClient {
             .max_connections(1)
             .connect_with(opts)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(crate::CoreError::Database)?;
 
         // cloud-auth.db holds the (encrypted) auth token — restrict it to the
         // owner on Unix (Windows relies on the per-user profile ACL).
         crate::infra::db::restrict_sqlite_files(&path);
 
-        // cloud-auth.db is a two-column token store; create only the
-        // table it needs, idempotently and order-independently.
+        // cloud-auth.db is a two-column token store; create its one table
+        // idempotently.
         sqlx::query!(
             "CREATE TABLE IF NOT EXISTS auth (\
                 key TEXT PRIMARY KEY NOT NULL, \
@@ -259,17 +349,17 @@ impl CloudClient {
         )
         .execute(&pool)
         .await
-        .map_err(|e| format!("auth table create failed: {e}"))?;
+        .map_err(|e| crate::CoreError::Internal(format!("auth table create failed: {e}")))?;
 
         cache.insert(path, pool.clone());
         Ok(pool)
     }
 
-    pub async fn auth_pool_public() -> Result<SqlitePool, String> {
+    pub async fn auth_pool_public() -> crate::Result<SqlitePool> {
         Self::auth_pool().await
     }
 
-    async fn save_encrypted_auth_key(key: &str, value: &str) -> Result<(), String> {
+    async fn save_encrypted_auth_key(key: &str, value: &str) -> crate::Result<()> {
         let encrypted = encrypt_secret(value)?;
         let pool = Self::auth_pool().await?;
         sqlx::query("INSERT OR REPLACE INTO auth (key, value) VALUES (?1, ?2)")
@@ -277,7 +367,7 @@ impl CloudClient {
             .bind(encrypted)
             .execute(&pool)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(crate::CoreError::Database)?;
         Ok(())
     }
 
@@ -292,10 +382,9 @@ impl CloudClient {
         match decrypt_secret(&raw) {
             Ok(plaintext) => Some(plaintext),
             Err(e) => {
-                // `quiet` suppresses the warning for read-only diagnostics
-                // (e.g. the embedder status probe, which the TUI polls every
-                // 500ms) so a corrupt token doesn't spam stderr and corrupt the
-                // interactive display. Real cloud/recall calls keep the warning.
+                // `quiet` suppresses the warning for read-only diagnostics so a
+                // corrupt token doesn't spam stderr. Real cloud/recall calls
+                // keep the warning.
                 if !quiet {
                     eprintln!(
                         "Token storage could not be decrypted: {e}. \
@@ -308,31 +397,31 @@ impl CloudClient {
         }
     }
 
-    async fn delete_auth_key(key: &str) -> Result<(), String> {
-        let pool = Self::auth_pool().await?;
+    async fn delete_auth_key(key: &str) -> crate::Result<()> {
+        let pool = Self::auth_pool().await.internal()?;
         sqlx::query("DELETE FROM auth WHERE key = ?1")
             .bind(key)
             .execute(&pool)
             .await
-            .map_err(|e| e.to_string())?;
+            .internal()?;
         Ok(())
     }
 
-    pub async fn save_token(token: &str) -> Result<(), String> {
+    pub async fn save_token(token: &str) -> crate::Result<()> {
         Self::save_encrypted_auth_key(AUTH_TOKEN_KEY, token).await?;
-        let pool = Self::auth_pool().await?;
+        let pool = Self::auth_pool().await.internal()?;
         sqlx::query!("DELETE FROM auth WHERE key = 'login_nonce'")
             .execute(&pool)
             .await
-            .map_err(|e| e.to_string())?;
+            .internal()?;
         Ok(())
     }
 
-    pub async fn save_refresh_token(refresh_token: &str) -> Result<(), String> {
+    pub async fn save_refresh_token(refresh_token: &str) -> crate::Result<()> {
         Self::save_encrypted_auth_key(AUTH_REFRESH_TOKEN_KEY, refresh_token).await
     }
 
-    pub async fn save_login_tokens(token: &str, refresh_token: Option<&str>) -> Result<(), String> {
+    pub async fn save_login_tokens(token: &str, refresh_token: Option<&str>) -> crate::Result<()> {
         Self::save_token(token).await?;
         match refresh_token.map(str::trim).filter(|s| !s.is_empty()) {
             Some(refresh_token) => Self::save_refresh_token(refresh_token).await?,
@@ -343,11 +432,21 @@ impl CloudClient {
         Ok(())
     }
 
+    fn explicit_env_token() -> Option<String> {
+        Self::resolve_explicit_env_token(crate::infra::env::non_empty)
+    }
+
+    fn resolve_explicit_env_token(
+        mut lookup: impl FnMut(&str) -> Option<String>,
+    ) -> Option<String> {
+        lookup(crate::infra::env::DIFFLORE_CLOUD_TOKEN)
+            .map(|token| token.trim().to_owned())
+            .filter(|token| !token.is_empty())
+    }
+
     pub async fn load_token() -> Option<String> {
-        // Environment variable override — useful when OS keyring is unreliable.
-        // An explicit env token is the user's own intent for the current URL, so
-        // Env tokens are explicit user intent for the current URL.
-        if let Some(token) = crate::env::non_empty(crate::env::DIFFLORE_TOKEN) {
+        // An explicit env token is the user's own intent for the current URL.
+        if let Some(token) = Self::explicit_env_token() {
             return Some(token);
         }
 
@@ -361,7 +460,7 @@ impl CloudClient {
     /// Use from read-only diagnostics / render loops (e.g. the embedder status
     /// probe) where a corrupt token must not spam the terminal.
     pub async fn load_token_quiet() -> Option<String> {
-        if let Some(token) = crate::env::non_empty(crate::env::DIFFLORE_TOKEN) {
+        if let Some(token) = Self::explicit_env_token() {
             return Some(token);
         }
 
@@ -389,7 +488,7 @@ impl CloudClient {
         }
     }
 
-    pub async fn clear_token() -> Result<(), String> {
+    pub async fn clear_token() -> crate::Result<()> {
         Self::delete_auth_key(AUTH_TOKEN_KEY).await?;
         Self::delete_auth_key(AUTH_REFRESH_TOKEN_KEY).await?;
         Self::delete_auth_key(AUTH_HOST_KEY).await
@@ -401,42 +500,30 @@ impl CloudClient {
             .timeout(std::time::Duration::from_secs(15))
             .build()
             .ok()?;
-        let url = format!(
-            "{}/token/refresh",
-            Self::resolve_cloud_url().trim_end_matches('/')
-        );
-        let resp = match client
-            .post(url)
-            .header("content-type", "application/json")
-            .json(&serde_json::json!({
-                "clientId": CLI_CLIENT_ID,
-                "refreshToken": refresh_token,
-            }))
-            .send()
+        let payload = serde_json::json!({
+            "clientId": CLI_CLIENT_ID,
+            "refreshToken": refresh_token,
+        });
+        let refresh_client = TokenRefreshClient {
+            client,
+            base_url: Self::resolve_cloud_url(),
+        };
+        let body_value: serde_json::Value = match api!(POST "/token/refresh", body = &payload)
+            .fetch(&refresh_client)
             .await
         {
-            Ok(resp) => resp,
+            Ok(body) => body,
             Err(e) => {
                 if cloud_debug_enabled() {
-                    eprintln!("[cloud-client] token refresh network error: {e}");
+                    eprintln!(
+                        "[cloud-client] token refresh error: {}",
+                        format_token_refresh_error(e, &refresh_token)
+                    );
                 }
                 return None;
             }
         };
-        let status = resp.status();
-        if !status.is_success() {
-            if cloud_debug_enabled() {
-                let raw = resp.text().await.unwrap_or_default();
-                // The /token/refresh body could echo the refreshToken we sent.
-                let body = scrub_tokens_from_body(&raw, &[Some(refresh_token.as_str())]);
-                eprintln!(
-                    "[cloud-client] token refresh returned {status}: {}",
-                    truncate_for_error(&body, 500)
-                );
-            }
-            return None;
-        }
-        let body = match resp.json::<TokenRefreshResponse>().await {
+        let body = match serde_json::from_value::<TokenRefreshResponse>(body_value) {
             Ok(body) => body,
             Err(e) => {
                 if cloud_debug_enabled() {
@@ -454,24 +541,19 @@ impl CloudClient {
         Some(body.token)
     }
 
-    /// Single source of truth for the auth-refresh-retry dance shared by
-    /// every authenticated request path in this file.
+    /// Shared auth-refresh-retry path for every authenticated request.
     ///
-    /// `build` is invoked to produce the request: with `None` for the
-    /// initial attempt (the caller embeds its own token, which may be
-    /// absent) and with `Some(&refreshed_token)` for the single retry that
-    /// happens iff the first response is `401 Unauthorized` *and*
-    /// `refresh_saved_token()` succeeds. Behaviour is exactly one
-    /// refresh + one retry — no loop — so the security-sensitive 401
-    /// handling lives in one place instead of being copy-pasted across
-    /// `recall_past_verdicts`, `post_fire_and_forget_result`, `get_json`,
-    /// `post_json`, and `ApiClient::request`.
+    /// `build` produces the request: `None` for the initial attempt (the
+    /// caller embeds its own token, which may be absent) and
+    /// `Some(&refreshed_token)` for the single retry that happens iff the
+    /// first response is `401 Unauthorized` *and* `refresh_saved_token()`
+    /// succeeds. Exactly one refresh + one retry, never a loop.
     ///
     /// Errors carry the [`SendPhase`] so callers can distinguish initial
     /// send failures from retry failures.
     async fn send_with_refresh<F>(
         build: F,
-    ) -> Result<reqwest::Response, (SendPhase, reqwest::Error)>
+    ) -> crate::Result<reqwest::Response, (SendPhase, reqwest::Error)>
     where
         F: Fn(Option<&str>) -> reqwest::RequestBuilder,
     {
@@ -499,19 +581,11 @@ impl CloudClient {
     }
 
     /// Call the cloud review-memory endpoint for semantically similar
-    /// past verdicts.
-    ///
-    /// This call is deliberately fault-tolerant:
-    /// * On HTTP 403 (e.g. team-scope recall without the team entitlement,
-    ///   or a capacity/permission limit) — returns `Ok(vec![])` so users
-    ///   proceed with a normal review. Personal review-memory recall is
-    ///   available on Cloud Free; paid plans expand capacity and team scope.
-    /// * On network / decode errors — logs and returns `Ok(vec![])`; a
-    ///   failing recall must NEVER block a review.
-    ///
-    /// The endpoint is hand-wired with `reqwest` rather than routed through
-    /// `openapi_contract::api!` because the request/response types carry
-    /// extra fields and derive traits beyond what the generated code provides.
+    /// past verdicts. Deliberately fault-tolerant — a failing recall must
+    /// NEVER block a review:
+    /// * On HTTP 403 (no team entitlement, or a capacity/permission limit)
+    ///   returns `Ok(vec![])` so the user proceeds with a normal review.
+    /// * On network / decode errors, logs and returns `Ok(vec![])`.
     pub async fn recall_past_verdicts(
         &self,
         req: RecallPastVerdictsRequest,
@@ -520,121 +594,19 @@ impl CloudClient {
             return Ok(Vec::new());
         }
 
-        let url = format!("{}/reviews/recall-past-verdicts", self.base_url);
-        // Past-verdict recall is the one best-effort endpoint that needs its
-        // own transient-failure handling: a 45s timeout plus a short backoff
-        // retry (see `send_recall_past_verdicts`). The shared
-        // `send_with_refresh` helper used by the other endpoints does not
-        // apply a timeout or retry network errors, so this site deliberately
-        // keeps its dedicated send path while still performing the standard
-        // one-shot 401 token-refresh retry below.
-        let mut resp = match self
-            .send_recall_past_verdicts(&url, self.token.as_deref(), &req)
+        let dtos: Vec<PastVerdictDto> = match self
+            .fetch_api_json(
+                api!(POST "/reviews/recall-past-verdicts", body = &req),
+                "recall_past_verdicts",
+            )
             .await
         {
-            Ok(r) => r,
+            Ok(dtos) => dtos,
             Err(e) => {
                 if cloud_debug_enabled() {
                     eprintln!(
-                        "[cloud-client] recall_past_verdicts network error after {} attempts: {e}",
-                        PAST_VERDICT_RETRY_DELAYS_MS.len() + 1
+                        "[difflore] Past-verdict recall unavailable. Continuing with local rules. {e}"
                     );
-                }
-                return Ok(Vec::new());
-            }
-        };
-
-        let mut status = resp.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED
-            && let Some(refreshed_token) = Self::refresh_saved_token().await
-        {
-            match self
-                .send_recall_past_verdicts(&url, Some(&refreshed_token), &req)
-                .await
-            {
-                Ok(r) => {
-                    resp = r;
-                    status = resp.status();
-                }
-                Err(e) => {
-                    if cloud_debug_enabled() {
-                        eprintln!(
-                            "[cloud-client] recall_past_verdicts retry error after token refresh: {e}"
-                        );
-                    }
-                    return Ok(Vec::new());
-                }
-            }
-        }
-        if status == reqwest::StatusCode::FORBIDDEN {
-            // plan_limit_exceeded or missing team feature — graceful no-op.
-            // Surface a single informational line (not an eprintln!'d error)
-            // per process so users understand *why* recall returned empty
-            // without turning every review into a warning spam.
-            static NOTIFIED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-            NOTIFIED.get_or_init(|| {
-                eprintln!(
-                    "[difflore] Past-verdict recall skipped: this request needs more review-memory capacity or team scope. \
-                     Personal Cloud Free recall still works for capped memory; see pricing at {} to expand team-wide recall.",
-                    pricing_url()
-                );
-            });
-            return Ok(Vec::new());
-        }
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            // KNOWN: cloud-side auth-scope gap on /reviews/recall-past-verdicts (see difflore-cloud route authz); fail-safe empty
-            //
-            // The server returns 401 here for valid logged-in team
-            // sessions (notably the background reachability probe from
-            // `ensure_ready`). This is a cloud-side authz scope gap, not
-            // a client bug — recall stays fail-safe (empty) so a review
-            // is never blocked. We no longer SILENTLY swallow it: emit a
-            // diagnostic through the same `cloud_debug_enabled()` gate
-            // every other degraded path in this file uses, deduped once
-            // per process so `doctor`/`plan`/`recall` aren't spammed with
-            // a scary-looking 401.
-            if cloud_debug_enabled() {
-                static NOTIFIED_401: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-                NOTIFIED_401.get_or_init(|| {
-                    eprintln!(
-                        "[difflore] Past-verdict recall unauthorized (401). \
-                         Continuing with local rules. Set DIFFLORE_DEBUG_CLOUD=1 \
-                         for transport details, or run `difflore cloud status` \
-                         to verify your session."
-                    );
-                });
-            }
-            return Ok(Vec::new());
-        }
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            // Gate the verbose, scary-looking error behind debug so unrelated
-            // CLI commands (doctor, plan, etc.) don't spam users with a
-            // probe-failure message that has no bearing on their request.
-            // The first failure per process still surfaces a faded one-liner
-            // so genuine outages remain discoverable.
-            static NOTIFIED_OTHER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-            NOTIFIED_OTHER.get_or_init(|| {
-                if cloud_debug_enabled() {
-                    eprintln!(
-                        "[difflore] Past-verdict recall unavailable ({status}). \
-                         Continuing with local rules. Cloud response: {body}"
-                    );
-                } else {
-                    eprintln!(
-                        "[difflore] Past-verdict recall unavailable ({status}); \
-                         continuing with local rules. Set DIFFLORE_DEBUG_CLOUD=1 for details."
-                    );
-                }
-            });
-            return Ok(Vec::new());
-        }
-
-        let dtos: Vec<PastVerdictDto> = match resp.json().await {
-            Ok(v) => v,
-            Err(e) => {
-                if cloud_debug_enabled() {
-                    eprintln!("[cloud-client] recall_past_verdicts decode error: {e}");
                 }
                 return Ok(Vec::new());
             }
@@ -658,63 +630,17 @@ impl CloudClient {
             .collect())
     }
 
-    fn recall_past_verdicts_request(
-        &self,
-        url: &str,
-        token: Option<&str>,
-    ) -> reqwest::RequestBuilder {
-        let mut builder = self
-            .client
-            .post(url)
-            .timeout(PAST_VERDICT_RECALL_TIMEOUT)
-            .header("content-type", "application/json");
-        if let Some(token) = token {
-            builder = builder.header("Authorization", format!("Bearer {token}"));
-        }
-        builder
-    }
-
-    async fn send_recall_past_verdicts(
-        &self,
-        url: &str,
-        token: Option<&str>,
-        req: &RecallPastVerdictsRequest,
-    ) -> Result<reqwest::Response, reqwest::Error> {
-        // Retry with backoff: one attempt per configured delay, then a final
-        // attempt whose result (Ok or Err) is returned directly — so there is no
-        // stored-then-unwrapped "last error" to reason about.
-        for &delay_ms in PAST_VERDICT_RETRY_DELAYS_MS {
-            match self
-                .recall_past_verdicts_request(url, token)
-                .json(req)
-                .send()
-                .await
-            {
-                Ok(resp) => return Ok(resp),
-                Err(_) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                }
-            }
-        }
-        self.recall_past_verdicts_request(url, token)
-            .json(req)
-            .send()
-            .await
-    }
-
     /// Shared helper for the fire-and-forget POST endpoints below. Returns
-    /// `true` iff the server accepted the payload (2xx). All of our upload
-    /// endpoints are fire-and-forget — transient failure must NOT bubble
-    /// up and kill the review/fix pipeline. Callers that want to know
-    /// success can inspect the bool; most ignore it.
-    async fn post_fire_and_forget<T: serde::Serialize>(
+    /// `true` iff the server accepted the payload (2xx). Transient failure
+    /// must NOT bubble up and kill the review/fix pipeline; most callers
+    /// ignore the bool.
+    async fn post_fire_and_forget<T: serde::de::DeserializeOwned>(
         &self,
-        path: &str,
-        body: &T,
+        request: ApiRequest<T>,
         endpoint_label: &'static str,
     ) -> bool {
         match self
-            .post_fire_and_forget_result(path, body, endpoint_label)
+            .post_fire_and_forget_result(request, endpoint_label)
             .await
         {
             Ok(()) => true,
@@ -727,147 +653,68 @@ impl CloudClient {
         }
     }
 
-    async fn post_fire_and_forget_result<T: serde::Serialize>(
+    async fn post_fire_and_forget_result<T: serde::de::DeserializeOwned>(
         &self,
-        path: &str,
-        body: &T,
+        request: ApiRequest<T>,
         endpoint_label: &'static str,
-    ) -> Result<(), String> {
+    ) -> crate::Result<()> {
         if !self.is_logged_in() {
-            return Err(format!("{endpoint_label} skipped: not logged in"));
+            return Err(crate::CoreError::Auth(format!(
+                "{endpoint_label} skipped: not logged in"
+            )));
         }
 
-        let url = format!("{}{}", self.base_url, path);
-        let resp = Self::send_with_refresh(|refreshed| {
-            let mut builder = self
-                .client
-                .post(&url)
-                .header("content-type", "application/json");
-            match refreshed {
-                Some(token) => {
-                    builder = builder.header("Authorization", format!("Bearer {token}"));
-                }
-                None => {
-                    if let Some(ref token) = self.token {
-                        builder = builder.header("Authorization", format!("Bearer {token}"));
-                    }
-                }
-            }
-            builder.json(body)
-        })
-        .await
-        .map_err(|(phase, e)| match phase {
-            SendPhase::Initial => format!("{endpoint_label} network error: {e}"),
-            SendPhase::Retry => format!("{endpoint_label} retry network error: {e}"),
-        })?;
-
-        let status = resp.status();
-        if status.is_success() {
-            return Ok(());
+        match request.fetch(self).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(crate::CoreError::internal(
+                self.format_api_error(endpoint_label, e).await,
+            )),
         }
-
-        let body = self
-            .scrub_response_body(&resp.text().await.unwrap_or_default())
-            .await;
-        Err(format!(
-            "{endpoint_label} returned {status}: {}",
-            truncate_for_error(&body, 500)
-        ))
     }
 
-    /// Sibling of [`post_fire_and_forget_result`] that surfaces the
-    /// HTTP status + body fragment as structured data so the outbox
-    /// can write a greppable `last_error`.
+    /// Like [`post_fire_and_forget_result`] but surfaces the HTTP status +
+    /// body fragment as structured data so the outbox can write a greppable
+    /// `last_error`.
     ///
-    /// Returns `Ok(())` on 2xx, `Err(OutboxFailure::Http(_))` for
-    /// any non-2xx response (including 401 after the standard
-    /// one-shot refresh+retry has been exhausted), and
-    /// `Err(OutboxFailure::Transport(_))` when the request never
-    /// produced a status — transport / DNS / TLS / timeout.
-    ///
-    /// Intentionally **does not** log anything to stdout/stderr: the
-    /// response body lands only in the returned struct, which the
-    /// caller writes into the local SQLite `last_error` column. The
-    /// fire-and-forget `bool` API stays unchanged for non-outbox callers.
-    async fn post_fire_and_forget_outcome<T: serde::Serialize>(
+    /// Returns `Ok(())` on 2xx, `Err(OutboxFailure::Http(_))` for any
+    /// non-2xx (including 401 after refresh+retry is exhausted), and
+    /// `Err(OutboxFailure::Transport(_))` when the request never produced a
+    /// status. Logs nothing to stdout/stderr — the response body lands only
+    /// in the returned struct.
+    async fn post_fire_and_forget_outcome<T: serde::de::DeserializeOwned>(
         &self,
-        path: &str,
-        body: &T,
+        request: ApiRequest<T>,
         endpoint_label: &'static str,
-    ) -> Result<(), OutboxFailure> {
+    ) -> crate::Result<(), OutboxFailure> {
         if !self.is_logged_in() {
-            // Pre-flight "not logged in" surfaces as a transport-
-            // class failure: there is no HTTP status to attach, and
-            // the remediation ("run `difflore cloud login`") is the
-            // same shape as other unreachable-cloud states.
+            // "Not logged in" is a transport-class failure: no HTTP status
+            // to attach, same remediation shape as other unreachable states.
             return Err(OutboxFailure::Transport(format!(
                 "{endpoint_label} skipped: not logged in"
             )));
         }
 
-        let url = format!("{}{}", self.base_url, path);
-        let resp = Self::send_with_refresh(|refreshed| {
-            let mut builder = self
-                .client
-                .post(&url)
-                .header("content-type", "application/json");
-            match refreshed {
-                Some(token) => {
-                    builder = builder.header("Authorization", format!("Bearer {token}"));
-                }
-                None => {
-                    if let Some(ref token) = self.token {
-                        builder = builder.header("Authorization", format!("Bearer {token}"));
-                    }
-                }
-            }
-            builder.json(body)
-        })
-        .await
-        .map_err(|(phase, e)| {
-            let label = match phase {
-                SendPhase::Initial => "initial",
-                SendPhase::Retry => "retry",
-            };
-            OutboxFailure::Transport(format!("{endpoint_label} {label}: {e}"))
-        })?;
-
-        let status = resp.status();
-        if status.is_success() {
-            return Ok(());
+        match request.fetch(self).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(self.outbox_failure_from_api_error(endpoint_label, e).await),
         }
-
-        let status_code = status.as_u16();
-        // `canonical_reason()` is None only for unassigned status
-        // numbers; fall back to the numeric form so `last_error` is
-        // never an empty phrase.
-        let reason_phrase = status
-            .canonical_reason()
-            .map_or_else(|| status_code.to_string(), str::to_owned);
-        let body_text = self
-            .scrub_response_body(&resp.text().await.unwrap_or_default())
-            .await;
-        let body_snippet = normalize_body_snippet(&body_text, 200);
-        Err(OutboxFailure::Http(HttpFailure {
-            status: status_code,
-            reason_phrase,
-            body_snippet,
-        }))
     }
 
-    /// Outbox-friendly wrapper around [`save_trajectory`]: same
-    /// payload + endpoint, but returns the rich [`OutboxFailure`]
+    /// Outbox-friendly [`save_trajectory`]: returns [`OutboxFailure`]
     /// instead of a `bool` so the queue's `last_error` can carry the
     /// upstream status + body fragment.
     pub(crate) async fn save_trajectory_outcome(
         &self,
         pr_review_id: &str,
         steps: serde_json::Value,
-    ) -> Result<(), OutboxFailure> {
+    ) -> crate::Result<(), OutboxFailure> {
         let req = SaveTrajectoryRequest { steps };
-        let path = format!("/reviews/{}/trajectory", escape_path_id(pr_review_id));
-        self.post_fire_and_forget_outcome(&path, &req, "save_trajectory")
-            .await
+        let pr_review_id = escape_path_id(pr_review_id);
+        self.post_fire_and_forget_outcome(
+            api!(POST "/reviews/{prReviewId}/trajectory", prReviewId = &pr_review_id, body = &req),
+            "save_trajectory",
+        )
+        .await
     }
 
     /// Outbox-friendly wrapper around [`record_review_metrics`].
@@ -875,10 +722,13 @@ impl CloudClient {
         &self,
         review_id: &str,
         req: RecordReviewMetricsRequest,
-    ) -> Result<(), OutboxFailure> {
-        let path = format!("/reviews/{}/metrics", escape_path_id(review_id));
-        self.post_fire_and_forget_outcome(&path, &req, "record_review_metrics")
-            .await
+    ) -> crate::Result<(), OutboxFailure> {
+        let review_id = escape_path_id(review_id);
+        self.post_fire_and_forget_outcome(
+            api!(POST "/reviews/{id}/metrics", id = &review_id, body = &req),
+            "record_review_metrics",
+        )
+        .await
     }
 
     /// Outbox-friendly wrapper around [`track_mcp_query`].
@@ -893,207 +743,159 @@ impl CloudClient {
         rule_ids: Vec<String>,
         client_label: Option<&str>,
         repo_full_name: Option<&str>,
-    ) -> Result<(), OutboxFailure> {
+    ) -> crate::Result<(), OutboxFailure> {
         let titles: Vec<String> = rule_titles.into_iter().take(10).collect();
         let ids: Vec<String> = rule_ids.into_iter().take(10).collect();
-        let body = serde_json::json!({
-            "file": file,
-            "intent": intent,
-            "rulesInjected": rules_injected,
-            "strictMatchCount": strict_match_count,
-            "ruleTitles": titles,
-            "ruleIds": ids,
-            "client": client_label.unwrap_or("mcp-server"),
-            "repoFullName": repo_full_name,
-        });
-        self.post_fire_and_forget_outcome("/dashboard/mcp-query", &body, "track_mcp_query")
-            .await
+        let body = mcp_query_body(
+            file,
+            intent,
+            rules_injected,
+            strict_match_count,
+            &titles,
+            &ids,
+            client_label,
+            repo_full_name,
+        );
+        self.post_fire_and_forget_outcome(
+            api!(POST "/dashboard/mcp-query", body = &body),
+            "track_mcp_query",
+        )
+        .await
     }
 
     /// Outbox-friendly wrapper around [`upload_imported_reviews`].
     pub(crate) async fn upload_imported_reviews_outcome(
         &self,
         req: &UploadImportedReviewsRequest,
-    ) -> Result<(), OutboxFailure> {
-        self.post_fire_and_forget_outcome("/reviews/import", req, "upload_imported_reviews")
-            .await
+    ) -> crate::Result<(), OutboxFailure> {
+        self.post_fire_and_forget_outcome(
+            api!(POST "/reviews/import", body = req),
+            "upload_imported_reviews",
+        )
+        .await
     }
 
     /// Outbox-friendly wrapper around [`post_observations`].
     pub(crate) async fn post_observations_outcome(
         &self,
-        batch: &[super::api_types::Observation],
-    ) -> Result<(), OutboxFailure> {
-        self.post_fire_and_forget_outcome("/cloud/observations", &batch, "post_observations")
-            .await
+        batch: &[crate::contract::Observation],
+    ) -> crate::Result<(), OutboxFailure> {
+        self.post_fire_and_forget_outcome(
+            api!(POST "/cloud/observations", body = &batch),
+            "post_observations",
+        )
+        .await
     }
 
-    /// POST `/reviews/{id}/metrics`.
-    ///
-    /// Uploads token usage + estimated cost + wall-clock duration for a
-    /// single review run. All fields on the request are optional; pass
-    /// `None` for anything the engine doesn't have and the server leaves
-    /// that column alone.
-    ///
-    /// This is fire-and-forget — a failed metrics upload must NEVER block
-    /// a review. Returns `true` on 2xx so unit tests can assert the happy
-    /// path, but every production caller should ignore the bool.
+    /// Outbox-friendly wrapper for locally mined candidate rules.
+    pub(crate) async fn post_session_mined_candidate_outcome(
+        &self,
+        candidate: &crate::cloud::session_mined::SessionMinedCandidate,
+    ) -> crate::Result<(), OutboxFailure> {
+        let batch = std::slice::from_ref(candidate);
+        self.post_fire_and_forget_outcome(
+            api!(POST "/cloud/session-mined-candidates", body = &batch),
+            "post_session_mined_candidate",
+        )
+        .await
+    }
+
+    /// POST `/reviews/{id}/metrics`: upload token usage + estimated cost +
+    /// duration for one review run. All request fields are optional (`None`
+    /// leaves that column alone). Fire-and-forget — a failed upload must
+    /// NEVER block a review; production callers ignore the bool.
     pub async fn record_review_metrics(
         &self,
         review_id: &str,
         req: RecordReviewMetricsRequest,
     ) -> bool {
-        let path = format!("/reviews/{}/metrics", escape_path_id(review_id));
-        self.post_fire_and_forget(&path, &req, "record_review_metrics")
-            .await
+        let review_id = escape_path_id(review_id);
+        self.post_fire_and_forget(
+            api!(POST "/reviews/{id}/metrics", id = &review_id, body = &req),
+            "record_review_metrics",
+        )
+        .await
     }
 
-    /// POST `/reviews/{prReviewId}/trajectory`.
-    ///
-    /// Takes the serialized output of `TrajectoryBuilder::into_json()` and
-    /// hands it to the cloud side, which parses it with a Zod discriminated
-    /// union that mirrors the Rust enum in `review_trajectory.rs` exactly.
-    /// Fire-and-forget — a missing trajectory is never a review blocker.
+    /// POST `/reviews/{prReviewId}/trajectory`: send the serialized output
+    /// of `TrajectoryBuilder::into_json()`. Fire-and-forget — a missing
+    /// trajectory is never a review blocker.
     pub async fn save_trajectory(&self, pr_review_id: &str, steps: serde_json::Value) -> bool {
         let req = SaveTrajectoryRequest { steps };
-        let path = format!("/reviews/{}/trajectory", escape_path_id(pr_review_id));
-        self.post_fire_and_forget(&path, &req, "save_trajectory")
-            .await
+        let pr_review_id = escape_path_id(pr_review_id);
+        self.post_fire_and_forget(
+            api!(POST "/reviews/{prReviewId}/trajectory", prReviewId = &pr_review_id, body = &req),
+            "save_trajectory",
+        )
+        .await
     }
 
-    /// GET `/reviews/{prReviewId}/trajectory` for the
-    /// `difflore trajectory <review-id>` CLI renderer.
-    ///
-    /// Sibling of [`save_trajectory`]: it fetches the recorded decision
-    /// trail for one review and decodes it back into the canonical
-    /// [`crate::review_trajectory::TrajectoryStep`] enum. Unlike the recall
-    /// path this is **not** fail-safe-to-empty — the caller (an explicit,
-    /// user-invoked `trajectory` command) wants to know *why* a fetch
-    /// failed (not logged in, plan-gated, review not found, network down)
-    /// so it can print an actionable message. We therefore surface the
-    /// underlying error string from [`get_json`] verbatim:
+    /// GET `/reviews/{prReviewId}/trajectory` for the `difflore trajectory`
+    /// renderer. Unlike recall this is **not** fail-safe-to-empty — the
+    /// caller wants to know *why* a fetch failed, so the typed OpenAPI
+    /// request error string is surfaced verbatim:
     ///
     /// * `"not_logged_in"` when no cloud token is present, and
-    /// * `"[get_trajectory] returned 4xx: …"` for plan-limit / not-found /
-    ///   other HTTP failures.
+    /// * `"[get_trajectory] returned 4xx: …"` for HTTP failures.
     ///
-    /// The cloud returns a zero-UUID placeholder with `steps: []` (not a
-    /// 404) when a review exists but has no persisted trajectory, so an
-    /// `Ok` with an empty `steps` vec is the "nothing recorded yet" signal
-    /// the renderer handles gracefully.
-    pub async fn get_trajectory(
-        &self,
-        pr_review_id: &str,
-    ) -> Result<GetTrajectoryResponse, String> {
-        let path = format!("/reviews/{}/trajectory", escape_path_id(pr_review_id));
-        self.get_json(&path, "get_trajectory").await
-    }
-
-    /// POST `/dashboard/mcp-query` — live agent-activity telemetry.
-    ///
-    /// Called every time the MCP server answers a canonical rule-search tool
-    /// invocation. The cloud side appends a row to `metric_events` and the
-    /// dashboard's "Recent agent activity" card polls for new entries. Fire-
-    /// and-forget — a missing telemetry hit must never block the MCP response
-    /// (agents time out on slow MCP tools).
-    ///
-    /// Kept flat to avoid churn in the outbox payload schema and callers.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn track_mcp_query(
-        &self,
-        file: &str,
-        intent: Option<&str>,
-        rules_injected: usize,
-        strict_match_count: usize,
-        rule_titles: Vec<String>,
-        rule_ids: Vec<String>,
-        client_label: Option<&str>,
-        repo_full_name: Option<&str>,
-    ) -> bool {
-        // Keep the payload small: cap titles/ids at 10 (server rejects >10).
-        let titles: Vec<String> = rule_titles.into_iter().take(10).collect();
-        let ids: Vec<String> = rule_ids.into_iter().take(10).collect();
-        let body = serde_json::json!({
-            "file": file,
-            "intent": intent,
-            "rulesInjected": rules_injected,
-            "strictMatchCount": strict_match_count,
-            "ruleTitles": titles,
-            "ruleIds": ids,
-            "client": client_label.unwrap_or("mcp-server"),
-            "repoFullName": repo_full_name,
-        });
-        self.post_fire_and_forget("/dashboard/mcp-query", &body, "track_mcp_query")
-            .await
-    }
-
-    /// POST `/accepted-edits`.
-    ///
-    /// Called when the user locally accepts an edit (IDE / CLI). The cloud
-    /// side inserts a `fix_acceptances` row which the `rule-promoter`
-    /// worker later aggregates into candidate rules. Fire-and-forget: a
-    /// failed acceptance POST must never block the local accept UX.
-    pub async fn record_accepted_edit(&self, req: RecordAcceptedEditRequest) -> bool {
-        self.record_accepted_edit_response(req).await.map_or_else(
-            |e| {
-                if cloud_debug_enabled() {
-                    eprintln!("[cloud-client] {e}");
-                }
-                false
-            },
-            |response| response.acceptance_recorded,
+    /// A review with no persisted trajectory comes back as a zero-UUID
+    /// placeholder with `steps: []` (not a 404), so an empty `steps` vec is
+    /// the "nothing recorded yet" signal.
+    pub async fn get_trajectory(&self, pr_review_id: &str) -> crate::Result<GetTrajectoryResponse> {
+        let pr_review_id = escape_path_id(pr_review_id);
+        self.fetch_logged_in_api_json(
+            api!(GET "/reviews/{prReviewId}/trajectory", prReviewId = &pr_review_id),
+            "get_trajectory",
         )
+        .await
     }
 
-    /// POST `/accepted-edits` and return the cloud attribution details.
-    ///
-    /// The response tells the CLI whether the raw accepted edit was also
-    /// linked to a team-scoped `fix_outcome` observation. That distinction
-    /// matters for Impact evidence: raw accepted rows prove usage, but
-    /// rule-linked observations prove the live fix path reused review memory.
+    /// POST `/accepted-edits` and return the cloud attribution details:
+    /// whether the accepted edit was also linked to a team-scoped
+    /// `fix_outcome` observation. That distinction matters for Impact
+    /// evidence — rule-linked observations prove the fix path reused memory.
     pub async fn record_accepted_edit_response(
         &self,
         req: RecordAcceptedEditRequest,
-    ) -> Result<RecordAcceptedEditResponse, String> {
-        self.post_json("/accepted-edits", &req, "record_accepted_edit")
-            .await
+    ) -> crate::Result<RecordAcceptedEditResponse> {
+        self.fetch_logged_in_api_json(
+            api!(POST "/accepted-edits", body = &req),
+            "record_accepted_edit",
+        )
+        .await
     }
 
-    /// POST `/reviews/import` — GitHub PR History Import.
-    ///
-    /// Uploads locally-imported PR review comments to the cloud for
-    /// team-wide recall and analytics. Fire-and-forget — a failed upload
-    /// must never block the local import pipeline.
+    /// POST `/reviews/import`: upload locally-imported PR review comments
+    /// for team-wide recall and analytics. Fire-and-forget — must never
+    /// block the local import pipeline.
     pub async fn upload_imported_reviews(&self, req: &UploadImportedReviewsRequest) -> bool {
-        self.post_fire_and_forget("/reviews/import", req, "upload_imported_reviews")
-            .await
+        self.post_fire_and_forget(
+            api!(POST "/reviews/import", body = req),
+            "upload_imported_reviews",
+        )
+        .await
     }
 
-    pub async fn post_observations(&self, batch: &[super::api_types::Observation]) -> bool {
-        self.post_fire_and_forget("/cloud/observations", &batch, "post_observations")
-            .await
-    }
-
-    pub async fn post_observation_events(
+    /// POST `/cloud/observations` for a batch of observation events, surfacing
+    /// the HTTP status + body fragment as a structured [`OutboxFailure`] so the
+    /// observation emitter can classify the failure (permanent vs. transient
+    /// vs. rate limited) and decide how to reschedule instead of blindly
+    /// abandoning.
+    pub(crate) async fn post_observation_events_outcome(
         &self,
         batch: &[super::observations::ObservationEvent],
-    ) -> bool {
-        self.post_fire_and_forget("/cloud/observations", &batch, "post_observation_events")
-            .await
-    }
-
-    pub async fn post_observation_events_result(
-        &self,
-        batch: &[super::observations::ObservationEvent],
-    ) -> Result<(), String> {
-        self.post_fire_and_forget_result("/cloud/observations", &batch, "post_observation_events")
-            .await
+    ) -> crate::Result<(), OutboxFailure> {
+        self.post_fire_and_forget_outcome(
+            api!(POST "/cloud/observations", body = &batch),
+            "post_observation_events",
+        )
+        .await
     }
 
     /// Scrub the construction-time bearer, the current saved bearer (possibly
-    /// refreshed mid-call), AND the refresh token from a response body before
+    /// refreshed mid-call), and the refresh token from a response body before
     /// it is surfaced in an error. Async because it reads the latest saved
-    /// tokens — only hit on rare non-2xx error paths.
+    /// tokens; only hit on rare non-2xx error paths.
     async fn scrub_response_body(&self, body: &str) -> String {
         let saved = Self::load_token_quiet().await;
         let refresh = Self::load_refresh_token().await;
@@ -1103,165 +905,127 @@ impl CloudClient {
         )
     }
 
-    async fn get_json<T: serde::de::DeserializeOwned>(
-        &self,
-        path: &str,
-        label: &'static str,
-    ) -> Result<T, String> {
-        if !self.is_logged_in() {
-            return Err("not_logged_in".to_owned());
-        }
-        let url = format!("{}{}", self.base_url, path);
-        let resp = Self::send_with_refresh(|refreshed| {
-            let mut builder = self.client.get(&url);
-            match refreshed {
-                Some(token) => {
-                    builder = builder.header("Authorization", format!("Bearer {token}"));
-                }
-                None => {
-                    if let Some(ref token) = self.token {
-                        builder = builder.header("Authorization", format!("Bearer {token}"));
-                    }
-                }
+    async fn format_api_error(&self, label: &'static str, error: ApiError) -> String {
+        match error {
+            ApiError::Http(e) => format!("{label} network error: {e}"),
+            ApiError::Serialization(e) => format!("{label} decode error: {e}"),
+            ApiError::Api { status, message } => {
+                let body = self.scrub_response_body(&message).await;
+                format_structured_api_error(label, status, &truncate_for_error(&body, 500))
             }
-            builder
-        })
-        .await
-        .map_err(|(phase, e)| match phase {
-            SendPhase::Initial => format!("[{label}] network error: {e}"),
-            SendPhase::Retry => format!("[{label}] retry network error: {e}"),
-        })?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = self
-                .scrub_response_body(&resp.text().await.unwrap_or_default())
-                .await;
-            return Err(format!(
-                "[{label}] returned {status}: {}",
-                truncate_for_error(&body, 500)
-            ));
-        }
-        resp.json::<T>()
-            .await
-            .map_err(|e| format!("[{label}] decode error: {e}"))
-    }
-
-    /// POST helper that, unlike `post_fire_and_forget`, returns the
-    /// decoded body. Used by interactive endpoints (knowledge corpora,
-    /// future synchronous CLI flows) where the user wants the answer,
-    /// not just success/failure.
-    async fn post_json<B: serde::Serialize, R: serde::de::DeserializeOwned>(
-        &self,
-        path: &str,
-        body: &B,
-        label: &'static str,
-    ) -> Result<R, String> {
-        if !self.is_logged_in() {
-            return Err("not_logged_in".to_owned());
-        }
-        let url = format!("{}{}", self.base_url, path);
-        let resp = Self::send_with_refresh(|refreshed| {
-            let mut builder = self
-                .client
-                .post(&url)
-                .header("content-type", "application/json");
-            match refreshed {
-                Some(token) => {
-                    builder = builder.header("Authorization", format!("Bearer {token}"));
-                }
-                None => {
-                    if let Some(ref token) = self.token {
-                        builder = builder.header("Authorization", format!("Bearer {token}"));
-                    }
-                }
+            ApiError::Defined {
+                status,
+                code,
+                message,
+            } => {
+                let body = self
+                    .scrub_response_body(&format!("{code}: {message}"))
+                    .await;
+                format_structured_api_error(label, status, &truncate_for_error(&body, 500))
             }
-            builder.json(body)
-        })
-        .await
-        .map_err(|(phase, e)| match phase {
-            SendPhase::Initial => format!("[{label}] network error: {e}"),
-            SendPhase::Retry => format!("[{label}] retry network error: {e}"),
-        })?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = self
-                .scrub_response_body(&resp.text().await.unwrap_or_default())
-                .await;
-            return Err(format!(
-                "[{label}] returned {status}: {}",
-                truncate_for_error(&body, 500)
-            ));
         }
-        resp.json::<R>()
-            .await
-            .map_err(|e| format!("[{label}] decode error: {e}"))
     }
 
-    /// POST `/knowledge/corpus` — build a filtered snapshot of rules +
-    /// extractions into a new corpus. Cloud spec §3.16.
-    pub async fn build_corpus(
+    async fn outbox_failure_from_api_error(
         &self,
-        req: &super::api_types::BuildCorpusRequest,
-    ) -> Result<super::api_types::BuildCorpusResult, String> {
-        self.post_json("/knowledge/corpus", req, "build_corpus")
-            .await
+        label: &'static str,
+        error: ApiError,
+    ) -> OutboxFailure {
+        match error {
+            ApiError::Http(e) => OutboxFailure::Transport(format!("{label}: {e}")),
+            ApiError::Serialization(e) => OutboxFailure::Transport(format!("{label}: {e}")),
+            ApiError::Api { status, message } => self.outbox_http_failure(status, &message).await,
+            ApiError::Defined {
+                status,
+                code,
+                message,
+            } => {
+                self.outbox_http_failure(status, &format!("{code}: {message}"))
+                    .await
+            }
+        }
     }
 
-    /// POST `/knowledge/corpus/{id}/prime` — allocate a session token
-    /// and mark the corpus primed. Returns the session token + ISO ts.
-    pub async fn prime_corpus(
-        &self,
-        corpus_id: &str,
-    ) -> Result<super::api_types::PrimeCorpusResult, String> {
-        let path = format!("/knowledge/corpus/{corpus_id}/prime");
-        self.post_json(&path, &serde_json::json!({}), "prime_corpus")
-            .await
+    async fn outbox_http_failure(&self, status: u16, body: &str) -> OutboxFailure {
+        let reason_phrase = reqwest::StatusCode::from_u16(status)
+            .ok()
+            .and_then(|status| status.canonical_reason().map(str::to_owned))
+            .unwrap_or_else(|| status.to_string());
+        let body_text = self.scrub_response_body(body).await;
+        let body_snippet = normalize_body_snippet(&body_text, 200);
+        OutboxFailure::Http(HttpFailure {
+            status,
+            reason_phrase,
+            body_snippet,
+        })
     }
 
-    /// POST `/knowledge/corpus/{id}/query` — ask the corpus a question.
-    /// Returns answer + citations. Errors `LlmNotConfigured` if the
-    /// caller has no `llmApiKey` configured cloud-side (BYOK gate).
-    pub async fn query_corpus(
+    pub(crate) async fn fetch_api_json<T, R>(
         &self,
-        corpus_id: &str,
-        question: &str,
-    ) -> Result<super::api_types::QueryCorpusResult, String> {
-        let path = format!("/knowledge/corpus/{corpus_id}/query");
-        let body = super::api_types::QueryCorpusRequest {
-            question: question.to_owned(),
+        request: ApiRequest<T>,
+        label: &'static str,
+    ) -> crate::Result<R>
+    where
+        T: serde::de::DeserializeOwned + serde::Serialize,
+        R: serde::de::DeserializeOwned,
+    {
+        let response = match request.fetch(self).await {
+            Ok(response) => response,
+            Err(e) => {
+                return Err(crate::CoreError::internal(
+                    self.format_api_error(label, e).await,
+                ));
+            }
         };
-        self.post_json(&path, &body, "query_corpus").await
+        let value = serde_json::to_value(response).map_err(|e| {
+            crate::CoreError::internal(format!("[{label}] encode generated response error: {e}"))
+        })?;
+        serde_json::from_value::<R>(value)
+            .map_err(|e| crate::CoreError::internal(format!("[{label}] decode error: {e}")))
     }
 
-    /// GET `/knowledge/corpora` — list this team's corpora with item
-    /// counts and prime/query timestamps.
-    pub async fn list_corpora(&self) -> Result<Vec<super::api_types::CorpusSummary>, String> {
-        self.get_json("/knowledge/corpora", "list_corpora").await
+    async fn fetch_logged_in_api_json<T, R>(
+        &self,
+        request: ApiRequest<T>,
+        label: &'static str,
+    ) -> crate::Result<R>
+    where
+        T: serde::de::DeserializeOwned + serde::Serialize,
+        R: serde::de::DeserializeOwned,
+    {
+        if !self.is_logged_in() {
+            return Err(crate::CoreError::Auth("not_logged_in".to_owned()));
+        }
+        self.fetch_api_json(request, label).await
     }
 
     /// GET `/impact/banner` — past verdicts recalled into reviews this week.
-    pub async fn get_impact_banner(&self) -> Result<ImpactBannerDto, String> {
-        self.get_json("/impact/banner", "impact_banner").await
+    pub async fn get_impact_banner(&self) -> crate::Result<ImpactBannerDto> {
+        self.fetch_logged_in_api_json(api!(GET "/impact/banner"), "impact_banner")
+            .await
     }
 
     /// GET `/impact/weekly` — last 12 weeks of rules / verdicts / fixes.
-    pub async fn get_impact_weekly(&self) -> Result<ImpactWeeklyDto, String> {
-        self.get_json("/impact/weekly", "impact_weekly").await
+    pub async fn get_impact_weekly(&self) -> crate::Result<ImpactWeeklyDto> {
+        self.fetch_logged_in_api_json(api!(GET "/impact/weekly"), "impact_weekly")
+            .await
     }
 
     /// GET `/impact/top-rules` — top 5 candidate rules across user's teams.
-    pub async fn get_impact_top_rules(&self) -> Result<ImpactTopRulesDto, String> {
-        self.get_json("/impact/top-rules", "impact_top_rules").await
+    pub async fn get_impact_top_rules(&self) -> crate::Result<ImpactTopRulesDto> {
+        self.fetch_logged_in_api_json(api!(GET "/impact/top-rules"), "impact_top_rules")
+            .await
     }
 
     /// GET `/impact/coverage` — repos / PRs / files covered by extractions.
-    pub async fn get_impact_coverage(&self) -> Result<ImpactCoverageDto, String> {
-        self.get_json("/impact/coverage", "impact_coverage").await
+    pub async fn get_impact_coverage(&self) -> crate::Result<ImpactCoverageDto> {
+        self.fetch_logged_in_api_json(api!(GET "/impact/coverage"), "impact_coverage")
+            .await
     }
 
     /// GET `/impact/fix-scorecard` — last 30d fix acceptance rate + trend.
-    pub async fn get_impact_fix_scorecard(&self) -> Result<ImpactFixScorecardDto, String> {
-        self.get_json("/impact/fix-scorecard", "impact_fix_scorecard")
+    pub async fn get_impact_fix_scorecard(&self) -> crate::Result<ImpactFixScorecardDto> {
+        self.fetch_logged_in_api_json(api!(GET "/impact/fix-scorecard"), "impact_fix_scorecard")
             .await
     }
 }
@@ -1274,11 +1038,7 @@ impl ApiClient for CloudClient {
         query: Option<&str>,
         body: Option<String>,
     ) -> impl Future<Output = Result<reqwest::Response, ApiError>> + Send {
-        let mut url = format!("{}{}", self.base_url, path);
-        if let Some(qs) = query {
-            url.push('?');
-            url.push_str(qs);
-        }
+        let url = build_api_url(&self.base_url, path, query);
         let reqwest_method = method.as_reqwest();
         let client = self.client.clone();
         let token = self.token.clone();
@@ -1315,17 +1075,27 @@ impl ApiClient for CloudClient {
         path: &str,
         query: Option<&str>,
     ) -> impl Future<Output = Result<SseStream, ApiError>> + Send {
-        let mut url = format!("{}{}", self.base_url, path);
-        if let Some(qs) = query {
-            url.push('?');
-            url.push_str(qs);
-        }
-        let mut req = self.client.request(method.as_reqwest(), &url);
-        if let Some(ref token) = self.token {
-            req = req.header("Authorization", format!("Bearer {token}"));
-        }
+        let url = build_api_url(&self.base_url, path, query);
+        let reqwest_method = method.as_reqwest();
+        let client = self.client.clone();
+        let token = self.token.clone();
         async move {
-            let resp = req.send().await.map_err(ApiError::from)?;
+            let resp = Self::send_with_refresh(|refreshed| {
+                let mut req = client.request(reqwest_method.clone(), &url);
+                match refreshed {
+                    Some(refreshed_token) => {
+                        req = req.header("Authorization", format!("Bearer {refreshed_token}"));
+                    }
+                    None => {
+                        if let Some(ref token) = token {
+                            req = req.header("Authorization", format!("Bearer {token}"));
+                        }
+                    }
+                }
+                req
+            })
+            .await
+            .map_err(|(_phase, e)| ApiError::from(e))?;
             let stream = resp.bytes_stream();
             Ok(SseStream::new(Box::pin(stream)))
         }
@@ -1334,7 +1104,39 @@ impl ApiClient for CloudClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{CloudClient, scrub_tokens_from_body};
+    use super::{
+        CloudClient, escape_path_id, format_structured_api_error, mcp_query_body,
+        scrub_tokens_from_body,
+    };
+
+    #[test]
+    fn explicit_env_token_uses_cloud_token_name() {
+        let mut keys = Vec::new();
+        let token = CloudClient::resolve_explicit_env_token(|key| {
+            keys.push(key.to_owned());
+            if key == crate::infra::env::DIFFLORE_CLOUD_TOKEN {
+                Some(" cloud-token ".to_owned())
+            } else {
+                None
+            }
+        });
+
+        assert_eq!(token.as_deref(), Some("cloud-token"));
+        assert_eq!(keys, vec![crate::infra::env::DIFFLORE_CLOUD_TOKEN]);
+    }
+
+    #[test]
+    fn explicit_env_token_ignores_empty_cloud_token() {
+        let token = CloudClient::resolve_explicit_env_token(|key| {
+            if key == crate::infra::env::DIFFLORE_CLOUD_TOKEN {
+                Some(" ".to_owned())
+            } else {
+                None
+            }
+        });
+
+        assert_eq!(token, None);
+    }
 
     #[test]
     fn scrub_tokens_redacts_every_known_token_over_8_chars() {
@@ -1361,9 +1163,206 @@ mod tests {
         assert!(scrubbed.contains("short=abc"));
     }
 
+    #[test]
+    fn escape_path_id_percent_encodes_path_segment_reserved_bytes() {
+        assert_eq!(escape_path_id("abc-._~XYZ09"), "abc-._~XYZ09");
+        assert_eq!(
+            escape_path_id("a/b c?x#%:\u{2603}"),
+            "a%2Fb%20c%3Fx%23%25%3A%E2%98%83"
+        );
+    }
+
+    #[test]
+    fn structured_api_error_formats_by_status_before_string_matching() {
+        let unauthorized = format_structured_api_error("rules_sync", 401, "token revoked");
+        assert!(unauthorized.contains("session expired"));
+        assert!(unauthorized.contains("returned 401: token revoked"));
+
+        let app_code = format_structured_api_error("rules_sync", 400, "API error 50001");
+        assert_eq!(app_code, "rules_sync returned 400: API error 50001");
+    }
+
+    #[test]
+    fn cloud_client_openapi_paths_are_not_sent_as_raw_strings() {
+        let source = include_str!("client.rs");
+        let forbidden = [
+            (
+                "direct ApiClient::request with a Method path",
+                concat!("request", "(Method::"),
+            ),
+            (
+                "raw fire-and-forget path",
+                concat!("post_fire_and_forget", "(\"/"),
+            ),
+            ("legacy GET helper", concat!("get_", "json(")),
+            ("legacy POST helper", concat!("post_", "json(")),
+            (
+                "raw reviews path formatting",
+                concat!("format!", "(\"/reviews"),
+            ),
+            (
+                "raw knowledge path formatting",
+                concat!("format!", "(\"/knowledge"),
+            ),
+            ("raw cloud path formatting", concat!("format!", "(\"/cloud")),
+            (
+                "raw dashboard path formatting",
+                concat!("format!", "(\"/dashboard"),
+            ),
+        ];
+
+        for (label, pattern) in forbidden {
+            assert!(
+                !source.contains(pattern),
+                "{label} bypasses openapi_contract::api!: {pattern}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_mined_candidate_upload_uses_cloud_batch_contract() {
+        let source = include_str!("client.rs");
+        let bare_object_call = concat!(
+            r#"api!(POST "/cloud/session-mined-candidates", body = "#,
+            "candidate)"
+        );
+        assert!(
+            source.contains("let batch = std::slice::from_ref(candidate);"),
+            "session-mined uploads must wrap the single outbox item in the cloud batch payload"
+        );
+        assert!(
+            source.contains(r#"api!(POST "/cloud/session-mined-candidates", body = &batch)"#),
+            "session-mined cloud endpoint accepts an array batch, not a bare candidate object"
+        );
+        assert!(
+            !source.contains(bare_object_call),
+            "a bare candidate object is rejected by the cloud schema as invalid_batch"
+        );
+    }
+
+    #[test]
+    fn mcp_query_body_omits_missing_repo_full_name() {
+        let body = mcp_query_body(
+            "unknown",
+            Some("self-check"),
+            0,
+            0,
+            &[],
+            &[],
+            Some("mcp-server-search"),
+            None,
+        );
+
+        assert_eq!(body["client"], "mcp-server-search");
+        assert!(
+            body.as_object()
+                .is_some_and(|obj| !obj.contains_key("repoFullName")),
+            "cloud schema accepts omitted repoFullName but rejects null"
+        );
+    }
+
+    #[test]
+    fn mcp_query_body_keeps_present_repo_full_name() {
+        let body = mcp_query_body(
+            "src/lib.rs",
+            None,
+            1,
+            1,
+            &["Use typed routes".to_owned()],
+            &["rule-1".to_owned()],
+            None,
+            Some(" Acme/Widgets "),
+        );
+
+        assert_eq!(body["client"], "mcp-server");
+        assert_eq!(body["repoFullName"], "Acme/Widgets");
+    }
+
+    #[test]
+    fn cloud_openapi_call_sites_use_contract_macro() {
+        fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("read source directory") {
+                let path = entry.expect("read source directory entry").path();
+                if path.is_dir() {
+                    collect_rs_files(&path, out);
+                } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let mut files = Vec::new();
+        collect_rs_files(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+
+        let forbidden = [
+            (
+                "direct ApiClient::request with a Method path",
+                concat!("request", "(Method::"),
+            ),
+            (
+                "raw fire-and-forget path",
+                concat!("post_fire_and_forget", "(\"/"),
+            ),
+            (
+                "raw fire-and-forget result path",
+                concat!("post_fire_and_forget_result", "(\"/"),
+            ),
+            (
+                "raw fire-and-forget outcome path",
+                concat!("post_fire_and_forget_outcome", "(\"/"),
+            ),
+            ("legacy GET helper", concat!("get_", "json(")),
+            ("legacy POST helper", concat!("post_", "json(")),
+            (
+                "raw reviews path formatting",
+                concat!("format!", "(\"/reviews"),
+            ),
+            (
+                "raw knowledge path formatting",
+                concat!("format!", "(\"/knowledge"),
+            ),
+            (
+                "raw impact path formatting",
+                concat!("format!", "(\"/impact"),
+            ),
+            ("raw cloud path formatting", concat!("format!", "(\"/cloud")),
+            (
+                "raw dashboard path formatting",
+                concat!("format!", "(\"/dashboard"),
+            ),
+            ("raw rules path formatting", concat!("format!", "(\"/rules")),
+            ("raw sync path formatting", concat!("format!", "(\"/sync")),
+            ("raw auth path formatting", concat!("format!", "(\"/auth")),
+            (
+                "raw billing path formatting",
+                concat!("format!", "(\"/billing"),
+            ),
+            ("raw teams path formatting", concat!("format!", "(\"/teams")),
+            ("raw token path formatting", concat!("format!", "(\"/token")),
+        ];
+
+        let mut failures = Vec::new();
+        for file in files {
+            let source = std::fs::read_to_string(&file).expect("read Rust source");
+            for (label, pattern) in forbidden {
+                if source.contains(pattern) {
+                    failures.push(format!("{}: {label}: {pattern}", file.display()));
+                }
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "OpenAPI-covered cloud calls must go through openapi_contract::api!: {failures:#?}"
+        );
+    }
+
     #[tokio::test]
     async fn auth_pool_public_reopens_same_token_store() {
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let pool = CloudClient::auth_pool_public()
             .await
             .expect("auth pool opens");

@@ -34,9 +34,9 @@ pub(super) fn repo_relative_path(repo_root: &Path, candidate: &str) -> Result<Pa
     let joined = repo_root.join(candidate);
     // Symlink-escape guard (best effort; only when the path already resolves).
     if let Ok(canon) = joined.canonicalize() {
-        let root = repo_root
-            .canonicalize()
-            .unwrap_or_else(|_| repo_root.to_path_buf());
+        let root = repo_root.canonicalize().map_err(|_| {
+            format!("refusing to touch '{candidate}': repository root could not be canonicalized")
+        })?;
         if !canon.starts_with(&root) {
             return Err(format!(
                 "refusing to touch '{candidate}': resolves outside the repository"

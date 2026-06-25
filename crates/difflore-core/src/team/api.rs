@@ -1,11 +1,9 @@
 use openapi_contract::api;
 
-use crate::cloud::api_types::{
-    Extraction, InviteResult, Success, Team, TeamMember, TeamRuleSummary,
-};
 use crate::cloud::client::CloudClient;
-use crate::errors::CoreError;
-use crate::models::SkillRecord;
+use crate::contract::{Extraction, InviteResult, Success, Team, TeamMember, TeamRuleSummary};
+use crate::domain::models::SkillRecord;
+use crate::error::CoreError;
 
 use super::cloud_id::{
     ensure_cloud_rule_id, resolve_cloud_rule_id_for_unpublish, resolve_existing_cloud_rule_id,
@@ -15,6 +13,10 @@ use super::types::{
     TeamMemberRecord, TeamMembersResult, TeamRulePublishInput, TeamRuleUnpublishInput,
     TeamSkillsResult, TeamUpdateRoleInput,
 };
+
+fn cloud_login_required() -> CoreError {
+    CoreError::Validation("not logged in to cloud. Run `difflore cloud login` first.".into())
+}
 
 async fn resolve_team_id(
     client: &CloudClient,
@@ -26,11 +28,8 @@ async fn resolve_team_id(
     let team: Option<Team> = api!(GET "/teams/my").fetch(client).await.ok().flatten();
     match team {
         Some(t) => Ok((t.id, true)),
-        // Reaching this branch means the cloud account isn't on a team yet.
-        // The previous bare "team" message bubbled up as `NotFound: team`
-        // — the user couldn't tell whether they typed something wrong, lost
-        // access, or just hadn't joined a team. Name the actual situation
-        // and point at the cloud surface that creates one.
+        // No team on the current cloud account; name the situation and
+        // point at the surface that creates one.
         None => Err(CoreError::NotFound(
             "no team for the current cloud account. Create or join one at \
              difflore.dev/team, then retry."
@@ -60,9 +59,7 @@ pub async fn members(input: TeamContextInput) -> crate::Result<TeamMembersResult
 pub async fn invite(input: TeamInviteInput) -> crate::Result<TeamInviteResult> {
     let client = CloudClient::create().await;
     if !client.is_logged_in() {
-        return Err(CoreError::Internal(
-            "not logged in to cloud. Run `difflore cloud login` first.".into(),
-        ));
+        return Err(cloud_login_required());
     }
     let (team_id, default_team_used) = resolve_team_id(&client, input.team_id).await?;
     let body = serde_json::json!({
@@ -81,9 +78,7 @@ pub async fn invite(input: TeamInviteInput) -> crate::Result<TeamInviteResult> {
 pub async fn remove_member(input: TeamMemberIdInput) -> crate::Result<()> {
     let client = CloudClient::create().await;
     if !client.is_logged_in() {
-        return Err(CoreError::Internal(
-            "not logged in to cloud. Run `difflore cloud login` first.".into(),
-        ));
+        return Err(cloud_login_required());
     }
     let (team_id, _) = resolve_team_id(&client, input.team_id).await?;
     let _: Success =
@@ -96,9 +91,7 @@ pub async fn remove_member(input: TeamMemberIdInput) -> crate::Result<()> {
 pub async fn update_role(input: TeamUpdateRoleInput) -> crate::Result<()> {
     let client = CloudClient::create().await;
     if !client.is_logged_in() {
-        return Err(CoreError::Internal(
-            "not logged in to cloud. Run `difflore cloud login` first.".into(),
-        ));
+        return Err(cloud_login_required());
     }
     let (team_id, _) = resolve_team_id(&client, input.team_id).await?;
     let body = serde_json::json!({ "role": input.role });
@@ -176,13 +169,11 @@ pub async fn resolve_known_cloud_rule_id(
 pub async fn publish_rule(input: TeamRulePublishInput) -> crate::Result<String> {
     let client = CloudClient::create().await;
     if !client.is_logged_in() {
-        return Err(CoreError::Internal(
-            "not logged in to cloud. Run `difflore cloud login` first.".into(),
-        ));
+        return Err(cloud_login_required());
     }
 
     let (team_id, _) = resolve_team_id(&client, input.team_id).await?;
-    let pool = crate::db::init_db().await.map_err(CoreError::Internal)?;
+    let pool = crate::infra::db::init_db().await?;
 
     if let Some(s) = crate::skills::rule_status(&pool, &input.rule_id).await?
         && s == "pending"
@@ -195,18 +186,15 @@ pub async fn publish_rule(input: TeamRulePublishInput) -> crate::Result<String> 
 
     let cloud_rule_id = ensure_cloud_rule_id(&pool, &client, &input.rule_id).await?;
 
-    // Look up local origin when caller didn't pass one — saves the CLI
-    // and tests from threading it through every call site, while still
-    // letting the cloud layer make the publish-time provenance explicit.
-    // Read by the (possibly-rewritten) cloud uuid, which is the row's
-    // current id post-`ensure_cloud_rule_id`.
+    // Look up local origin when the caller didn't pass one. Keyed by the
+    // cloud uuid, which is the row's current id after `ensure_cloud_rule_id`.
     let origin = match input.origin {
         Some(o) => Some(o),
-        None => sqlx::query_scalar!("SELECT origin FROM skills WHERE id = ?1", cloud_rule_id)
-            .fetch_optional(&pool)
-            .await
-            .ok()
-            .flatten(),
+        None => {
+            sqlx::query_scalar!("SELECT origin FROM skills WHERE id = ?1", cloud_rule_id)
+                .fetch_optional(&pool)
+                .await?
+        }
     };
     let body = serde_json::json!({
         "ruleId": cloud_rule_id,
@@ -223,13 +211,11 @@ pub async fn publish_rule(input: TeamRulePublishInput) -> crate::Result<String> 
 pub async fn unpublish_rule(input: TeamRuleUnpublishInput) -> crate::Result<()> {
     let client = CloudClient::create().await;
     if !client.is_logged_in() {
-        return Err(CoreError::Internal(
-            "not logged in to cloud. Run `difflore cloud login` first.".into(),
-        ));
+        return Err(cloud_login_required());
     }
 
     let (team_id, _) = resolve_team_id(&client, input.team_id).await?;
-    let pool = crate::db::init_db().await.map_err(CoreError::Internal)?;
+    let pool = crate::infra::db::init_db().await?;
     let cloud_rule_id = resolve_cloud_rule_id_for_unpublish(&pool, &input.rule_id).await?;
     let body = serde_json::json!({
         "ruleId": cloud_rule_id,

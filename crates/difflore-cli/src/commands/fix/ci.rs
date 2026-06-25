@@ -1,9 +1,9 @@
 use std::io::{self, Write};
 
-use difflore_core::review::ReviewIssueRecord;
+use difflore_core::review_engine::ReviewIssueRecord;
 
-use crate::commands::util::exit_code;
 use crate::style::{self, sym};
+use crate::support::util::exit_code;
 
 use super::{CONFIDENCE_THRESHOLD, file_loc, issue_rule_label};
 
@@ -28,8 +28,8 @@ pub(super) fn exit_after_output(code: i32) -> ! {
     exit_code(code);
 }
 
-// Default: only fail on confident patches. Structured outputs share this
-// exit-code contract.
+// Only fails on confident patches unless `strict`; structured outputs share
+// this exit-code contract.
 pub(super) fn finish_ci_mode(suggestions: &[&ReviewIssueRecord], strict: bool, scope_label: &str) {
     let blocking = ci_blocking_suggestions(suggestions, strict);
     if blocking.is_empty() {

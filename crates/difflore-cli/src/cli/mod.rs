@@ -3,7 +3,9 @@ mod commands;
 mod help;
 
 pub(crate) use args::{
-    FixCliArgs, ImportReviewsCliArgs, InitCliArgs, RecallCliArgs, StatusLane, SyncCliArgs,
+    ExportCliArgs, ExportFormatArg, FixCliArgs, ImportDistillArg, ImportProviderArg,
+    ImportReviewsCliArgs, InitCliArgs, LearnCliArgs, MemoryPackageFormatArg, RecallCliArgs,
+    ReviewCliArgs, StatusLane, SyncCliArgs,
 };
 pub(crate) use commands::*;
 pub(crate) use help::build_cli;

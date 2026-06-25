@@ -1,7 +1,7 @@
-//! Buyer-grade "value loop" evidence: proof that one rule was *learned* from a
-//! PR review, *recalled* and *served* (causally, before the edit), and then
-//! produced an *accepted edit* in a different PR. The strict causal/file-match
-//! gating lives here; the source-proof half is delegated to `super::source_proof`.
+//! "Value loop" evidence: proof that one rule was learned from a PR review,
+//! recalled and served (causally, before the edit), and then produced an
+//! accepted edit in a *different* PR. Strict causal/file-match gating lives
+//! here; the source-proof half is delegated to `super::source_proof`.
 
 use super::super::transform::{
     ValueLoopAcceptedCandidate, normalize_repo, pr_number_for_value_loop,
@@ -140,9 +140,19 @@ pub(in crate::commands::status) async fn build_value_loop_evidence_for_candidate
     ) {
         return None;
     }
-    let mcp_summary = difflore_core::mcp_rule_serves::summary_for_rule(db, &candidate.rule_id, 30)
-        .await
-        .ok()?;
+    let mcp_summary = match difflore_core::observability::mcp_rule_serves::summary_for_rule(
+        db,
+        &candidate.rule_id,
+        30,
+    )
+    .await
+    {
+        Ok(summary) => summary,
+        Err(e) => {
+            debug_query_failure("mcp serve summary lookup", Some(&candidate.rule_id), &e);
+            return None;
+        }
+    };
     let mcp_latest = mcp_summary.latest?;
     let recall = causal_top3_recall_for(
         db,
@@ -244,11 +254,12 @@ async fn causal_top3_recall_for(
     rule_id: &str,
     served_at: &str,
     accepted_at: &str,
-) -> Option<difflore_core::rule_outcomes::TopRecallEvidence> {
+) -> Option<difflore_core::observability::rule_outcomes::TopRecallEvidence> {
     // Push the causal predicate into SQL so `LIMIT` cannot hide the one
     // valid pre-serve recall behind later non-causal rows.
-    let recall = sqlx::query_as::<_, difflore_core::rule_outcomes::TopRecallEvidence>(
-        r"SELECT rule_id,
+    let recall =
+        match sqlx::query_as::<_, difflore_core::observability::rule_outcomes::TopRecallEvidence>(
+            r"SELECT rule_id,
                   repo_full_name,
                   file_path,
                   COALESCE(rank, 999) AS rank,
@@ -263,12 +274,19 @@ async fn causal_top3_recall_for(
              AND datetime(created_at) <= datetime(?2)
            ORDER BY datetime(created_at) DESC, id DESC
            LIMIT 1",
-    )
-    .bind(rule_id)
-    .bind(served_at)
-    .fetch_optional(db)
-    .await
-    .ok()??;
+        )
+        .bind(rule_id)
+        .bind(served_at)
+        .fetch_optional(db)
+        .await
+        {
+            Ok(Some(recall)) => recall,
+            Ok(None) => return None,
+            Err(e) => {
+                debug_query_failure("causal recall lookup", Some(rule_id), &e);
+                return None;
+            }
+        };
     // Defence in depth: SQL already filters `recall <= serve`; this
     // catches any `served_at > accepted_at` data-quality drift in the
     // upstream invariant.
@@ -317,7 +335,27 @@ async fn fetch_value_loop_accepted_rows(
             query = query.bind(repo);
         }
     }
-    query.fetch_all(db).await.unwrap_or_default()
+    match query.fetch_all(db).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            debug_query_failure("accepted value-loop row lookup", None, &e);
+            Vec::new()
+        }
+    }
+}
+
+fn debug_query_failure(label: &str, rule_id: Option<&str>, error: &dyn std::fmt::Display) {
+    if !difflore_core::infra::env::debug_telemetry() {
+        return;
+    }
+    match rule_id {
+        Some(rule_id) => {
+            eprintln!("[difflore.status.value_loop] {label} failed for rule `{rule_id}`: {error}");
+        }
+        None => {
+            eprintln!("[difflore.status.value_loop] {label} failed: {error}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -348,18 +386,20 @@ mod tests {
             }),
         )
         .await;
-        difflore_core::rule_outcomes::record_recalled_with_context(
+        difflore_core::observability::rule_outcomes::record_recalled_with_context(
             &pool,
-            &[difflore_core::rule_outcomes::RuleRecallInput {
-                rule_id: "rule-1",
-                session_id: Some("session-1"),
-                repo_full_name: Some("acme/widgets"),
-                file_path: Some("src/parser.rs"),
-                query_text: "src/parser.rs structured parser",
-                rank: 1,
-                top_k: 3,
-                strict_file_match: true,
-            }],
+            &[
+                difflore_core::observability::rule_outcomes::RuleRecallInput {
+                    rule_id: "rule-1",
+                    session_id: Some("session-1"),
+                    repo_full_name: Some("acme/widgets"),
+                    file_path: Some("src/parser.rs"),
+                    query_text: "src/parser.rs structured parser",
+                    rank: 1,
+                    top_k: 3,
+                    strict_file_match: true,
+                },
+            ],
         )
         .await
         .expect("record recall");
@@ -369,9 +409,9 @@ mod tests {
             .execute(&pool)
             .await
             .expect("pin recall time");
-        difflore_core::mcp_rule_serves::record(
+        difflore_core::observability::mcp_rule_serves::record(
             &pool,
-            &difflore_core::mcp_rule_serves::McpRuleServeInput {
+            &difflore_core::observability::mcp_rule_serves::McpRuleServeInput {
                 tool: "search_rules",
                 session_id: Some("session-1"),
                 repo_full_name: Some("acme/widgets"),
@@ -473,18 +513,20 @@ mod tests {
         .execute(&pool)
         .await
         .expect("insert review comment");
-        difflore_core::rule_outcomes::record_recalled_with_context(
+        difflore_core::observability::rule_outcomes::record_recalled_with_context(
             &pool,
-            &[difflore_core::rule_outcomes::RuleRecallInput {
-                rule_id: "comment-rule",
-                session_id: Some("session-comment"),
-                repo_full_name: Some("acme/widgets"),
-                file_path: Some("docs/readme.md"),
-                query_text: "docs/readme.md blank lines blockquotes",
-                rank: 1,
-                top_k: 3,
-                strict_file_match: true,
-            }],
+            &[
+                difflore_core::observability::rule_outcomes::RuleRecallInput {
+                    rule_id: "comment-rule",
+                    session_id: Some("session-comment"),
+                    repo_full_name: Some("acme/widgets"),
+                    file_path: Some("docs/readme.md"),
+                    query_text: "docs/readme.md blank lines blockquotes",
+                    rank: 1,
+                    top_k: 3,
+                    strict_file_match: true,
+                },
+            ],
         )
         .await
         .expect("record recall");
@@ -494,9 +536,9 @@ mod tests {
             .execute(&pool)
             .await
             .expect("pin recall time");
-        difflore_core::mcp_rule_serves::record(
+        difflore_core::observability::mcp_rule_serves::record(
             &pool,
-            &difflore_core::mcp_rule_serves::McpRuleServeInput {
+            &difflore_core::observability::mcp_rule_serves::McpRuleServeInput {
                 tool: "search_rules",
                 session_id: Some("session-comment"),
                 repo_full_name: Some("acme/widgets"),
@@ -557,18 +599,20 @@ mod tests {
             }),
         )
         .await;
-        difflore_core::rule_outcomes::record_recalled_with_context(
+        difflore_core::observability::rule_outcomes::record_recalled_with_context(
             &pool,
-            &[difflore_core::rule_outcomes::RuleRecallInput {
-                rule_id: "agent-rule",
-                session_id: Some("session-2"),
-                repo_full_name: Some("acme/widgets"),
-                file_path: Some("src/wait.ts"),
-                query_text: "src/wait.ts stable wait",
-                rank: 2,
-                top_k: 3,
-                strict_file_match: true,
-            }],
+            &[
+                difflore_core::observability::rule_outcomes::RuleRecallInput {
+                    rule_id: "agent-rule",
+                    session_id: Some("session-2"),
+                    repo_full_name: Some("acme/widgets"),
+                    file_path: Some("src/wait.ts"),
+                    query_text: "src/wait.ts stable wait",
+                    rank: 2,
+                    top_k: 3,
+                    strict_file_match: true,
+                },
+            ],
         )
         .await
         .expect("record recall");
@@ -578,9 +622,9 @@ mod tests {
             .execute(&pool)
             .await
             .expect("pin recall time");
-        difflore_core::mcp_rule_serves::record(
+        difflore_core::observability::mcp_rule_serves::record(
             &pool,
-            &difflore_core::mcp_rule_serves::McpRuleServeInput {
+            &difflore_core::observability::mcp_rule_serves::McpRuleServeInput {
                 tool: "search_rules",
                 session_id: Some("session-2"),
                 repo_full_name: Some("acme/widgets"),
@@ -625,6 +669,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn value_loop_evidence_fails_closed_when_mcp_summary_query_fails() {
+        let pool = value_loop_pool().await;
+        insert_skill_only(&pool, "mcp-error-rule", "Use stable waits", "acme/widgets").await;
+        insert_source_proof(
+            &pool,
+            "mcp-error-rule",
+            serde_json::json!({
+                "sourceProof": {
+                    "source": "acme/widgets#77",
+                    "commentUrl": "https://github.com/acme/widgets/pull/77#discussion_r1",
+                    "file": "src/wait.ts",
+                    "excerpt": "Use stable waits instead of scheduler races."
+                }
+            }),
+        )
+        .await;
+        let accepted_at = recent_offset(&pool, "-1 minutes").await;
+        sqlx::query("DROP TABLE mcp_rule_serves")
+            .execute(&pool)
+            .await
+            .expect("drop mcp_rule_serves");
+
+        let evidence = build_value_loop_evidence_for_candidate(
+            &pool,
+            ValueLoopAcceptedCandidate {
+                rule_id: "mcp-error-rule".to_owned(),
+                name: "Use stable waits".to_owned(),
+                source_repo: Some("acme/widgets".to_owned()),
+                target_repo_full_name: Some("acme/widgets".to_owned()),
+                target_pr_number: Some(78),
+                accepted_file_path: Some("src/wait.ts".to_owned()),
+                accepted_at,
+                diff_signature: None,
+                source: "local_fix_outcome".to_owned(),
+            },
+        )
+        .await;
+
+        assert!(
+            evidence.is_none(),
+            "value-loop evidence must fail closed when MCP serve summary lookup errors"
+        );
+    }
+
+    #[tokio::test]
+    async fn value_loop_row_and_recall_query_failures_fail_closed() {
+        let pool = value_loop_pool().await;
+        pool.close().await;
+
+        let rows = fetch_value_loop_accepted_rows(&pool, Some(&["acme/widgets".to_owned()])).await;
+        assert!(
+            rows.is_empty(),
+            "accepted-row query failures must degrade to an empty candidate list"
+        );
+
+        let recall = causal_top3_recall_for(
+            &pool,
+            "rule-1",
+            "2026-06-21 12:00:00",
+            "2026-06-21 12:01:00",
+        )
+        .await;
+        assert!(
+            recall.is_none(),
+            "causal recall query failures must degrade to no evidence"
+        );
+    }
+
+    #[tokio::test]
     async fn value_loop_evidence_requires_strict_recall_and_mcp_file_proof() {
         let pool = value_loop_pool().await;
         insert_skill_only(&pool, "loose-rule", "Avoid loose proof", "acme/widgets").await;
@@ -641,18 +754,20 @@ mod tests {
             }),
         )
         .await;
-        difflore_core::rule_outcomes::record_recalled_with_context(
+        difflore_core::observability::rule_outcomes::record_recalled_with_context(
             &pool,
-            &[difflore_core::rule_outcomes::RuleRecallInput {
-                rule_id: "loose-rule",
-                session_id: Some("session-loose"),
-                repo_full_name: Some("acme/widgets"),
-                file_path: Some("src/other.ts"),
-                query_text: "src/other.ts loose proof",
-                rank: 1,
-                top_k: 3,
-                strict_file_match: false,
-            }],
+            &[
+                difflore_core::observability::rule_outcomes::RuleRecallInput {
+                    rule_id: "loose-rule",
+                    session_id: Some("session-loose"),
+                    repo_full_name: Some("acme/widgets"),
+                    file_path: Some("src/other.ts"),
+                    query_text: "src/other.ts loose proof",
+                    rank: 1,
+                    top_k: 3,
+                    strict_file_match: false,
+                },
+            ],
         )
         .await
         .expect("record loose recall");
@@ -662,9 +777,9 @@ mod tests {
             .execute(&pool)
             .await
             .expect("pin recall time");
-        difflore_core::mcp_rule_serves::record(
+        difflore_core::observability::mcp_rule_serves::record(
             &pool,
-            &difflore_core::mcp_rule_serves::McpRuleServeInput {
+            &difflore_core::observability::mcp_rule_serves::McpRuleServeInput {
                 tool: "search_rules",
                 session_id: Some("session-loose"),
                 repo_full_name: Some("acme/widgets"),
@@ -725,18 +840,20 @@ mod tests {
             }),
         )
         .await;
-        difflore_core::rule_outcomes::record_recalled_with_context(
+        difflore_core::observability::rule_outcomes::record_recalled_with_context(
             &pool,
-            &[difflore_core::rule_outcomes::RuleRecallInput {
-                rule_id: "late-serve-rule",
-                session_id: Some("session-3"),
-                repo_full_name: Some("acme/widgets"),
-                file_path: Some("src/causal.ts"),
-                query_text: "src/causal.ts causal proof",
-                rank: 1,
-                top_k: 3,
-                strict_file_match: true,
-            }],
+            &[
+                difflore_core::observability::rule_outcomes::RuleRecallInput {
+                    rule_id: "late-serve-rule",
+                    session_id: Some("session-3"),
+                    repo_full_name: Some("acme/widgets"),
+                    file_path: Some("src/causal.ts"),
+                    query_text: "src/causal.ts causal proof",
+                    rank: 1,
+                    top_k: 3,
+                    strict_file_match: true,
+                },
+            ],
         )
         .await
         .expect("record recall");
@@ -746,9 +863,9 @@ mod tests {
             .execute(&pool)
             .await
             .expect("pin recall time");
-        difflore_core::mcp_rule_serves::record(
+        difflore_core::observability::mcp_rule_serves::record(
             &pool,
-            &difflore_core::mcp_rule_serves::McpRuleServeInput {
+            &difflore_core::observability::mcp_rule_serves::McpRuleServeInput {
                 tool: "hook_post_edit",
                 session_id: Some("session-3"),
                 repo_full_name: Some("acme/widgets"),

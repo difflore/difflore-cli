@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use difflore_core::context::index_db;
-use difflore_core::db;
+use difflore_core::infra::db;
 use difflore_core::migration;
 use tempfile::TempDir;
 
@@ -83,6 +83,26 @@ async fn retired_split_migration_refuses_retired_global_index() {
         !guard.home().join("backups").exists(),
         "retired migration must not create historical backups"
     );
+}
+
+#[tokio::test]
+async fn memory_conflicts_migration_applies() {
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    db::run_migrations(&pool).await.unwrap();
+
+    // The embedded migration must create the reviewable-conflict table; a
+    // fresh DB starts with zero records.
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_conflicts")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "fresh memory_conflicts table starts empty");
 }
 
 #[tokio::test]

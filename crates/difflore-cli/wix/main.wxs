@@ -69,7 +69,7 @@
 
         <Package Id='*'
             Keywords='Installer'
-            Description='Your AI coding agent, taught by your team&#39;s PR reviews — a local-first, open-source MCP server that turns past review comments into rules your agent follows automatically.'
+            Description='Your AI coding agent learned public code, not your team&#39;s private decisions. difflore turns past PR reviews into source-backed local rules.'
             Manufacturer='Zachary'
             InstallerVersion='450'
             Languages='1033'
@@ -136,6 +136,14 @@
                                 Source='$(var.CargoTargetBinDir)\difflore-hook.exe'
                                 KeyPath='yes'/>
                         </Component>
+                        <Component Id='binary2' Guid='*'>
+                            <File
+                                Id='exe2'
+                                Name='difflore-launcher.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\difflore-launcher.exe'
+                                KeyPath='yes'/>
+                        </Component>
                     </Directory>
                 </Directory>
             </Directory>
@@ -159,6 +167,7 @@
 
             <ComponentRef Id='binary0'/>
             <ComponentRef Id='binary1'/>
+            <ComponentRef Id='binary2'/>
 
             <Feature
                 Id='Environment'

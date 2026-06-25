@@ -1,10 +1,7 @@
 use std::process::Command;
 
-/// Map raw `gh` CLI / GitHub API error strings into actionable hints
-/// for `difflore import-reviews`. The import path shells out to the
-/// GitHub CLI (`gh api graphql ...`); errors arrive as
-/// `"gh api graphql error: <stderr>"` or `"GraphQL errors: <msg>"`.
-/// Same shape as `format_cloud_err`: substring match, raw retained on
+/// Map raw `gh` CLI / GitHub API error strings into actionable hints for
+/// `difflore import-reviews`. Substring match; the raw string is retained on
 /// the unrecognised path so triage info isn't lost.
 pub(crate) fn format_github_import_err(label: &str, e: &str) -> String {
     let lower = e.to_ascii_lowercase();
@@ -58,10 +55,9 @@ pub(crate) fn format_github_import_err(label: &str, e: &str) -> String {
             "{label}: GitHub returned a transient error after retrying.\n  Recovery: rerun the same command, or shrink the window (`--max-prs 20` or `--since YYYY-MM-DD`) if GitHub is unstable.\n\n  raw: {e}"
         );
     }
-    // Network / timeout / generic fallback all share shape with the
-    // cloud path — delegate to the core helper. Domain-specific GitHub
-    // hints live above; the core layer is product-agnostic.
-    difflore_core::origins::format_api_error(label, e)
+    // Network/timeout/generic fallback: delegate to the product-agnostic core
+    // helper. Domain-specific GitHub hints are handled above.
+    difflore_core::domain::origins::format_api_error(label, e)
 }
 
 pub(super) fn verify_source_repo_access(source_repo: &str) -> Result<(), String> {
