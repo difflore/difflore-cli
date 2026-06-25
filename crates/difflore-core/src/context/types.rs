@@ -1,11 +1,11 @@
-//! Context engine record types, previously defined in the Tauri commands layer.
+//! Context engine record types.
 
-use crate::models::SkillRecord;
+use crate::domain::models::SkillRecord;
 
 /// A past review verdict recalled from the cloud review-memory store.
 ///
 /// Produced by `cloud::client::recall_past_verdicts` / surfaced by
-/// `context::retrieval::retrieve_past_verdicts` and injected into the
+/// `context::retrieval::retrieve_past_verdicts_by_text` and injected into the
 /// review prompt by `review::build_segmented_prompt`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -121,7 +121,7 @@ pub struct RuleMatchEvidenceRecord {
     /// Source repo this rule was learned from (e.g. "gin-gonic/gin").
     /// `None` for manual / globally-scoped rules. Lets the agent surface
     /// the same "<- learned from <repo>" provenance the user sees in
-    /// `fix --preview`, the TUI, the cloud rule-detail page, etc.
+    /// `review`, `recall`, the cloud rule-detail page, etc.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_repo: Option<String>,
     /// Number of times the cloud value loop observed this rule cited by a
@@ -132,6 +132,13 @@ pub struct RuleMatchEvidenceRecord {
     /// impact endpoint. Best-effort remote enrichment; omitted when unavailable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_rate: Option<f64>,
+    /// Compact whyRanked explanation of this result's serve position
+    /// (`path-hint; band 9/10; source manual`): path-hint match,
+    /// 10%-band relative score, and source priority — the same facts the
+    /// deterministic serve arbitration sorted on. Omitted when arbitration
+    /// metadata was unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<EvidenceRecord>,
 }
@@ -257,7 +264,8 @@ pub struct ContextIndexStatusRecord {
     pub reason: Option<String>,
 }
 
-/// Build a compact provenance trail for a rule record as surfaced in the TUI.
+/// Build a compact provenance trail for a rule record as surfaced in local
+/// and cloud memory detail views.
 pub fn rule_provenance_evidence(rule: &SkillRecord) -> Vec<EvidenceRecord> {
     let mut evidence = vec![
         EvidenceRecord::new(

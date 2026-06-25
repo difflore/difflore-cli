@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(unsafe_code)]
-//! Behavioural regression test for W1-B hot-path fix.
+//! Behavioural regression test for the `PostToolUse:Edit` hot path.
 //!
 //! Lives in its own integration-test binary on purpose: the test
 //! mutates `DIFFLORE_HOME` so all on-disk side effects (`data.db`,
@@ -9,70 +9,37 @@
 //! every `tests/*.rs` file its own process, so that env mutation
 //! cannot leak into sibling test binaries.
 //!
-//! The fix being guarded: `PostToolUse:Edit` must consult
-//! `hook_cache::should_skip_recent` BEFORE opening the SQLite
-//! pool or running `observation::classify` + outbox `enqueue`.
-//! Before the fix the skip path still paid all of those costs
-//! (175ms p99); after it, a duplicate edit short-circuits to a
-//! noop without writing any observation row or any
-//! `cloud_outbox` row.
+//! Invariant guarded: `PostToolUse:Edit` must consult
+//! `hook::cache::should_skip_recent` BEFORE opening the SQLite pool
+//! or running `observation::classify` + outbox `enqueue`. A duplicate
+//! edit must short-circuit to a noop, writing no observation row and
+//! no `cloud_outbox` row.
 //!
 //! The proceed half asserts the non-skip branch still runs the
-//! classifier + outbox enqueue, so the fix didn't accidentally
-//! suppress capture. Both halves run in the same `#[tokio::test]`
-//! to avoid racing on the shared process-wide `DIFFLORE_HOME` env
-//! var.
+//! classifier + outbox enqueue, so capture is not suppressed. Both
+//! halves run in the same `#[tokio::test]` to avoid racing on the
+//! shared process-wide `DIFFLORE_HOME` env var.
 
-use std::collections::BTreeMap;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use difflore_cli::hook_runtime;
-use serde::{Deserialize, Serialize};
+use difflore_cli::hook::runtime as hook_runtime;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 
-#[derive(Serialize, Deserialize)]
-struct CacheFile {
-    version: u32,
-    entries: BTreeMap<String, CacheEntry>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct CacheEntry {
-    ts_ms: i64,
-    rules_injected: usize,
-}
-
 /// Seed `hook-cache.json` so `should_skip_recent` returns true for
-/// the given file path. Mirrors the on-disk layout
-/// `hook_cache::remember_injection` would have produced; we write
-/// it by hand to avoid having to actually run a successful
-/// injection just to set up the test.
+/// the given file path and synthesized edit signal.
 fn seed_skip_cache(home: &Path, file_path: &str) {
-    let project_root = difflore_core::db::current_project_root();
-    let project_hash = difflore_core::db::project_hash_from_root(&project_root);
-    let normalized = file_path.trim().replace('\\', "/");
-    let key = format!("{project_hash}:post-edit:{normalized}");
-
-    let ts_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64);
-    let mut entries = BTreeMap::new();
-    entries.insert(
-        key,
-        CacheEntry {
-            ts_ms,
-            rules_injected: 3,
-        },
+    let _ = home;
+    let project_root = difflore_core::infra::db::current_project_root();
+    let project_hash = difflore_core::infra::db::project_hash_from_root(&project_root);
+    let signal = "post-edit\n-let x = 1;\n+let x = 2;\n";
+    difflore_cli::hook::cache::remember_injection_for_project_hash_with_signal(
+        file_path,
+        "post-edit",
+        3,
+        &project_hash,
+        Some(signal),
     );
-    let cache = CacheFile {
-        version: 1,
-        entries,
-    };
-    std::fs::create_dir_all(home).expect("create home");
-    let payload = serde_json::to_string_pretty(&cache).expect("serialize cache");
-    std::fs::write(home.join("hook-cache.json"), payload).expect("write hook-cache");
 }
 
 fn post_tool_use_payload(file_path: &str) -> String {
@@ -129,6 +96,14 @@ async fn post_tool_use_dedup_skip_short_circuits_before_db_and_outbox() {
     // insert a row (the proceed assertion below relies on this).
     unsafe {
         std::env::remove_var("DIFFLORE_CAPTURE");
+    }
+    // The test asserts enqueue behavior directly; spawning the detached drain
+    // daemon would make the process lifetime and row count racy on Windows.
+    unsafe {
+        std::env::set_var(
+            difflore_core::infra::env::DIFFLORE_DISABLE_OUTBOX_DAEMON,
+            "1",
+        );
     }
 
     // -- skip arm -----------------------------------------------------
@@ -192,6 +167,7 @@ async fn post_tool_use_dedup_skip_short_circuits_before_db_and_outbox() {
 
     unsafe {
         std::env::remove_var("DIFFLORE_HOME");
+        std::env::remove_var(difflore_core::infra::env::DIFFLORE_DISABLE_OUTBOX_DAEMON);
     }
     drop(home);
 }

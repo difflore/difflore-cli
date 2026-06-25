@@ -9,6 +9,7 @@ CONOUT$
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 .codex/worktrees/
+.windsurf/
 
 # codex review loop runtime artifacts
 .codex-runtime/

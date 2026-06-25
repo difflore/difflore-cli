@@ -42,6 +42,7 @@ mod tests {
         let args = FixArgs {
             yes: true,
             preview: false,
+            read_only: false,
             ci: false,
             strict: false,
             diff_scope: None,
@@ -67,6 +68,7 @@ mod tests {
         let args = FixArgs {
             yes: true,
             preview: false,
+            read_only: false,
             ci: false,
             strict: false,
             diff_scope: None,

@@ -10,20 +10,17 @@ packages = ["difflore-cli"]
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
-installers = ["shell", "powershell", "homebrew", "msi"]
+installers = ["shell", "powershell", "msi"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Path that installers should place binaries in
-install-path = "CARGO_HOME"
+install-path = "~/.difflore/bin"
 # Where to host releases
 hosting = "github"
 # Run release checks before release artifacts are built or published.
 plan-jobs = ["./release-preflight"]
-# Publish the generated Homebrew formula from the release workflow.
-tap = "difflore/homebrew-tap"
-publish-jobs = ["homebrew"]
 # Whether to install an updater program
-install-updater = false
+install-updater = true
 
 [dist.dependencies.apt]
 libdbus-1-dev = "*"

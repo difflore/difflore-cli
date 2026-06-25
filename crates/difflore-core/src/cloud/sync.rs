@@ -1,13 +1,10 @@
-use openapi_contract::{ApiClient, Method, api};
+use openapi_contract::api;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
-use super::api_types::{
-    BillingCurrent, Success, SyncProviders, SyncSettings, Team, TeamRuleSummary, UserProfile,
-};
 use super::client::CloudClient;
-use crate::models::SkillRecord;
-use crate::skill_fs::skills_base_dir;
+use crate::contract::{BillingCurrent, Success, SyncProviders, SyncSettings, Team, UserProfile};
+use crate::domain::models::SkillRecord;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncResult {
@@ -36,22 +33,17 @@ pub struct SyncedRule {
     pub content: String,
     pub updated_at: String,
     pub created_at: String,
-    /// Iter-9 (2026-04-18): glob list (e.g. `["**/*.rs"]`) the CLI's cascade
-    /// uses to drop rules whose patterns don't match the current file.
-    /// Empty / missing = universal rule.
+    /// Glob list (e.g. `["**/*.rs"]`) the CLI's cascade uses to drop rules
+    /// whose patterns don't match the current file. Empty / missing = universal rule.
     #[serde(default)]
     pub file_patterns: Vec<String>,
-    /// 2026-04-20: input-channel provenance (manual | conversation |
-    /// `pr_review` | extracted). When the cloud doesn't yet emit this
-    /// field, defaults to None and `apply_sync_result` falls back to
-    /// `cloud` so audit pages can still distinguish remotely-fetched
-    /// rules from locally-typed ones.
+    /// Input-channel provenance (manual | conversation | `pr_review` |
+    /// extracted). Defaults to None when the cloud doesn't emit it, so
+    /// `apply_sync_result` falls back to `cloud`.
     #[serde(default)]
     pub origin: Option<String>,
-    /// 2026-04-25: GitHub-style `owner/repo` provenance for the cluster
-    /// of extractions that drafted this rule. Mirrors cloud's
-    /// `rules_cloud.source_repo` 1-for-1; the local skills table carries
-    /// the same column in the initial schema.
+    /// GitHub-style `owner/repo` provenance for the extractions that drafted
+    /// this rule. Mirrors cloud's `rules_cloud.source_repo`.
     #[serde(default, rename = "sourceRepo")]
     pub source_repo: Option<String>,
 }
@@ -83,26 +75,32 @@ pub async fn sync_skills_filtered(
     exclude_ids: &[String],
 ) -> Result<Option<SyncResult>, crate::CoreError> {
     let exclude: std::collections::HashSet<&str> = exclude_ids.iter().map(String::as_str).collect();
+    let ids_for_scope: Vec<String> = skills
+        .iter()
+        .filter(|s| !exclude.contains(s.id.as_str()))
+        .map(|s| s.id.clone())
+        .collect();
+    let scope_by_id = load_sync_hash_scope(&ids_for_scope).await;
     let local_hashes: std::collections::HashMap<String, String> = skills
         .iter()
         .filter(|s| !exclude.contains(s.id.as_str()))
-        .map(|skill| (skill.id.clone(), skill_content_hash(skill)))
+        .map(|skill| {
+            (
+                skill.id.clone(),
+                skill_content_hash(skill, scope_by_id.get(&skill.id)),
+            )
+        })
         .collect();
     let payload = serde_json::json!({ "localHashes": local_hashes });
 
-    let resp = client
-        .request(Method::POST, "/rules/sync", None, Some(payload.to_string()))
-        .await?;
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(crate::CoreError::Internal(format!(
-            "rules sync returned {status}; run `difflore doctor --report` for cloud diagnostics"
-        )));
-    }
-    let result: serde_json::Value = resp
-        .json()
+    let result: serde_json::Value = client
+        .fetch_api_json(api!(POST "/rules/sync", body = &payload), "rules_sync")
         .await
-        .map_err(|e| crate::CoreError::Internal(format!("rules sync decode error: {e}")))?;
+        .map_err(|e| {
+            crate::CoreError::Internal(format!(
+                "rules sync failed: {e}; run `difflore doctor --report` for cloud diagnostics"
+            ))
+        })?;
 
     let created = result
         .get("created")
@@ -153,14 +151,16 @@ pub async fn sync_skills_filtered(
     }))
 }
 
-fn map_synced_rule_value(val: &serde_json::Value) -> Result<SyncedRule, String> {
+fn map_synced_rule_value(val: &serde_json::Value) -> crate::Result<SyncedRule> {
     // `id` and `content` are REQUIRED — a missing/empty value would create or
     // overwrite a local rule keyed on an empty id (corrupting the store). Cloud
     // schema drift must fail the whole sync, never silently apply a junk rule.
-    let required = |key: &str| -> Result<String, String> {
+    let required = |key: &str| -> crate::Result<String> {
         match val.get(key).and_then(|v| v.as_str()) {
             Some(s) if !s.trim().is_empty() => Ok(s.to_owned()),
-            _ => Err(format!("missing or empty required field `{key}`")),
+            _ => Err(crate::CoreError::Internal(format!(
+                "missing or empty required field `{key}`"
+            ))),
         }
     };
     Ok(SyncedRule {
@@ -239,33 +239,36 @@ fn map_synced_rule_value(val: &serde_json::Value) -> Result<SyncedRule, String> 
     })
 }
 
+fn map_team_synced_rule_value(val: &serde_json::Value) -> crate::Result<SyncedRule> {
+    let mut normalized = val.clone();
+    let content_is_missing = normalized
+        .get("content")
+        .and_then(|v| v.as_str())
+        .is_none_or(|s| s.trim().is_empty());
+    if content_is_missing {
+        let description = normalized
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_owned();
+        normalized["content"] = serde_json::Value::String(description);
+    }
+
+    let mut rule = map_synced_rule_value(&normalized)?;
+    if rule.origin.is_none() {
+        rule.origin = Some("team".to_owned());
+    }
+    Ok(rule)
+}
+
 pub async fn sync_team_skills(client: &CloudClient) -> Result<TeamSyncResult, crate::CoreError> {
     let skills_json: Vec<serde_json::Value> = api!(GET "/rules/team").fetch(client).await?;
-    let skills: Vec<TeamRuleSummary> = skills_json
-        .into_iter()
-        .map(serde_json::from_value)
-        .collect::<Result<_, _>>()?;
-    let visible_count = i32::try_from(skills.len()).unwrap_or(i32::MAX);
-    let created = skills
-        .into_iter()
-        .map(|rule| SyncedRule {
-            id: rule.id,
-            name: rule.name,
-            r#type: rule.r#type,
-            description: rule.description.clone(),
-            version: rule.version,
-            engines: rule.engines,
-            tags: rule.tags,
-            trigger: rule.trigger,
-            check_prompt: rule.check_prompt,
-            content: rule.description,
-            updated_at: rule.updated_at,
-            created_at: rule.created_at,
-            file_patterns: rule.file_patterns,
-            origin: Some("team".to_owned()),
-            source_repo: rule.source_repo,
-        })
-        .collect();
+    let visible_count = i32::try_from(skills_json.len()).unwrap_or(i32::MAX);
+    let created = skills_json
+        .iter()
+        .map(map_team_synced_rule_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| crate::CoreError::Internal(format!("team rules sync: malformed rule: {e}")))?;
     Ok(TeamSyncResult {
         visible_count,
         synced: SyncResult {
@@ -304,7 +307,7 @@ pub fn mask_api_key(key: &str) -> String {
 /// Used by `sync_providers`; exposed for callers that want to inspect what
 /// will be sent before pushing.
 pub fn build_provider_sync_entries(
-    providers: &[crate::models::ProviderRecord],
+    providers: &[crate::domain::models::ProviderRecord],
 ) -> Vec<serde_json::Value> {
     providers
         .iter()
@@ -401,6 +404,68 @@ pub struct CloudStatus {
     pub team_name: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloudTier {
+    Free,
+    Team,
+    TeamPlus,
+}
+
+impl CloudTier {
+    pub const fn is_team(self) -> bool {
+        matches!(self, Self::Team | Self::TeamPlus)
+    }
+
+    pub const fn default_label(self) -> &'static str {
+        match self {
+            Self::Free => "Cloud Free",
+            Self::Team => "Cloud Team",
+            Self::TeamPlus => "Cloud Team Plus",
+        }
+    }
+}
+
+pub fn cloud_tier_from_status(status: &CloudStatus) -> CloudTier {
+    if !status.logged_in {
+        return CloudTier::Free;
+    }
+
+    let plan = status
+        .plan
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .replace('-', "_");
+    match plan.as_str() {
+        "team_plus" | "enterprise" => CloudTier::TeamPlus,
+        "team" | "pro" | "business" => CloudTier::Team,
+        "free" | "self_host" | "oss" => CloudTier::Free,
+        _ if has_team_identity(status) => CloudTier::Team,
+        _ => CloudTier::Free,
+    }
+}
+
+pub fn cloud_plan_label_from_status(status: &CloudStatus) -> String {
+    if let Some(team) = status.team_name.as_deref().map(str::trim)
+        && !team.is_empty()
+    {
+        return team.to_owned();
+    }
+
+    cloud_tier_from_status(status).default_label().to_owned()
+}
+
+fn has_team_identity(status: &CloudStatus) -> bool {
+    status
+        .team_id
+        .as_deref()
+        .is_some_and(|team| !team.trim().is_empty())
+        || status
+            .team_name
+            .as_deref()
+            .is_some_and(|team| !team.trim().is_empty())
+}
+
 /// Fetch the user's cloud status (profile + billing plan + active team).
 /// Safe to call when not logged in — returns a `logged_in: false` response.
 pub async fn fetch_cloud_status(client: &CloudClient) -> CloudStatus {
@@ -465,40 +530,50 @@ pub async fn fetch_cloud_status(client: &CloudClient) -> CloudStatus {
     }
 }
 
-fn skill_content_hash(skill: &SkillRecord) -> String {
-    let skill_md_path = match skills_base_dir() {
-        Ok(base) => Some(
-            base.join(&skill.source)
-                .join(&skill.directory)
-                .join("SKILL.md"),
-        ),
-        Err(e) => {
-            warn_skill_hash_fallback(&format!(
-                "failed to resolve skills dir for {}: {e}",
-                skill.id
-            ));
-            None
-        }
-    };
+#[derive(Debug, Clone, Default)]
+struct SyncHashScope {
+    file_patterns: Vec<String>,
+    source_repo: Option<String>,
+}
 
-    let content = match skill_md_path {
-        Some(path) => match std::fs::read_to_string(&path) {
-            Ok(markdown) => extract_skill_content_body(&markdown),
-            Err(e) => {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    warn_skill_hash_fallback(&format!(
-                        "failed to read {} for {}: {e}",
-                        path.display(),
-                        skill.id
-                    ));
-                }
-                fallback_skill_content_for_hash(skill)
-            }
-        },
-        None => fallback_skill_content_for_hash(skill),
+async fn load_sync_hash_scope(ids: &[String]) -> std::collections::HashMap<String, SyncHashScope> {
+    let mut out = std::collections::HashMap::new();
+    if ids.is_empty() {
+        return out;
+    }
+    let Ok(db) = crate::infra::db::init_db().await else {
+        return out;
     };
+    let Ok(ids_json) = serde_json::to_string(ids) else {
+        return out;
+    };
+    let Ok(rows) = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+        "SELECT id, file_patterns, source_repo
+           FROM skills WHERE id IN (SELECT value FROM json_each(?1))",
+    )
+    .bind(ids_json)
+    .fetch_all(&db)
+    .await
+    else {
+        return out;
+    };
+    for (id, file_patterns_raw, source_repo) in rows {
+        out.insert(
+            id,
+            SyncHashScope {
+                file_patterns: parse_file_patterns_for_hash(file_patterns_raw.as_deref()),
+                source_repo,
+            },
+        );
+    }
+    out
+}
 
-    let digest = sha2::Sha256::digest(content.as_bytes());
+fn skill_content_hash(skill: &SkillRecord, scope: Option<&SyncHashScope>) -> String {
+    let content = skill_content_for_hash(skill);
+
+    let payload = rule_sync_hash_payload_json(skill, scope, &content);
+    let digest = sha2::Sha256::digest(payload.as_bytes());
     use std::fmt::Write as _;
     digest
         .iter()
@@ -508,14 +583,69 @@ fn skill_content_hash(skill: &SkillRecord) -> String {
         })
 }
 
-fn warn_skill_hash_fallback(message: &str) {
-    if std::env::var_os("DIFFLORE_DEBUG_SYNC_HASH").is_some() {
-        eprintln!("[difflore] rules sync hash fallback: {message}");
-    }
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuleSyncHashPayload<'a> {
+    content: &'a str,
+    file_patterns: Vec<String>,
+    source_repo: Option<String>,
+    tags: Vec<String>,
+    version: &'a str,
 }
 
-fn fallback_skill_content_for_hash(skill: &SkillRecord) -> String {
-    // Keep the sync contract centered on "content" semantics rather than full metadata.
+fn rule_sync_hash_payload_json(
+    skill: &SkillRecord,
+    scope: Option<&SyncHashScope>,
+    content: &str,
+) -> String {
+    let version = clean_string(Some(&skill.version)).unwrap_or_default();
+    serde_json::to_string(&RuleSyncHashPayload {
+        content,
+        file_patterns: clean_string_array(
+            scope
+                .map(|scope| scope.file_patterns.as_slice())
+                .unwrap_or_default()
+                .iter(),
+        ),
+        source_repo: clean_string(scope.and_then(|scope| scope.source_repo.as_deref())),
+        tags: clean_string_array(skill.tags.iter()),
+        version: &version,
+    })
+    .unwrap_or_else(|_| {
+        format!(
+            r#"{{"content":{},"filePatterns":[],"sourceRepo":null,"tags":[],"version":""}}"#,
+            serde_json::to_string(content).unwrap_or_else(|_| "\"\"".to_owned())
+        )
+    })
+}
+
+fn parse_file_patterns_for_hash(raw: Option<&str>) -> Vec<String> {
+    raw.and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
+        .unwrap_or_default()
+}
+
+fn clean_string(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn clean_string_array<'a>(values: impl Iterator<Item = &'a String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for value in values {
+        let Some(cleaned) = clean_string(Some(value)) else {
+            continue;
+        };
+        if out.contains(&cleaned) {
+            continue;
+        }
+        out.push(cleaned);
+    }
+    out
+}
+
+fn skill_content_for_hash(skill: &SkillRecord) -> String {
     skill
         .check_prompt
         .clone()
@@ -529,35 +659,10 @@ fn fallback_skill_content_for_hash(skill: &SkillRecord) -> String {
         .unwrap_or_default()
 }
 
-fn extract_skill_content_body(markdown: &str) -> String {
-    let mut lines = markdown.lines();
-    if lines.next().map(str::trim) != Some("---") {
-        return markdown.trim().to_owned();
-    }
-
-    let mut in_frontmatter = true;
-    let mut body_lines: Vec<&str> = Vec::new();
-    for line in markdown.lines().skip(1) {
-        if in_frontmatter {
-            if line.trim() == "---" {
-                in_frontmatter = false;
-            }
-            continue;
-        }
-        body_lines.push(line);
-    }
-
-    if in_frontmatter {
-        markdown.trim().to_owned()
-    } else {
-        body_lines.join("\n").trim().to_owned()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::ProviderRecord;
+    use crate::domain::models::ProviderRecord;
     use std::collections::HashMap;
 
     #[test]
@@ -649,6 +754,54 @@ mod tests {
         assert!(normalize_provider_payload(Some(serde_json::json!({}))).is_none());
     }
 
+    fn cloud_status(
+        logged_in: bool,
+        plan: Option<&str>,
+        team_id: Option<&str>,
+        team_name: Option<&str>,
+    ) -> CloudStatus {
+        CloudStatus {
+            logged_in,
+            email: None,
+            plan: plan.map(String::from),
+            team_id: team_id.map(String::from),
+            team_name: team_name.map(String::from),
+        }
+    }
+
+    #[test]
+    fn cloud_tier_mapping_is_shared_for_cli_surfaces() {
+        assert_eq!(
+            cloud_tier_from_status(&cloud_status(false, Some("team"), None, None)),
+            CloudTier::Free
+        );
+        assert_eq!(
+            cloud_tier_from_status(&cloud_status(true, Some("free"), None, None)),
+            CloudTier::Free
+        );
+        assert_eq!(
+            cloud_tier_from_status(&cloud_status(true, Some("pro"), None, None)),
+            CloudTier::Team
+        );
+        assert_eq!(
+            cloud_tier_from_status(&cloud_status(true, Some("team-plus"), None, None)),
+            CloudTier::TeamPlus
+        );
+        assert_eq!(
+            cloud_tier_from_status(&cloud_status(true, None, Some("team_123"), None)),
+            CloudTier::Team
+        );
+    }
+
+    #[test]
+    fn cloud_plan_label_prefers_team_name() {
+        let status = cloud_status(true, Some("team"), Some("team_123"), Some("Acme"));
+        assert_eq!(cloud_plan_label_from_status(&status), "Acme");
+
+        let fallback = cloud_status(true, Some("enterprise"), None, None);
+        assert_eq!(cloud_plan_label_from_status(&fallback), "Cloud Team Plus");
+    }
+
     #[test]
     fn sync_rule_mapping_uses_canonical_source_repo_field_only() {
         let val = serde_json::json!({
@@ -685,7 +838,34 @@ mod tests {
     }
 
     #[test]
-    fn skill_content_hash_falls_back_silently_when_skill_file_is_missing() {
+    fn team_sync_rule_mapping_prefers_content_over_description() {
+        let val = serde_json::json!({
+            "id": "team-rule-1",
+            "name": "Rule",
+            "description": "Summary",
+            "content": "Full body",
+            "origin": "conversation"
+        });
+        let mapped = map_team_synced_rule_value(&val).expect("valid team rule");
+        assert_eq!(mapped.description, "Summary");
+        assert_eq!(mapped.content, "Full body");
+        assert_eq!(mapped.origin.as_deref(), Some("conversation"));
+    }
+
+    #[test]
+    fn team_sync_rule_mapping_falls_back_to_description_for_old_clouds() {
+        let val = serde_json::json!({
+            "id": "team-rule-2",
+            "name": "Rule",
+            "description": "Summary"
+        });
+        let mapped = map_team_synced_rule_value(&val).expect("valid legacy team rule");
+        assert_eq!(mapped.content, "Summary");
+        assert_eq!(mapped.origin.as_deref(), Some("team"));
+    }
+
+    #[test]
+    fn skill_content_hash_uses_db_fields_without_skill_file() {
         let skill = SkillRecord {
             id: "missing-cloud-rule".into(),
             name: "Missing cloud rule".into(),
@@ -712,8 +892,13 @@ mod tests {
             origin: "pr_review".into(),
         };
 
+        let expected_payload = r#"{"content":"prefer check prompt for hashing","filePatterns":[],"sourceRepo":null,"tags":[],"version":"1.0.0"}"#;
+        assert_eq!(
+            rule_sync_hash_payload_json(&skill, None, "prefer check prompt for hashing"),
+            expected_payload
+        );
         let expected = {
-            let digest = sha2::Sha256::digest(b"prefer check prompt for hashing");
+            let digest = sha2::Sha256::digest(expected_payload.as_bytes());
             use std::fmt::Write as _;
             digest
                 .iter()
@@ -723,6 +908,48 @@ mod tests {
                 })
         };
 
-        assert_eq!(skill_content_hash(&skill), expected);
+        assert_eq!(skill_content_hash(&skill, None), expected);
+    }
+
+    #[test]
+    fn skill_content_hash_changes_when_scope_metadata_changes() {
+        let skill = SkillRecord {
+            id: "scoped-cloud-rule".into(),
+            name: "Scoped cloud rule".into(),
+            source: "cloud".into(),
+            directory: "missing-cloud-rule".into(),
+            version: "1.0.0".into(),
+            description: "same body".into(),
+            r#type: "review_standard".into(),
+            engines: vec![],
+            tags: vec!["origin:session_mined".into()],
+            trigger: None,
+            check_prompt: Some("same body".into()),
+            repo_owner: None,
+            repo_name: None,
+            repo_branch: None,
+            readme_url: None,
+            enabled_for_codex: true,
+            enabled_for_claude: true,
+            enabled_for_gemini: true,
+            enabled_for_cursor: true,
+            installed_at: "2026-05-11T00:00:00Z".into(),
+            updated_at: "2026-05-11T00:00:00Z".into(),
+            enforcement: None,
+            origin: "pr_review".into(),
+        };
+        let rust_scope = SyncHashScope {
+            file_patterns: vec!["src/**/*.rs".into()],
+            source_repo: Some("acme/widgets".into()),
+        };
+        let ts_scope = SyncHashScope {
+            file_patterns: vec!["packages/**/*.ts".into()],
+            source_repo: Some("acme/widgets".into()),
+        };
+
+        assert_ne!(
+            skill_content_hash(&skill, Some(&rust_scope)),
+            skill_content_hash(&skill, Some(&ts_scope))
+        );
     }
 }

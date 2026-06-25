@@ -14,13 +14,10 @@
 //! When disabled, no row enters either queue and later drain passes have
 //! nothing to upload.
 
-/// Env var documented as the telemetry capture kill-switch.
 pub const DIFFLORE_CAPTURE_ENV: &str = "DIFFLORE_CAPTURE";
 
-/// Whether telemetry capture is enabled.
-///
-/// Only the exact lowercase string `"false"` disables capture; unset
-/// and every other value leave it enabled.
+/// Whether telemetry capture is enabled. Only the exact lowercase string
+/// `"false"` disables it; unset and every other value leave it enabled.
 #[must_use]
 pub fn capture_enabled() -> bool {
     std::env::var(DIFFLORE_CAPTURE_ENV).as_deref() != Ok("false")

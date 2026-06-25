@@ -1,7 +1,9 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use crate::models::*;
+    use crate::domain::models::*;
+    use crate::infra::git::RepoScope;
+    use crate::observability::privacy::SECRET_REDACTION_PLACEHOLDER;
 
     #[test]
     fn decode_base64_table() {
@@ -164,11 +166,9 @@ body text";
         assert!(!r2.enabled);
     }
 
-    // ── remember_rule content-hash + 30s window dedup ──
-    //
-    // These tests exercise the dedup window in `remember()`: a content-hash
-    // storm inside the window collapses to a single soft-accept bump; outside
-    // the window, title/body dedup or a fresh insert still applies.
+    // remember_rule content-hash + 30s window dedup: a content-hash storm
+    // inside the window collapses to a single soft-accept bump; outside the
+    // window, title/body dedup or a fresh insert still applies.
 
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::str::FromStr;
@@ -177,7 +177,7 @@ body text";
 
     impl DedupTestEnv {
         async fn db() -> sqlx::SqlitePool {
-            let _home = crate::db::shared_test_home();
+            let _home = crate::infra::db::shared_test_home();
             let opts = SqliteConnectOptions::from_str("sqlite::memory:")
                 .unwrap()
                 .foreign_keys(true);
@@ -186,7 +186,7 @@ body text";
                 .connect_with(opts)
                 .await
                 .unwrap();
-            crate::db::run_migrations(&pool).await.unwrap();
+            crate::infra::db::run_migrations(&pool).await.unwrap();
             pool
         }
     }
@@ -290,6 +290,33 @@ body text";
             .await
             .unwrap();
         assert_eq!(ambiguous, vec!["acme/widgets".to_owned()]);
+
+        sqlx::query(
+            "INSERT INTO skills
+             (id, name, source, directory, version, description, source_repo, status)
+             VALUES (?1, ?1, 'cloud', '/tmp', '1.0.0', 'body', ?2, 'active')",
+        )
+        .bind("github-app-rule")
+        .bind("acme/app")
+        .execute(&db)
+        .await
+        .unwrap();
+        let gitlab =
+            expand_repo_scopes_with_source_aliases(&db, &["gitlab.com/acme/app".to_owned()])
+                .await
+                .unwrap();
+        assert_eq!(gitlab, vec!["gitlab.com/acme/app".to_owned()]);
+
+        let self_managed = expand_repo_scopes_with_source_aliases(
+            &db,
+            &["gitlab.corp.example/acme/app".to_owned()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            self_managed,
+            vec!["gitlab.corp.example/acme/app".to_owned()]
+        );
     }
 
     #[tokio::test]
@@ -410,6 +437,56 @@ body text";
     }
 
     #[tokio::test]
+    async fn apply_sync_result_created_updates_published_local_row_by_cloud_id() {
+        let db = DedupTestEnv::db().await;
+        sqlx::query(
+            "INSERT INTO skills \
+             (id, name, source, directory, version, description, type, engines, tags, \
+              cloud_id, enabled_for_codex, enabled_for_claude, enabled_for_gemini, enabled_for_cursor, \
+              installed_at, updated_at, origin, status) \
+             VALUES \
+             ('published-local-rule', 'Old local rule', 'local', 'published-local-rule', '0.1.0', \
+              'stale published local description', 'review_standard', '[]', '[]', \
+              'published-local-rule', 0, 1, 0, 0, \
+              '2026-05-05 00:00:00', '2026-05-05 00:00:00', 'conversation', 'active')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let mut rule = synced_rule("published-local-rule");
+        rule.name = "Fresh published rule".to_owned();
+        rule.content = "fresh cloud-edited body for a published local rule".to_owned();
+        rule.version = "2.0.0".to_owned();
+
+        apply_sync_result(
+            &db,
+            &crate::cloud::sync::SyncResult {
+                created: vec![rule],
+                updated: vec![],
+                deleted: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        let row: (String, String, String, String, i64, i64, i64) = sqlx::query_as(
+            "SELECT name, source, version, description, enabled_for_codex, enabled_for_gemini, enabled_for_cursor \
+             FROM skills WHERE id = 'published-local-rule'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "Fresh published rule");
+        assert_eq!(row.1, "local");
+        assert_eq!(row.2, "2.0.0");
+        assert_eq!(row.3, "fresh cloud-edited body for a published local rule");
+        assert_eq!(row.4, 0);
+        assert_eq!(row.5, 0);
+        assert_eq!(row.6, 0);
+    }
+
+    #[tokio::test]
     async fn apply_sync_result_updated_preserves_user_disabled_agent_toggles() {
         let db = DedupTestEnv::db().await;
         apply_sync_result(
@@ -460,6 +537,49 @@ body text";
         assert_eq!(row.2, 1);
         assert_eq!(row.3, 0);
         assert_eq!(row.4, 0);
+    }
+
+    #[tokio::test]
+    async fn apply_sync_result_updated_updates_published_local_row_by_cloud_id() {
+        let db = DedupTestEnv::db().await;
+        sqlx::query(
+            "INSERT INTO skills \
+             (id, name, source, directory, version, description, type, engines, tags, \
+              cloud_id, installed_at, updated_at, origin, status) \
+             VALUES \
+             ('published-local-updated', 'Old local rule', 'local', 'published-local-updated', '0.1.0', \
+              'stale published local description', 'review_standard', '[]', '[]', \
+              'published-local-updated', '2026-05-05 00:00:00', '2026-05-05 00:00:00', 'conversation', 'active')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let mut rule = synced_rule("published-local-updated");
+        rule.content = "cloud updated body for the already-published local rule".to_owned();
+
+        apply_sync_result(
+            &db,
+            &crate::cloud::sync::SyncResult {
+                created: vec![],
+                updated: vec![rule],
+                deleted: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        let row: (String, String) =
+            sqlx::query_as("SELECT source, description FROM skills WHERE id = ?1")
+                .bind("published-local-updated")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(row.0, "local");
+        assert_eq!(
+            row.1,
+            "cloud updated body for the already-published local rule"
+        );
     }
 
     #[tokio::test]
@@ -518,6 +638,60 @@ body text";
     }
 
     #[tokio::test]
+    async fn apply_sync_result_canonicalizes_cloud_source_repo_before_writing() {
+        let db = DedupTestEnv::db().await;
+        let mut rule = synced_rule("cloud-source-repo-canonical");
+        rule.source_repo = Some("GitLab.Corp.Example:8443/Group/Project".to_owned());
+
+        apply_sync_result(
+            &db,
+            &crate::cloud::sync::SyncResult {
+                created: vec![rule],
+                updated: vec![],
+                deleted: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        let source_repo: String =
+            sqlx::query_scalar("SELECT source_repo FROM skills WHERE id = ?1")
+                .bind("cloud-source-repo-canonical")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        assert_eq!(source_repo, "gitlab.corp.example:8443/group/project");
+    }
+
+    #[tokio::test]
+    async fn apply_sync_result_rejects_noncanonical_cloud_source_repo() {
+        let db = DedupTestEnv::db().await;
+        let mut rule = synced_rule("cloud-source-repo-invalid");
+        rule.source_repo = Some("project".to_owned());
+
+        apply_sync_result(
+            &db,
+            &crate::cloud::sync::SyncResult {
+                created: vec![rule],
+                updated: vec![],
+                deleted: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        let source_repo: Option<String> =
+            sqlx::query_scalar("SELECT source_repo FROM skills WHERE id = ?1")
+                .bind("cloud-source-repo-invalid")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        assert_eq!(source_repo, None);
+    }
+
+    #[tokio::test]
     async fn search_meta_uses_canonical_source_repo_only() {
         let db = DedupTestEnv::db().await;
         sqlx::query(
@@ -555,7 +729,7 @@ body text";
             "repo_owner/repo_name must not be reconstructed as source_repo"
         );
 
-        let health = crate::db::corpus_health(&db).await.unwrap();
+        let health = crate::infra::db::corpus_health(&db).await.unwrap();
         assert!(
             health
                 .by_source_repo
@@ -638,7 +812,10 @@ body text";
             bad_code: None,
             good_code: None,
             severity: None,
+            kind: None,
+            category: None,
             origin: None,
+            captured_by_client: None,
         }
     }
 
@@ -652,6 +829,113 @@ body text";
         assert_ne!(base, remember_content_hash("**/*.ts", "Title", "Body"));
         assert_ne!(base, remember_content_hash("**/*.rs", "Other", "Body"));
         assert_ne!(base, remember_content_hash("**/*.rs", "Title", "Other"));
+    }
+
+    #[tokio::test]
+    async fn remember_persists_capture_client() {
+        let db = DedupTestEnv::db().await;
+        let mut input = remember_input(
+            "Caller provenance rule",
+            "Remember which client captured this rule.",
+            Some(vec!["**/*.rs"]),
+        );
+        input.captured_by_client = Some(" claude-code ".to_owned());
+
+        let remembered = remember(&db, input).await.unwrap();
+        let captured: Option<String> =
+            sqlx::query_scalar("SELECT captured_by_client FROM skills WHERE id = ?1")
+                .bind(&remembered.skill.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        assert_eq!(captured.as_deref(), Some("claude-code"));
+    }
+
+    #[tokio::test]
+    async fn remember_soft_preference_uses_separate_rule_type_and_loader() {
+        let db = DedupTestEnv::db().await;
+        let mut input = remember_input(
+            "Prefer backend-first tradeoffs",
+            "When tradeoffs are unclear, prioritize backend maintainability.",
+            None,
+        );
+        input.kind = Some("soft_preference".to_owned());
+        input.category = Some("project_context".to_owned());
+
+        let remembered = remember(&db, input).await.unwrap();
+        let (rule_type, tags): (String, String) =
+            sqlx::query_as("SELECT type, tags FROM skills WHERE id = ?1")
+                .bind(&remembered.skill.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        assert_eq!(rule_type, "soft_preference");
+        assert!(tags.contains("project_context"), "tags: {tags}");
+
+        let review_rules = crate::context::rule_source::load_rules_from_db(&db)
+            .await
+            .unwrap();
+        assert!(
+            review_rules
+                .iter()
+                .all(|rule| rule.skill_id != remembered.skill.id),
+            "soft preferences must not enter precision review-rule retrieval"
+        );
+
+        let soft_preferences =
+            crate::context::rule_source::load_soft_preferences_for_engine(&db, None, &[], 10)
+                .await
+                .unwrap();
+        assert_eq!(soft_preferences.len(), 1);
+        assert_eq!(soft_preferences[0].title, "Prefer backend-first tradeoffs");
+    }
+
+    #[tokio::test]
+    async fn remember_review_rules_do_not_create_native_claude_skill_links() {
+        let db = DedupTestEnv::db().await;
+        let active = remember(
+            &db,
+            remember_input(
+                "No native link active",
+                "Active review rules stay in DiffLore recall instead of ~/.claude/skills.",
+                Some(vec!["**/*.rs"]),
+            ),
+        )
+        .await
+        .unwrap();
+        let pending = remember_as_candidate(
+            &db,
+            remember_input(
+                "No native link pending",
+                "Pending review candidates must not leak into native agent skills.",
+                Some(vec!["**/*.rs"]),
+            ),
+        )
+        .await
+        .unwrap();
+
+        let engine_dir = fs::get_engine_skills_dir("claude")
+            .expect("claude skill dir should resolve under shared test home");
+        assert!(
+            !engine_dir.join(&active.skill.directory).exists(),
+            "active review rules are served by MCP/recall, not native Claude skills"
+        );
+        assert!(
+            !engine_dir.join(&pending.skill.directory).exists(),
+            "pending review candidates must never be native Claude skills"
+        );
+
+        let local_dir = fs::skills_base_dir().unwrap().join("local");
+        assert!(
+            !local_dir.join(&active.skill.directory).exists(),
+            "active review rules are DB-only and must not create local SKILL.md mirrors"
+        );
+        assert!(
+            !local_dir.join(&pending.skill.directory).exists(),
+            "pending review candidates are DB-only and must not create local SKILL.md mirrors"
+        );
     }
 
     #[tokio::test]
@@ -772,13 +1056,25 @@ body text";
     }
 
     #[tokio::test]
-    async fn remember_redacts_raw_secretish_tokens_before_persisting() {
+    async fn remember_redacts_cloud_parity_secret_classes_before_persisting() {
         let db = DedupTestEnv::db().await;
+        let bearer = "abcdef1234567890XYZ";
+        let api_key = "A1b2C3d4E5f6G7h8";
+        let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.\
+                   eyJzdWIiOiIxMjM0NTY3ODkwIn0.\
+                   dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+        let slack = "xoxb-EXAMPLEONLY-NOTAREALTOKEN-PLACEHOLDER";
         let input = remember_input(
-            "Redact raw secret",
-            "Never store token sk-proj-abcdefghijklmnopqrstuvwxyz in review memory.",
+            "Redact stronger secret classes",
+            &format!(
+                "Never store Authorization: Bearer {bearer}, \
+                 api_key = \"{api_key}\", or jwt {jwt} in review memory."
+            ),
             Some(vec!["**/*.rs"]),
         );
+        let mut input = input;
+        input.bad_code = Some(format!("const slack = \"{slack}\";"));
+        input.good_code = Some("const slack = env_token();".to_owned());
 
         let remembered = remember(&db, input).await.unwrap();
 
@@ -786,9 +1082,23 @@ body text";
             remembered
                 .skill
                 .description
-                .contains("[redacted private content]")
+                .contains(SECRET_REDACTION_PLACEHOLDER)
         );
-        assert!(!remembered.skill.description.contains("sk-proj-"));
+        assert!(!remembered.skill.description.contains(bearer));
+        assert!(!remembered.skill.description.contains(api_key));
+        assert!(!remembered.skill.description.contains(jwt));
+
+        let skill_id = &remembered.skill.id;
+        let example = sqlx::query!(
+            "SELECT bad_code, good_code FROM rule_examples WHERE skill_id = ?1",
+            skill_id,
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert!(example.bad_code.contains(SECRET_REDACTION_PLACEHOLDER));
+        assert!(!example.bad_code.contains(slack));
+        assert_eq!(example.good_code, "const slack = env_token();");
     }
 
     #[tokio::test]
@@ -1040,17 +1350,17 @@ body text";
         assert!((change.before - 0.6).abs() < 1e-9);
         assert!((change.after - 0.65).abs() < 1e-9);
 
-        let row = sqlx::query!(
+        let row: (String, Option<f64>, Option<f64>) = sqlx::query_as(
             "SELECT kind, confidence_before, confidence_after \
-             FROM rule_events WHERE skill_id = ?1",
-            remembered.skill.id
+             FROM rule_events WHERE skill_id = ?1 AND kind = 'feedback_accept'",
         )
+        .bind(remembered.skill.id)
         .fetch_one(&db)
         .await
         .unwrap();
-        assert_eq!(row.kind, "feedback_accept");
-        assert!((row.confidence_before.unwrap() - 0.6).abs() < 1e-9);
-        assert!((row.confidence_after.unwrap() - 0.65).abs() < 1e-9);
+        assert_eq!(row.0, "feedback_accept");
+        assert!((row.1.unwrap() - 0.6).abs() < 1e-9);
+        assert!((row.2.unwrap() - 0.65).abs() < 1e-9);
     }
 
     #[tokio::test]
@@ -1085,7 +1395,7 @@ body text";
     #[tokio::test]
     async fn create_local_audits_engine_link_failure() {
         let db = DedupTestEnv::db().await;
-        let engine_dir = crate::skill_fs::get_engine_skills_dir("codex")
+        let engine_dir = fs::get_engine_skills_dir("codex")
             .expect("codex skill dir should resolve under shared test home");
         std::fs::create_dir_all(&engine_dir).unwrap();
         let blocking_entry = engine_dir.join("engine-link-audit-rule");
@@ -1098,7 +1408,7 @@ body text";
                 engines: Some(vec!["codex".to_owned()]),
                 tags: None,
                 description: Some("exercise engine-link audit path".to_owned()),
-                r#type: Some("review_standard".to_owned()),
+                r#type: Some("skill".to_owned()),
                 trigger: None,
                 check_prompt: None,
                 content: None,
@@ -1118,6 +1428,42 @@ body text";
         let metadata: serde_json::Value = serde_json::from_str(row.2.as_deref().unwrap()).unwrap();
         assert_eq!(metadata["engine"], "codex");
         assert_eq!(metadata["enabled"], true);
+    }
+
+    #[tokio::test]
+    async fn create_local_review_standard_does_not_create_engine_link() {
+        let db = DedupTestEnv::db().await;
+        let name = format!("Review Standard No Link {}", uuid::Uuid::new_v4());
+        let skill = create_local(
+            &db,
+            CreateLocalSkillInput {
+                name,
+                engines: Some(vec!["codex".to_owned()]),
+                tags: None,
+                description: Some("review rules are served by DiffLore recall".to_owned()),
+                r#type: Some("review_standard".to_owned()),
+                trigger: None,
+                check_prompt: None,
+                content: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let engine_dir = fs::get_engine_skills_dir("codex")
+            .expect("codex skill dir should resolve under shared test home");
+        assert!(
+            !engine_dir.join(&skill.directory).exists(),
+            "review_standard rows must not be exposed as native agent skills"
+        );
+        assert!(
+            !fs::skills_base_dir()
+                .unwrap()
+                .join("local")
+                .join(&skill.directory)
+                .exists(),
+            "review_standard rows must be DB-only and must not create local SKILL.md mirrors"
+        );
     }
 
     #[tokio::test]
@@ -1141,10 +1487,7 @@ body text";
         .await
         .unwrap();
 
-        let skill_dir = crate::skill_fs::skills_base_dir()
-            .unwrap()
-            .join("local")
-            .join(&slug);
+        let skill_dir = fs::skills_base_dir().unwrap().join("local").join(&slug);
         let _ = std::fs::remove_dir_all(&skill_dir);
 
         let err = create_local(
@@ -1352,10 +1695,20 @@ body text";
             "after promote, the rule must be served by MCP"
         );
 
-        // Reject removes the row entirely.
-        let extra = remember_as_candidate(&db, remember_input("Reject me", "Body C", None))
-            .await
-            .unwrap();
+        // Reject removes the row entirely AND tombstones its content_hash so
+        // a later import can't resurrect the rejected draft.
+        let extra = remember_as_candidate(
+            &db,
+            remember_input("Reject me", "Body C", Some(vec!["**/*.rs"])),
+        )
+        .await
+        .unwrap();
+        let extra_hash: String =
+            sqlx::query_scalar("SELECT content_hash FROM skills WHERE id = ?1")
+                .bind(&extra.skill.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
         reject_candidate(&db, &extra.skill.id).await.unwrap();
         let exists =
             sqlx::query_scalar!("SELECT COUNT(*) FROM skills WHERE id = ?1", extra.skill.id)
@@ -1363,6 +1716,444 @@ body text";
                 .await
                 .unwrap();
         assert_eq!(exists, 0, "reject_candidate must delete the row");
+        let tombstoned: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM rejected_signatures WHERE content_hash = ?1")
+                .bind(&extra_hash)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            tombstoned, 1,
+            "reject_candidate must tombstone the rejected content_hash"
+        );
+    }
+
+    #[tokio::test]
+    async fn is_rejected_signature_tracks_reject_lifecycle() {
+        let db = DedupTestEnv::db().await;
+
+        let input = remember_input(
+            "Tombstone lookup rule",
+            "This exact content must stay rejected once the user rejects it.",
+            Some(vec!["**/*.rs"]),
+        );
+        // A DIFFERENT content input must stay false throughout.
+        let other = remember_input(
+            "Unrelated rule",
+            "A completely different rule body that was never rejected.",
+            Some(vec!["**/*.ts"]),
+        );
+
+        let candidate = remember_as_candidate(&db, input.clone()).await.unwrap();
+
+        // Before reject: not tombstoned.
+        assert!(
+            !is_rejected_signature(&db, &input).await.unwrap(),
+            "a freshly created candidate must not read as rejected"
+        );
+        assert!(
+            !is_rejected_signature(&db, &other).await.unwrap(),
+            "an unrelated input must not read as rejected"
+        );
+
+        reject_candidate(&db, &candidate.skill.id).await.unwrap();
+
+        // After reject: the same content is tombstoned, the other stays clean.
+        assert!(
+            is_rejected_signature(&db, &input).await.unwrap(),
+            "rejected content must read as rejected"
+        );
+        assert!(
+            !is_rejected_signature(&db, &other).await.unwrap(),
+            "different content must stay un-rejected after an unrelated reject"
+        );
+    }
+
+    #[tokio::test]
+    async fn remember_as_candidate_dedup_stays_within_pending_trust_tier() {
+        let db = DedupTestEnv::db().await;
+
+        let active = remember(
+            &db,
+            remember_input(
+                "Trust partition rule",
+                "Identical body must not let an untrusted draft strengthen an active rule.",
+                Some(vec!["**/*.rs"]),
+            ),
+        )
+        .await
+        .unwrap();
+        let active_id = active.skill.id.clone();
+
+        let pending = remember_as_candidate(
+            &db,
+            remember_input(
+                "Trust partition rule",
+                "Identical body must not let an untrusted draft strengthen an active rule.",
+                Some(vec!["**/*.rs"]),
+            ),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !pending.deduped,
+            "candidate capture must not dedup into the active trust tier"
+        );
+        assert_ne!(pending.skill.id, active_id);
+        let active_confidence: f64 = sqlx::query_scalar!(
+            "SELECT confidence_score FROM skills WHERE id = ?1",
+            active_id
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert!(
+            (active_confidence - 0.60).abs() < 1e-9,
+            "active rule should not be strengthened by pending candidate dedup, got {active_confidence}"
+        );
+
+        let pending_again = remember_as_candidate(
+            &db,
+            remember_input(
+                "Trust partition rule",
+                "Identical body must not let an untrusted draft strengthen an active rule.",
+                Some(vec!["**/*.rs"]),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(
+            pending_again.deduped,
+            "candidate capture should still dedup within pending tier"
+        );
+        assert_eq!(pending_again.skill.id, pending.skill.id);
+        let pending_status =
+            sqlx::query_scalar!("SELECT status FROM skills WHERE id = ?1", pending.skill.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(pending_status, "pending");
+
+        let promote_err = promote_candidate(&db, &pending.skill.id)
+            .await
+            .expect_err("approving an exact active duplicate should fail closed");
+        assert!(
+            promote_err.to_string().contains("duplicates active rule"),
+            "duplicate approval error should name the active conflict: {promote_err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reimport_of_promoted_rule_dedups_into_active_without_forking() {
+        // Regression for the import re-mine footgun's second face: a HIGH-
+        // confidence review comment is auto-promoted to `active` on first import.
+        // The same comment on the next `import-reviews` run must dedup into the
+        // approved rule, NOT fork a fresh pending draft — which would then trip
+        // `promote_candidate`'s "duplicates active rule" guard and abort the
+        // whole import. Import-origin only; the conversation trust tier (tested
+        // above) is deliberately left untouched.
+        let db = DedupTestEnv::db().await;
+
+        let mut first_input = remember_input(
+            "No raw SQL in handlers",
+            "Use the query builder instead of string-concatenated SQL.",
+            Some(vec!["**/*.rs"]),
+        );
+        first_input.origin = Some("pr_review".to_owned());
+        let first = remember_as_candidate_with_confidence(&db, first_input, 0.9_f32)
+            .await
+            .unwrap();
+        assert!(!first.deduped, "first import must create a fresh draft");
+        promote_candidate(&db, &first.skill.id).await.unwrap();
+
+        let active_confidence: f64 =
+            sqlx::query_scalar("SELECT confidence_score FROM skills WHERE id = ?1")
+                .bind(&first.skill.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        let mut second_input = remember_input(
+            "No raw SQL in handlers",
+            "Use the query builder instead of string-concatenated SQL.",
+            Some(vec!["**/*.rs"]),
+        );
+        second_input.origin = Some("pr_review".to_owned());
+        let second = remember_as_candidate_with_confidence(&db, second_input, 0.9_f32)
+            .await
+            .unwrap();
+
+        assert!(
+            second.deduped,
+            "re-importing an already-active rule must dedup, not fork a new draft"
+        );
+        assert!(
+            second.matched_existing_active,
+            "the dedup must be flagged as an untouched active match, not a strengthen"
+        );
+        assert_eq!(
+            second.skill.id, first.skill.id,
+            "re-import must dedup into the existing active rule"
+        );
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM skills")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "re-import must not create a duplicate skills row");
+
+        let (status, confidence_after): (String, f64) =
+            sqlx::query_as("SELECT status, confidence_score FROM skills WHERE id = ?1")
+                .bind(&first.skill.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            status, "active",
+            "the approved rule's status must be untouched"
+        );
+        assert!(
+            (active_confidence - confidence_after).abs() < 1e-9,
+            "re-import must not inflate the approved rule's confidence"
+        );
+    }
+
+    #[tokio::test]
+    async fn pr_review_semantic_dedup_merges_same_repo_pending_candidates() {
+        let db = DedupTestEnv::db().await;
+        let repo = RepoScope::canonical("owner/repo").expect("canonical repo");
+
+        let mut first = remember_input(
+            "Review: Avoid leaking secrets into logs",
+            "Rule:\nWhen touching `src/**/*.ts`, avoid logging Authorization headers or API tokens.\n\nSource evidence:\nSource: owner/repo#1",
+            Some(vec!["src/**/*.ts"]),
+        );
+        first.origin = Some("pr_review".to_owned());
+        let first_outcome =
+            remember_as_candidate_with_confidence_for_repo(&db, first, 0.55_f32, &repo)
+                .await
+                .unwrap();
+        assert!(
+            !first_outcome.deduped,
+            "first same-repo semantic candidate should insert"
+        );
+
+        let stored_repo: Option<String> =
+            sqlx::query_scalar("SELECT source_repo FROM skills WHERE id = ?1")
+                .bind(&first_outcome.skill.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            stored_repo.as_deref(),
+            Some("owner/repo"),
+            "repo scope must be written at insert time"
+        );
+
+        let mut second = remember_input(
+            "Review: Do not log API tokens",
+            "Rule:\nWhen touching `src/**/*.ts`, never include API tokens or Authorization headers in logs.\n\nSource evidence:\nSource: owner/repo#2",
+            Some(vec!["src/**/*.ts"]),
+        );
+        second.origin = Some("pr_review".to_owned());
+        let second_outcome =
+            remember_as_candidate_with_confidence_for_repo(&db, second, 0.55_f32, &repo)
+                .await
+                .unwrap();
+
+        assert!(
+            second_outcome.deduped,
+            "near-duplicate pr_review candidates in the same repo should merge"
+        );
+        assert_eq!(second_outcome.skill.id, first_outcome.skill.id);
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM skills")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "semantic dedup must not create a second row");
+    }
+
+    #[tokio::test]
+    async fn pr_review_semantic_dedup_does_not_cross_repo_scope() {
+        let db = DedupTestEnv::db().await;
+        let first_repo = RepoScope::canonical("owner/repo").expect("canonical repo");
+        let second_repo = RepoScope::canonical("other/repo").expect("canonical repo");
+
+        let mut first = remember_input(
+            "Review: Avoid leaking secrets into logs",
+            "Rule:\nWhen touching `src/**/*.ts`, avoid logging Authorization headers or API tokens.",
+            Some(vec!["src/**/*.ts"]),
+        );
+        first.origin = Some("pr_review".to_owned());
+        let first_outcome =
+            remember_as_candidate_with_confidence_for_repo(&db, first, 0.55_f32, &first_repo)
+                .await
+                .unwrap();
+
+        let mut second = remember_input(
+            "Review: Do not log API tokens",
+            "Rule:\nWhen touching `src/**/*.ts`, never include API tokens or Authorization headers in logs.",
+            Some(vec!["src/**/*.ts"]),
+        );
+        second.origin = Some("pr_review".to_owned());
+        let second_outcome =
+            remember_as_candidate_with_confidence_for_repo(&db, second, 0.55_f32, &second_repo)
+                .await
+                .unwrap();
+
+        assert!(
+            !second_outcome.deduped,
+            "semantic dedup must not merge across source_repo"
+        );
+        assert_ne!(second_outcome.skill.id, first_outcome.skill.id);
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM skills")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn pr_review_semantic_dedup_respects_language_scope() {
+        let db = DedupTestEnv::db().await;
+        let repo = RepoScope::canonical("owner/repo").expect("canonical repo");
+
+        let mut first = remember_input(
+            "Review: Avoid leaking secrets into logs",
+            "Rule:\nWhen touching `src/**/*.ts`, avoid logging Authorization headers or API tokens.",
+            Some(vec!["src/**/*.ts"]),
+        );
+        first.origin = Some("pr_review".to_owned());
+        remember_as_candidate_with_confidence_for_repo(&db, first, 0.55_f32, &repo)
+            .await
+            .unwrap();
+
+        let mut second = remember_input(
+            "Review: Avoid leaking secrets into logs",
+            "Rule:\nWhen touching `cmd/**/*.go`, avoid logging Authorization headers or API tokens.",
+            Some(vec!["cmd/**/*.go"]),
+        );
+        second.origin = Some("pr_review".to_owned());
+        let second_outcome =
+            remember_as_candidate_with_confidence_for_repo(&db, second, 0.55_f32, &repo)
+                .await
+                .unwrap();
+
+        assert!(
+            !second_outcome.deduped,
+            "same-title rules with incompatible language scopes must stay separate"
+        );
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM skills")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn pr_review_semantic_dedup_matches_active_without_forking_pending() {
+        let db = DedupTestEnv::db().await;
+        let repo = RepoScope::canonical("owner/repo").expect("canonical repo");
+
+        let mut first = remember_input(
+            "Review: Avoid leaking secrets into logs",
+            "Rule:\nWhen touching `src/**/*.ts`, avoid logging Authorization headers or API tokens.",
+            Some(vec!["src/**/*.ts"]),
+        );
+        first.origin = Some("pr_review".to_owned());
+        let first_outcome =
+            remember_as_candidate_with_confidence_for_repo(&db, first, 0.9_f32, &repo)
+                .await
+                .unwrap();
+        promote_candidate(&db, &first_outcome.skill.id)
+            .await
+            .unwrap();
+        let confidence_before: f64 =
+            sqlx::query_scalar("SELECT confidence_score FROM skills WHERE id = ?1")
+                .bind(&first_outcome.skill.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        let mut second = remember_input(
+            "Review: Do not log API tokens",
+            "Rule:\nWhen touching `src/**/*.ts`, never include API tokens or Authorization headers in logs.",
+            Some(vec!["src/**/*.ts"]),
+        );
+        second.origin = Some("pr_review".to_owned());
+        let second_outcome =
+            remember_as_candidate_with_confidence_for_repo(&db, second, 0.55_f32, &repo)
+                .await
+                .unwrap();
+
+        assert!(second_outcome.deduped);
+        assert!(
+            second_outcome.matched_existing_active,
+            "semantic duplicate of an active imported rule should be reported as already covered"
+        );
+        assert_eq!(second_outcome.skill.id, first_outcome.skill.id);
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM skills")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+        let confidence_after: f64 =
+            sqlx::query_scalar("SELECT confidence_score FROM skills WHERE id = ?1")
+                .bind(&first_outcome.skill.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(
+            (confidence_before - confidence_after).abs() < 1e-9,
+            "active semantic match should not inflate confidence"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_mined_capture_does_not_match_into_active_rule() {
+        // The active-match shortcut is scoped to the review-import origin only.
+        // A session_mined capture whose content hashes identically to an active
+        // rule must NOT be silently collapsed into it: session candidates carry
+        // their own repo scope + approval flow, and swallowing one into a
+        // same-hash active rule of a different repo would drop it without ever
+        // serving it where it came from. It keeps the original pending-tier
+        // behavior (a fresh, separate draft).
+        let db = DedupTestEnv::db().await;
+
+        let mut active_input = remember_input(
+            "No raw SQL in handlers",
+            "Use the query builder instead of string-concatenated SQL.",
+            Some(vec!["**/*.rs"]),
+        );
+        active_input.origin = Some("pr_review".to_owned());
+        let active = remember_as_candidate_with_confidence(&db, active_input, 0.9_f32)
+            .await
+            .unwrap();
+        promote_candidate(&db, &active.skill.id).await.unwrap();
+
+        let mut session_input = remember_input(
+            "No raw SQL in handlers",
+            "Use the query builder instead of string-concatenated SQL.",
+            Some(vec!["**/*.rs"]),
+        );
+        session_input.origin = Some("session_mined".to_owned());
+        let session = remember_as_candidate_with_confidence(&db, session_input, 0.9_f32)
+            .await
+            .unwrap();
+
+        assert!(
+            !session.deduped,
+            "a session_mined capture must not dedup into an active rule via the import shortcut"
+        );
+        assert!(
+            !session.matched_existing_active,
+            "session_mined must not be flagged as an active match"
+        );
+        assert_ne!(
+            session.skill.id, active.skill.id,
+            "session_mined must create its own row, not collapse into the active rule"
+        );
     }
 
     #[tokio::test]
@@ -1386,7 +2177,7 @@ body text";
         .await
         .unwrap();
 
-        let candidates = list_candidates(&db, Some("acme/widgets"), None)
+        let candidates = list_candidates(&db, Some("ACME/Widgets"), None)
             .await
             .unwrap();
         let ids: std::collections::HashSet<&str> = candidates
@@ -1399,10 +2190,17 @@ body text";
             "repo_owner/repo_name must not satisfy the canonical source_repo filter"
         );
         assert_eq!(
-            count_pending_candidates(&db, Some("acme/widgets"))
+            count_pending_candidates(&db, Some("ACME/Widgets"))
                 .await
                 .unwrap(),
             1
+        );
+        assert_eq!(
+            candidates
+                .iter()
+                .find(|candidate| candidate.id == "pending-canonical-repo")
+                .and_then(|candidate| candidate.source_repo.as_deref()),
+            Some("acme/widgets")
         );
     }
 
@@ -1583,7 +2381,7 @@ body text";
         // corpus_health (the doctor / rules-explain stats helper) must
         // also exclude pending — the dashboard's "growth" view leaked
         // candidates before this fix.
-        let h = crate::db::corpus_health(&db).await.unwrap();
+        let h = crate::infra::db::corpus_health(&db).await.unwrap();
         assert_eq!(h.total, 1, "corpus_health.total must exclude pending");
         let conv_corpus = h
             .by_origin

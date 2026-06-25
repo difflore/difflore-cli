@@ -1,108 +1,91 @@
 //! Pull recent user-prompt / assistant-text pairs out of a platform
-//! transcript so the gate can mine them.
-//!
-//! Mirrors hivemind's `src/skillify/extractors/` — strips tool calls,
-//! thinking blocks, and other agentic scaffolding so what reaches the
-//! gate is the *conversation*, not the framework noise. Anything that
-//! couldn't have come from a human user or the assistant's final
-//! reply is dropped.
+//! transcript so the gate can mine them. Strips tool calls, thinking blocks,
+//! and other agentic scaffolding so only the conversation reaches the gate.
 //!
 //! Platform support today:
 //!
-//! * Claude Code — JSONL transcript at `transcript_path` (provided in
-//!   the hook stdin payload). Full implementation here.
-//! * Cursor / Gemini / Windsurf — return `Ok(vec![])`. TODO: each
-//!   platform stores its conversation history differently and we
-//!   haven't done the adapter work yet. The downstream worker simply
-//!   skips empty pairs, so a session-mine fire on an unsupported
-//!   platform is a no-op rather than an error.
+//! * Claude Code — JSONL transcript at `transcript_path` (from the hook stdin
+//!   payload). Full implementation here.
+//! * Cursor / Gemini / Windsurf — return `Ok(vec![])` (adapters not yet
+//!   written). The worker skips empty pairs, so this is a no-op, not an error.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// One conversation pair handed to the gate. `user_prompt` is the
-/// most recent user message before the assistant turn, and
-/// `assistant_text` is the assistant's reply *with tool calls /
-/// thinking blocks stripped*.
+/// One conversation pair handed to the gate. `user_prompt` is the user message
+/// before the assistant turn; `assistant_text` is the reply with tool calls and
+/// thinking blocks stripped.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Pair {
     pub user_prompt: String,
     pub assistant_text: String,
 }
 
-/// Hard cap on a single pair (user + assistant combined). Anything
-/// beyond this is truncated with an ellipsis marker so the gate
-/// payload stays bounded even if the user pasted a huge log.
+/// Hard cap on a single pair (user + assistant combined); beyond this is
+/// truncated with an ellipsis so the gate payload stays bounded.
 pub const PAIR_MAX_CHARS: usize = 2_000;
 
-/// Hard cap on the entire extraction (sum of all pairs). Aligns with
-/// a ~10 K-token gate budget after JSON envelope overhead.
+/// Hard cap on the entire extraction (sum of all pairs). Aligns with a
+/// ~10 K-token gate budget after JSON envelope overhead.
 pub const TOTAL_MAX_CHARS: usize = 40_000;
 
-/// Source platform discriminator. We only have a complete extractor
-/// for Claude Code right now; the rest return empty so the worker
-/// can no-op on unsupported transcripts without surfacing an error.
+/// Source platform discriminator. Only Claude Code has a complete extractor;
+/// the rest return empty so the worker no-ops on unsupported transcripts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
     ClaudeCode,
     Cursor,
     GeminiCli,
     Windsurf,
+    Unknown,
 }
 
 impl Platform {
-    /// Best-effort lookup by the canonical platform name string the
-    /// hook adapter reports.
+    /// Look up the platform by the name string the hook adapter reports.
     pub fn from_client_name(client: &str) -> Self {
         match client.to_ascii_lowercase().as_str() {
             "cursor" => Self::Cursor,
             "gemini-cli" | "gemini_cli" | "gemini" => Self::GeminiCli,
             "windsurf" => Self::Windsurf,
-            _ => Self::ClaudeCode,
+            "claude-code" | "claude_code" | "claude" => Self::ClaudeCode,
+            _ => Self::Unknown,
         }
     }
 }
 
-/// Inputs accepted by [`extract_recent_session_pairs`]. Bundled so
-/// future platforms can opt into extra fields (e.g. a separate
-/// session DB handle for Cursor) without breaking call sites.
+/// Inputs accepted by [`extract_recent_session_pairs`]. Bundled so future
+/// platforms can add fields without breaking call sites.
 #[derive(Debug, Clone, Copy)]
 pub struct ExtractArgs<'a> {
     pub platform: Platform,
-    /// Path to the platform's transcript JSONL (Claude Code) or
-    /// equivalent. May be missing for older hook payloads.
+    /// Path to the platform's transcript JSONL (Claude Code) or equivalent.
+    /// May be missing for older hook payloads.
     pub transcript_path: Option<&'a str>,
-    /// Hook session id. Used for trace logging today; future
-    /// platforms may key extraction off this.
+    /// Hook session id, used for trace logging.
     pub session_id: Option<&'a str>,
-    /// Upper bound on pair count. The worker passes a small number
-    /// (typically 10) so the gate has a tight context.
+    /// Upper bound on pair count (the worker passes ~10).
     pub max_pairs: usize,
 }
 
-/// Read the recent session pairs from the configured transcript and
-/// strip framework noise. Returns an empty vec when the transcript
-/// is missing, malformed, or the platform isn't yet supported — the
-/// worker downstream short-circuits on `is_empty()`.
+/// Read the recent session pairs from the transcript and strip framework noise.
+/// Returns an empty vec when the transcript is missing, malformed, or the
+/// platform isn't supported; the worker short-circuits on `is_empty()`.
 pub fn extract_recent_session_pairs(args: ExtractArgs<'_>) -> std::io::Result<Vec<Pair>> {
     if args.max_pairs == 0 {
         return Ok(Vec::new());
     }
     match args.platform {
         Platform::ClaudeCode => extract_from_claude_code(&args),
-        // TODO(extract): wire Cursor / Gemini / Windsurf transcripts
-        // — each platform stores conversation history differently
-        // and the adapter work is out of scope for this scaffold
-        // PR. Empty result == worker no-op, which is the safe
-        // default until the adapters land.
+        // TODO(extract): wire Cursor / Gemini / Windsurf transcripts. Empty
+        // result == worker no-op, the safe default until the adapters land.
         _ => Ok(Vec::new()),
     }
 }
 
-/// Cap hook-supplied transcript reads. Only the most recent pairs are needed,
-/// so reading the tail is sufficient; a truncated first line is skipped.
+/// Cap on hook-supplied transcript reads. Only recent pairs are needed, so
+/// reading the tail is sufficient; a truncated first line is skipped.
 const MAX_TRANSCRIPT_BYTES: u64 = 32 * 1024 * 1024;
 
-fn read_transcript_tail_capped(path: &str) -> std::io::Result<String> {
+fn read_transcript_tail_capped(path: &Path) -> std::io::Result<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
@@ -114,11 +97,35 @@ fn read_transcript_tail_capped(path: &str) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// Claude Code: transcript is JSONL, one event per line, identical
-/// shape to the file `hook_runtime::stated_vs_actual` already
-/// consumes. We re-implement the walk (rather than calling the
-/// existing helper) because we need *user + assistant pairs* in
-/// order, not just the last assistant blob.
+fn allowed_transcript_roots(platform: Platform) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if platform == Platform::ClaudeCode
+        && let Some(home) = dirs::home_dir()
+    {
+        roots.push(home.join(".claude").join("projects"));
+    }
+    #[cfg(test)]
+    roots.push(std::env::temp_dir());
+    roots
+}
+
+fn canonical_allowed_transcript_path(platform: Platform, transcript_path: &str) -> Option<PathBuf> {
+    let path = Path::new(transcript_path);
+    if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+        return None;
+    }
+    let canonical_path = path.canonicalize().ok()?;
+    allowed_transcript_roots(platform)
+        .into_iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .any(|root| canonical_path.starts_with(root))
+        .then_some(canonical_path)
+}
+
+/// Claude Code: JSONL transcript, one event per line (same shape as
+/// `hook::runtime::drift_report` consumes). Re-implements the walk rather
+/// than reusing that helper because we need ordered user+assistant pairs, not
+/// just the last assistant blob.
 fn extract_from_claude_code(args: &ExtractArgs<'_>) -> std::io::Result<Vec<Pair>> {
     let Some(transcript_path) = args.transcript_path else {
         return Ok(Vec::new());
@@ -126,11 +133,12 @@ fn extract_from_claude_code(args: &ExtractArgs<'_>) -> std::io::Result<Vec<Pair>
     if transcript_path.trim().is_empty() {
         return Ok(Vec::new());
     }
-    if !Path::new(transcript_path).exists() {
+    let Some(transcript_path) = canonical_allowed_transcript_path(args.platform, transcript_path)
+    else {
         return Ok(Vec::new());
-    }
+    };
 
-    let body = read_transcript_tail_capped(transcript_path)?;
+    let body = read_transcript_tail_capped(&transcript_path)?;
     let mut pending_user: Option<String> = None;
     let mut pairs: Vec<Pair> = Vec::new();
     let mut total_chars: usize = 0;
@@ -155,21 +163,18 @@ fn extract_from_claude_code(args: &ExtractArgs<'_>) -> std::io::Result<Vec<Pair>
                     continue;
                 }
                 let Some(user_prompt) = pending_user.take() else {
-                    // Assistant turn without a preceding user turn —
-                    // typically a system-initiated event. Skip.
+                    // Assistant turn with no preceding user turn (system event).
                     continue;
                 };
                 if user_prompt.trim().is_empty() {
                     continue;
                 }
                 let pair = build_capped_pair(&user_prompt, &assistant_text);
-                let pair_len = pair.user_prompt.chars().count()
-                    + pair.assistant_text.chars().count();
+                let pair_len =
+                    pair.user_prompt.chars().count() + pair.assistant_text.chars().count();
                 if total_chars.saturating_add(pair_len) > TOTAL_MAX_CHARS {
-                    // Stop collecting once we'd blow the total budget.
-                    // Keeping the earlier pairs is fine — the gate
-                    // will see a coherent prefix instead of a
-                    // truncated tail.
+                    // Stop before blowing the budget; the earlier pairs form a
+                    // coherent prefix rather than a truncated tail.
                     break;
                 }
                 total_chars += pair_len;
@@ -192,11 +197,9 @@ enum Role {
 }
 
 fn row_role(value: &serde_json::Value) -> Option<Role> {
-    // Claude Code marks the row type two ways depending on version:
-    // `"type":"user"|"assistant"` at the top level and/or
-    // `"message":{"role":"user"|"assistant"}` nested. Mirror the
-    // logic in `stated_vs_actual::read_last_assistant_text` so the
-    // two readers don't diverge.
+    // Claude Code marks the row type two ways depending on version: top-level
+    // `"type"` and/or nested `"message":{"role":...}`. Mirrors
+    // `drift_report::read_last_assistant_text` so the readers don't diverge.
     let top = value.get("type").and_then(serde_json::Value::as_str);
     let nested = value
         .get("message")
@@ -210,9 +213,8 @@ fn row_role(value: &serde_json::Value) -> Option<Role> {
     }
 }
 
-/// Extract the conversational text from a Claude Code message row,
-/// stripping tool calls and thinking blocks. Returns `None` when the
-/// message has no usable text (e.g. a pure tool_use row).
+/// Extract conversational text from a Claude Code message row, stripping tool
+/// calls and thinking blocks. Returns `None` for a row with no usable text.
 fn extract_text_content(value: &serde_json::Value) -> Option<String> {
     let content = value.get("message").and_then(|m| m.get("content"))?;
     if let Some(s) = content.as_str() {
@@ -225,10 +227,8 @@ fn extract_text_content(value: &serde_json::Value) -> Option<String> {
             .get("type")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
-        // Drop anything that isn't a plain conversational text part.
-        // `tool_use` / `tool_result` are framework noise; `thinking`
-        // is the reasoning trace and must never leave the local
-        // machine via the gate payload (privacy + relevance).
+        // Keep only plain text parts. `thinking` is the reasoning trace and
+        // must never leave the local machine via the gate payload.
         if part_type != "text" {
             continue;
         }
@@ -287,10 +287,8 @@ mod tests {
 
     #[test]
     fn missing_transcript_path_returns_empty_not_error() {
-        // The hook may invoke session-mine before the transcript file
-        // exists on disk (Claude Code can lag on first turn). We must
-        // not bubble up an io::Error — empty result + no-op is the
-        // intended degraded mode.
+        // The hook may fire before the transcript exists on disk; that must
+        // degrade to empty + no-op, not an io::Error.
         let args = cc_args(None, 10);
         let pairs = extract_recent_session_pairs(args).expect("no panic");
         assert!(pairs.is_empty());
@@ -302,8 +300,7 @@ mod tests {
 
     #[test]
     fn extracts_pairs_in_order_and_strips_tool_calls() {
-        // Two turns, each with a tool_use part interleaved. The
-        // extractor must keep only the text parts and pair them
+        // Two turns with interleaved tool_use parts; keep only text, paired
         // with the preceding user prompt.
         let f = write_jsonl(&[
             r#"{"type":"user","message":{"role":"user","content":"please fix the bug"}}"#,
@@ -322,10 +319,8 @@ mod tests {
 
     #[test]
     fn drops_thinking_blocks_from_assistant_text() {
-        // Hard contract: thinking content MUST NOT leave the local
-        // machine via the gate payload. A regression that lets a
-        // `"type":"thinking"` part through would leak the agent's
-        // internal reasoning to the gate provider.
+        // Hard contract: thinking content MUST NOT reach the gate payload —
+        // a leak would expose the agent's internal reasoning to the provider.
         let f = write_jsonl(&[
             r#"{"type":"user","message":{"role":"user","content":"q"}}"#,
             r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"private chain-of-thought"},{"type":"text","text":"final answer"}]}}"#,
@@ -335,9 +330,7 @@ mod tests {
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].assistant_text, "final answer");
         assert!(
-            !pairs[0]
-                .assistant_text
-                .contains("private chain-of-thought"),
+            !pairs[0].assistant_text.contains("private chain-of-thought"),
             "thinking blocks must never reach the gate"
         );
     }
@@ -361,9 +354,8 @@ mod tests {
 
     #[test]
     fn empty_assistant_text_pair_is_dropped() {
-        // A row with only tool_use parts produces empty assistant
-        // text — nothing for the gate to mine. Pair must be skipped
-        // entirely (not emitted with an empty string field).
+        // A row with only tool_use parts has empty assistant text; the pair
+        // must be skipped, not emitted with an empty string field.
         let f = write_jsonl(&[
             r#"{"type":"user","message":{"role":"user","content":"go"}}"#,
             r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Edit","input":{}}]}}"#,
@@ -375,12 +367,24 @@ mod tests {
 
     #[test]
     fn cursor_platform_returns_empty_until_adapter_lands() {
-        // Document the TODO platform behaviour so a future adapter
-        // PR has to explicitly update this test rather than silently
-        // changing the contract.
+        // Locks in the no-adapter contract so a future adapter must update
+        // this test rather than silently changing behaviour.
         let args = ExtractArgs {
             platform: Platform::Cursor,
             transcript_path: Some("/tmp/whatever"),
+            session_id: Some("sess"),
+            max_pairs: 10,
+        };
+        let pairs = extract_recent_session_pairs(args).expect("ok");
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
+    fn unknown_platform_returns_empty_instead_of_parsing_as_claude_code() {
+        assert_eq!(Platform::from_client_name("new-agent"), Platform::Unknown);
+        let args = ExtractArgs {
+            platform: Platform::from_client_name("new-agent"),
+            transcript_path: Some("/tmp/whatever.jsonl"),
             session_id: Some("sess"),
             max_pairs: 10,
         };

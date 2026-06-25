@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -80,8 +82,7 @@ pub async fn resolve_rule_id_by_name(
 
     // 2) Normalized prefix match, same ranking. Handles names like
     //    "headChar returns wrong byte" matching
-    //    "headChar returns wrong byte (off-by-one)" — see the
-    //    polish-surface scan finding #1 for the real-world sample.
+    //    "headChar returns wrong byte (off-by-one)".
     let prefix: Result<Option<String>, _> = sqlx::query_scalar(
         "SELECT id FROM skills \
          WHERE LOWER(name) LIKE LOWER(?1) || '%' AND status = 'active' \
@@ -196,19 +197,72 @@ pub async fn record_many(pool: &SqlitePool, inputs: &[FixOutcomeInput<'_>]) -> c
     Ok(())
 }
 
+/// Default minimum ACCEPTED outcomes a rule needs before its realized
+/// apply-clean rate is allowed to influence ranking. Below this, one lucky or
+/// unlucky outcome would swing the multiplier, so the rule stays neutral.
+pub const EFFECTIVENESS_MIN_SAMPLES: i64 = 3;
+
+/// One row of [`rule_effectiveness_map`].
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct RuleEffectivenessRow {
+    rule_id: String,
+    apply_rate: f64,
+}
+
+/// Per-rule realized effectiveness, keyed by `rule_id`, for retrieval ranking.
+///
+/// The value is the rule's APPLY-CLEAN rate AMONG ACCEPTED fixes: of the
+/// outcomes the user accepted, the fraction that also applied cleanly
+/// (`COALESCE(applied_ok, 1) = 1`). It is deliberately CONDITIONED on
+/// `accepted = 1`, which makes it orthogonal to the stored `confidence_score`:
+/// confidence already encodes accept-vs-reject (`update_confidence` nudges
+/// +0.05 on accept, −0.1 on reject) but never looks at `applied_ok`, so this
+/// captures a different dimension — "when accepted, did the fix actually
+/// apply?" — instead of re-counting acceptance. A rule whose accepted fixes
+/// keep failing to apply scores low; a rule whose accepted fixes apply cleanly
+/// scores high. Only rules with at least `min_samples` ACCEPTED outcomes are
+/// returned, so a single outcome can't move ranking.
+///
+/// Callers fold it in as a small, capped, reward-only multiplier — see
+/// retrieval's `apply_effectiveness_weight` — so it nudges apply-reliable rules
+/// without re-rewarding the acceptance that confidence already covers.
+pub async fn rule_effectiveness_map(
+    pool: &SqlitePool,
+    min_samples: i64,
+) -> crate::Result<HashMap<String, f64>> {
+    let min_samples = min_samples.max(1);
+    // Runtime `query_as` keeps this optional ranking input independent of the
+    // offline SQLx cache (matches `split_summary`).
+    let rows = sqlx::query_as::<_, RuleEffectivenessRow>(
+        r"SELECT
+            rule_id AS rule_id,
+            AVG(CASE WHEN COALESCE(applied_ok, 1) = 1 THEN 1.0 ELSE 0.0 END) AS apply_rate
+          FROM fix_outcomes
+          WHERE rule_id IS NOT NULL AND TRIM(rule_id) <> '' AND accepted = 1
+          GROUP BY rule_id
+          HAVING COUNT(*) >= ?1",
+    )
+    .bind(min_samples)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.rule_id, row.apply_rate))
+        .collect())
+}
+
 pub async fn summary(pool: &SqlitePool, days: i64) -> crate::Result<FixOutcomeSummary> {
     let days = days.max(1);
     let window = format!("-{days} days");
-    let row = sqlx::query_as!(
-        FixOutcomeSummary,
-        r#"SELECT
-            COALESCE(SUM(CASE WHEN accepted = 1 AND applied_ok = 1 THEN 1 ELSE 0 END), 0) AS "applied!: i64",
-            COALESCE(SUM(CASE WHEN accepted = 1 AND applied_ok = 0 THEN 1 ELSE 0 END), 0) AS "failed!: i64",
-            COALESCE(SUM(CASE WHEN accepted = 0 THEN 1 ELSE 0 END), 0) AS "rejected!: i64"
+    let row = sqlx::query_as::<_, FixOutcomeSummary>(
+        r"SELECT
+            COALESCE(SUM(CASE WHEN accepted = 1 AND COALESCE(applied_ok, 1) = 1 THEN 1 ELSE 0 END), 0) AS applied,
+            COALESCE(SUM(CASE WHEN accepted = 1 AND applied_ok = 0 THEN 1 ELSE 0 END), 0) AS failed,
+            COALESCE(SUM(CASE WHEN accepted = 0 THEN 1 ELSE 0 END), 0) AS rejected
          FROM fix_outcomes
-         WHERE datetime(created_at) >= datetime('now', ?1)"#,
-        window
+         WHERE datetime(created_at) >= datetime('now', ?1)",
     )
+    .bind(window)
     .fetch_one(pool)
     .await?;
     Ok(row)
@@ -280,16 +334,16 @@ pub async fn top_failure_reasons(
 pub async fn accepted_signature_count(pool: &SqlitePool, days: i64) -> crate::Result<i64> {
     let days = days.max(1);
     let window = format!("-{days} days");
-    let count = sqlx::query_scalar!(
-        r#"SELECT COUNT(DISTINCT diff_signature) AS "count!: i64"
+    let count = sqlx::query_scalar::<_, i64>(
+        r"SELECT COUNT(DISTINCT diff_signature) AS count
          FROM fix_outcomes
          WHERE accepted = 1
-           AND applied_ok = 1
+           AND COALESCE(applied_ok, 1) = 1
            AND diff_signature IS NOT NULL
            AND TRIM(diff_signature) <> ''
-           AND datetime(created_at) >= datetime('now', ?1)"#,
-        window,
+           AND datetime(created_at) >= datetime('now', ?1)",
     )
+    .bind(window)
     .fetch_one(pool)
     .await?;
     Ok(count)
@@ -298,19 +352,18 @@ pub async fn accepted_signature_count(pool: &SqlitePool, days: i64) -> crate::Re
 pub async fn daily(pool: &SqlitePool, days: i64) -> crate::Result<Vec<FixOutcomeDaily>> {
     let days = days.max(1);
     let window = format!("-{days} days");
-    let rows = sqlx::query_as!(
-        FixOutcomeDaily,
-        r#"SELECT
-            date(created_at) AS "day!: String",
-            COALESCE(SUM(CASE WHEN accepted = 1 AND applied_ok = 1 THEN 1 ELSE 0 END), 0) AS "applied!: i64",
-            COALESCE(SUM(CASE WHEN accepted = 1 AND applied_ok = 0 THEN 1 ELSE 0 END), 0) AS "failed!: i64",
-            COALESCE(SUM(CASE WHEN accepted = 0 THEN 1 ELSE 0 END), 0) AS "rejected!: i64"
+    let rows = sqlx::query_as::<_, FixOutcomeDaily>(
+        r"SELECT
+            date(created_at) AS day,
+            COALESCE(SUM(CASE WHEN accepted = 1 AND COALESCE(applied_ok, 1) = 1 THEN 1 ELSE 0 END), 0) AS applied,
+            COALESCE(SUM(CASE WHEN accepted = 1 AND applied_ok = 0 THEN 1 ELSE 0 END), 0) AS failed,
+            COALESCE(SUM(CASE WHEN accepted = 0 THEN 1 ELSE 0 END), 0) AS rejected
          FROM fix_outcomes
          WHERE datetime(created_at) >= datetime('now', ?1)
          GROUP BY date(created_at)
-         ORDER BY date(created_at) ASC"#,
-        window
+         ORDER BY date(created_at) ASC",
     )
+    .bind(window)
     .fetch_all(pool)
     .await?;
     Ok(rows)
@@ -783,10 +836,10 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO fix_outcomes (id, rule_name, accepted, applied_ok) VALUES
-             ('legacy-1', 'r', 1, NULL),
-             ('legacy-2', 'r', 1, NULL),
-             ('phantom', 'r', 1, 0)",
+            "INSERT INTO fix_outcomes (id, rule_name, diff_signature, accepted, applied_ok) VALUES
+             ('legacy-1', 'r', 'sig-a', 1, NULL),
+             ('legacy-2', 'r', 'sig-b', 1, NULL),
+             ('phantom', 'r', 'sig-c', 1, 0)",
         )
         .execute(&pool)
         .await
@@ -798,5 +851,73 @@ mod tests {
             "legacy rows with NULL applied_ok must be charitably counted as applied",
         );
         assert_eq!(split.accepted_but_failed, 1);
+
+        let summary = summary(&pool, 30).await.expect("summary");
+        assert_eq!(summary.applied, 2);
+        assert_eq!(summary.failed, 1);
+
+        let daily = daily(&pool, 30).await.expect("daily");
+        assert_eq!(daily.len(), 1);
+        assert_eq!(daily[0].applied, 2);
+        assert_eq!(daily[0].failed, 1);
+
+        let signatures = accepted_signature_count(&pool, 30)
+            .await
+            .expect("accepted signature count");
+        assert_eq!(signatures, 2);
+    }
+
+    #[tokio::test]
+    async fn rule_effectiveness_map_scores_apply_clean_rate_among_accepts() {
+        let pool = pool_with_fix_outcomes().await;
+
+        let mk = |rule_id: &'static str, accepted: bool, applied_ok: bool| FixOutcomeInput {
+            rule_id: Some(rule_id),
+            rule_name: "n",
+            file_path: None,
+            repo_full_name: None,
+            pr_number: None,
+            diff_signature: None,
+            accepted,
+            applied_ok,
+            failed_reason: None,
+        };
+
+        let inputs = vec![
+            // r-clean: three accepted, all applied -> apply-clean rate 1.0.
+            mk("r-clean", true, true),
+            mk("r-clean", true, true),
+            mk("r-clean", true, true),
+            // r-flaky: four accepted, three applied + one failed -> 0.75. The
+            // rejected outcome is EXCLUDED (the metric conditions on accept), so
+            // confidence's accept/reject signal is not re-counted here.
+            mk("r-flaky", true, true),
+            mk("r-flaky", true, true),
+            mk("r-flaky", true, true),
+            mk("r-flaky", true, false),
+            mk("r-flaky", false, false),
+            // r-thin: only two ACCEPTED outcomes -> below the floor, excluded.
+            mk("r-thin", true, true),
+            mk("r-thin", true, true),
+        ];
+        record_many(&pool, &inputs).await.expect("record outcomes");
+
+        let map = rule_effectiveness_map(&pool, 3)
+            .await
+            .expect("effectiveness map");
+
+        assert!(
+            (map["r-clean"] - 1.0).abs() < 1e-9,
+            "every accepted fix applied cleanly -> 1.0",
+        );
+        assert!(
+            (map["r-flaky"] - 0.75).abs() < 1e-9,
+            "one of four accepted fixes failed to apply: {:?}",
+            map.get("r-flaky"),
+        );
+        assert!(
+            !map.contains_key("r-thin"),
+            "fewer than the sample floor of ACCEPTED outcomes must not influence ranking",
+        );
     }
 }

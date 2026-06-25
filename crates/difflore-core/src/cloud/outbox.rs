@@ -2,9 +2,9 @@
 //!
 //! Every fire-and-forget cloud POST (trajectory, `review_metrics`,
 //! `accepted_edit`, `mcp_query`, `imported_reviews`) is first appended as a
-//! `pending` row in the global `~/.difflore/data.db`. Drain is triggered
-//! synchronously from hook / CLI cold paths — there is deliberately no
-//! background daemon.
+//! `pending` row in the global `~/.difflore/data.db`. Drain can run from CLI
+//! sync paths or the self-managed background daemon; hooks stay on the hot path
+//! by enqueueing locally first.
 //!
 //! Claim/confirm semantics:
 //!
@@ -30,34 +30,244 @@
 
 use super::outbox_core::{self, RetryDecision, now_unix_ms};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
-use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+use sqlx::{Row, SqlitePool};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
+
+const SESSION_MINED_LOCAL_REVIEW_STATUS_PATH: &str = "$.localReview.status";
+const SESSION_MINED_LOCAL_REVIEW_APPROVED: &str = "approved";
 use tokio::sync::Mutex;
 
-/// How long a processing row is allowed to sit before `reset_stale` will
-/// recover it. Anything claimed by a crashed / hung drain pass falls back
-/// to `pending` after this many seconds.
+/// Seconds a `processing` row may sit before `reset_stale` / `claim_next`
+/// recovers it to `pending` (covers a crashed or hung drain pass).
 pub const DEFAULT_STALE_SECONDS: u64 = 60;
 
 /// How many consecutive `mark_failed` calls trip the circuit breaker.
 pub const CIRCUIT_FAILURE_THRESHOLD: u32 = 3;
 
-/// How long (ms) the circuit stays open before `claim_next` starts
-/// returning rows again.
+/// How long (ms) the circuit stays open before `claim_next` returns rows again.
 pub const CIRCUIT_OPEN_DURATION_MS: i64 = 60_000;
 
-/// Maximum delivery attempts per outbox item. After this many failures,
-/// the item is marked `abandoned` and is no longer claimed.
+/// Maximum delivery attempts per outbox item; afterwards the item is marked
+/// `abandoned` and is no longer claimed.
 pub const MAX_RETRY_COUNT: i64 = outbox_core::MAX_RETRY_COUNT;
 
+use outbox_core::MAX_OBSERVATION_BATCH as OBSERVATION_OUTBOX_BATCH_SIZE;
+
 static DRAIN_SERIALIZATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static SPILL_SEQ: AtomicU64 = AtomicU64::new(0);
+
+const DRAIN_STATE_FILE_NAME: &str = "outbox-drain-state.json";
+const HOOK_SPILL_DIR: &str = "hook-spill/observations";
+const SPILL_RECORD_VERSION: u32 = 1;
 
 fn drain_serialization_lock() -> &'static Mutex<()> {
     DRAIN_SERIALIZATION_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-/// A row in `cloud_outbox` that has been claimed for processing.
+/// Last observed cloud-outbox drain pass. Kept outside SQLite so doctor can
+/// report daemon liveness even if the DB is temporarily unavailable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OutboxDrainState {
+    pub version: u32,
+    pub updated_at_ms: i64,
+    pub last_drain_at_ms: i64,
+    pub attempted: usize,
+    pub confirmed: usize,
+    pub last_error: Option<String>,
+}
+
+pub fn drain_state_path() -> crate::Result<PathBuf> {
+    Ok(crate::infra::paths::data_home()?.join(DRAIN_STATE_FILE_NAME))
+}
+
+pub fn read_drain_state() -> crate::Result<Option<OutboxDrainState>> {
+    let path = drain_state_path()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&path)?;
+    Ok(Some(serde_json::from_str(&raw)?))
+}
+
+fn write_drain_state(report: &OutboxDrainReport, last_error: Option<String>) {
+    let now = now_unix_ms();
+    let state = OutboxDrainState {
+        version: 1,
+        updated_at_ms: now,
+        last_drain_at_ms: now,
+        attempted: report.attempted,
+        confirmed: report.confirmed,
+        last_error,
+    };
+    if let Ok(path) = drain_state_path()
+        && let Ok(json) = serde_json::to_vec_pretty(&state)
+    {
+        let _ = crate::infra::files::write_atomic(&path, &json);
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HookSpillRecord {
+    pub version: u32,
+    pub kind: String,
+    pub payload_json: String,
+    pub created_at_ms: i64,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HookSpillStats {
+    pub count: usize,
+    pub bytes: u64,
+    pub oldest_created_at_ms: Option<i64>,
+    pub newest_created_at_ms: Option<i64>,
+    pub newest_error: Option<String>,
+    pub path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HookSpillReplayReport {
+    pub attempted: usize,
+    pub replayed: usize,
+    pub failed: usize,
+}
+
+pub fn hook_spill_dir() -> crate::Result<PathBuf> {
+    Ok(crate::infra::paths::data_home()?.join(HOOK_SPILL_DIR))
+}
+
+pub fn spill_observation_payload(
+    payload_json: &str,
+    error: impl Into<String>,
+) -> crate::Result<PathBuf> {
+    spill_payload(kind::OBSERVATION, payload_json, Some(error.into()))
+}
+
+fn spill_payload(
+    kind: &str,
+    payload_json: &str,
+    last_error: Option<String>,
+) -> crate::Result<PathBuf> {
+    let dir = hook_spill_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    let now = now_unix_ms();
+    let seq = SPILL_SEQ.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!("{}-{}-{}.json", now, std::process::id(), seq));
+    let record = HookSpillRecord {
+        version: SPILL_RECORD_VERSION,
+        kind: kind.to_owned(),
+        payload_json: payload_json.to_owned(),
+        created_at_ms: now,
+        last_error: last_error.map(|e| outbox_core::truncate(&e, 2048)),
+    };
+    let json = serde_json::to_vec_pretty(&record)?;
+    crate::infra::files::write_atomic(&path, &json)?;
+    Ok(path)
+}
+
+pub fn hook_spill_stats() -> crate::Result<HookSpillStats> {
+    let dir = hook_spill_dir()?;
+    let mut stats = HookSpillStats {
+        path: Some(dir.clone()),
+        ..HookSpillStats::default()
+    };
+    if !dir.exists() {
+        return Ok(stats);
+    }
+    for entry in std::fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !is_spill_json(&path) {
+            continue;
+        }
+        let meta = entry.metadata()?;
+        stats.count += 1;
+        stats.bytes = stats.bytes.saturating_add(meta.len());
+        if let Ok(raw) = std::fs::read_to_string(&path)
+            && let Ok(record) = serde_json::from_str::<HookSpillRecord>(&raw)
+        {
+            stats.oldest_created_at_ms = Some(match stats.oldest_created_at_ms {
+                Some(current) => current.min(record.created_at_ms),
+                None => record.created_at_ms,
+            });
+            let is_newest = stats
+                .newest_created_at_ms
+                .is_none_or(|current| record.created_at_ms >= current);
+            if is_newest {
+                stats.newest_created_at_ms = Some(record.created_at_ms);
+                stats.newest_error = record.last_error;
+            }
+        }
+    }
+    Ok(stats)
+}
+
+pub async fn replay_spilled_observations(
+    queue: &OutboxQueue,
+    max_items: usize,
+) -> crate::Result<HookSpillReplayReport> {
+    let dir = hook_spill_dir()?;
+    if max_items == 0 || !dir.exists() {
+        return Ok(HookSpillReplayReport::default());
+    }
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if is_spill_json(&path) {
+            files.push(path);
+        }
+    }
+    files.sort();
+
+    let mut report = HookSpillReplayReport::default();
+    for path in files.into_iter().take(max_items) {
+        report.attempted += 1;
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            report.failed += 1;
+            continue;
+        };
+        let Ok(record) = serde_json::from_str::<HookSpillRecord>(&raw) else {
+            quarantine_bad_spill(&path);
+            report.failed += 1;
+            continue;
+        };
+        if record.kind != kind::OBSERVATION {
+            quarantine_bad_spill(&path);
+            report.failed += 1;
+            continue;
+        }
+        match queue
+            .enqueue_with_outcome(&record.kind, &record.payload_json)
+            .await
+        {
+            Ok(EnqueueOutcome::Inserted { .. }) => {
+                let _ = std::fs::remove_file(&path);
+                report.replayed += 1;
+            }
+            Ok(EnqueueOutcome::CaptureDisabled) | Err(_) => {
+                report.failed += 1;
+                break;
+            }
+        }
+    }
+    Ok(report)
+}
+
+fn is_spill_json(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("json")
+}
+
+fn quarantine_bad_spill(path: &Path) {
+    let bad_path = path.with_extension("bad");
+    let _ = std::fs::rename(path, bad_path);
+}
+
+/// A `cloud_outbox` row that has been claimed for processing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboxItem {
     pub id: i64,
@@ -66,22 +276,44 @@ pub struct OutboxItem {
     pub retry_count: i64,
 }
 
-/// Current state of the breaker. `Open` means callers should short-
-/// circuit until the `until_unix_ms` timestamp has passed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnqueueOutcome {
+    Inserted { row_id: i64 },
+    CaptureDisabled,
+}
+
+impl EnqueueOutcome {
+    const fn row_id_or_zero(self) -> i64 {
+        match self {
+            Self::Inserted { row_id } => row_id,
+            Self::CaptureDisabled => 0,
+        }
+    }
+}
+
+fn outbox_item_from_row(row: &sqlx::sqlite::SqliteRow) -> OutboxItem {
+    OutboxItem {
+        id: row.try_get("id").unwrap_or_default(),
+        kind: row.try_get("kind").unwrap_or_default(),
+        payload_json: row.try_get("payload_json").unwrap_or_default(),
+        retry_count: row.try_get("retry_count").unwrap_or_default(),
+    }
+}
+
+/// Breaker state. `Open` means callers should short-circuit until
+/// `until_unix_ms` has passed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CircuitState {
     Closed,
     Open { until_unix_ms: i64 },
 }
 
-/// Queue handle. Cheap to clone; all state is either on disk or inside
-/// an `Arc<Atomic*>` so multiple callers inside the same process observe
-/// the same breaker state.
+/// Queue handle. Cheap to clone; all state is either on disk or behind an
+/// `Arc<Atomic*>` so all clones in a process share the same breaker state.
 #[derive(Debug, Clone)]
 pub struct OutboxQueue {
     pool: SqlitePool,
-    /// Count of consecutive `mark_failed` calls since the last
-    /// successful `confirm`. Shared across clones.
+    /// Consecutive `mark_failed` calls since the last successful `confirm`.
     consecutive_failures: Arc<AtomicU32>,
     /// Unix-ms until which the circuit stays open. `0` when closed.
     circuit_open_until_ms: Arc<AtomicI64>,
@@ -98,12 +330,14 @@ impl OutboxQueue {
         }
     }
 
-    /// Insert a new fire-and-forget payload. Returns the row id so tests
-    /// (and the occasional curious caller) can trace a specific item.
-    /// Production callers usually ignore the returned id.
-    pub async fn enqueue(&self, kind: &str, payload_json: &str) -> Result<i64, sqlx::Error> {
+    /// Insert a new fire-and-forget payload, preserving whether capture was disabled.
+    pub async fn enqueue_with_outcome(
+        &self,
+        kind: &str,
+        payload_json: &str,
+    ) -> crate::Result<EnqueueOutcome, sqlx::Error> {
         if !crate::cloud::capture::capture_enabled() {
-            return Ok(0);
+            return Ok(EnqueueOutcome::CaptureDisabled);
         }
         let now = now_unix_ms();
         let result = sqlx::query!(
@@ -115,22 +349,31 @@ impl OutboxQueue {
         )
         .execute(&self.pool)
         .await?;
-        Ok(result.last_insert_rowid())
+        Ok(EnqueueOutcome::Inserted {
+            row_id: result.last_insert_rowid(),
+        })
     }
 
-    /// Current breaker state. `None` rows + closed breaker ⇒ callers may
-    /// proceed. `Open` ⇒ short-circuit. Callers should check this *before*
-    /// building expensive payloads for bulk drains.
+    /// Insert a new fire-and-forget payload. Returns the row id; production
+    /// callers usually ignore it. Returns `0` when capture is disabled.
+    pub async fn enqueue(&self, kind: &str, payload_json: &str) -> crate::Result<i64, sqlx::Error> {
+        Ok(self
+            .enqueue_with_outcome(kind, payload_json)
+            .await?
+            .row_id_or_zero())
+    }
+
+    /// Current breaker state. Callers should check this before building
+    /// expensive payloads for bulk drains.
     pub fn circuit_state(&self) -> CircuitState {
         let until = self.circuit_open_until_ms.load(Ordering::SeqCst);
         if until == 0 {
             return CircuitState::Closed;
         }
         if now_unix_ms() >= until {
-            // Expired — allow the next claim to cycle the breaker closed.
-            // We intentionally don't reset the counter here; the first
+            // Expired. Don't reset the failure counter here; the first
             // successful `confirm` does that, and the next `mark_failed`
-            // just re-opens the breaker.
+            // re-opens the breaker.
             self.circuit_open_until_ms.store(0, Ordering::SeqCst);
             CircuitState::Closed
         } else {
@@ -141,52 +384,54 @@ impl OutboxQueue {
     }
 
     /// Atomically pick the oldest `pending` row and flip it to
-    /// `processing`. Returns `None` when the queue is empty or when the
-    /// circuit breaker is open.
+    /// `processing`. Returns `None` when the queue is empty or the breaker
+    /// is open.
     ///
     /// The UPDATE uses `RETURNING` so claim-and-read happen in one
-    /// statement (`SQLite` serialises writes per connection, so this is
-    /// equivalent to `SELECT … FOR UPDATE` on a row-at-a-time queue).
-    ///
+    /// statement, equivalent to `SELECT … FOR UPDATE` on a row-at-a-time
+    /// queue (`SQLite` serialises writes per connection).
     pub async fn claim_next(&self) -> Result<Option<OutboxItem>, sqlx::Error> {
         if matches!(self.circuit_state(), CircuitState::Open { .. }) {
             return Ok(None);
         }
 
         let now = now_unix_ms();
-        // Rows `status = 'processing'` whose `claimed_at` is older than
-        // `DEFAULT_STALE_SECONDS` are eligible to be re-claimed here:
-        // a previous claimer crashed / SIGKILL'd / froze. Folding the
-        // recovery into the same atomic UPDATE means no caller needs to
-        // remember to invoke `reset_stale` separately — the queue self-
-        // heals on every claim. Independent `reset_stale` is kept as a
-        // public entry point for startup + diagnostics.
+        // `processing` rows whose `claimed_at` is older than
+        // `DEFAULT_STALE_SECONDS` (a previous claimer crashed/froze) are
+        // re-claimable here. Folding recovery into the same atomic UPDATE
+        // self-heals the queue on every claim; `reset_stale` stays public
+        // for startup and diagnostics.
         let stale_cutoff = now - (DEFAULT_STALE_SECONDS as i64) * 1000;
-        let row = sqlx::query!(
-            r#"UPDATE cloud_outbox
+        let row = sqlx::query(
+            r"UPDATE cloud_outbox
              SET status = 'processing', claimed_at = ?1
              WHERE id = (
                  SELECT id FROM cloud_outbox
-                 WHERE status = 'pending'
+                 WHERE (status = 'pending'
                     OR (status = 'processing'
                         AND claimed_at IS NOT NULL
-                        AND claimed_at < ?2)
+                        AND claimed_at < ?2))
+                   AND (
+                        kind != ?3
+                        OR (
+                            json_valid(payload_json)
+                            AND LOWER(COALESCE(json_extract(payload_json, ?4), '')) = ?5
+                        )
+                   )
                  ORDER BY created_at ASC, id ASC
                  LIMIT 1
              )
-             RETURNING id as "id!: i64", kind, payload_json, retry_count"#,
-            now,
-            stale_cutoff
+             RETURNING id, kind, payload_json, retry_count",
         )
+        .bind(now)
+        .bind(stale_cutoff)
+        .bind(kind::SESSION_MINED_CANDIDATE)
+        .bind(SESSION_MINED_LOCAL_REVIEW_STATUS_PATH)
+        .bind(SESSION_MINED_LOCAL_REVIEW_APPROVED)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|r| OutboxItem {
-            id: r.id,
-            kind: r.kind,
-            payload_json: r.payload_json,
-            retry_count: r.retry_count,
-        }))
+        Ok(row.as_ref().map(outbox_item_from_row))
     }
 
     pub async fn claim_next_kind(&self, kind: &str) -> Result<Option<OutboxItem>, sqlx::Error> {
@@ -196,8 +441,8 @@ impl OutboxQueue {
 
         let now = now_unix_ms();
         let stale_cutoff = now - (DEFAULT_STALE_SECONDS as i64) * 1000;
-        let row = sqlx::query!(
-            r#"UPDATE cloud_outbox
+        let row = sqlx::query(
+            r"UPDATE cloud_outbox
              SET status = 'processing', claimed_at = ?1
              WHERE id = (
                  SELECT id FROM cloud_outbox
@@ -206,35 +451,39 @@ impl OutboxQueue {
                         OR (status = 'processing'
                             AND claimed_at IS NOT NULL
                             AND claimed_at < ?2))
+                   AND (
+                        ?3 != ?4
+                        OR (
+                            json_valid(payload_json)
+                            AND LOWER(COALESCE(json_extract(payload_json, ?5), '')) = ?6
+                        )
+                   )
                  ORDER BY created_at ASC, id ASC
                  LIMIT 1
              )
-             RETURNING id AS "id!: i64", kind AS "kind!: String", payload_json AS "payload_json!: String", retry_count AS "retry_count!: i64""#,
-            now,
-            stale_cutoff,
-            kind,
+             RETURNING id, kind, payload_json, retry_count",
         )
+        .bind(now)
+        .bind(stale_cutoff)
+        .bind(kind)
+        .bind(kind::SESSION_MINED_CANDIDATE)
+        .bind(SESSION_MINED_LOCAL_REVIEW_STATUS_PATH)
+        .bind(SESSION_MINED_LOCAL_REVIEW_APPROVED)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|r| OutboxItem {
-            id: r.id,
-            kind: r.kind,
-            payload_json: r.payload_json,
-            retry_count: r.retry_count,
-        }))
+        Ok(row.as_ref().map(outbox_item_from_row))
     }
 
-    /// Upload succeeded — delete the row and reset the consecutive-
-    /// failure counter so the circuit can close again.
+    /// Upload succeeded: delete the row and reset the consecutive-failure
+    /// counter so the circuit can close again.
     pub async fn confirm(&self, id: i64) -> Result<(), sqlx::Error> {
         sqlx::query!("DELETE FROM cloud_outbox WHERE id = ?1", id)
             .execute(&self.pool)
             .await?;
         self.consecutive_failures.store(0, Ordering::SeqCst);
-        // Do NOT reset the breaker here — we let the natural expiry or
-        // the next `claim_next` cycle close it. This avoids races where
-        // one confirm sneaks between two failures.
+        // Don't reset the breaker here; let expiry or the next `claim_next`
+        // close it. Avoids races where one confirm sneaks between two failures.
         Ok(())
     }
 
@@ -249,7 +498,6 @@ impl OutboxQueue {
         // Trim unbounded errors so cascade failures cannot bloat the DB.
         let err_trimmed: String = outbox_core::truncate(err, 2048);
 
-        // Load current retry_count to decide the transition.
         let current = sqlx::query!(
             "SELECT retry_count, status FROM cloud_outbox WHERE id = ?1",
             id
@@ -258,14 +506,12 @@ impl OutboxQueue {
         .await?;
 
         let Some(row) = current else {
-            // Row vanished between claim and mark_failed. Caller may have
-            // raced with a confirm from another drain pass; treat as a
-            // no-op and don't tick the failure counter.
+            // Row vanished between claim and mark_failed (raced with a
+            // confirm from another drain pass). No-op; don't tick the counter.
             return Ok(());
         };
 
-        // Shared retry/abandon decision. This queue retries by bouncing
-        // rows to `pending`; it does not schedule backoff delays.
+        // This queue retries by bouncing rows to `pending`; no backoff delays.
         let (new_status, new_count) = match outbox_core::decide_retry(row.retry_count) {
             RetryDecision::Retry { next_count } => ("pending", next_count),
             RetryDecision::Abandon { next_count } => ("abandoned", next_count),
@@ -293,9 +539,8 @@ impl OutboxQueue {
         Ok(())
     }
 
-    /// Promote any `processing` rows older than `threshold_secs` back to
-    /// `pending`. Called at startup (see `startup.rs`) to recover from
-    /// crashed drains.
+    /// Promote `processing` rows older than `threshold_secs` back to
+    /// `pending`. Called at startup to recover from crashed drains.
     pub async fn reset_stale(&self, threshold_secs: u64) -> Result<u64, sqlx::Error> {
         let cutoff = now_unix_ms() - (threshold_secs as i64) * 1000;
         let result = sqlx::query!(
@@ -309,21 +554,32 @@ impl OutboxQueue {
         Ok(result.rows_affected())
     }
 
-    /// Per-kind breakdown of `status='pending'` rows for lag warnings.
-    /// Sorted by kind for deterministic rendering. Uses runtime SQL so
-    /// this diagnostic helper does not require `.sqlx` cache updates.
+    /// Per-kind breakdown of `pending` rows for lag warnings, sorted by kind
+    /// for deterministic rendering.
     pub async fn pending_counts_by_kind(&self) -> Result<Vec<(String, i64)>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT kind, COUNT(*) AS c \
-             FROM cloud_outbox WHERE status = 'pending' GROUP BY kind",
+             FROM cloud_outbox \
+             WHERE status = 'pending' \
+               AND (
+                    kind != ?1
+                    OR (
+                        json_valid(payload_json)
+                        AND LOWER(COALESCE(json_extract(payload_json, ?2), '')) = ?3
+                    )
+               ) \
+             GROUP BY kind",
         )
+        .bind(kind::SESSION_MINED_CANDIDATE)
+        .bind(SESSION_MINED_LOCAL_REVIEW_STATUS_PATH)
+        .bind(SESSION_MINED_LOCAL_REVIEW_APPROVED)
         .fetch_all(&self.pool)
         .await?;
         let mut out: Vec<(String, i64)> = rows
             .into_iter()
             .map(|r| {
-                let kind: String = sqlx::Row::try_get(&r, "kind").unwrap_or_default();
-                let count: i64 = sqlx::Row::try_get(&r, "c").unwrap_or_default();
+                let kind: String = Row::try_get(&r, "kind").unwrap_or_default();
+                let count: i64 = Row::try_get(&r, "c").unwrap_or_default();
                 (kind, count)
             })
             .collect();
@@ -331,23 +587,19 @@ impl OutboxQueue {
         Ok(out)
     }
 
-    /// Drain stale `abandoned` rows older than `cutoff_unix_ms` back to
-    /// the live queue. Returns a per-kind breakdown of rows that were
-    /// (or would be, in `dry_run` mode) reset.
+    /// Reset `abandoned` rows older than `cutoff_unix_ms` back to `pending`,
+    /// returning a per-kind breakdown of rows that were (or, in `dry_run`,
+    /// would be) reset.
     ///
-    /// Cutoff semantics: a row is eligible iff its most recent
-    /// `claimed_at` (last attempt) — or `created_at` if it was
-    /// abandoned before any attempt — is **older than**
-    /// `cutoff_unix_ms`. This deliberately leaves recently-abandoned
-    /// rows alone: those are almost certainly the symptom of a current
-    /// outage rather than a stale-auth backlog.
+    /// A row is eligible iff its most recent `claimed_at` — or `created_at`
+    /// if it was abandoned before any attempt — is older than
+    /// `cutoff_unix_ms`. Recently-abandoned rows are left alone: those are
+    /// likely a current outage rather than a stale-auth backlog.
     ///
-    /// Tx-safety: the whole operation runs inside a single
-    /// `BEGIN/COMMIT` so a partial drain cannot leave the queue in a
-    /// half-reset state. `dry_run = true` still runs the SELECT but
-    /// rolls back instead of committing, so it has the same
-    /// transactional snapshot guarantees as the real path while
-    /// remaining strictly read-only.
+    /// The whole operation runs in one `BEGIN/COMMIT` so a partial drain
+    /// cannot leave a half-reset queue. `dry_run = true` runs the SELECT but
+    /// rolls back, keeping the same snapshot guarantees while staying
+    /// read-only.
     pub async fn drain_abandoned_older_than(
         &self,
         cutoff_unix_ms: i64,
@@ -367,16 +619,15 @@ impl OutboxQueue {
 
         let mut summary = DrainSummary::default();
         for row in rows {
-            let kind: String = sqlx::Row::try_get(&row, "kind").unwrap_or_default();
-            let count: i64 = sqlx::Row::try_get(&row, "c").unwrap_or_default();
+            let kind: String = Row::try_get(&row, "kind").unwrap_or_default();
+            let count: i64 = Row::try_get(&row, "c").unwrap_or_default();
             summary.per_kind.push((kind, count));
             summary.total += count;
         }
         summary.per_kind.sort_by(|a, b| a.0.cmp(&b.0));
 
         if dry_run || summary.total == 0 {
-            // Nothing to mutate; roll the snapshot back so we never
-            // commit a no-op tx (cheaper, and keeps the audit clean).
+            // Nothing to mutate; roll back rather than commit a no-op tx.
             tx.rollback().await?;
             return Ok(summary);
         }
@@ -396,25 +647,21 @@ impl OutboxQueue {
         tx.commit().await?;
 
         // Reset in-process breaker state so the next drain pass after a
-        // resurrection isn't immediately short-circuited by the
-        // counter left over from the auth-revoke storm. The on-disk
-        // row state is what's authoritative; this is just hygiene.
+        // resurrection isn't short-circuited by a leftover counter. On-disk
+        // row state is authoritative; this is just hygiene.
         self.consecutive_failures.store(0, Ordering::SeqCst);
         self.circuit_open_until_ms.store(0, Ordering::SeqCst);
 
-        // Reconcile the per-kind summary's `total` with the actual
-        // affected row count. They can only diverge if a concurrent
-        // writer abandoned another eligible row between the SELECT and
-        // the UPDATE inside the same tx — vanishingly rare, but record
-        // the real number rather than the snapshot count.
+        // Prefer the real affected count over the snapshot `total`: they can
+        // diverge only if a concurrent writer abandoned another eligible row
+        // between the SELECT and UPDATE in the same tx.
         let affected = i64::try_from(affected.rows_affected()).unwrap_or(summary.total);
         summary.total = affected;
         Ok(summary)
     }
 
-    /// Number of rows in each status bucket. Diagnostics only — e.g.
-    /// `difflore doctor` surfaces this so users can see a backlog
-    /// building up.
+    /// Number of rows in each status bucket. Diagnostics only (e.g.
+    /// `difflore doctor` surfaces a building backlog).
     pub async fn counts(&self) -> Result<OutboxCounts, sqlx::Error> {
         let rows = sqlx::query!(
             r#"SELECT status, COUNT(*) as "c!: i64" FROM cloud_outbox GROUP BY status"#
@@ -437,7 +684,6 @@ impl OutboxQueue {
     }
 }
 
-/// Summary row for `difflore doctor` / diagnostics.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct OutboxCounts {
     pub pending: i64,
@@ -448,10 +694,8 @@ pub struct OutboxCounts {
 
 /// Result of a `drain_abandoned_older_than` call (dry-run or real).
 ///
-/// `total` is the number of rows that were (or would be) reset to
-/// `pending`. `per_kind` is the same number bucketed by the row's
-/// `kind` column (or `event_type` for the observation queue), sorted
-/// ascending so callers render deterministically.
+/// `total` is the count of rows reset to `pending`; `per_kind` is that count
+/// bucketed by `kind`, sorted ascending for deterministic rendering.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DrainSummary {
     pub total: i64,
@@ -488,19 +732,16 @@ pub struct OutboxDrainReport {
     pub accepted_edit_attribution: AcceptedEditAttributionSummary,
 }
 
-/// Per-row dispatch result. `last_error` carries the diagnostic string
-/// to persist into `cloud_outbox.last_error` when `ok` is false.
+/// Per-row dispatch result.
+#[derive(Debug)]
 struct DispatchOutcome {
     ok: bool,
     accepted_edit_attribution: Option<AcceptedEditAttributionSummary>,
-    /// Pre-formatted, greppable string to persist into
-    /// `cloud_outbox.last_error` when `ok == false`. `None` on the
-    /// success path. For HTTP failures this is
-    /// `"{status} {reason}: {body_snippet}"`; for transport failures
-    /// it is `"transport: {message}"`; for semantic cloud-side
-    /// rejections (e.g. `record_accepted_edit` 2xx but
-    /// `acceptance_recorded == false`) it carries the `response.error`
-    /// the cloud handed back.
+    /// Greppable string persisted into `cloud_outbox.last_error` when
+    /// `ok == false`; `None` on success. HTTP failures use
+    /// `"{status} {reason}: {body_snippet}"`, transport failures
+    /// `"transport: {message}"`, and semantic rejections (2xx but
+    /// `acceptance_recorded == false`) carry the cloud's `response.error`.
     last_error: Option<String>,
 }
 
@@ -513,10 +754,7 @@ impl DispatchOutcome {
         }
     }
 
-    /// Constructor for the failure path: marks `ok = false` and
-    /// carries the rich error string the caller already formatted.
-    /// Centralises the field discipline so a future arm can't
-    /// accidentally lose `last_error`.
+    /// Failure-path constructor: `ok = false` carrying the formatted error.
     const fn failed_with(last_error: String) -> Self {
         Self {
             ok: false,
@@ -525,8 +763,6 @@ impl DispatchOutcome {
         }
     }
 
-    /// Translate a [`super::client::OutboxFailure`] into the persisted
-    /// `last_error` shape.
     fn from_outbox_failure(failure: &super::client::OutboxFailure) -> Self {
         Self::failed_with(failure.format_for_outbox_last_error())
     }
@@ -534,7 +770,7 @@ impl DispatchOutcome {
 
 fn accepted_edit_attribution_summary(
     expected_rule_ids: usize,
-    response: &super::api_types::RecordAcceptedEditResponse,
+    response: &crate::contract::RecordAcceptedEditResponse,
 ) -> AcceptedEditAttributionSummary {
     let mut summary = AcceptedEditAttributionSummary {
         uploaded: usize::from(response.acceptance_recorded),
@@ -568,35 +804,27 @@ pub mod kind {
     pub const TRAJECTORY: &str = "trajectory";
     pub const REVIEW_METRICS: &str = "review_metrics";
     pub const ACCEPTED_EDIT: &str = "accepted_edit";
-    /// Pre-release OSS outbox rows. Kept stable so drains can acknowledge
-    /// and discard them, but they must never feed the current accepted-edit
-    /// value-loop evidence endpoint.
+    /// Pre-release rows. Drains acknowledge and discard them; they must never
+    /// feed the current accepted-edit value-loop evidence endpoint.
     pub const LEGACY_FIX_ACCEPTANCE: &str = "fix_acceptance";
     pub const MCP_QUERY: &str = "mcp_query";
     pub const IMPORTED_REVIEWS: &str = "imported_reviews";
-    /// `PostToolUse` observation; see `cloud::api_types::Observation`
-    /// and `crate::observation` for the payload shape.
+    /// `PostToolUse` observation; see `crate::contract::Observation`
+    /// and `crate::observability::classifier` for the payload shape.
     pub const OBSERVATION: &str = "observation";
-    /// Session-mined candidate rule — see
-    /// [`crate::cloud::session_mined::SessionMinedCandidate`]. The
-    /// destination endpoint is `POST /api/cloud/session-mined-candidates`.
-    /// The cloud endpoint exists; local drains still need an explicit
-    /// dispatcher arm before these rows leave `pending`. Defined here (rather
-    /// than in `session_mine/worker.rs`) so the enqueue and dispatcher share
-    /// one source of truth for the wire string.
+    /// Session-mined candidate rule (see
+    /// [`crate::cloud::session_mined::SessionMinedCandidate`]); destination is
+    /// `POST /api/cloud/session-mined-candidates`.
     pub const SESSION_MINED_CANDIDATE: &str = "session_mined_candidate";
 }
 
-/// Drain at most `max_items` outbox rows. For each claimed row, invoke
-/// the appropriate `CloudClient` method, then `confirm` on success or
-/// `mark_failed` on HTTP / network failure. Returns `(attempted, confirmed)`.
+/// Drain at most `max_items` outbox rows: for each, dispatch to the right
+/// `CloudClient` method, then `confirm` on success or `mark_failed` on
+/// failure. Returns `(attempted, confirmed)`.
 ///
-/// Callers should treat this as best-effort: a non-Ok return value from
-/// a SQL operation is surfaced, but upload failures themselves are
-/// absorbed into the queue's retry counters.
-///
-/// Call site: hook cold-path exits (before `exit(0)`) and any CLI
-/// command that has some idle time after its main work completes.
+/// Best-effort: SQL errors are surfaced, but upload failures are absorbed
+/// into the queue's retry counters. Called from hook cold-path exits and CLI
+/// commands with idle time after their main work.
 pub async fn drain_outbox(
     queue: &OutboxQueue,
     client: &super::client::CloudClient,
@@ -618,6 +846,23 @@ pub async fn drain_outbox_report(
     }
     let _drain_guard = drain_serialization_lock().lock().await;
 
+    let report = drain_rows(queue, client, None, max_items).await?;
+    write_drain_state(&report, None);
+    Ok(report)
+}
+
+/// Shared per-row drain loop backing both [`drain_outbox_report`] and
+/// [`drain_outbox_kind_report`]. When `kind` is `None` it claims rows of any
+/// kind (`claim_next`); when `Some`, it claims only rows of that kind
+/// (`claim_next_kind`). The caller is responsible for holding the drain
+/// serialization lock and for persisting the returned report via
+/// [`write_drain_state`].
+async fn drain_rows(
+    queue: &OutboxQueue,
+    client: &super::client::CloudClient,
+    kind: Option<&str>,
+    max_items: usize,
+) -> Result<OutboxDrainReport, sqlx::Error> {
     let mut attempted = 0usize;
     let mut confirmed = 0usize;
     let mut accepted_edit_attribution = AcceptedEditAttributionSummary::default();
@@ -625,14 +870,18 @@ pub async fn drain_outbox_report(
         if matches!(queue.circuit_state(), CircuitState::Open { .. }) {
             break;
         }
-        let Some(item) = queue.claim_next().await? else {
+        let claimed = match kind {
+            Some(kind) => queue.claim_next_kind(kind).await?,
+            None => queue.claim_next().await?,
+        };
+        let Some(item) = claimed else {
             break;
         };
         attempted += 1;
         let outcome = match dispatch(client, &item).await {
             Ok(outcome) => outcome,
             Err(err) => {
-                let _ = queue.mark_failed(item.id, &err).await;
+                let _ = queue.mark_failed(item.id, &err.to_string()).await;
                 continue;
             }
         };
@@ -679,50 +928,88 @@ pub async fn drain_outbox_kind_report(
     }
     let _drain_guard = drain_serialization_lock().lock().await;
 
+    if kind == kind::OBSERVATION {
+        let report = drain_observation_outbox_kind_report(queue, client, max_items).await?;
+        write_drain_state(&report, None);
+        return Ok(report);
+    }
+
+    let report = drain_rows(queue, client, Some(kind), max_items).await?;
+    write_drain_state(&report, None);
+    Ok(report)
+}
+
+async fn drain_observation_outbox_kind_report(
+    queue: &OutboxQueue,
+    client: &super::client::CloudClient,
+    max_items: usize,
+) -> Result<OutboxDrainReport, sqlx::Error> {
     let mut attempted = 0usize;
     let mut confirmed = 0usize;
-    let mut accepted_edit_attribution = AcceptedEditAttributionSummary::default();
-    for _ in 0..max_items {
+
+    while attempted < max_items {
         if matches!(queue.circuit_state(), CircuitState::Open { .. }) {
             break;
         }
-        let Some(item) = queue.claim_next_kind(kind).await? else {
-            break;
-        };
-        attempted += 1;
-        let outcome = match dispatch(client, &item).await {
-            Ok(outcome) => outcome,
-            Err(err) => {
-                let _ = queue.mark_failed(item.id, &err).await;
-                continue;
+
+        let limit = (max_items - attempted).min(OBSERVATION_OUTBOX_BATCH_SIZE);
+        let mut ids = Vec::with_capacity(limit);
+        let mut observations = Vec::with_capacity(limit);
+        let mut claimed_any = false;
+
+        for _ in 0..limit {
+            let Some(item) = queue.claim_next_kind(kind::OBSERVATION).await? else {
+                break;
+            };
+            claimed_any = true;
+            attempted += 1;
+            match serde_json::from_str::<crate::contract::Observation>(&item.payload_json) {
+                Ok(obs) => {
+                    ids.push(item.id);
+                    observations.push(obs);
+                }
+                Err(e) => {
+                    let _ = queue
+                        .mark_failed(item.id, &format!("observation parse: {e}"))
+                        .await;
+                }
             }
-        };
-        if outcome.ok {
-            queue.confirm(item.id).await?;
-            confirmed += 1;
-            if let Some(summary) = outcome.accepted_edit_attribution {
-                accepted_edit_attribution.add(summary);
+        }
+
+        if observations.is_empty() {
+            if !claimed_any {
+                break;
             }
-        } else {
-            // Persist the structured dispatch error when available.
-            let err_msg = outcome
-                .last_error
-                .as_deref()
-                .unwrap_or("upload returned non-2xx (no detail)");
-            let _ = queue.mark_failed(item.id, err_msg).await;
+            continue;
+        }
+
+        match client.post_observations_outcome(&observations).await {
+            Ok(()) => {
+                for id in ids {
+                    queue.confirm(id).await?;
+                    confirmed += 1;
+                }
+            }
+            Err(failure) => {
+                let err_msg = failure.format_for_outbox_last_error();
+                for id in ids {
+                    let _ = queue.mark_failed(id, &err_msg).await;
+                }
+                break;
+            }
         }
     }
+
     Ok(OutboxDrainReport {
         attempted,
         confirmed,
-        accepted_edit_attribution,
+        accepted_edit_attribution: AcceptedEditAttributionSummary::default(),
     })
 }
 
 /// Route a single outbox row to the correct `CloudClient` method.
 ///
-/// The payload JSON is a versionless wrapper so the enqueue / drain
-/// contracts stay in one place. Schemas:
+/// Payload JSON is a versionless wrapper. Schemas:
 ///
 /// * `trajectory`        — `{ "pr_review_id": String, "steps": Value }`
 /// * `review_metrics`    — `{ "review_id": String, "req": RecordReviewMetricsRequest }`
@@ -732,11 +1019,13 @@ pub async fn drain_outbox_kind_report(
 ///                             "strict_match_count", "rule_titles",
 ///                             "client_label" }`
 /// * `imported_reviews`  — `UploadImportedReviewsRequest`
+/// * `session_mined_candidate` — `SessionMinedCandidate`
 async fn dispatch(
     client: &super::client::CloudClient,
     item: &OutboxItem,
-) -> Result<DispatchOutcome, String> {
-    use super::api_types::{
+) -> crate::Result<DispatchOutcome> {
+    use crate::cloud::session_mined::SessionMinedCandidate;
+    use crate::contract::{
         RecordAcceptedEditRequest, RecordReviewMetricsRequest, UploadImportedReviewsRequest,
     };
     use serde_json::Value;
@@ -744,13 +1033,12 @@ async fn dispatch(
     match item.kind.as_str() {
         kind::TRAJECTORY => {
             let v: Value = serde_json::from_str(&item.payload_json)
-                .map_err(|e| format!("trajectory parse: {e}"))?;
+                .map_err(|e| crate::CoreError::internal(format!("trajectory parse: {e}")))?;
             let pr_review_id = v
                 .get("pr_review_id")
                 .and_then(|x| x.as_str())
-                .ok_or_else(|| "trajectory missing pr_review_id".to_owned())?;
+                .ok_or_else(|| crate::CoreError::internal("trajectory missing pr_review_id"))?;
             let steps = v.get("steps").cloned().unwrap_or(Value::Array(Vec::new()));
-            // `_outcome` carries status + body detail for `last_error`.
             Ok(
                 match client.save_trajectory_outcome(pr_review_id, steps).await {
                     Ok(()) => DispatchOutcome::ok(true),
@@ -760,18 +1048,19 @@ async fn dispatch(
         }
         kind::REVIEW_METRICS => {
             let v: Value = serde_json::from_str(&item.payload_json)
-                .map_err(|e| format!("review_metrics parse: {e}"))?;
+                .map_err(|e| crate::CoreError::internal(format!("review_metrics parse: {e}")))?;
             let review_id = v
                 .get("review_id")
                 .and_then(|x| x.as_str())
-                .ok_or_else(|| "review_metrics missing review_id".to_owned())?
+                .ok_or_else(|| crate::CoreError::internal("review_metrics missing review_id"))?
                 .to_owned();
             let req_val = v
                 .get("req")
                 .cloned()
                 .unwrap_or(Value::Object(serde_json::Map::default()));
-            let req: RecordReviewMetricsRequest = serde_json::from_value(req_val)
-                .map_err(|e| format!("review_metrics decode req: {e}"))?;
+            let req: RecordReviewMetricsRequest = serde_json::from_value(req_val).map_err(|e| {
+                crate::CoreError::internal(format!("review_metrics decode req: {e}"))
+            })?;
             Ok(
                 match client.record_review_metrics_outcome(&review_id, req).await {
                     Ok(()) => DispatchOutcome::ok(true),
@@ -781,7 +1070,7 @@ async fn dispatch(
         }
         kind::ACCEPTED_EDIT => {
             let req: RecordAcceptedEditRequest = serde_json::from_str(&item.payload_json)
-                .map_err(|e| format!("accepted_edit parse: {e}"))?;
+                .map_err(|e| crate::CoreError::internal(format!("accepted_edit parse: {e}")))?;
             let expected_rule_ids = req
                 .rule_ids
                 .iter()
@@ -789,11 +1078,9 @@ async fn dispatch(
                 .count();
             let response = client.record_accepted_edit_response(req).await?;
             let summary = accepted_edit_attribution_summary(expected_rule_ids, &response);
-            // Semantic-only failure path: the cloud returned 2xx but
-            // refused to record the acceptance (e.g. dedup, payload
-            // rejection). Surface its `error` field — never the
-            // historic `non-2xx` literal, which is actively wrong
-            // here (the response was 2xx).
+            // Semantic-only failure: 2xx but acceptance not recorded (dedup,
+            // payload rejection). Surface the cloud's `error`, not a `non-2xx`
+            // literal that would be wrong for a 2xx response.
             let last_error = if response.acceptance_recorded {
                 None
             } else {
@@ -809,15 +1096,14 @@ async fn dispatch(
             })
         }
         kind::LEGACY_FIX_ACCEPTANCE => {
-            // Historical `fix_acceptance` rows predate the current
-            // accepted-edit proof contract. Confirm them so old queues do
-            // not retry forever, but do not POST them to `/accepted-edits`
-            // or count them as current value-loop evidence.
+            // Legacy `fix_acceptance` rows predate the accepted-edit proof
+            // contract. Confirm them so old queues stop retrying, but never
+            // POST them or count them as current value-loop evidence.
             Ok(DispatchOutcome::ok(true))
         }
         kind::MCP_QUERY => {
             let v: Value = serde_json::from_str(&item.payload_json)
-                .map_err(|e| format!("mcp_query parse: {e}"))?;
+                .map_err(|e| crate::CoreError::internal(format!("mcp_query parse: {e}")))?;
             let file = v
                 .get("file")
                 .and_then(|x| x.as_str())
@@ -884,15 +1170,15 @@ async fn dispatch(
         }
         kind::IMPORTED_REVIEWS => {
             let req: UploadImportedReviewsRequest = serde_json::from_str(&item.payload_json)
-                .map_err(|e| format!("imported_reviews parse: {e}"))?;
+                .map_err(|e| crate::CoreError::internal(format!("imported_reviews parse: {e}")))?;
             Ok(match client.upload_imported_reviews_outcome(&req).await {
                 Ok(()) => DispatchOutcome::ok(true),
                 Err(failure) => DispatchOutcome::from_outbox_failure(&failure),
             })
         }
         kind::OBSERVATION => {
-            let obs: super::api_types::Observation = serde_json::from_str(&item.payload_json)
-                .map_err(|e| format!("observation parse: {e}"))?;
+            let obs: crate::contract::Observation = serde_json::from_str(&item.payload_json)
+                .map_err(|e| crate::CoreError::internal(format!("observation parse: {e}")))?;
             Ok(
                 match client
                     .post_observations_outcome(std::slice::from_ref(&obs))
@@ -903,14 +1189,34 @@ async fn dispatch(
                 },
             )
         }
-        other => Err(format!("unknown outbox kind '{other}'")),
+        kind::SESSION_MINED_CANDIDATE => {
+            let candidate: SessionMinedCandidate = serde_json::from_str(&item.payload_json)
+                .map_err(|e| {
+                    crate::CoreError::internal(format!("session_mined_candidate parse: {e}"))
+                })?;
+            candidate.validate().map_err(|e| {
+                crate::CoreError::internal(format!("session_mined_candidate validate: {e}"))
+            })?;
+            Ok(
+                match client
+                    .post_session_mined_candidate_outcome(&candidate)
+                    .await
+                {
+                    Ok(()) => DispatchOutcome::ok(true),
+                    Err(failure) => DispatchOutcome::from_outbox_failure(&failure),
+                },
+            )
+        }
+        other => Err(crate::CoreError::internal(format!(
+            "unknown outbox kind '{other}'"
+        ))),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud::api_types::RecordAcceptedEditResponse;
+    use crate::contract::RecordAcceptedEditResponse;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
     async fn fresh_pool() -> SqlitePool {
@@ -994,6 +1300,62 @@ mod tests {
         assert_eq!(summary.warning_count(), 0);
     }
 
+    #[test]
+    fn drain_state_round_trips_to_data_home() {
+        let _home = crate::infra::db::shared_test_home();
+        let path = drain_state_path().expect("drain state path");
+        let _ = std::fs::remove_file(&path);
+
+        let report = OutboxDrainReport {
+            attempted: 3,
+            confirmed: 2,
+            accepted_edit_attribution: AcceptedEditAttributionSummary::default(),
+        };
+        write_drain_state(&report, Some("transport: offline".to_owned()));
+
+        let state = read_drain_state()
+            .expect("read drain state")
+            .expect("state should exist");
+        assert_eq!(state.attempted, 3);
+        assert_eq!(state.confirmed, 2);
+        assert_eq!(state.last_error.as_deref(), Some("transport: offline"));
+        assert!(state.last_drain_at_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn hook_spill_replays_into_cloud_outbox_and_removes_spill_file() {
+        let _home = crate::infra::db::shared_test_home();
+        let capture_enabled = crate::cloud::capture::capture_enabled();
+        let spill_dir = hook_spill_dir().expect("spill dir");
+        let _ = std::fs::remove_dir_all(&spill_dir);
+
+        let pool = fresh_pool().await;
+        let queue = OutboxQueue::new(pool.clone());
+        let path = spill_observation_payload(r#"{"session_id":"s1"}"#, "db locked")
+            .expect("spill payload");
+        assert!(path.exists(), "spill file should be durable");
+
+        let stats = hook_spill_stats().expect("spill stats");
+        assert_eq!(stats.count, 1);
+        assert_eq!(stats.newest_error.as_deref(), Some("db locked"));
+
+        let report = replay_spilled_observations(&queue, 8)
+            .await
+            .expect("replay spill");
+        assert_eq!(report.attempted, 1);
+        assert_eq!(report.replayed, 1);
+        assert_eq!(report.failed, 0);
+        assert!(!path.exists(), "successful replay should remove spill file");
+
+        let rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cloud_outbox WHERE kind = 'observation'")
+                .fetch_one(&pool)
+                .await
+                .expect("count rows");
+        assert_eq!(rows, i64::from(capture_enabled));
+        assert_eq!(hook_spill_stats().expect("spill stats").count, 0);
+    }
+
     #[tokio::test]
     async fn legacy_fix_acceptance_dispatch_skips_current_accepted_edit_pipeline() {
         let client = crate::cloud::client::CloudClient::new();
@@ -1010,6 +1372,44 @@ mod tests {
 
         assert!(outcome.ok);
         assert_eq!(outcome.accepted_edit_attribution, None);
+    }
+
+    #[tokio::test]
+    async fn session_mined_candidate_dispatch_is_a_known_outbox_kind() {
+        let client = crate::cloud::client::CloudClient::new();
+        let candidate = crate::cloud::session_mined::SessionMinedCandidate::try_new(
+            crate::cloud::session_mined::SessionMinedCandidateArgs {
+                session_id: "sess_test".to_owned(),
+                ts_ms: 1_719_000_000_000,
+                source_repo: crate::infra::git::RepoScope::github("acme/widgets")
+                    .expect("valid repo scope"),
+                title: "Validate webhook signatures".to_owned(),
+                body: "Always verify webhook signatures before parsing payloads.".to_owned(),
+                file_patterns: vec!["src/webhooks/**/*.ts".to_owned()],
+                gate_model: "codex:local".to_owned(),
+                gate_verdict: "KEEP".to_owned(),
+            },
+        )
+        .expect("valid candidate");
+        let item = OutboxItem {
+            id: 1,
+            kind: kind::SESSION_MINED_CANDIDATE.to_owned(),
+            payload_json: serde_json::to_string(&candidate).expect("serialize candidate"),
+            retry_count: 0,
+        };
+
+        let outcome = dispatch(&client, &item)
+            .await
+            .expect("session-mined candidates must have a dispatch arm");
+
+        assert!(!outcome.ok);
+        assert!(
+            outcome
+                .last_error
+                .as_deref()
+                .is_some_and(|err| err.contains("not logged in")),
+            "logged-out dispatch should fail via CloudClient, not unknown kind: {outcome:?}"
+        );
     }
 
     #[tokio::test]
@@ -1043,6 +1443,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn claim_next_kind_skips_unapproved_session_mined_candidates() {
+        let pool = fresh_pool().await;
+        let q = OutboxQueue::new(pool.clone());
+        let unapproved = q
+            .enqueue(
+                kind::SESSION_MINED_CANDIDATE,
+                r#"{"content_hash":"unapproved"}"#,
+            )
+            .await
+            .unwrap();
+        let approved = q
+            .enqueue(
+                kind::SESSION_MINED_CANDIDATE,
+                r#"{"content_hash":"approved","localReview":{"status":"approved"}}"#,
+            )
+            .await
+            .unwrap();
+
+        let counts = q.pending_counts_by_kind().await.unwrap();
+        assert_eq!(counts, vec![(kind::SESSION_MINED_CANDIDATE.to_owned(), 1)]);
+
+        let item = q
+            .claim_next_kind(kind::SESSION_MINED_CANDIDATE)
+            .await
+            .unwrap()
+            .expect("approved session candidate claimed");
+        assert_eq!(item.id, approved);
+        assert_eq!(
+            status_of(&pool, unapproved).await.as_deref(),
+            Some("pending")
+        );
+        assert!(
+            q.claim_next_kind(kind::SESSION_MINED_CANDIDATE)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_next_skips_unapproved_session_mined_candidates() {
+        let pool = fresh_pool().await;
+        let q = OutboxQueue::new(pool.clone());
+        let session = q
+            .enqueue(
+                kind::SESSION_MINED_CANDIDATE,
+                r#"{"content_hash":"unapproved"}"#,
+            )
+            .await
+            .unwrap();
+        let trajectory = q.enqueue(kind::TRAJECTORY, "{}").await.unwrap();
+
+        let item = q
+            .claim_next()
+            .await
+            .unwrap()
+            .expect("non-session row claimed");
+        assert_eq!(item.id, trajectory);
+        assert_eq!(status_of(&pool, session).await.as_deref(), Some("pending"));
+    }
+
+    #[tokio::test]
     async fn drain_serialization_lock_is_process_wide() {
         let guard = drain_serialization_lock()
             .try_lock()
@@ -1067,21 +1529,16 @@ mod tests {
 
     #[tokio::test]
     async fn mark_failed_eight_times_abandons() {
-        // Reconciliation note: the abandon bound was unified 3 -> 8
-        // (`outbox_core::MAX_RETRY_COUNT`) so the `cloud_outbox` queue
-        // no longer under-retries relative to the higher-volume
-        // observation queue. A row therefore now survives 7 retried
-        // failures and is abandoned on the 8th (`next_count == 8`).
+        // A row survives 7 retried failures and is abandoned on the 8th
+        // (`next_count == 8`, the `outbox_core::MAX_RETRY_COUNT` bound).
         let pool = fresh_pool().await;
         let q = OutboxQueue::new(pool.clone());
         let id = q.enqueue("trajectory", "{}").await.unwrap();
 
-        // Attempts 1..=7 bounce the row back to `pending`. The circuit
-        // breaker trips after 3 consecutive failures, which — now that
-        // the bound is 8 — happens *before* the abandon transition, so
-        // reset the in-process breaker state between attempts to keep
-        // `claim_next` returning the row (the on-disk retry_count, the
-        // thing under test, is unaffected by this reset).
+        // Attempts 1..=7 bounce the row back to `pending`. The breaker trips
+        // after 3 consecutive failures (before the abandon at 8), so reset it
+        // between attempts to keep `claim_next` returning the row; the on-disk
+        // retry_count under test is unaffected by this reset.
         for attempt in 1..=7 {
             q.circuit_open_until_ms.store(0, Ordering::SeqCst);
             q.consecutive_failures.store(0, Ordering::SeqCst);
@@ -1113,11 +1570,9 @@ mod tests {
 
     #[tokio::test]
     async fn claim_next_auto_recovers_stale_processing_rows() {
-        // Simulate a crashed drain: enqueue → claim → never confirm,
-        // then backdate `claimed_at` past the stale threshold. A later
-        // `claim_next` from a fresh caller must self-heal the row (no
-        // explicit `reset_stale` call) so daemon crashes don't leave
-        // work stuck in `processing` forever.
+        // Crashed drain: enqueue, claim, never confirm, then backdate
+        // `claimed_at` past the stale threshold. A later `claim_next` must
+        // self-heal the row without an explicit `reset_stale` call.
         let pool = fresh_pool().await;
         let q = OutboxQueue::new(pool.clone());
         let id = q.enqueue("trajectory", "{\"crashed\":true}").await.unwrap();

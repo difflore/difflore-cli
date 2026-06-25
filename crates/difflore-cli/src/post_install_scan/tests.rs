@@ -4,7 +4,9 @@
 use std::path::PathBuf;
 
 use super::guards::{GuardSignals, run_guards_with};
-use super::opts::{DEFAULT_MAX_PRS, PostInstallScanOpts};
+use super::opts::{
+    DEFAULT_MAX_PRS, DEFAULT_SINCE_DAYS, DEFAULT_WALL_TIMEOUT_SECS, PostInstallScanOpts,
+};
 use super::outcome::{PostInstallScanOutcome, SkipReason};
 
 fn pristine_signals() -> GuardSignals {
@@ -25,15 +27,24 @@ fn opts_for_cwd_defaults_to_interactive_with_default_max_prs() {
     assert_eq!(opts.cwd, PathBuf::from("/tmp/repo"));
     assert!(!opts.non_interactive);
     assert_eq!(opts.max_prs, DEFAULT_MAX_PRS);
-    assert_eq!(opts.max_prs, 5, "default max_prs documented as 5");
+    assert_eq!(opts.max_prs, 50, "default max_prs documented as 50");
+    assert_eq!(opts.since_days, DEFAULT_SINCE_DAYS);
+    assert_eq!(opts.wall_timeout_secs, DEFAULT_WALL_TIMEOUT_SECS);
+    assert_eq!(opts.since_days, 120);
+    assert_eq!(opts.wall_timeout_secs, 20);
 }
 
 #[test]
-fn guard_layer_skips_when_stdout_is_piped() {
+fn guard_layer_allows_piped_stdout_for_background_scan() {
     let mut s = pristine_signals();
     s.stdout_is_tty = false;
+    assert_eq!(run_guards_with(s, false), Ok(()));
+}
+
+#[test]
+fn guard_layer_skips_when_non_interactive_is_explicit() {
     let outcome = PostInstallScanOutcome::Skipped {
-        reason: run_guards_with(s, false).expect_err("non-tty must skip"),
+        reason: run_guards_with(pristine_signals(), true).expect_err("flag must skip"),
     };
     assert_eq!(
         outcome,
@@ -75,10 +86,8 @@ fn guard_layer_skips_when_running_in_ci() {
 
 #[test]
 fn guard_skip_priority_matches_blame_order() {
-    // Documents the deliberate priority: explicit user opt-out wins
-    // over CI detection, which wins over non-tty, etc. Future
-    // maintainers reordering the guards will break this and have to
-    // re-read the priority intent.
+    // Pins the deliberate priority: explicit user opt-out wins over CI, which
+    // wins over non-tty, etc. Reordering the guards breaks this.
     let mut s = pristine_signals();
     s.explicit_skip = true;
     s.in_ci = true;
@@ -86,10 +95,7 @@ fn guard_skip_priority_matches_blame_order() {
     s.is_git_repo = false;
     s.has_github_remote = false;
     s.gh_on_path = false;
-    assert_eq!(
-        run_guards_with(s, true),
-        Err(SkipReason::ExplicitlySkipped)
-    );
+    assert_eq!(run_guards_with(s, true), Err(SkipReason::ExplicitlySkipped));
 }
 
 #[test]

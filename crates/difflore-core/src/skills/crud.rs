@@ -1,18 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::errors::CoreError;
-use crate::models::{
-    DiscoverSkillsInput, DiscoveredSkillRecord, InstallSkillInput, RemoveSkillInput, SkillRecord,
-    ToggleSkillEngineInput,
+use crate::domain::models::{
+    InstallSkillInput, RemoveSkillInput, SkillRecord, ToggleSkillEngineInput,
 };
+use crate::error::CoreError;
 
-use super::{SkillRow, decode_base64_lossy, parse_skill_frontmatter};
+use super::{SkillRow, fetch_skill_row_by_id, fetch_skill_row_by_id_optional};
 
-/// Sidecar query: `(skill_id → source_repo)` for every rule in the local
-/// `skills` table.
-///
-/// Used by the TUI to default the rules tab to the current repo without
-/// widening `SkillRecord` (which is a stable serde surface).
+/// Map `skill_id → source_repo` for every active rule. Lets local memory
+/// surfaces default to the current repo without widening the stable
+/// `SkillRecord` serde surface.
 pub async fn list_source_repos(
     db: &sqlx::SqlitePool,
 ) -> crate::Result<HashMap<String, Option<String>>> {
@@ -26,15 +23,13 @@ pub async fn list_source_repos(
     Ok(out)
 }
 
-/// Expand detected git remotes with a conservative source-repo alias.
+/// Expand git remotes with a conservative source-repo alias.
 ///
-/// A common fork setup only has `origin` configured locally, e.g.
-/// `difflore-fixtures/fastapi`, while the imported review memory is scoped to
-/// the upstream repo, e.g. `fastapi/fastapi`. If the local rule store has
-/// exactly one active source repo with the same repository name, include that
-/// source repo as an additional recall scope. When there are zero or multiple
-/// possible aliases, keep the original remotes only so unrelated repos never
-/// receive global memory.
+/// A fork's local `origin` (e.g. `difflore-fixtures/fastapi`) may differ from
+/// the upstream repo the imported memory is scoped to (e.g. `fastapi/fastapi`).
+/// When exactly one active source repo shares the same repository name, add it
+/// as an extra recall scope. With zero or multiple candidates, keep only the
+/// original remotes so unrelated repos never receive global memory.
 pub async fn expand_repo_scopes_with_source_aliases(
     db: &sqlx::SqlitePool,
     repo_full_names: &[String],
@@ -44,11 +39,11 @@ pub async fn expand_repo_scopes_with_source_aliases(
     let mut repo_names = Vec::new();
 
     for raw in repo_full_names {
-        let Some(repo) = crate::git::normalize_github_repo_full_name(raw) else {
+        let Some(repo) = crate::infra::git::normalize_canonical_repo_scope(raw) else {
             continue;
         };
         if seen.insert(repo.clone()) {
-            if let Some((_, name)) = repo.rsplit_once('/')
+            if let Some((_, name)) = legacy_github_scope(&repo)
                 && !repo_names.iter().any(|existing| existing == name)
             {
                 repo_names.push(name.to_owned());
@@ -74,10 +69,9 @@ pub async fn expand_repo_scopes_with_source_aliases(
 
         let candidates: Vec<String> = rows
             .into_iter()
-            .filter_map(|repo| crate::git::normalize_github_repo_full_name(&repo))
+            .filter_map(|repo| crate::infra::git::normalize_canonical_repo_scope(&repo))
             .filter(|repo| {
-                repo.rsplit_once('/')
-                    .is_some_and(|(_, name)| name == repo_name)
+                legacy_github_scope(repo).is_some_and(|(_, name)| name == repo_name)
                     && !seen.contains(repo)
             })
             .collect();
@@ -94,6 +88,14 @@ pub async fn expand_repo_scopes_with_source_aliases(
     Ok(scopes)
 }
 
+fn legacy_github_scope(scope: &str) -> Option<(&str, &str)> {
+    let (owner, repo) = scope.split_once('/')?;
+    if owner.contains('.') || repo.contains('/') || repo.is_empty() {
+        return None;
+    }
+    Some((owner, repo))
+}
+
 pub async fn list(db: &sqlx::SqlitePool) -> crate::Result<Vec<SkillRecord>> {
     let rows = sqlx::query_as!(
         SkillRow,
@@ -108,9 +110,8 @@ pub async fn list(db: &sqlx::SqlitePool) -> crate::Result<Vec<SkillRecord>> {
     Ok(rows.into_iter().map(SkillRecord::from).collect())
 }
 
-/// Same SELECT as `list()` but without the `status='active'` filter.
-/// Used by review-memory surfaces that need to see pending rows alongside
-/// active ones.
+/// Like `list()` but without the `status='active'` filter, so callers can
+/// see pending rows alongside active ones.
 pub async fn list_all(db: &sqlx::SqlitePool) -> crate::Result<Vec<SkillRecord>> {
     let rows = sqlx::query_as!(
         SkillRow,
@@ -125,6 +126,13 @@ pub async fn list_all(db: &sqlx::SqlitePool) -> crate::Result<Vec<SkillRecord>> 
 }
 
 pub async fn add(db: &sqlx::SqlitePool, input: InstallSkillInput) -> crate::Result<SkillRecord> {
+    if !crate::skills::fs::is_safe_skill_component(&input.owner)
+        || !crate::skills::fs::is_safe_skill_component(&input.directory)
+    {
+        return Err(CoreError::Validation(
+            "skill owner and directory must be safe single path components".to_owned(),
+        ));
+    }
     let id = format!("skill-{}-{}", input.owner, input.directory);
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let engines_json = serde_json::to_string(&["claude"])?;
@@ -152,34 +160,14 @@ pub async fn add(db: &sqlx::SqlitePool, input: InstallSkillInput) -> crate::Resu
     .execute(db)
     .await?;
 
-    let row = sqlx::query_as!(
-        SkillRow,
-        "SELECT id, name, source, directory, version, description, type, \
-         engines, tags, trigger, check_prompt, repo_owner, repo_name, repo_branch, readme_url, \
-         enabled_for_codex, enabled_for_claude, enabled_for_gemini, enabled_for_cursor, \
-         installed_at, updated_at, origin FROM skills WHERE id = ?1",
-        id
-    )
-    .fetch_one(db)
-    .await?;
-    Ok(SkillRecord::from(row))
+    fetch_skill_row_by_id(db, &id).await
 }
 
 pub async fn remove(db: &sqlx::SqlitePool, input: RemoveSkillInput) -> crate::Result<()> {
-    let skill: Option<SkillRecord> = sqlx::query_as!(
-        SkillRow,
-        "SELECT id, name, source, directory, version, description, type, \
-             engines, tags, trigger, check_prompt, repo_owner, repo_name, repo_branch, readme_url, \
-             enabled_for_codex, enabled_for_claude, enabled_for_gemini, enabled_for_cursor, \
-             installed_at, updated_at, origin FROM skills WHERE id = ?1",
-        input.id
-    )
-    .fetch_optional(db)
-    .await?
-    .map(SkillRecord::from);
+    let skill: Option<SkillRecord> = fetch_skill_row_by_id_optional(db, &input.id).await?;
 
-    // Fail loud when the id doesn't exist — otherwise we return a phantom
-    // "Removed rule: X" for typos, which makes debugging impossible.
+    // Fail loud on an unknown id; otherwise a typo returns a phantom
+    // "Removed rule: X" that's impossible to debug.
     let Some(skill) = skill else {
         return Err(CoreError::NotFound(format!(
             "rule '{}' not found. Inspect local memory with `difflore status --json`.",
@@ -194,17 +182,23 @@ pub async fn remove(db: &sqlx::SqlitePool, input: RemoveSkillInput) -> crate::Re
     {
         for engine in &["codex", "claude", "gemini", "cursor"] {
             if let Err(e) =
-                crate::skill_fs::sync_engine_link(&skill.source, &skill.directory, engine, false)
+                crate::skills::fs::sync_engine_link(&skill.source, &skill.directory, engine, false)
             {
                 eprintln!("warning: sync_engine_link failed for engine {engine}: {e}");
             }
         }
-        let skill_dir = crate::skill_fs::skills_base_dir()
-            .map_err(CoreError::Internal)?
-            .join(&skill.source)
-            .join(&skill.directory);
-        if skill_dir.exists() {
-            let _ = std::fs::remove_dir_all(&skill_dir);
+        // Confine the recursive delete to the skills root: a crafted
+        // `source`/`directory` (e.g. containing `..`) must never let
+        // `remove_dir_all` escape and delete an arbitrary directory.
+        if crate::skills::fs::is_safe_skill_component(&skill.source)
+            && crate::skills::fs::is_safe_skill_component(&skill.directory)
+        {
+            let skill_dir = crate::skills::fs::skills_base_dir()?
+                .join(&skill.source)
+                .join(&skill.directory);
+            if skill_dir.exists() {
+                let _ = std::fs::remove_dir_all(&skill_dir);
+            }
         }
     }
 
@@ -236,24 +230,14 @@ pub async fn toggle_engine(
         other => return Err(CoreError::Internal(format!("unknown engine: {other}"))),
     }
 
-    // Sync the symlink on disk to match the new DB state.
-    if let Some(row) = sqlx::query_as!(
-        SkillRow,
-        "SELECT id, name, source, directory, version, description, type, \
-         engines, tags, trigger, check_prompt, repo_owner, repo_name, repo_branch, readme_url, \
-         enabled_for_codex, enabled_for_claude, enabled_for_gemini, enabled_for_cursor, \
-         installed_at, updated_at, origin FROM skills WHERE id = ?1",
-        input.id
-    )
-    .fetch_optional(db)
-    .await?
-    {
-        let skill = SkillRecord::from(row);
-        if let Err(e) = crate::skill_fs::sync_engine_link(
+    if let Some(skill) = fetch_skill_row_by_id_optional(db, &input.id).await? {
+        let enabled =
+            input.enabled && crate::skills::fs::skill_type_allows_engine_link(&skill.r#type);
+        if let Err(e) = crate::skills::fs::sync_engine_link(
             &skill.source,
             &skill.directory,
             &input.engine,
-            input.enabled,
+            enabled,
         ) {
             eprintln!(
                 "warning: sync_engine_link failed for engine {}: {e}",
@@ -265,151 +249,49 @@ pub async fn toggle_engine(
     Ok(())
 }
 
-pub async fn discover(
-    db: &sqlx::SqlitePool,
-    input: DiscoverSkillsInput,
-) -> crate::Result<Vec<DiscoveredSkillRecord>> {
-    let branch = input.branch.unwrap_or_else(|| "main".into());
-    let repo_slug = format!("{}/{}", input.owner, input.repo);
-
-    let dirs: Vec<String> = if which::which("gh").is_ok() {
-        let output = std::process::Command::new("gh")
-            .args([
-                "api",
-                &format!("repos/{repo_slug}/contents"),
-                "--jq",
-                ".[].name",
-            ])
-            .output();
-
-        match output {
-            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .map(|l| l.trim().to_owned())
-                .filter(|l| !l.is_empty() && !l.starts_with('.'))
-                .collect(),
-            _ => vec![],
-        }
-    } else {
-        vec![]
-    };
-
-    let installed_ids: Vec<String> =
-        sqlx::query_scalar!("SELECT id FROM skills WHERE source = 'github'")
-            .fetch_all(db)
-            .await?;
-
-    if dirs.is_empty() {
-        return Ok(vec![DiscoveredSkillRecord {
-            name: format!("{} skills", input.repo),
-            description: format!("Skills from {repo_slug}"),
-            r#type: "skill".into(),
-            engines: vec!["claude".into()],
-            tags: vec!["remote".into()],
-            version: "1.0.0".into(),
-            directory: input.repo.clone(),
-            repo_owner: input.owner.clone(),
-            repo_name: input.repo,
-            repo_branch: branch,
-            installed: installed_ids.iter().any(|id| id.contains(&input.owner)),
-        }]);
-    }
-
-    let mut results = Vec::new();
-    for dir in dirs {
-        let skill_id = format!("skill-{}-{}", input.owner, dir);
-        let installed = installed_ids.contains(&skill_id);
-
-        let (name, description, fm) = if which::which("gh").is_ok() {
-            let md_output = std::process::Command::new("gh")
-                .args([
-                    "api",
-                    &format!("repos/{repo_slug}/contents/{dir}/SKILL.md"),
-                    "--jq",
-                    ".content",
-                ])
-                .output();
-
-            match md_output {
-                Ok(o) if o.status.success() => {
-                    let raw = String::from_utf8_lossy(&o.stdout).trim().to_owned();
-                    let decoded = decode_base64_lossy(&raw);
-                    let fm = parse_skill_frontmatter(&decoded);
-                    let first_line = fm
-                        .body
-                        .lines()
-                        .find(|l| !l.trim().is_empty())
-                        .unwrap_or(&dir)
-                        .trim_start_matches('#')
-                        .trim()
-                        .to_owned();
-                    let desc = fm
-                        .body
-                        .lines()
-                        .skip(1)
-                        .find(|l| !l.trim().is_empty())
-                        .unwrap_or("Remote skill")
-                        .trim()
-                        .to_owned();
-                    (first_line, desc, fm)
-                }
-                _ => (
-                    dir.replace('-', " "),
-                    format!("Skill from {repo_slug}/{dir}"),
-                    parse_skill_frontmatter(""),
-                ),
-            }
-        } else {
-            (
-                dir.replace('-', " "),
-                format!("Skill from {repo_slug}/{dir}"),
-                parse_skill_frontmatter(""),
-            )
-        };
-
-        results.push(DiscoveredSkillRecord {
-            name,
-            description,
-            r#type: fm.r#type.unwrap_or_else(|| "skill".into()),
-            engines: fm.engines.unwrap_or_else(|| vec!["claude".into()]),
-            tags: fm
-                .tags
-                .unwrap_or_else(|| vec!["remote".into(), "github".into()]),
-            version: fm.version.unwrap_or_else(|| "1.0.0".into()),
-            directory: dir,
-            repo_owner: input.owner.clone(),
-            repo_name: input.repo.clone(),
-            repo_branch: branch.clone(),
-            installed,
-        });
-    }
-
-    Ok(results)
-}
-
 pub async fn sync_links(db: &sqlx::SqlitePool) -> crate::Result<()> {
-    let rows = sqlx::query_as!(
-        SkillRow,
-        "SELECT id, name, source, directory, version, description, type, \
-         engines, tags, trigger, check_prompt, repo_owner, repo_name, repo_branch, readme_url, \
-         enabled_for_codex, enabled_for_claude, enabled_for_gemini, enabled_for_cursor, \
-         installed_at, updated_at, origin FROM skills WHERE status = 'active'",
+    #[derive(sqlx::FromRow)]
+    struct SkillLinkRow {
+        source: String,
+        directory: String,
+        r#type: String,
+        enabled_for_codex: i64,
+        enabled_for_claude: i64,
+        enabled_for_gemini: i64,
+        enabled_for_cursor: i64,
+        status: String,
+    }
+
+    for engine in &["codex", "claude", "gemini", "cursor"] {
+        if let Err(e) = crate::skills::fs::purge_review_standard_engine_links(engine, false) {
+            eprintln!("warning: purge review-standard links failed for engine {engine}: {e}");
+        }
+    }
+
+    let rows = sqlx::query_as::<_, SkillLinkRow>(
+        "SELECT source, directory, type AS \"type\", enabled_for_codex, \
+         enabled_for_claude, enabled_for_gemini, enabled_for_cursor, status \
+         FROM skills",
     )
     .fetch_all(db)
     .await?;
-    let skills: Vec<SkillRecord> = rows.into_iter().map(SkillRecord::from).collect();
 
-    for skill in &skills {
+    for skill in &rows {
+        let allow_engine_link = skill.status == "active"
+            && crate::skills::fs::skill_type_allows_engine_link(&skill.r#type);
         let engines = [
-            ("codex", skill.enabled_for_codex),
-            ("claude", skill.enabled_for_claude),
-            ("gemini", skill.enabled_for_gemini),
-            ("cursor", skill.enabled_for_cursor),
+            ("codex", skill.enabled_for_codex != 0),
+            ("claude", skill.enabled_for_claude != 0),
+            ("gemini", skill.enabled_for_gemini != 0),
+            ("cursor", skill.enabled_for_cursor != 0),
         ];
         for (engine, enabled) in engines {
-            if let Err(e) =
-                crate::skill_fs::sync_engine_link(&skill.source, &skill.directory, engine, enabled)
-            {
+            if let Err(e) = crate::skills::fs::sync_engine_link(
+                &skill.source,
+                &skill.directory,
+                engine,
+                allow_engine_link && enabled,
+            ) {
                 eprintln!("warning: sync_engine_link failed for engine {engine}: {e}");
             }
         }

@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use crate::mcp_install;
+use crate::installer;
 use crate::style;
 
 const HOOK_SHIM_STALE_GRACE: Duration = Duration::from_secs(5);
@@ -32,12 +32,14 @@ pub(crate) fn has_fixable() -> bool {
     if !difflore_dir_exists() {
         return true;
     }
-    if !mcp_install::detect_install_repair_targets().is_empty() {
+    if !installer::detect_install_repair_targets().is_empty() {
         return true;
     }
     matches!(
         check_hook_shim(),
-        HookShimState::Missing | HookShimState::Stale { .. }
+        HookShimState::Missing
+            | HookShimState::Stale { .. }
+            | HookShimState::UnreadableMtime { .. }
     )
 }
 
@@ -88,7 +90,7 @@ pub(crate) fn run_fix_pass() {
     );
 }
 
-// ── Action planning ────────────────────────────────────────────────
+// Action planning
 
 enum Action {
     CreateDiffloreDir,
@@ -101,7 +103,7 @@ fn collect_actions() -> Vec<Action> {
     if !difflore_dir_exists() {
         out.push(Action::CreateDiffloreDir);
     }
-    let drift = mcp_install::detect_install_repair_targets();
+    let drift = installer::detect_install_repair_targets();
     if !drift.is_empty() {
         out.push(Action::InstallMcpDrift(drift));
     }
@@ -112,10 +114,10 @@ fn collect_actions() -> Vec<Action> {
     out
 }
 
-// ── 1. ~/.difflore/ directory ──────────────────────────────────────
+// 1. ~/.difflore/ directory
 
 fn difflore_dir_path() -> Option<PathBuf> {
-    difflore_core::paths::data_home().ok()
+    difflore_core::infra::paths::data_home().ok()
 }
 
 fn difflore_dir_exists() -> bool {
@@ -147,7 +149,7 @@ fn apply_create_difflore_dir() {
     }
 }
 
-// ── 2. MCP install drift ───────────────────────────────────────────
+// 2. MCP install drift
 
 fn apply_install_mcp_drift(names: &[String]) {
     println!(
@@ -159,20 +161,77 @@ fn apply_install_mcp_drift(names: &[String]) {
     // `install_all` is idempotent — re-running picks up newly detected
     // agents without re-prompting for already-installed ones, which is
     // exactly what we want for drift recovery.
-    mcp_install::install_all(false);
-    println!(
-        "  {} {}",
-        style::emerald(style::sym::OK),
-        style::ok("MCP install drift repaired"),
-    );
+    let applied = installer::install_all(false);
+    let remaining = if applied {
+        Vec::new()
+    } else {
+        installer::detect_install_repair_targets()
+    };
+    print_install_mcp_result(mcp_drift_repair_result(applied, remaining));
 }
 
-// ── 3. difflore-hook shim ──────────────────────────────────────────
+#[derive(Debug, PartialEq, Eq)]
+enum McpDriftRepairResult {
+    Applied,
+    Remaining(Vec<String>),
+    Unconfirmed,
+}
+
+fn mcp_drift_repair_result(applied: bool, remaining: Vec<String>) -> McpDriftRepairResult {
+    if applied {
+        McpDriftRepairResult::Applied
+    } else if remaining.is_empty() {
+        McpDriftRepairResult::Unconfirmed
+    } else {
+        McpDriftRepairResult::Remaining(remaining)
+    }
+}
+
+fn print_install_mcp_result(result: McpDriftRepairResult) {
+    match result {
+        McpDriftRepairResult::Applied => println!(
+            "  {} {}",
+            style::emerald(style::sym::OK),
+            style::ok("MCP install drift repaired"),
+        ),
+        McpDriftRepairResult::Remaining(names) => {
+            println!(
+                "  {} {} {}",
+                style::amber(style::sym::WARN),
+                style::warn("MCP install drift remains:"),
+                style::ident(&names.join(", ")),
+            );
+            println!(
+                "    {} {}",
+                style::pewter(style::sym::TIP),
+                style::pewter("run `difflore agents status` for details"),
+            );
+        }
+        McpDriftRepairResult::Unconfirmed => {
+            println!(
+                "  {} {}",
+                style::amber(style::sym::WARN),
+                style::warn("MCP install drift repair was not confirmed"),
+            );
+            println!(
+                "    {} {}",
+                style::pewter(style::sym::TIP),
+                style::pewter("run `difflore agents status` for details"),
+            );
+        }
+    }
+}
+
+// 3. difflore-hook shim
 
 enum HookShimState {
     Ok,
     Missing,
     Stale {
+        shim_path: PathBuf,
+        cli_path: PathBuf,
+    },
+    UnreadableMtime {
         shim_path: PathBuf,
         cli_path: PathBuf,
     },
@@ -187,14 +246,25 @@ fn check_hook_shim() -> HookShimState {
     let Some(shim) = hook_shim_for_cli(&cli).or_else(which_hook_shim) else {
         return HookShimState::Missing;
     };
-    let shim_mtime = file_mtime(&shim);
-    let cli_mtime = file_mtime(&cli);
+    classify_hook_shim_mtimes(&shim, &cli, file_mtime(&shim), file_mtime(&cli))
+}
+
+fn classify_hook_shim_mtimes(
+    shim: &std::path::Path,
+    cli: &std::path::Path,
+    shim_mtime: Option<SystemTime>,
+    cli_mtime: Option<SystemTime>,
+) -> HookShimState {
     match (shim_mtime, cli_mtime) {
         (Some(s), Some(c)) if shim_older_than_cli(s, c) => HookShimState::Stale {
-            shim_path: shim,
-            cli_path: cli,
+            shim_path: shim.to_path_buf(),
+            cli_path: cli.to_path_buf(),
         },
-        _ => HookShimState::Ok,
+        (Some(_), Some(_)) => HookShimState::Ok,
+        _ => HookShimState::UnreadableMtime {
+            shim_path: shim.to_path_buf(),
+            cli_path: cli.to_path_buf(),
+        },
     }
 }
 
@@ -206,7 +276,7 @@ fn hook_shim_for_cli(cli: &std::path::Path) -> Option<PathBuf> {
 
 fn which_hook_shim() -> Option<PathBuf> {
     let exe_name = format!("difflore-hook{}", std::env::consts::EXE_SUFFIX);
-    let path = difflore_core::env::var_os(difflore_core::env::PATH)?;
+    let path = difflore_core::infra::env::var_os(difflore_core::infra::env::PATH)?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(&exe_name);
         if candidate.is_file() {
@@ -239,9 +309,7 @@ fn apply_hook_shim(state: HookShimState) {
                 "    {} {} {}",
                 style::pewter(style::sym::TIP),
                 style::pewter("re-run"),
-                style::cmd(
-                    "cargo install --git https://github.com/difflore/difflore-cli difflore-cli"
-                ),
+                style::cmd("difflore update"),
             );
         }
         HookShimState::Stale {
@@ -264,15 +332,41 @@ fn apply_hook_shim(state: HookShimState) {
                 "    {} {} {}",
                 style::pewter(style::sym::TIP),
                 style::pewter("re-run"),
-                style::cmd(
-                    "cargo install --git https://github.com/difflore/difflore-cli difflore-cli"
-                ),
+                style::cmd("difflore update"),
+            );
+        }
+        HookShimState::UnreadableMtime {
+            shim_path,
+            cli_path,
+        } => {
+            println!(
+                "  {} {}",
+                style::amber(style::sym::WARN),
+                style::warn("could not compare difflore-hook and difflore timestamps"),
+            );
+            println!(
+                "    {} {} {}",
+                style::pewter(style::sym::BULLET),
+                style::pewter("shim:"),
+                style::ident(&shim_path.display().to_string()),
+            );
+            println!(
+                "    {} {} {}",
+                style::pewter(style::sym::BULLET),
+                style::pewter("cli:"),
+                style::ident(&cli_path.display().to_string()),
+            );
+            println!(
+                "    {} {} {}",
+                style::pewter(style::sym::TIP),
+                style::pewter("re-run"),
+                style::cmd("difflore update"),
             );
         }
     }
 }
 
-// ── Decline notices ────────────────────────────────────────────────
+// Decline notices
 
 /// Print the one-line "we won't auto-touch this" notices for the
 /// privacy-sensitive surfaces. Only emitted under `--fix` so the
@@ -340,5 +434,45 @@ mod tests {
         let cli = SystemTime::UNIX_EPOCH + Duration::from_secs(110);
 
         assert!(shim_older_than_cli(shim, cli));
+    }
+
+    #[test]
+    fn hook_shim_with_unreadable_mtime_needs_attention() {
+        let shim = PathBuf::from("difflore-hook");
+        let cli = PathBuf::from("difflore");
+
+        assert!(matches!(
+            classify_hook_shim_mtimes(
+                &shim,
+                &cli,
+                None,
+                Some(SystemTime::UNIX_EPOCH + Duration::from_secs(100)),
+            ),
+            HookShimState::UnreadableMtime { .. }
+        ));
+    }
+
+    #[test]
+    fn mcp_drift_repair_result_reports_applied_install() {
+        assert_eq!(
+            mcp_drift_repair_result(true, vec!["Codex".to_owned()]),
+            McpDriftRepairResult::Applied
+        );
+    }
+
+    #[test]
+    fn mcp_drift_repair_result_reports_remaining_drift() {
+        assert_eq!(
+            mcp_drift_repair_result(false, vec!["Codex".to_owned(), "Cursor".to_owned()]),
+            McpDriftRepairResult::Remaining(vec!["Codex".to_owned(), "Cursor".to_owned()])
+        );
+    }
+
+    #[test]
+    fn mcp_drift_repair_result_reports_unconfirmed_noop() {
+        assert_eq!(
+            mcp_drift_repair_result(false, Vec::new()),
+            McpDriftRepairResult::Unconfirmed
+        );
     }
 }

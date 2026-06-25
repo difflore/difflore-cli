@@ -1,21 +1,15 @@
 //! Synchronous `[Y/n]` prompt for the post-install offer.
 //!
-//! Mirrors the helper in `commands/welcome.rs::prompt_yes` but stays
-//! sync so it slots into the (sync) `mcp_install::install_all` flow
-//! without forcing a tokio runtime up the call stack. Visual style
-//! tracks the existing pewter/emerald palette from `style.rs`.
+//! Stays sync so it slots into the sync `installer::install_all` flow without
+//! forcing a tokio runtime up the call stack.
 
 use std::io::{self, BufRead, Write};
 
 use crate::style::{self, sym};
 
-/// Default-yes confirmation prompt. Empty input -> yes (matches the
-/// `[Y/n]` capitalization convention); anything starting with `n` -> no;
-/// EOF / read error -> no (we never opt a non-interactive caller in by
-/// accident).
-///
-/// Pulled out as a function so the runner can swap it for a stub in
-/// unit tests via the `ask_yes_default_yes_with` indirection below.
+/// Default-yes confirmation prompt. Empty input -> yes; anything starting
+/// with `n` -> no; EOF / read error -> no (never opt a non-interactive
+/// caller in by accident).
 #[must_use]
 pub fn ask_yes_default_yes(question: &str) -> bool {
     print_question(question);
@@ -26,10 +20,8 @@ pub fn ask_yes_default_yes(question: &str) -> bool {
     ask_yes_default_yes_with(read.ok().map(|_| buf))
 }
 
-/// Pure decision: given the line the prompt collected (or `None` for
-/// EOF / read error), should we treat it as "yes"? Public to the
-/// module so tests can exercise the cleanup + default-yes logic
-/// without driving a real stdin.
+/// Pure decision for a collected line (`None` = EOF / read error): treat it
+/// as "yes"? Split out so tests can exercise the logic without real stdin.
 #[must_use]
 pub fn ask_yes_default_yes_with(line: Option<String>) -> bool {
     let Some(line) = line else {
@@ -43,8 +35,7 @@ pub fn ask_yes_default_yes_with(line: Option<String>) -> bool {
     !(answer == "n" || answer == "no")
 }
 
-/// Render the `[Y/n]` line. Kept separate so the prompt's visual style
-/// can be tweaked without touching the decision logic.
+/// Render the `[Y/n]` line.
 fn print_question(question: &str) {
     print!(
         "  {} {} {} ",
@@ -55,9 +46,8 @@ fn print_question(question: &str) {
     let _ = io::stdout().flush();
 }
 
-/// Same cleanup welcome.rs uses: strip whitespace, NULs, BOM, then
-/// lowercase. Means a Windows shell that injects `\r\n` + a stray BOM
-/// still produces a clean answer string.
+/// Strip whitespace, NULs, and BOM, then lowercase, so a Windows shell
+/// injecting `\r\n` + a stray BOM still yields a clean answer string.
 fn clean_prompt_answer(line: &str) -> String {
     line.trim_matches(|c: char| c.is_whitespace() || c == '\0' || c == '\u{feff}')
         .to_ascii_lowercase()
@@ -102,7 +92,9 @@ mod tests {
 
     #[test]
     fn windows_control_bytes_are_stripped_before_decision() {
-        assert!(!ask_yes_default_yes_with(Some("\u{feff}n\0\r\n".to_owned())));
+        assert!(!ask_yes_default_yes_with(Some(
+            "\u{feff}n\0\r\n".to_owned()
+        )));
         assert!(ask_yes_default_yes_with(Some("\u{feff}\0\r\n".to_owned())));
     }
 }

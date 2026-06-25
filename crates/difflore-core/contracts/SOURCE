@@ -1,0 +1,16 @@
+# Provenance for crates/difflore-core/contracts/openapi-spec.json
+#
+# The spec is vendored from the difflore-cloud repository's contract export
+# (cloud: `pnpm contract:export` writes src/contracts/openapi/*.json).
+# Do not hand-edit openapi-spec.json without refreshing this provenance.
+
+source-repo:   difflore-cloud
+source-path:   src/contracts/openapi/api.json
+source-commit: 1fd8abe5b94f524111479eb08838ee27e1f9f297
+
+# sha256 of the vendored openapi-spec.json currently checked in here.
+spec-sha256:   8141b468e4b3a83aee2365e9b9dfecf814033aea8b249a3b97019643346cbc87
+
+# In sync: re-exported from difflore-cloud at the source-commit above via
+# `pnpm contract:export` and re-vendored. The `check-vendored-spec` gate
+# verifies this byte-for-byte against a freshly built cloud spec.

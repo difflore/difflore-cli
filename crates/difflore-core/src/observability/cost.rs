@@ -1,16 +1,11 @@
-//! Review cost transparency.
+//! Review cost transparency: a pricing table for the LLM models `DiffLore`
+//! calls plus a helper to estimate the USD cost of a review turn.
 //!
-//! A small pricing table for the LLM models `DiffLore` actually calls, plus
-//! a helper to estimate the USD cost of a single review turn from the
-//! provider's returned `usage` block.
-//!
-//! The table is intentionally conservative: unknown models return `None`
-//! rather than guessing, so downstream code can persist `NULL` and the
-//! cloud aggregation skips the row instead of under-reporting.
+//! Unknown models return `None` rather than guessing, so downstream code
+//! persists `NULL` and cloud aggregation skips the row.
 
-/// Per-1K-token pricing for a single LLM model. Mirrors the public pricing
-/// pages for each provider as of the plan date; update when providers
-/// change their rate cards.
+/// Per-1K-token pricing for a single LLM model. Update when providers change
+/// their rate cards.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModelPricing {
     pub input_usd_per_1k: f64,
@@ -18,12 +13,12 @@ pub struct ModelPricing {
 }
 
 /// Look up the per-1K pricing for a model. Returns `None` for unknown
-/// identifiers so callers can record `NULL` and avoid under/over-reporting.
+/// identifiers so callers can record `NULL`.
 pub fn pricing_for(model: &str) -> Option<ModelPricing> {
     match model {
         // ── Anthropic ──
-        // Sonnet 4 snapshot ids share the same published rate card. Keep both
-        // entries so archived fix_runs.ai_model values still resolve.
+        // Both Sonnet 4 snapshot ids share a rate card, so archived
+        // fix_runs.ai_model values still resolve.
         "claude-sonnet-4-20250514" | "claude-sonnet-4-6" => Some(ModelPricing {
             input_usd_per_1k: 0.003,
             output_usd_per_1k: 0.015,
@@ -49,11 +44,8 @@ pub fn pricing_for(model: &str) -> Option<ModelPricing> {
     }
 }
 
-/// Compute the estimated USD cost of a single LLM call.
-///
-/// Returns `None` for unknown models. The arithmetic is deliberately simple
-/// (no rounding, no currency conversion); downstream consumers persist the
-/// value in a `numeric(10, 6)` column where it will be rounded once.
+/// Estimated USD cost of a single LLM call. Returns `None` for unknown models.
+/// No rounding; consumers persist into a `numeric(10, 6)` column.
 pub fn estimate_cost_usd(model: &str, input_tokens: u32, output_tokens: u32) -> Option<f64> {
     let p = pricing_for(model)?;
     let cost = (f64::from(input_tokens) / 1000.0).mul_add(

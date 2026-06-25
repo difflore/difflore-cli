@@ -1,9 +1,9 @@
 //! Local MCP rule-serve ledger.
 //!
-//! This records the small, low-sensitive facts needed to prove the open
-//! source runtime is doing useful work: which MCP rule tool served rules,
-//! whether it came up empty, the repo/file scope, and a hash of the query.
-//! It deliberately does not store the prompt, source code, or rule bodies.
+//! Records low-sensitivity facts proving the runtime does useful work: which
+//! MCP rule tool served rules, whether it came up empty, the repo/file scope,
+//! and a hash of the query. It does not store the prompt, source code, or rule
+//! bodies.
 
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
@@ -53,7 +53,6 @@ struct McpRuleServeRuleRow {
     tool: String,
     repo_full_name: Option<String>,
     file_path: Option<String>,
-    rule_ids_json: String,
     strict_match_count: i64,
     estimated_tokens: i64,
     served_at: String,
@@ -73,7 +72,7 @@ pub fn query_hash(query_text: &str) -> String {
 }
 
 pub async fn record(pool: &SqlitePool, input: &McpRuleServeInput<'_>) -> crate::Result<()> {
-    let rule_ids_json = serde_json::to_string(input.rule_ids).unwrap_or_else(|_| "[]".to_owned());
+    let rule_ids_json = serde_json::to_string(input.rule_ids)?;
     let rule_count = input.rule_ids.len() as i64;
     let was_empty = i64::from(rule_count == 0);
     let hash = query_hash(input.query_text);
@@ -167,27 +166,30 @@ pub async fn summary_for_rule(
 ) -> crate::Result<McpRuleServeRuleSummary> {
     let days = days.max(1);
     let window = format!("-{days} days");
-    let rows = sqlx::query_as!(
-        McpRuleServeRuleRow,
-        r#"SELECT tool AS "tool!: String", repo_full_name, file_path,
-                rule_ids_json AS "rule_ids_json!: String",
-                strict_match_count AS "strict_match_count!: i64",
-                estimated_tokens AS "estimated_tokens!: i64",
-                served_at AS "served_at!: String"
+    // Runtime query form keeps the json_each membership predicate in SQLite
+    // without needing a compile-time SQLx cache entry for this dynamic scan.
+    let rows = sqlx::query_as::<_, McpRuleServeRuleRow>(
+        r"SELECT tool, repo_full_name, file_path,
+                strict_match_count,
+                estimated_tokens,
+                served_at
          FROM mcp_rule_serves
          WHERE was_empty = 0
            AND datetime(served_at) >= datetime('now', ?1)
-         ORDER BY datetime(served_at) DESC, id DESC"#,
-        window,
+           AND EXISTS (
+             SELECT 1
+             FROM json_each(CASE WHEN json_valid(rule_ids_json) THEN rule_ids_json ELSE '[]' END)
+             WHERE value = ?2
+           )
+         ORDER BY datetime(served_at) DESC, id DESC",
     )
+    .bind(window)
+    .bind(rule_id)
     .fetch_all(pool)
     .await?;
 
     let mut summary = McpRuleServeRuleSummary::default();
     for row in rows {
-        if !rule_ids_json_contains(&row.rule_ids_json, rule_id) {
-            continue;
-        }
         summary.calls += 1;
         summary.strict_match_calls += i64::from(row.strict_match_count > 0);
         summary.estimated_tokens += row.estimated_tokens.max(0);
@@ -203,10 +205,6 @@ pub async fn summary_for_rule(
         }
     }
     Ok(summary)
-}
-
-fn rule_ids_json_contains(raw: &str, rule_id: &str) -> bool {
-    serde_json::from_str::<Vec<String>>(raw).is_ok_and(|ids| ids.iter().any(|id| id == rule_id))
 }
 
 #[cfg(test)]

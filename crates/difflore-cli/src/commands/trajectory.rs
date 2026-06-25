@@ -1,30 +1,21 @@
 //! `difflore trajectory <review-id>` — local replay of a recorded review
 //! trajectory.
 //!
-//! The cloud already persists a rich decision trail for every review run
-//! (`difflore-cloud/src/orpc/-trajectory-types.ts` ↔ the Rust enum in
-//! `difflore_core::review_trajectory`): chunks retrieved → rules applied →
-//! past verdicts recalled → llm_call (per perspective) → self_check →
-//! final_decision.
+//! Fetches one review's trajectory via [`CloudClient::get_trajectory`] (the
+//! cloud's `getTrajectory` oRPC GET, mirroring the Rust enum in
+//! `difflore_core::observability::trajectory`) and renders it as a readable step
+//! ladder so every emitted issue traces back to its memory evidence: chunks
+//! retrieved, rules applied (with `← learned from <repo>` provenance from the
+//! local `skills` table), past verdicts recalled, each `llm_call`, the
+//! self-check, and the final issue ids.
 //!
-//! This command fetches one review's trajectory through the existing cloud
-//! client ([`CloudClient::get_trajectory`], which wraps the `getTrajectory`
-//! oRPC GET) and renders it as a readable **step ladder** so every emitted
-//! issue is traceable back to its memory evidence: which chunks were
-//! retrieved, which rules fired (with `← learned from <repo>` provenance
-//! pulled from the local `skills` table), which past verdicts were recalled,
-//! each `llm_call`'s perspective + token usage, the self-check keep/drop +
-//! average confidence, and the final issue ids.
-//!
-//! The renderer ([`render_trajectory`]) is a **pure function**
-//! (`steps + provenance → Vec<String>`) with no I/O and no color, so it is
-//! unit-tested against fixtures. The handler does the fetch + provenance
-//! lookup + printing; `--json` bypasses the renderer and emits the raw
-//! trajectory document.
+//! The renderer ([`render_trajectory`]) is a pure function with no I/O and no
+//! color so it is unit-tested against fixtures. `--json` bypasses it and emits
+//! the raw trajectory document.
 
 use std::collections::HashMap;
 
-use difflore_core::review_trajectory::{RuleSource, TrajectoryStep};
+use difflore_core::observability::trajectory::{RuleSource, TrajectoryStep};
 
 use crate::runtime::CommandContext;
 use crate::style;
@@ -50,7 +41,7 @@ pub(crate) async fn handle_trajectory(ctx: &CommandContext, args: TrajectoryArgs
         if args.json {
             println!(
                 "{}",
-                crate::commands::util::json_compact_or(
+                crate::support::util::json_compact_or(
                     &serde_json::json!({ "error": "missing_review_id" }),
                     "{}"
                 )
@@ -71,7 +62,7 @@ pub(crate) async fn handle_trajectory(ctx: &CommandContext, args: TrajectoryArgs
     let doc = match fetched {
         Ok(doc) => doc,
         Err(e) => {
-            render_fetch_error(review_id, &e, args.json);
+            render_fetch_error(review_id, &e.to_string(), args.json);
             return;
         }
     };
@@ -88,7 +79,7 @@ pub(crate) async fn handle_trajectory(ctx: &CommandContext, args: TrajectoryArgs
             "stepCount": doc.steps.len(),
             "steps": doc.steps,
         });
-        println!("{}", crate::commands::util::json_or(&payload, "{}"));
+        println!("{}", crate::support::util::json_or(&payload, "{}"));
         return;
     }
 
@@ -113,7 +104,7 @@ fn render_fetch_error(review_id: &str, err: &str, json: bool) {
     if json {
         println!(
             "{}",
-            crate::commands::util::json_compact_or(
+            crate::support::util::json_compact_or(
                 &serde_json::json!({
                     "reviewId": review_id,
                     "error": classify_fetch_error(err).as_str(),
@@ -189,19 +180,24 @@ fn classify_fetch_error(err: &str) -> FetchError {
         FetchError::NotLoggedIn
     } else if lower.contains("plan_limit_exceeded")
         || lower.contains("plangated")
-        || lower.contains(" 403")
-        || lower.contains("forbidden")
+        || contains_http_status(&lower, "403")
     {
         FetchError::PlanGated
     } else if lower.contains("reviewnotfound")
         || lower.contains("review_not_found")
-        || lower.contains(" 404")
-        || lower.contains("not found")
+        || contains_http_status(&lower, "404")
     {
         FetchError::NotFound
     } else {
         FetchError::Other
     }
+}
+
+fn contains_http_status(lower: &str, code: &str) -> bool {
+    lower.contains(&format!("returned {code}"))
+        || lower.contains(&format!("http {code}"))
+        || lower.contains(&format!("status {code}"))
+        || lower.contains(&format!(" {code}:"))
 }
 
 /// Human label for a [`RuleSource`] used in the `rules applied` line.
@@ -252,7 +248,7 @@ fn join_scores_capped(scores: &[f32], n: usize) -> String {
 /// block instead of a bare header.
 pub(crate) fn render_trajectory(
     review_id: &str,
-    doc: &difflore_core::cloud::api_types::GetTrajectoryResponse,
+    doc: &difflore_core::contract::GetTrajectoryResponse,
     provenance: &HashMap<String, Option<String>>,
 ) -> Vec<String> {
     let mut out = Vec::new();
@@ -334,7 +330,7 @@ fn render_step(
             for id in rule_ids {
                 // Provenance suffix: `← learned from <repo>` when the local
                 // skills table knows where the rule came from. The same
-                // framing the agent sees in MCP serves + the TUI.
+                // framing the agent sees in MCP serves and CLI memory surfaces.
                 let suffix = match provenance.get(id) {
                     Some(Some(repo)) if !repo.trim().is_empty() => {
                         format!("  \u{2190} learned from {repo}")
@@ -454,8 +450,8 @@ fn render_step(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use difflore_core::cloud::api_types::GetTrajectoryResponse;
-    use difflore_core::review_trajectory::RecalledVerdict;
+    use difflore_core::contract::GetTrajectoryResponse;
+    use difflore_core::observability::trajectory::RecalledVerdict;
 
     fn doc(steps: Vec<TrajectoryStep>) -> GetTrajectoryResponse {
         GetTrajectoryResponse {
@@ -682,6 +678,14 @@ mod tests {
         );
         assert_eq!(
             classify_fetch_error("[get_trajectory] network error: connection refused"),
+            FetchError::Other
+        );
+        assert_eq!(
+            classify_fetch_error("[get_trajectory] network error: cache file not found locally"),
+            FetchError::Other
+        );
+        assert_eq!(
+            classify_fetch_error("[get_trajectory] upstream said forbidden branch name"),
             FetchError::Other
         );
         assert_eq!(

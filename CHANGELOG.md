@@ -1,27 +1,37 @@
 # Changelog
 
-All notable changes to DiffLore are listed here. The project follows
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Notable DiffLore changes are listed here. The project follows Semantic
+Versioning.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-06-08
+## [0.2.0] - 2026-06-24
+
+First general release. DiffLore turns past code-review feedback into local
+memory that your AI coding agent recalls automatically.
 
 ### Added
 
-- First public release of the local-first DiffLore CLI.
-- GitHub PR review import with `difflore import-reviews`, including dry-run
-  planning and repo-scoped rule attribution.
-- Local review-memory recall with `difflore recall`, `difflore ask`, and
-  installed MCP tools for supported AI coding agents.
-- Agent wiring with `difflore agents install`, `agents status`, `agents update`,
-  and `agents uninstall`.
-- Rule-aware local fix previews with `difflore fix --preview`; accepted changes
-  only touch the local working tree.
-- Local status and diagnostics through bare `difflore`, `difflore status`, and
-  `difflore doctor --report`.
-- Optional semantic recall configuration through `difflore embeddings setup`.
-- Optional cloud login and sync commands for teams that want shared memory,
-  governance, and impact views.
-- Public documentation for installation, CLI usage, security reporting,
-  contribution workflow, and release notes.
+- Import review history from GitHub and GitLab pull/merge requests.
+- Automatic recall of relevant past reviews, delivered to agents over MCP and
+  lifecycle hooks.
+- `difflore memory` — a local control plane to inspect, curate, and prune what
+  the agent recalls.
+- Semantic embeddings on by default for higher-recall retrieval, with automatic
+  full-text fallback.
+- Static rule export to `AGENTS.md` and `CLAUDE.md`.
+- Fix previews, `difflore doctor` diagnostics, and optional cloud sync.
+
+### Changed
+
+- Faster, hardened lifecycle hooks with lower cold-start latency, especially on
+  Windows.
+- Polished terminal output, authentication, and first-run experience.
+
+### Removed
+
+- The experimental terminal UI and first-run wizard.
+
+## [0.1.0] - 2026-06-08
+
+- Initial preview to validate the local-first approach; not publicly promoted.

@@ -1,35 +1,26 @@
 //! `difflore eval` — a fast, repeatable self-recall sanity check.
 //!
 //! IMPORTANT: this is a SELF-RECALL probe, NOT real-world recall. Each query is
-//! the rule's OWN first ~8 significant words, so the corpus is being asked to
-//! find a rule from (a distillation of) its own text. That is an OPTIMISTIC
-//! UPPER BOUND on retrieval quality — useful as a fast, offline, deterministic
-//! sanity check that the index/embedder/rerank are wired up and ranking the
-//! obvious case, but it overstates how well DiffLore recalls a rule from a
-//! *paraphrase* (the real agent query). Real-world paraphrase recall needs
-//! separate task-query evaluation; this command only checks the local
-//! self-match path.
+//! the rule's own first ~8 significant words, so the corpus is asked to find a
+//! rule from a distillation of its own text — an optimistic upper bound that
+//! overstates recall from a real paraphrased agent query. Paraphrase recall
+//! needs separate task-query evaluation.
 //!
-//! Until this module, the doctor self-recall check measured the WRONG path: it
-//! called raw `retrieve_rules_with_confidence`, while every real recall surface
-//! (`recall`, `fix`, MCP `search_rules`, the hook hot path) applies the lexical
-//! and strict-file re-rank on top, so the reported numbers understated what the
-//! self-recall query itself would surface. This module measures self-recall
-//! through `retrieve_rules_for_search` — the exact reranked path the agent uses
-//! — so the upper bound is computed over the real ranking pipeline. Both
-//! `difflore eval` and the doctor section call [`measure_self_recall`], so the
-//! metric can never drift between the two (part of the public eval-seed contract).
+//! Measurement goes through `retrieve_rules_for_search` — the same reranked
+//! path the agent uses — so the upper bound reflects the real ranking pipeline.
+//! Both `difflore eval` and the doctor section call [`measure_self_recall`], so
+//! the metric can't drift between them.
 //!
-//! `difflore eval` builds the measurement index in an isolated `TempDir` with
-//! the local lexical (SHA1) embedder, so it is deterministic, offline, fast,
-//! and leaves the user's real per-project indexes untouched. SHA1 is also the
-//! zero-setup mode every new user starts in (and the effective mode whenever
-//! the cloud embedder is paused), so this is the recall quality that matters
-//! most for the "first fired rule" goal.
+//! The index is built in an isolated `TempDir` with the local lexical (SHA1)
+//! embedder, so it is deterministic, offline, and leaves the user's real
+//! per-project indexes untouched. SHA1 is also the zero-setup mode new users
+//! start in, so this is the recall quality that matters most for first recall.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use difflore_core::CoreError;
+use difflore_core::context::eval as golden;
 use difflore_core::context::retrieval::{self, RuleSearchRetrievalOptions};
 use difflore_core::context::rule_source::RuleDocument;
 use difflore_core::context::{index_db, rule_source};
@@ -38,7 +29,6 @@ use crate::runtime::CommandContext;
 use crate::style::{self, sym};
 
 /// Stop-words dropped when distilling a rule's body into a self-recall query.
-/// Kept identical to the historical doctor list so numbers stay comparable.
 const STOP: &[&str] = &[
     "the", "a", "an", "and", "or", "of", "to", "for", "in", "on", "at", "by", "with", "when",
     "use", "using", "as", "is", "are", "be", "this", "that", "from", "into", "do", "not", "should",
@@ -64,6 +54,10 @@ pub(crate) struct SelfRecallReport {
     pub hits_at_5: usize,
     pub reciprocal_rank_sum: f64,
     pub per_lang: BTreeMap<String, (usize, usize, usize, f64)>,
+    pub retrieval_errors: usize,
+    pub rate_limited_errors: usize,
+    pub embed_cap_errors: usize,
+    latency_ms: Vec<u64>,
 }
 
 impl SelfRecallReport {
@@ -82,6 +76,22 @@ impl SelfRecallReport {
         } else {
             self.reciprocal_rank_sum / self.tested as f64
         }
+    }
+    pub fn avg_latency_ms(&self) -> u64 {
+        if self.latency_ms.is_empty() {
+            0
+        } else {
+            self.latency_ms.iter().sum::<u64>() / self.latency_ms.len() as u64
+        }
+    }
+    pub fn max_latency_ms(&self) -> u64 {
+        self.latency_ms.iter().copied().max().unwrap_or(0)
+    }
+    pub fn p95_latency_ms(&self) -> u64 {
+        percentile_latency_ms(&self.latency_ms, 0.95)
+    }
+    pub const fn latency_samples(&self) -> usize {
+        self.latency_ms.len()
     }
 }
 
@@ -119,20 +129,40 @@ pub(crate) fn build_samples(rules: &[RuleDocument], n_target: usize) -> Vec<Self
     if rules.is_empty() || n_target == 0 {
         return Vec::new();
     }
-    let step = rules.len().div_ceil(n_target).max(1);
-    rules
-        .iter()
-        .step_by(step)
-        .take(n_target)
-        .filter_map(|rule| {
-            let query = self_recall_query(&rule.content);
-            (!query.is_empty()).then(|| SelfRecallSample {
+    let sample_count = n_target.min(rules.len());
+    let mut indices = Vec::with_capacity(rules.len());
+    for i in 0..sample_count {
+        let index = if sample_count == 1 {
+            0
+        } else {
+            i * (rules.len() - 1) / (sample_count - 1)
+        };
+        if !indices.contains(&index) {
+            indices.push(index);
+        }
+    }
+    for index in 0..rules.len() {
+        if !indices.contains(&index) {
+            indices.push(index);
+        }
+    }
+
+    let mut samples = Vec::with_capacity(sample_count);
+    for index in indices {
+        if samples.len() >= sample_count {
+            break;
+        }
+        let rule = &rules[index];
+        let query = self_recall_query(&rule.content);
+        if !query.is_empty() {
+            samples.push(SelfRecallSample {
                 skill_id: rule.skill_id.clone(),
                 query,
                 language: rule.language.clone(),
-            })
-        })
-        .collect()
+            });
+        }
+    }
+    samples
 }
 
 /// Measure self-recall against `index_pool` through the REAL reranked search
@@ -150,7 +180,8 @@ pub(crate) async fn measure_self_recall(
         entry.0 += 1;
         report.tested += 1;
 
-        let Ok(hits) = retrieval::retrieve_rules_for_search(
+        let query_started = Instant::now();
+        let hits = match retrieval::retrieve_rules_for_search(
             index_pool,
             RuleSearchRetrievalOptions {
                 query: &sample.query,
@@ -158,17 +189,33 @@ pub(crate) async fn measure_self_recall(
                 top_k: 5,
                 confidence_map: None,
                 age_days_map: None,
-                target_file: None,
+                effectiveness_map: None,
+                target_scope: None,
                 repo_scopes: &[],
                 ann_enabled: false,
+                local_query_embedding: false,
                 embedding_timeout,
                 cold_start_retry: false,
                 adaptive_prune: false,
             },
         )
         .await
-        else {
-            continue;
+        {
+            Ok(hits) => {
+                report.latency_ms.push(duration_ms(query_started.elapsed()));
+                hits
+            }
+            Err(e) => {
+                report.latency_ms.push(duration_ms(query_started.elapsed()));
+                report.retrieval_errors += 1;
+                if is_embed_cap_error(&e) {
+                    report.embed_cap_errors += 1;
+                }
+                if is_rate_limited_error(&e) {
+                    report.rate_limited_errors += 1;
+                }
+                continue;
+            }
         };
 
         if let Some(pos) = hits.iter().position(|h| h.skill_id == sample.skill_id) {
@@ -184,6 +231,30 @@ pub(crate) async fn measure_self_recall(
         }
     }
     report
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn percentile_latency_ms(samples: &[u64], percentile: f64) -> u64 {
+    if samples.is_empty() {
+        return 0;
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let pct = percentile.clamp(0.0, 1.0);
+    let idx = ((sorted.len() - 1) as f64 * pct).ceil() as usize;
+    sorted[idx]
+}
+
+const fn is_embed_cap_error(err: &CoreError) -> bool {
+    matches!(err, CoreError::EmbedCapReached { .. })
+}
+
+fn is_rate_limited_error(err: &CoreError) -> bool {
+    let text = difflore_core::error::error_chain_text(err).to_ascii_lowercase();
+    text.contains("rate limit") || text.contains("too many requests") || text.contains("429")
 }
 
 // ── Health marks (shared thresholds with the doctor section) ─────────────
@@ -235,8 +306,7 @@ pub(crate) async fn handle_eval(ctx: &CommandContext, samples: Option<usize>, js
         return;
     }
 
-    // Progress notice on stderr (keeps stdout clean for `--json`): the
-    // whole-corpus index build + sampling can take a few seconds.
+    // Progress notice on stderr keeps stdout clean for `--json`.
     if !json {
         eprintln!(
             "  {} measuring recall over {} rules ({} sample{})…",
@@ -333,6 +403,30 @@ fn emit_text(report: &SelfRecallReport, corpus: usize, elapsed: Duration) {
         style::pewter(mrr_mark(mrr)),
         mrr,
     );
+    println!(
+        "  {} latency       avg {} ms · p95 {} ms · max {} ms ({} query sample{})",
+        style::pewter(sym::BULLET),
+        report.avg_latency_ms(),
+        report.p95_latency_ms(),
+        report.max_latency_ms(),
+        report.latency_samples(),
+        if report.latency_samples() == 1 {
+            ""
+        } else {
+            "s"
+        },
+    );
+    println!(
+        "  {} retrieval errs {} · rate-limit {} · embed-cap {}",
+        style::pewter(if report.retrieval_errors == 0 {
+            sym::OK
+        } else {
+            sym::WARN
+        }),
+        report.retrieval_errors,
+        report.rate_limited_errors,
+        report.embed_cap_errors,
+    );
 
     let by_lang = top_languages(report, 4);
     if by_lang.len() >= 2 {
@@ -405,6 +499,15 @@ fn emit_json(report: &SelfRecallReport, corpus: usize, elapsed: Duration) {
             "at1_pct": report.at1_pct(),
             "mrr": report.mrr(),
             "elapsed_ms": elapsed.as_millis(),
+            "latency": {
+                "samples": report.latency_samples(),
+                "avg_ms": report.avg_latency_ms(),
+                "p95_ms": report.p95_latency_ms(),
+                "max_ms": report.max_latency_ms(),
+            },
+            "retrieval_errors": report.retrieval_errors,
+            "rate_limited_errors": report.rate_limited_errors,
+            "embed_cap_errors": report.embed_cap_errors,
             "by_language": by_lang,
         })
     );
@@ -434,6 +537,181 @@ fn top_languages(
     out
 }
 
+// ── Golden eval (precision/recall + forbidden-exclusion) ─────────────────
+
+/// `difflore eval --golden` entry point. Runs the committed smoke fixture
+/// through the REAL reranked search path with paraphrased agent queries and
+/// reports precision/recall@k, forbidden-rule leakage, and abstention. Unlike
+/// `difflore eval` (self-recall), this is the regression guardrail to run
+/// before changing ranking. Offline and deterministic (local SHA1, isolated
+/// TempDir index, embedded fixture — no DB, no network).
+pub(crate) async fn handle_golden_eval(json: bool) {
+    let fixture = match golden::parse_golden_fixture(golden::GOLDEN_SMOKE_FIXTURE) {
+        Ok(f) => f,
+        Err(e) => {
+            style::report_error("could not parse golden fixture", &e.to_string(), &[]);
+            return;
+        }
+    };
+    let docs = golden::golden_rules_to_documents(&fixture);
+
+    let tmp = match tempfile::tempdir() {
+        Ok(t) => t,
+        Err(e) => {
+            style::report_error("could not create eval index", &e.to_string(), &[]);
+            return;
+        }
+    };
+    let index_pool = match index_db::open_index_pool_at(&tmp.path().join("golden.db")).await {
+        Ok(p) => p,
+        Err(e) => {
+            style::report_error("could not open eval index", &e.to_string(), &[]);
+            return;
+        }
+    };
+    if let Err(e) = index_db::upsert_rule_chunks_isolated(&index_pool, &docs).await {
+        style::report_error("could not build eval index", &e.to_string(), &[]);
+        return;
+    }
+
+    // Retrieve the whole (tiny) corpus so first-relevant-rank is observable;
+    // scoring still cuts precision/recall/forbidden at `golden::GOLDEN_K`.
+    let top_k = fixture.rules.len().max(golden::GOLDEN_K);
+    let report = match golden::score_golden_cases(&index_pool, &fixture, top_k).await {
+        Ok(r) => r,
+        Err(e) => {
+            style::report_error("golden eval failed", &e.to_string(), &[]);
+            return;
+        }
+    };
+
+    if json {
+        emit_golden_json(&report);
+    } else {
+        emit_golden_text(&report);
+    }
+}
+
+const fn golden_mark(ok: bool) -> &'static str {
+    if ok { sym::OK } else { sym::ERR }
+}
+
+fn emit_golden_text(report: &golden::GoldenReport) {
+    let recall_ok = report.mean_recall_at_k >= 0.8;
+    let forbid_ok = report.positive_forbidden_hits == 0;
+    let abstain_ok = report.negative_clean == report.negative_cases;
+
+    println!();
+    println!(
+        "  {} {}",
+        style::cmd("difflore eval --golden"),
+        style::pewter(
+            "· golden-case precision/recall · local lexical (SHA1) · the reranked search path"
+        ),
+    );
+    println!();
+    println!(
+        "  {} recall@{}      {:.0}%  (mean over {} positive case{})",
+        style::pewter(golden_mark(recall_ok)),
+        report.k,
+        report.mean_recall_at_k * 100.0,
+        report.positive_cases,
+        if report.positive_cases == 1 { "" } else { "s" },
+    );
+    println!(
+        "  {} precision@{}   {:.0}%",
+        style::pewter(sym::BULLET),
+        report.k,
+        report.mean_precision_at_k * 100.0,
+    );
+    println!(
+        "  {} MRR           {:.3}",
+        style::pewter(sym::BULLET),
+        report.mean_reciprocal_rank,
+    );
+    println!(
+        "  {} forbidden leak {}  (in top-{} of positive cases — must be 0)",
+        style::pewter(golden_mark(forbid_ok)),
+        report.positive_forbidden_hits,
+        report.k,
+    );
+    println!(
+        "  {} abstention     {}/{} doc-only case{} recalled nothing forbidden",
+        style::pewter(golden_mark(abstain_ok)),
+        report.negative_clean,
+        report.negative_cases,
+        if report.negative_cases == 1 { "" } else { "s" },
+    );
+    if report.strict_file_total > 0 {
+        println!(
+            "  {} strict-file    {}/{} recalled rules matched the edited file's globs",
+            style::pewter(golden_mark(
+                report.strict_file_correct == report.strict_file_total
+            )),
+            report.strict_file_correct,
+            report.strict_file_total,
+        );
+    }
+
+    println!();
+    println!("  {}", style::pewter("per case:"));
+    for case in &report.cases {
+        let rank = case
+            .first_relevant_rank
+            .map_or_else(|| "—".to_owned(), |r| format!("#{r}"));
+        let detail = if case.expected == 0 {
+            format!(
+                "abstain {}",
+                if case.abstained_correctly == Some(true) {
+                    "clean"
+                } else {
+                    "LEAKED"
+                },
+            )
+        } else {
+            format!(
+                "expected @{rank} · forbidden in top-{}: {}",
+                report.k, case.forbidden_hits
+            )
+        };
+        println!(
+            "    {} {}",
+            style::pewter(&case.case_id),
+            style::pewter(&detail)
+        );
+    }
+
+    println!();
+    println!(
+        "  {}",
+        style::pewter("self-recall is an upper bound; this is the paraphrase-recall guardrail"),
+    );
+}
+
+fn emit_golden_json(report: &golden::GoldenReport) {
+    match serde_json::to_string(&serde_json::json!({
+        "ok": true,
+        "mode": "sha1",
+        "metric": "golden-case",
+        "path": "reranked_search",
+        "k": report.k,
+        "total_cases": report.total_cases,
+        "positive_cases": report.positive_cases,
+        "negative_cases": report.negative_cases,
+        "mean_recall_at_k": report.mean_recall_at_k,
+        "mean_precision_at_k": report.mean_precision_at_k,
+        "mean_reciprocal_rank": report.mean_reciprocal_rank,
+        "positive_forbidden_hits": report.positive_forbidden_hits,
+        "negative_clean": report.negative_clean,
+        "strict_file_correct": report.strict_file_correct,
+        "strict_file_total": report.strict_file_total,
+        "cases": report.cases,
+    })) {
+        Ok(s) => println!("{s}"),
+        Err(e) => style::report_error("could not render golden json", &e.to_string(), &[]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,12 +738,41 @@ mod tests {
             hits_at_5: 3,
             reciprocal_rank_sum: 1.0 + 0.5 + 0.25, // ranks 1, 1, 4, miss
             per_lang: BTreeMap::new(),
+            retrieval_errors: 0,
+            rate_limited_errors: 0,
+            embed_cap_errors: 0,
+            latency_ms: Vec::new(),
         };
         assert!((r.at5_pct() - 75.0).abs() < 1e-9);
         assert!((r.at1_pct() - 50.0).abs() < 1e-9);
         assert!((r.mrr() - (1.75 / 4.0)).abs() < 1e-9);
         r.tested = 0;
         assert!(r.mrr().abs() < 1e-9, "no divide-by-zero on empty");
+    }
+
+    #[test]
+    fn latency_percentiles_are_stable_for_small_samples() {
+        let report = SelfRecallReport {
+            latency_ms: vec![10, 30, 20, 100],
+            ..SelfRecallReport::default()
+        };
+
+        assert_eq!(report.avg_latency_ms(), 40);
+        assert_eq!(report.p95_latency_ms(), 100);
+        assert_eq!(report.max_latency_ms(), 100);
+        assert_eq!(percentile_latency_ms(&[10, 20, 30, 40], 0.50), 30);
+    }
+
+    #[test]
+    fn retrieval_error_classifier_counts_rate_limit_and_embed_cap() {
+        let cap = CoreError::EmbedCapReached {
+            cap: 200,
+            used: 200,
+        };
+        assert!(is_embed_cap_error(&cap));
+        assert!(is_rate_limited_error(&CoreError::Internal(
+            "provider returned 429 Too Many Requests".to_owned()
+        )));
     }
 
     #[test]
@@ -493,10 +800,50 @@ mod tests {
         let a = build_samples(&rules, 10);
         let b = build_samples(&rules, 10);
         assert_eq!(a.len(), 10);
+        assert_eq!(build_samples(&rules, 20).len(), 20);
+        assert_eq!(build_samples(&rules, 100).len(), 50);
+        assert_eq!(
+            build_samples(&rules[..10], 4)
+                .iter()
+                .map(|s| s.skill_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["r0", "r3", "r6", "r9"]
+        );
         assert_eq!(
             a.iter().map(|s| &s.skill_id).collect::<Vec<_>>(),
             b.iter().map(|s| &s.skill_id).collect::<Vec<_>>(),
             "stride sampling must be deterministic"
+        );
+    }
+
+    #[test]
+    fn build_samples_backfills_when_stride_hits_empty_queries() {
+        let rules: Vec<RuleDocument> = (0..6)
+            .map(|i| RuleDocument {
+                skill_id: format!("r{i}"),
+                title: format!("t{i}"),
+                content: if i == 0 {
+                    String::new()
+                } else {
+                    format!("Rule ID: r{i}\nRule Name: t{i}\n\nbody token alpha{i} bravo")
+                },
+                confidence: 0.7,
+                file_patterns: None,
+                language: None,
+                repo_scope: None,
+            })
+            .collect();
+
+        let samples = build_samples(&rules, 3);
+
+        assert_eq!(samples.len(), 3);
+        let sample_ids = samples
+            .iter()
+            .map(|sample| sample.skill_id.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            sample_ids.iter().all(|sample_id| *sample_id != "r0"),
+            "{sample_ids:?}"
         );
     }
 }

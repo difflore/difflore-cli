@@ -5,7 +5,8 @@ mod schema;
 
 pub(crate) use diagnostics::cloud_embed_outage_active;
 pub use diagnostics::{
-    EmbeddingDiagnostics, effective_embedding_profile_for_freshness, gather_embedding_diagnostics,
+    EmbeddingDiagnostics, effective_embedding_profile_for_freshness,
+    embedding_provider_recently_down, gather_embedding_diagnostics,
     gather_embedding_diagnostics_with_activity,
 };
 pub use pool::{
@@ -13,9 +14,9 @@ pub use pool::{
     rule_index_is_current,
 };
 pub use queries::{
-    RuleChunksUpsertOutcome, fts_search, query_rule_chunks, upsert_rule_chunks,
-    upsert_rule_chunks_isolated, upsert_rule_chunks_with_profile,
-    upsert_rule_chunks_with_profile_and_timeout,
+    RuleChunksUpsertOutcome, fts_search, query_rule_chunks, query_rule_chunks_no_embeddings,
+    upsert_rule_chunks, upsert_rule_chunks_isolated, upsert_rule_chunks_with_local_profile,
+    upsert_rule_chunks_with_profile, upsert_rule_chunks_with_profile_and_timeout,
 };
 pub use schema::{IndexedRuleChunk, QueryFilter, index_db_path_for_project};
 
@@ -65,10 +66,9 @@ mod tests {
         }
     }
 
-    /// Generate a per-test project hash so tests can share the crate-
-    /// wide `shared_test_home()` without colliding in
-    /// `projects/<hash>/…`. Avoids the flaky `set_var` / `remove_var`
-    /// dance that was racing with concurrent test modules.
+    /// Per-test project hash so tests can share the crate-wide
+    /// `shared_test_home()` without colliding in `projects/<hash>/…`, avoiding
+    /// the `set_var` / `remove_var` race with concurrent test modules.
     fn unique_hash(tag: &str) -> String {
         use std::time::{SystemTime, UNIX_EPOCH};
         let nanos = SystemTime::now()
@@ -80,11 +80,10 @@ mod tests {
 
     #[tokio::test]
     async fn get_pool_for_project_creates_dir_and_db_on_first_call() {
-        let home = crate::db::shared_test_home();
+        let home = crate::infra::db::shared_test_home();
         let hash = unique_hash("testhashcreate");
         let pool = get_pool_for_project(&hash).await.unwrap();
-        // Running a trivial query should succeed — proves the table was
-        // created.
+        // A trivial query succeeding proves the table was created.
         let _ = sqlx::query_scalar!(r#"SELECT COUNT(*) as "n!: i64" FROM rule_chunks"#)
             .fetch_one(&pool)
             .await
@@ -98,14 +97,12 @@ mod tests {
 
     #[tokio::test]
     async fn get_pool_for_project_reuses_pool_on_second_call() {
-        let _home = crate::db::shared_test_home();
+        let _home = crate::infra::db::shared_test_home();
         let hash = unique_hash("testhashreuse");
         let p1 = get_pool_for_project(&hash).await.unwrap();
         let p2 = get_pool_for_project(&hash).await.unwrap();
-        // SqlitePool is Arc-shaped; same inner Arc means the cache hit.
-        // We can't easily compare the inner Arcs publicly, but we can
-        // check both pools see the same state — write a row via p1,
-        // read via p2.
+        // Can't compare the inner Arcs publicly, so prove the cache hit by
+        // writing via p1 and reading the same state via p2.
         sqlx::query!(
             "INSERT INTO rule_chunks (id, skill_id, content, embedding, file_patterns) \
              VALUES ('rule-x', 'skill-x', 'hello', NULL, NULL)"
@@ -122,9 +119,8 @@ mod tests {
 
     #[tokio::test]
     async fn upsert_populates_language_and_repo_scope_columns() {
-        // C2 back-fill proof: new rows carry the denormalised metadata
-        // so the SQL pre-filter can act on them without a join back to
-        // the skills table.
+        // New rows carry the denormalised metadata so the SQL pre-filter can
+        // act on them without a join back to the skills table.
         let tmp = TempDir::new().unwrap();
         let pool = fresh_pool(&tmp).await;
         let rules = vec![rd_with(
@@ -141,6 +137,30 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].language.as_deref(), Some("rust"));
         assert_eq!(chunks[0].repo_scope.as_deref(), Some("tokio-rs/tokio"));
+    }
+
+    #[tokio::test]
+    async fn upsert_with_local_profile_uses_sha1_vectors() {
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(&tmp).await;
+        let rules = vec![rd("local-only", "keep MCP retrieval local")];
+
+        let outcome = upsert_rule_chunks_with_local_profile(&pool, &rules)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome.embedding_profile,
+            crate::context::embedding::local_embedding_profile()
+        );
+        let chunks = query_rule_chunks(&pool, &QueryFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(
+            chunks[0].embedding.len(),
+            crate::context::embedding::EMBEDDING_DIM
+        );
     }
 
     #[tokio::test]
@@ -185,11 +205,11 @@ mod tests {
             chunks.iter().map(|c| c.skill_id.as_str()).collect();
         assert!(ids.contains("rust-1"));
         assert!(!ids.contains("py-1"), "python chunk must be filtered out");
-        // 2026-04-27 polish: NULL language now means "global rule —
-        // applies to every language" (mirrors repo_scope NULL
-        // semantics). Untagged rules must come through, otherwise
-        // filter_from_file would silently drop the cluster pipeline's
-        // most common case (0/3921 cloud rules carry a language tag).
+        // NULL language means "global rule — applies to every language"
+        // (mirrors repo_scope NULL semantics). Untagged rules must come
+        // through, otherwise filter_from_file would silently drop the cluster
+        // pipeline's most common case (almost no cloud rules carry a language
+        // tag).
         assert!(
             ids.contains("unscoped"),
             "NULL language column must match a strict language filter as global"
@@ -486,13 +506,23 @@ mod tests {
         let pool = open_pool_at(&path).await.unwrap();
 
         // language/repo_scope columns now exist (NULL-valued for rows that
-        // predate those columns).
+        // predate those columns). The vector query skips this legacy row
+        // because its embedding is NULL; FTS backfill below still indexes it.
+        let (language, repo_scope): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT language, repo_scope FROM rule_chunks WHERE id = 'rule-pre-metadata'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(language.is_none());
+        assert!(repo_scope.is_none());
         let chunks = query_rule_chunks(&pool, &QueryFilter::default())
             .await
             .unwrap();
-        assert_eq!(chunks.len(), 1);
-        assert!(chunks[0].language.is_none());
-        assert!(chunks[0].repo_scope.is_none());
+        assert!(
+            chunks.is_empty(),
+            "legacy rows with NULL embeddings must not be exposed as empty vectors"
+        );
 
         // FTS back-fill populated the existing content; searching for a
         // token that's only in that rule should return it.

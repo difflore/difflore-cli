@@ -1,12 +1,13 @@
 use core::fmt::Write as _;
 use std::collections::HashMap;
+use std::io::{self, Write as IoWrite};
 use std::path::Path;
 
-use difflore_core::models::DiffContentRecord;
-use difflore_core::review::ReviewIssueRecord;
+use difflore_core::domain::models::DiffContentRecord;
+use difflore_core::review_engine::ReviewIssueRecord;
 
-use crate::commands::util::exit_err;
 use crate::style::{self, sym};
+use crate::support::util::exit_err;
 
 use super::pr::PreparedPrFix;
 use super::{CONFIDENCE_THRESHOLD, file_loc, percent, review_status_for_outcome};
@@ -36,7 +37,7 @@ pub(super) fn render_fix_report_markdown(
                 .get(id)
                 .map(|repo| format!(" _(learned from `{repo}`)_"))
                 .unwrap_or_default();
-            writeln!(out, "- **{title}** — `{id}`{provenance}").ok();
+            writeln!(out, "- **{title}** - `{id}`{provenance}").ok();
         }
         out.push('\n');
     }
@@ -63,7 +64,7 @@ pub(super) fn render_fix_report_markdown(
         let loc = file_loc(issue);
         writeln!(
             out,
-            "### {idx}. `{loc}` — {rule} ({pct}% {conf_label})\n",
+            "### {idx}. `{loc}` - {rule} ({pct}% {conf_label})\n",
             idx = i + 1,
             rule = issue.rule,
         )
@@ -104,7 +105,7 @@ pub(super) fn render_fix_report_markdown(
         out.push_str(
             "- No changed files were found in this scope.\n\
              - No provider call was made and no patches were applied.\n\
-             - Make or stage a change, then run `difflore fix --preview` to see recalled memories before applying patches.\n",
+             - Make or stage a change, then run `difflore review --diff all` to see recalled memories before applying patches.\n",
         );
     } else {
         out.push_str(
@@ -117,7 +118,9 @@ pub(super) fn render_fix_report_markdown(
 
 pub(super) fn write_fix_report(report_target: &str, md: &str, json: bool) {
     if report_target == "-" {
-        print!("{md}");
+        if let Err(e) = write_fix_report_stdout(io::stdout().lock(), md) {
+            exit_err(&format!("could not write fix report to stdout: {e}"));
+        }
         return;
     }
     match std::fs::write(report_target, md) {
@@ -136,6 +139,11 @@ pub(super) fn write_fix_report(report_target: &str, md: &str, json: bool) {
     }
 }
 
+fn write_fix_report_stdout(mut writer: impl IoWrite, md: &str) -> io::Result<()> {
+    writer.write_all(md.as_bytes())?;
+    writer.flush()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_agent_handoff_markdown(
     scope_label: &str,
@@ -152,7 +160,7 @@ pub(super) fn render_agent_handoff_markdown(
     let mut out = String::new();
     out.push_str("# DiffLore local agent fix task\n\n");
     out.push_str(
-        "You are editing this repository locally with team review memory from DiffLore.\n\n",
+        "You are editing this repository locally with source-backed codebase rules from DiffLore.\n\n",
     );
 
     out.push_str("## Constraints\n\n");
@@ -274,6 +282,49 @@ Then stop. Do not commit, push, open a PR, or post comments.\n",
     out
 }
 
+/// One `findings[]` element: a recalled suggestion plus its source-repo
+/// attribution (looked up by `rule_id`). Shared by every fix JSON emitter so
+/// the wire shape stays identical across review/preview/yes modes.
+pub(super) fn finding_json(
+    issue: &ReviewIssueRecord,
+    attributions: &HashMap<String, String>,
+) -> serde_json::Value {
+    let source_repo = issue
+        .rule_id
+        .as_deref()
+        .and_then(|id| attributions.get(id))
+        .cloned();
+    serde_json::json!({
+        "id": issue.rule_id,
+        "rule": issue.rule,
+        "file": issue.file,
+        "line": issue.line,
+        "confidence": issue.confidence,
+        "summary": issue.message,
+        "diff": issue.suggestion,
+        "sourceRepo": source_repo,
+    })
+}
+
+/// The `recalled[]` array: one `{id, title, sourceRepo}` object per recalled
+/// rule, zipping parallel id/title slices and resolving each repo attribution.
+pub(super) fn recalled_provenance_json(
+    ids: &[String],
+    titles: &[String],
+    attributions: &HashMap<String, String>,
+) -> Vec<serde_json::Value> {
+    ids.iter()
+        .zip(titles.iter())
+        .map(|(id, title)| {
+            serde_json::json!({
+                "id": id,
+                "title": title,
+                "sourceRepo": attributions.get(id),
+            })
+        })
+        .collect()
+}
+
 fn fix_json_value(
     scope_label: &str,
     matched_rule_ids: &[String],
@@ -284,35 +335,10 @@ fn fix_json_value(
 ) -> serde_json::Value {
     let findings: Vec<serde_json::Value> = suggestions
         .iter()
-        .map(|issue| {
-            let source_repo = issue
-                .rule_id
-                .as_deref()
-                .and_then(|id| attributions.get(id))
-                .cloned();
-            serde_json::json!({
-                "id": issue.rule_id,
-                "rule": issue.rule,
-                "file": issue.file,
-                "line": issue.line,
-                "confidence": issue.confidence,
-                "summary": issue.message,
-                "diff": issue.suggestion,
-                "sourceRepo": source_repo,
-            })
-        })
+        .map(|issue| finding_json(issue, attributions))
         .collect();
-    let recalled_provenance: Vec<serde_json::Value> = matched_rule_ids
-        .iter()
-        .zip(matched_rule_titles.iter())
-        .map(|(id, title)| {
-            serde_json::json!({
-                "id": id,
-                "title": title,
-                "sourceRepo": attributions.get(id),
-            })
-        })
-        .collect();
+    let recalled_provenance =
+        recalled_provenance_json(matched_rule_ids, matched_rule_titles, attributions);
     serde_json::json!({
         "scope": scope_label,
         "recalledRuleIds": matched_rule_ids,
@@ -342,7 +368,7 @@ pub(super) fn emit_fix_json(
         attributions,
         outcome,
     );
-    println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+    println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
 }
 
 #[cfg(test)]
@@ -415,6 +441,15 @@ mod tests {
     }
 
     #[test]
+    fn write_fix_report_stdout_writes_all_bytes() {
+        let mut out = Vec::new();
+
+        write_fix_report_stdout(&mut out, "hello\nworld").expect("write stdout report");
+
+        assert_eq!(out, b"hello\nworld");
+    }
+
+    #[test]
     fn recalled_memories_show_source_repo_when_available() {
         let suggestions: Vec<&ReviewIssueRecord> = Vec::new();
         let mut attributions = HashMap::new();
@@ -430,10 +465,10 @@ mod tests {
 
         assert!(
             report
-                .contains("**MaxBytesError handling** — `rule-a` _(learned from `gin-gonic/gin`)_")
+                .contains("**MaxBytesError handling** - `rule-a` _(learned from `gin-gonic/gin`)_")
         );
         // rule-b has no attribution -> no provenance suffix.
-        assert!(report.contains("**Other rule** — `rule-b`\n"));
+        assert!(report.contains("**Other rule** - `rule-b`\n"));
     }
 
     #[test]

@@ -4,11 +4,11 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
-use difflore_core::models::{DiffContentRecord, GitDiffInput};
+use difflore_core::domain::models::{DiffContentRecord, GitDiffInput};
 use serde::Deserialize;
 
-use crate::commands::util::validate_owner_repo;
 use crate::style::{self, sym};
+use crate::support::util::validate_owner_repo;
 
 use super::fix_debug;
 
@@ -67,6 +67,7 @@ pub(super) struct PreparePrOptions<'a> {
     pub(super) no_checkout: bool,
     pub(super) allow_dirty: bool,
     pub(super) yes: bool,
+    pub(super) read_only: bool,
     pub(super) preview: bool,
 }
 
@@ -105,17 +106,17 @@ pub(super) async fn prepare_pr_fix(
     let preview_command_timeout = preview_command_timeout(options.preview);
     let mut meta = fetch_pr_metadata(&repo_root, &spec, preview_command_timeout)?;
     if let Some(base) = options.base_override {
-        // Reject option-looking base overrides before git can parse them as
-        // flags on the --no-checkout path.
+        // Reject option-looking base overrides before git parses them as flags.
         difflore_core::infra::git::reject_option_like_revision(base, "PR base override")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         meta.base_ref = base.to_owned();
+        meta.base_sha.clear();
     }
 
     let prepared = if options.no_checkout {
         ensure_clean_worktree(&repo_root, options.allow_dirty)?;
         prepare_current_head_pr(&repo_root, &meta)?
-    } else if options.preview {
+    } else if options.read_only {
         prepare_preview_pr(&repo_root, &meta, preview_command_timeout)?
     } else {
         ensure_clean_worktree(&repo_root, options.allow_dirty)?;
@@ -138,8 +139,9 @@ pub(super) async fn prepare_pr_fix(
         {
             Ok(result) => result?,
             Err(_) => bail!(
-                "preview PR diff collection timed out after {}ms; fetch the PR locally or retry without --preview to use the full apply-path budget",
-                duration_ms(PR_PREVIEW_DIFF_TIMEOUT)
+                "preview PR diff collection timed out after {}ms; fetch the PR locally, or run `difflore fix --pr {}` when you want the full apply-path budget",
+                duration_ms(PR_PREVIEW_DIFF_TIMEOUT),
+                options.raw_pr,
             ),
         }
     } else {
@@ -183,7 +185,12 @@ pub(super) fn parse_pr_spec(
             .map(str::to_owned)
             .or_else(|| repo_from_remote(cwd, "upstream"))
             .or_else(|| {
-                difflore_core::git::detect_github_repo_full_names(&cwd.to_string_lossy())
+                // intentionally GitHub-only: `difflore fix --pr` is the GitHub
+                // pull-request flow (gh CLI, github.com PR URLs). GitLab MRs go
+                // through their own path, so the host-aware detector is wrong
+                // here — a self-managed GitLab remote must NOT be inferred as a
+                // `--pr` target.
+                difflore_core::infra::git::detect_github_repo_full_names(&cwd.to_string_lossy())
                     .into_iter()
                     .next()
             })
@@ -225,7 +232,9 @@ fn normalize_repo(repo: &str) -> anyhow::Result<String> {
 
 fn repo_from_remote(repo_root: &Path, remote: &str) -> Option<String> {
     let url = git_stdout(repo_root, &["remote", "get-url", remote], None).ok()?;
-    difflore_core::git::parse_github_remote_url(&url)
+    // intentionally GitHub-only: the `--pr` flow targets github.com PRs, so a
+    // non-GitHub remote here must resolve to None rather than a GitLab scope.
+    difflore_core::infra::git::parse_github_remote_url(&url)
 }
 
 fn head_repo_full_name(view: &GhPrView) -> Option<String> {
@@ -294,8 +303,8 @@ fn fetch_pr_metadata(
         format!("{head_url}.git")
     };
 
-    // GitHub-supplied refs/OIDs flow into git as revisions. Reject values
-    // git could misparse as options before any downstream call sees them.
+    // GitHub-supplied refs/OIDs flow into git as revisions; reject values git
+    // could misparse as options before any downstream call sees them.
     for (value, what) in [
         (&view.base_ref_name, "PR base ref"),
         (&view.base_ref_oid, "PR base SHA"),
@@ -384,9 +393,19 @@ fn fetch_and_checkout_pr(
 ) -> anyhow::Result<PreparedPrFix> {
     let refs = fetch_pr_refs(repo_root, meta, None)?;
 
+    // Refuse to clobber a pre-existing branch. `switch -C` would force-reset an
+    // existing `work_branch` ref to the PR head, silently orphaning any commits
+    // only reachable from it. Detect the collision and surface a clear error;
+    // use `switch -c` (fails if the branch exists) for the create case.
+    if branch_exists(repo_root, work_branch)? {
+        bail!(
+            "work branch `{work_branch}` already exists; refusing to overwrite it with the PR head. \
+             Choose a different branch with --work-branch, or delete the stale one (`git branch -D {work_branch}`) if it holds no work you need."
+        );
+    }
     run_git(
         repo_root,
-        &["switch", "-C", work_branch, &refs.head_ref],
+        &["switch", "-c", work_branch, &refs.head_ref],
         None,
     )
     .with_context(|| format!("failed to switch to {work_branch}"))?;
@@ -538,7 +557,9 @@ fn prepared_from_meta(
     if !aliases.iter().any(|repo| repo == &meta.head_repo_full_name) {
         aliases.push(meta.head_repo_full_name.clone());
     }
-    for repo in difflore_core::git::detect_github_repo_full_names(&project_path) {
+    // intentionally GitHub-only: PR-fix attribution aliases are github.com
+    // repo scopes; GitLab MR scopes are never `--pr` aliases.
+    for repo in difflore_core::infra::git::detect_github_repo_full_names(&project_path) {
         if !aliases.iter().any(|existing| existing == &repo) {
             aliases.push(repo);
         }
@@ -566,7 +587,7 @@ async fn collect_pr_diff(
     repo_root: &Path,
     prepared: &PreparedPrFix,
 ) -> anyhow::Result<Vec<DiffContentRecord>> {
-    difflore_core::git::diff(GitDiffInput {
+    difflore_core::infra::git::diff(GitDiffInput {
         project_path: repo_root.to_string_lossy().to_string(),
         staged: None,
         ref1: Some(prepared.merge_base.clone()),
@@ -585,7 +606,9 @@ fn merge_base_for_current_head(repo_root: &Path, meta: &PrMetadata) -> anyhow::R
         }
         candidates.push(format!("origin/{}", meta.base_ref));
     }
-    candidates.push(meta.base_sha.clone());
+    if !meta.base_sha.trim().is_empty() {
+        candidates.push(meta.base_sha.clone());
+    }
 
     for candidate in candidates {
         if let Ok(merge_base) = git_stdout(repo_root, &["merge-base", "HEAD", &candidate], None)
@@ -621,7 +644,9 @@ fn remote_for_repo(repo_root: &Path, repo_full_name: &str) -> anyhow::Result<Opt
         let Ok(url) = git_stdout(repo_root, &["remote", "get-url", remote], None) else {
             continue;
         };
-        let Some(remote_repo) = difflore_core::git::parse_github_remote_url(&url) else {
+        // intentionally GitHub-only: matching the PR's head/base repo against
+        // local remotes is a github.com operation in the `--pr` flow.
+        let Some(remote_repo) = difflore_core::infra::git::parse_github_remote_url(&url) else {
             continue;
         };
         if remote_repo == repo_full_name {
@@ -643,6 +668,25 @@ fn run_git(repo_root: &Path, args: &[&str], timeout: Option<Duration>) -> anyhow
     run_command(repo_root, "git", args, timeout).map(|_| ())
 }
 
+/// Whether a local branch named `branch` already exists. Used to refuse a
+/// destructive `switch -C` that would reset committed work on a name collision.
+fn branch_exists(repo_root: &Path, branch: &str) -> anyhow::Result<bool> {
+    let mut cmd = Command::new("git");
+    cmd.args([
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        &format!("refs/heads/{branch}"),
+    ])
+    .current_dir(repo_root);
+    difflore_core::infra::git::apply_no_window(&mut cmd);
+    let output = cmd
+        .output()
+        .context("failed to check whether the work branch already exists")?;
+    // `--verify --quiet` exits 0 when the ref resolves, 1 when it does not.
+    Ok(output.status.success())
+}
+
 fn run_command(
     repo_root: &Path,
     program: &str,
@@ -654,10 +698,10 @@ fn run_command(
     let output = if let Some(timeout) = timeout {
         run_command_with_timeout(repo_root, program, args, timeout)?
     } else {
-        Command::new(program)
-            .args(args)
-            .current_dir(repo_root)
-            .output()
+        let mut cmd = Command::new(program);
+        cmd.args(args).current_dir(repo_root);
+        difflore_core::infra::git::apply_no_window(&mut cmd);
+        cmd.output()
             .with_context(|| format!("failed to run `{program}`"))?
     };
     fix_debug!(
@@ -685,11 +729,13 @@ fn run_command_with_timeout(
     args: &[&str],
     timeout: Duration,
 ) -> anyhow::Result<Output> {
-    let mut child = Command::new(program)
-        .args(args)
+    let mut cmd = Command::new(program);
+    cmd.args(args)
         .current_dir(repo_root)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    difflore_core::infra::git::apply_no_window(&mut cmd);
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("failed to run `{program}`"))?;
     let started = Instant::now();
@@ -795,9 +841,8 @@ mod tests {
     #[test]
     fn parses_number_from_upstream_remote_in_fork_clone() {
         let dir = tempfile::tempdir().unwrap();
-        let status = Command::new("git")
+        let status = difflore_core::infra::git::git_command(dir.path())
             .args(["init"])
-            .current_dir(dir.path())
             .status()
             .unwrap();
         assert!(status.success());
@@ -805,9 +850,8 @@ mod tests {
             ("origin", "https://github.com/difflore-fixtures/vite.git"),
             ("upstream", "https://github.com/vitejs/vite.git"),
         ] {
-            let status = Command::new("git")
+            let status = difflore_core::infra::git::git_command(dir.path())
                 .args(["remote", "add", name, url])
-                .current_dir(dir.path())
                 .status()
                 .unwrap();
             assert!(status.success());

@@ -3,19 +3,21 @@ use super::rule_source::RuleExample;
 use super::types::PastVerdict;
 
 pub const RULE_TOKEN_BUDGET: usize = 1500;
+pub const SOFT_PREFERENCE_TOKEN_BUDGET: usize = 240;
 
-/// Per-call token budget for assembled rule context. Defaults to the
-/// compile-time constant in `super::config`, but callers (e.g. the
-/// orchestrator) may override based on per-project settings.
+/// Per-call token budget for assembled rule context. Defaults to a compile-time
+/// constant; callers may override based on per-project settings.
 #[derive(Debug, Clone, Copy)]
 pub struct TokenBudgets {
     pub rule: usize,
+    pub soft_preference: usize,
 }
 
 impl Default for TokenBudgets {
     fn default() -> Self {
         Self {
             rule: RULE_TOKEN_BUDGET,
+            soft_preference: SOFT_PREFERENCE_TOKEN_BUDGET,
         }
     }
 }
@@ -28,7 +30,10 @@ impl TokenBudgets {
             .filter(|v| *v > 0)
             .and_then(|v| usize::try_from(v).ok())
             .unwrap_or(RULE_TOKEN_BUDGET);
-        Self { rule }
+        Self {
+            rule,
+            soft_preference: SOFT_PREFERENCE_TOKEN_BUDGET,
+        }
     }
 }
 
@@ -43,9 +48,17 @@ pub struct ContextSection {
 
 #[derive(Debug, Clone)]
 pub struct AssembledContext {
+    pub soft_preference_sections: Vec<ContextSection>,
     pub rule_sections: Vec<ContextSection>,
+    pub soft_preference_count: usize,
     pub rule_count: usize,
     pub estimated_tokens: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct SoftPreferenceContext {
+    pub title: String,
+    pub body: String,
 }
 
 /// Format a rule with its few-shot examples for prompt injection.
@@ -110,15 +123,48 @@ pub fn assemble_with_examples_and_budgets(
     examples_map: Option<&std::collections::HashMap<String, Vec<RuleExample>>>,
     budgets: TokenBudgets,
 ) -> AssembledContext {
+    assemble_with_examples_budgets_and_soft_preferences(
+        rule_chunks,
+        query,
+        task_intent,
+        examples_map,
+        budgets,
+        &[],
+    )
+}
+
+#[allow(clippy::implicit_hasher)] // reason: stable public API; `HashMap<K,V>` (default hasher) is what every caller passes.
+pub fn assemble_with_examples_budgets_and_soft_preferences(
+    rule_chunks: &[ScoredRuleChunk],
+    query: &str,
+    task_intent: &str,
+    examples_map: Option<&std::collections::HashMap<String, Vec<RuleExample>>>,
+    budgets: TokenBudgets,
+    soft_preferences: &[SoftPreferenceContext],
+) -> AssembledContext {
+    let mut soft_preference_sections = Vec::new();
+    let mut soft_preference_tokens = 0;
     let mut rule_sections = Vec::new();
     let mut rule_tokens = 0;
+
+    for preference in soft_preferences {
+        let section_text = format_soft_preference(preference);
+        let tokens = estimate_tokens(&section_text);
+        if soft_preference_tokens + tokens > budgets.soft_preference {
+            continue;
+        }
+        soft_preference_tokens += tokens;
+        soft_preference_sections.push(ContextSection {
+            content: section_text,
+        });
+    }
 
     for scored in rule_chunks {
         let examples = examples_map.and_then(|m| m.get(&scored.skill_id));
         let section_text = format_rule_with_examples(&scored.content, examples);
         let tokens = estimate_tokens(&section_text);
         if rule_tokens + tokens > budgets.rule {
-            break;
+            continue;
         }
         rule_tokens += tokens;
         rule_sections.push(ContextSection {
@@ -130,10 +176,20 @@ pub fn assemble_with_examples_and_budgets(
     let _task_intent = task_intent;
 
     AssembledContext {
+        soft_preference_count: soft_preference_sections.len(),
         rule_count: rule_sections.len(),
+        soft_preference_sections,
         rule_sections,
-        estimated_tokens: rule_tokens,
+        estimated_tokens: soft_preference_tokens + rule_tokens,
     }
+}
+
+fn format_soft_preference(preference: &SoftPreferenceContext) -> String {
+    format!(
+        "Preference: {}\n{}",
+        preference.title.trim(),
+        preference.body.trim()
+    )
 }
 
 /// Render a past-verdict recall block for injection into the review
@@ -241,12 +297,68 @@ mod tests {
             .map(|i| make_rule_chunk(&format!("s{i}"), &big_rule))
             .collect();
 
-        let small_budget = TokenBudgets { rule: 100 };
+        let small_budget = TokenBudgets {
+            rule: 100,
+            ..TokenBudgets::default()
+        };
         let assembled = assemble_with_examples_and_budgets(&rules, "q", "i", None, small_budget);
         assert!(
             assembled.rule_count <= 1,
             "expected aggressive truncation, got {}",
             assembled.rule_count,
+        );
+    }
+
+    #[test]
+    fn assemble_skips_oversized_rule_and_keeps_later_fitting_rules() {
+        let rules = vec![
+            make_rule_chunk("small-1", &"a".repeat(20)),
+            make_rule_chunk("oversized", &"b".repeat(200)),
+            make_rule_chunk("small-2", &"c".repeat(20)),
+        ];
+
+        let assembled = assemble_with_examples_and_budgets(
+            &rules,
+            "q",
+            "i",
+            None,
+            TokenBudgets {
+                rule: 10,
+                ..TokenBudgets::default()
+            },
+        );
+
+        assert_eq!(assembled.rule_count, 2);
+        assert_eq!(assembled.estimated_tokens, 10);
+        assert_eq!(assembled.rule_sections[0].content, "a".repeat(20));
+        assert_eq!(assembled.rule_sections[1].content, "c".repeat(20));
+    }
+
+    #[test]
+    fn soft_preferences_use_independent_budget_before_rules() {
+        let rules = vec![make_rule_chunk("rule-1", &"r".repeat(20))];
+        let soft_preferences = vec![SoftPreferenceContext {
+            title: "Prefer backend-first answers".to_owned(),
+            body: "When tradeoffs are unclear, prioritize backend maintainability.".to_owned(),
+        }];
+        let assembled = assemble_with_examples_budgets_and_soft_preferences(
+            &rules,
+            "q",
+            "i",
+            None,
+            TokenBudgets {
+                rule: 10,
+                soft_preference: 80,
+            },
+            &soft_preferences,
+        );
+
+        assert_eq!(assembled.soft_preference_count, 1);
+        assert_eq!(assembled.rule_count, 1);
+        assert!(
+            assembled.soft_preference_sections[0]
+                .content
+                .contains("Preference: Prefer backend-first answers")
         );
     }
 

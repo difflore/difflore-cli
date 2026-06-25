@@ -1,6 +1,4 @@
-//! `difflore skills` — local skill-store utilities.
-//!
-//! Houses local maintenance commands for the skill store.
+//! `difflore skills` — local skill-store maintenance commands.
 
 pub(crate) mod backfill;
 pub(crate) mod sweep;

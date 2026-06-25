@@ -1,7 +1,7 @@
 use uuid::Uuid;
 
-use crate::errors::CoreError;
-use crate::models::{AddProjectInput, ProjectRecord, RemoveProjectInput};
+use crate::domain::models::{AddProjectInput, ProjectRecord, RemoveProjectInput};
+use crate::error::CoreError;
 
 #[derive(sqlx::FromRow)]
 struct ProjectRow {
@@ -20,11 +20,15 @@ impl From<ProjectRow> for ProjectRecord {
             name: r.name,
             path: r.path,
             git_branch: r.git_branch,
-            active_sessions: i32::try_from(r.active_sessions).unwrap_or(i32::MAX),
+            active_sessions: count_i64_to_i32(r.active_sessions),
             total_sessions: None,
             created_at: r.created_at,
         }
     }
+}
+
+fn count_i64_to_i32(value: i64) -> i32 {
+    i32::try_from(value.max(0)).unwrap_or(i32::MAX)
 }
 
 pub async fn list(db: &sqlx::SqlitePool) -> crate::Result<Vec<ProjectRecord>> {
@@ -182,6 +186,12 @@ mod tests {
         assert_eq!(rec.active_sessions, 3);
         assert_eq!(rec.total_sessions, None);
         assert_eq!(rec.created_at, "2026-04-10 12:00:00");
+    }
+
+    #[test]
+    fn project_row_count_conversion_clamps_to_display_range() {
+        assert_eq!(count_i64_to_i32(-1), 0);
+        assert_eq!(count_i64_to_i32(i64::MAX), i32::MAX);
     }
 
     #[test]

@@ -14,10 +14,10 @@ pub struct DiffloreConfig {
     pub theme: ThemeMode,
 }
 
-/// Read `<config_home>/config.toml`. Missing or unreadable files yield
-/// `DiffloreConfig::default()`. We deliberately avoid pulling in serde
-/// + toml just for one key; `parse_kv_pairs` understands the small
-///   `key = "value"` subset we ship.
+/// Read `<config_home>/config.toml`, falling back to
+/// `DiffloreConfig::default()` on a missing or unreadable file. Avoids pulling
+/// in serde + toml for one key; `parse_kv_pairs` handles the small
+/// `key = "value"` subset we ship.
 pub fn load() -> DiffloreConfig {
     let Ok(path) = paths::config_file() else {
         return DiffloreConfig::default();
@@ -25,10 +25,9 @@ pub fn load() -> DiffloreConfig {
     load_from_path(&path)
 }
 
-/// Load a config from an explicit path. Returns default on any I/O or
-/// parse failure (including missing file). Exposed for tests that need
-/// to point at a specific tempdir without racing on the shared
-/// `DIFFLORE_HOME`.
+/// Load a config from an explicit path, returning default on any I/O or parse
+/// failure. Exposed for tests that need a specific tempdir without racing on
+/// the shared `DIFFLORE_HOME`.
 pub fn load_from_path(path: &Path) -> DiffloreConfig {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return DiffloreConfig::default();
@@ -127,11 +126,9 @@ mod tests {
 
     #[test]
     fn load_returns_default_when_file_missing_in_data_home() {
-        // The shared test home doesn't include a config.toml unless
-        // some other test has written one. Treat missing as default
-        // — that's the production guarantee we care about.
-        // (We don't write to the shared home here to avoid racing
-        //  with parallel tests.)
+        // Missing config.toml must yield the default — the production
+        // guarantee. Don't write to the shared home, to avoid racing parallel
+        // tests.
         let _ = load(); // must not panic
     }
 

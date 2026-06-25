@@ -1,6 +1,6 @@
-//! `difflore cloud impact`: fetch the cloud Impact panels (banner, weekly
-//! trend, top rules, coverage, fix scorecard) and render them, plus the
-//! JSON payload and the "not logged in / session unverified" fallbacks.
+//! `difflore cloud impact`: fetch and render the cloud Impact panels (banner,
+//! weekly trend, top rules, coverage, fix scorecard), the JSON payload, and
+//! the "not logged in / session unverified" fallbacks.
 //!
 //! Agent-usage evidence helpers (shared with `cloud status`) live in
 //! [`super`]; this module only renders them.
@@ -14,14 +14,14 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
     if !client.is_logged_in() {
         if json {
             let payload = impact_logged_out_value();
-            println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+            println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
         } else {
             println!(
                 "{} Not logged in to DiffLore Cloud.",
                 style::pewter(style::sym::BULLET)
             );
             println!(
-                "  Impact shows accepted-fix counts, top recalled rules, and review-effort trends —"
+                "  Impact shows accepted-fix counts, top recalled rules, and review-effort trends."
             );
             println!("  none of which are computable from local-only data.");
             println!();
@@ -34,7 +34,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
     if !cloud_status.logged_in {
         if json {
             let payload = impact_unverified_session_value();
-            println!("{}", crate::commands::util::json_compact_or(&payload, "{}"));
+            println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
         } else {
             println!(
                 "{} Cloud session could not be verified.",
@@ -59,15 +59,15 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
 
     if json {
         let accepted_proof_sources =
-            crate::commands::impact_payload::fetch_accepted_proof_sources_for_top_rules(
+            crate::support::impact_payload::fetch_accepted_proof_sources_for_top_rules(
                 ctx,
                 &top_rules,
                 usize::MAX,
             )
             .await;
         let mut payload =
-            crate::commands::impact_payload::shared_sections_with_accepted_proof_sources(
-                &crate::commands::impact_payload::ImpactPayloadInputs {
+            crate::support::impact_payload::shared_sections_with_accepted_proof_sources(
+                &crate::support::impact_payload::ImpactPayloadInputs {
                     banner: &banner,
                     weekly: &weekly,
                     top_rules: &top_rules,
@@ -94,7 +94,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
             super::agent_usage_value(agent_usage.as_ref()),
         );
         let payload = serde_json::Value::Object(payload);
-        println!("{}", crate::commands::util::json_or(&payload, "{}"));
+        println!("{}", crate::support::util::json_or(&payload, "{}"));
         return;
     }
 
@@ -117,7 +117,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         Err(e) => println!(
             "  {} {}",
             style::amber("!"),
-            impact_panel_error("banner", e)
+            impact_panel_error("banner", &e.to_string())
         ),
     }
 
@@ -125,10 +125,10 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         && agent_usage.rule_fires > 0
     {
         println!();
-        println!("  {}", "Agent usage — last 7 days".bold());
+        println!("  {}", "Agent usage - last 7 days".bold());
         let pending = if agent_usage.pending_uploads > 0 {
             format!(
-                " · {} pending upload{}",
+                " | {} pending upload{}",
                 agent_usage.pending_uploads,
                 if agent_usage.pending_uploads == 1 {
                     ""
@@ -176,7 +176,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         println!("  {}  (max {})", style::emerald(&bar), max);
         println!(
             "  {}",
-            style::pewter("rules sedimented · past verdicts recalled · fixes accepted")
+            style::pewter("rules learned | past verdicts recalled | fixes accepted")
         );
     }
 
@@ -190,13 +190,13 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                 .any(|rule| rule.accepted_proof_source.is_none())
             {
                 let ids: Vec<String> = r.rules.iter().map(|x| x.id.clone()).collect();
-                crate::commands::impact_payload::fetch_accepted_proof_sources(&ctx.db, &ids).await
+                crate::support::impact_payload::fetch_accepted_proof_sources(&ctx.db, &ids).await
             } else {
                 std::collections::HashMap::new()
             };
             for rule in &r.rules {
                 let meta = match (&rule.severity, &rule.language) {
-                    (Some(s), Some(l)) => format!(" [{s} · {l}]"),
+                    (Some(s), Some(l)) => format!(" [{s} | {l}]"),
                     (Some(s), None) => format!(" [{s}]"),
                     (None, Some(l)) => format!(" [{l}]"),
                     _ => String::new(),
@@ -204,35 +204,35 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                 let trust = rule.trust_rate.map_or_else(String::new, |rate| {
                     let pct = (rate * 100.0).round() as i64;
                     if rule.cited_count > 0 {
-                        format!(" · trust {pct}% ({} cited)", rule.cited_count)
+                        format!(" | trust {pct}% ({} cited)", rule.cited_count)
                     } else {
-                        format!(" · trust {pct}%")
+                        format!(" | trust {pct}%")
                     }
                 });
-                let proof = crate::commands::impact_payload::accepted_proof_source_label(
+                let proof = crate::support::impact_payload::accepted_proof_source_label(
                     rule.accepted_proof_source
                         .as_deref()
                         .or_else(|| local_proof_sources.get(&rule.id).map(String::as_str)),
                 )
-                .map_or_else(String::new, |label| format!(" · {}", style::pewter(label)));
-                let agent_ready = crate::commands::impact_payload::agent_ready_proof_label(
+                .map_or_else(String::new, |label| format!(" | {}", style::pewter(label)));
+                let agent_ready = crate::support::impact_payload::agent_ready_proof_label(
                     rule.reviewer_proof_ready_count,
                 )
-                .map_or_else(String::new, |label| format!(" · {}", style::pewter(&label)));
+                .map_or_else(String::new, |label| format!(" | {}", style::pewter(&label)));
                 let reviewer_context =
-                    crate::commands::impact_payload::reviewer_context_proof_label(
+                    crate::support::impact_payload::reviewer_context_proof_label(
                         rule.reviewer_context_serves,
                         rule.reviewer_mentions,
                     )
-                    .map_or_else(String::new, |label| format!(" · {}", style::pewter(&label)));
+                    .map_or_else(String::new, |label| format!(" | {}", style::pewter(&label)));
                 let source_repo = rule
                     .source_repo
                     .as_deref()
                     .map_or_else(String::new, |repo| {
-                        format!(" · {}", style::pewter(&format!("learned from {repo}")))
+                        format!(" | {}", style::pewter(&format!("learned from {repo}")))
                     });
                 println!(
-                    "    {} {}{} — {} accepted, {} user{}{trust}{proof}{agent_ready}{reviewer_context}{source_repo}",
+                    "    {} {}{} - {} accepted, {} user{}{trust}{proof}{agent_ready}{reviewer_context}{source_repo}",
                     style::pewter(style::sym::BULLET),
                     rule.name.bold(),
                     style::pewter(&meta),
@@ -271,7 +271,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         Err(e) => println!(
             "    {} {}",
             style::amber("!"),
-            impact_panel_error("top rules", e)
+            impact_panel_error("top rules", &e.to_string())
         ),
     }
 
@@ -280,12 +280,12 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
     match &coverage {
         Ok(c) => {
             let ai_label = if c.ai_reviewer_comments_indexed > 0 {
-                format!(" · {} AI reviewer signals", c.ai_reviewer_comments_indexed)
+                format!(" | {} AI reviewer signals", c.ai_reviewer_comments_indexed)
             } else {
                 String::new()
             };
             println!(
-                "    {} repos · {} PRs · {} review comments{} · {} files",
+                "    {} repos | {} PRs | {} review comments{} | {} files",
                 style::emerald(&c.repos.to_string()),
                 style::emerald(&c.prs.to_string()),
                 style::emerald(&c.review_comments_indexed.to_string()),
@@ -296,12 +296,12 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         Err(e) => println!(
             "    {} {}",
             style::amber("!"),
-            impact_panel_error("coverage", e)
+            impact_panel_error("coverage", &e.to_string())
         ),
     }
 
     println!();
-    println!("  {}", "Fix acceptance — last 30 days".bold());
+    println!("  {}", "Fix acceptance - last 30 days".bold());
     match &fix {
         Ok(f) => {
             let rate = if f.last30.total > 0 {
@@ -311,7 +311,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
             };
             let rate_str = match rate {
                 Some(r) => format!("{r:.0}%"),
-                None => "—".to_owned(),
+                None => "-".to_owned(),
             };
             let mut line = format!(
                 "    {} ({} / {} fixes accepted)",
@@ -319,14 +319,9 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                 f.last30.accepted,
                 f.last30.total
             );
-            if let Some(label) = crate::commands::impact_payload::saved_review_time_label(
-                crate::commands::impact_payload::saved_review_minutes_for_scorecard(f),
-            ) {
-                line.push_str(&format!(" {}", style::pewter(&format!("· {label}"))));
-            }
             if let Some(t) = f.trend_pct {
-                let arrow = if t >= 0.0 { "▲" } else { "▼" };
-                let trend = format!(" {} {:.0}% vs prior 30d", arrow, t.abs());
+                let sign = if t >= 0.0 { "+" } else { "-" };
+                let trend = format!(" {sign}{:.0}% vs prior 30d", t.abs());
                 line.push_str(&if t >= 0.0 {
                     style::emerald(&trend).to_string()
                 } else {
@@ -338,15 +333,37 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         Err(e) => println!(
             "    {} {}",
             style::amber("!"),
-            impact_panel_error("fix acceptance", e)
+            impact_panel_error("fix acceptance", &e.to_string())
         ),
     }
 
     println!();
-    let plan = cloud_status.plan.as_deref().unwrap_or("free");
+    let plan_tier = difflore_core::cloud::sync::cloud_tier_from_status(&cloud_status);
     let prs = coverage.as_ref().map_or(0, |c| c.prs);
     let fixes_total = fix.as_ref().map_or(0, |f| f.last30.total);
     let has_signal = prs > 0 || fixes_total > 0;
+    let team_ready = super::team::accepted_fix_proof_ready(
+        cloud_status.logged_in,
+        cloud_status.team_name.as_deref(),
+    );
+
+    if !team_ready {
+        println!("  {}", "Next steps".bold());
+        println!(
+            "    {} next: {}",
+            style::pewter(style::sym::BULLET),
+            style::cmd(super::team::team_workspace_next_command(
+                cloud_status.logged_in,
+                cloud_status.team_name.as_deref()
+            ))
+        );
+        println!(
+            "    {} then: {}",
+            style::pewter(style::sym::BULLET),
+            style::cmd("difflore cloud sync")
+        );
+        return;
+    }
 
     if !has_signal {
         println!("  {}", "Next steps".bold());
@@ -365,59 +382,70 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         return;
     }
 
-    match plan {
-        "team" | "team_plus" | "enterprise" => {
-            let label = match plan {
-                "team_plus" => "Cloud Team Plus",
-                "enterprise" => "Enterprise",
-                _ => "Cloud Team",
-            };
-            let team_suffix = cloud_status
-                .team_name
-                .as_deref()
-                .map(|t| format!(" · team `{t}`"))
-                .unwrap_or_default();
-            println!(
-                "  {} {} {}{}",
-                "Plan".bold(),
-                style::ok(label),
-                style::ok(style::sym::OK),
-                style::pewter(&team_suffix)
-            );
-        }
-        _ => {
-            println!("  {}", "Why Cloud Team".bold());
-            if prs > 0 {
-                println!(
-                    "    You've reviewed {} PR{} locally. Cloud Team's GitHub App learns \
-                     from review history and shares governed rules with every agent.",
-                    style::emerald(&prs.to_string()),
-                    if prs == 1 { "" } else { "s" }
-                );
-            }
-            if fixes_total >= 5 {
-                println!(
-                    "    {} local fix outcome{} were recorded in 30d. Cloud plans add \
-                     shared review memory, GitHub App ingest, Reviewer Context, governance, \
-                     and impact analytics.",
-                    style::emerald(&fixes_total.to_string()),
-                    if fixes_total == 1 { "" } else { "s" }
-                );
-            }
-            println!(
-                "    {} {}",
-                style::pewter("Upgrade:"),
-                difflore_core::cloud::endpoints::pricing_url()
-            );
-        }
+    if plan_tier.is_team() {
+        let (label, team_suffix) = impact_plan_line(plan_tier, cloud_status.team_name.as_deref());
+        println!(
+            "  {} {} {}{}",
+            "Plan".bold(),
+            style::ok(&label),
+            style::ok(style::sym::OK),
+            style::pewter(&team_suffix)
+        );
+        return;
     }
+
+    println!("  {}", "Why Cloud Team".bold());
+    if prs > 0 {
+        println!(
+            "    You've reviewed {} PR{} locally. Cloud Team's GitHub App learns \
+             from review history and shares governed rules with every agent.",
+            style::emerald(&prs.to_string()),
+            if prs == 1 { "" } else { "s" }
+        );
+    }
+    if fixes_total >= 5 {
+        println!(
+            "    {} local fix outcome{} were recorded in 30d. Cloud plans add \
+             shared team rules, GitHub App ingest, Reviewer Context, team controls, \
+             and impact analytics.",
+            style::emerald(&fixes_total.to_string()),
+            if fixes_total == 1 { "" } else { "s" }
+        );
+    }
+    println!(
+        "    {} {}",
+        style::pewter("Upgrade:"),
+        difflore_core::cloud::endpoints::pricing_url()
+    );
+}
+
+/// Plan line for the `impact` summary: the shared tier label plus an optional
+/// `| team `name`` suffix.
+///
+/// Deliberately uses [`CloudTier::default_label`] rather than
+/// `cloud_plan_label_from_status` (which returns the *team name* when one is
+/// set): the team name is already shown in the suffix, so reusing it as the
+/// label duplicated it and dropped the tier label. Using the tier label here
+/// also matches what `difflore init` / `doctor` render, so the same login shows
+/// one consistent plan name across surfaces.
+fn impact_plan_line(
+    tier: difflore_core::cloud::sync::CloudTier,
+    team_name: Option<&str>,
+) -> (String, String) {
+    let label = tier.default_label().to_owned();
+    let team_suffix = team_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| format!(" | team `{name}`"))
+        .unwrap_or_default();
+    (label, team_suffix)
 }
 
 fn impact_logged_out_value() -> serde_json::Value {
     impact_needs_login_value(
         "needs_cloud_login",
         "cloud_login_required",
-        "Impact needs cloud-linked evidence to show accepted-fix counts, top recalled rules, and review-effort trends.",
+        "Impact needs cloud-linked activity to show accepted-fix counts, top recalled rules, and review-effort trends.",
     )
 }
 
@@ -508,5 +536,30 @@ mod tests {
                 .expect("value description")
                 .contains("could not be verified")
         );
+    }
+
+    #[test]
+    fn impact_plan_line_keeps_tier_label_and_single_team_suffix() {
+        use difflore_core::cloud::sync::CloudTier;
+
+        // Team user with a team name: the tier label is kept and the team name
+        // appears exactly once (in the suffix, never folded into the label).
+        let (label, suffix) = impact_plan_line(CloudTier::Team, Some("Acme"));
+        assert_eq!(label, "Cloud Team");
+        assert_eq!(suffix, " | team `Acme`");
+        assert!(
+            !label.contains("Acme"),
+            "team name must not leak into the plan label (regression guard)"
+        );
+
+        // Team Plus keeps its own label.
+        assert_eq!(
+            impact_plan_line(CloudTier::TeamPlus, Some("Acme")).0,
+            "Cloud Team Plus"
+        );
+
+        // No team name -> no suffix; blank/whitespace name -> no empty suffix.
+        assert_eq!(impact_plan_line(CloudTier::Team, None).1, "");
+        assert_eq!(impact_plan_line(CloudTier::Team, Some("  ")).1, "");
     }
 }

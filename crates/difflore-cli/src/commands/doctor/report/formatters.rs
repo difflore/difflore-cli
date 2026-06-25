@@ -1,9 +1,16 @@
+use crate::commands::dist;
 use crate::commands::doctor::labels::{
     doctor_canonical_mark, doctor_canonical_record_state_label, doctor_install_mark,
     doctor_install_state_label,
 };
-use crate::commands::{dist, util::format_recall_edit_proof_breakdown};
-use crate::mcp_install;
+use crate::installer;
+use crate::support::util::format_recall_edit_proof_breakdown;
+
+use crate::commands::doctor::embedding_degradation::{
+    SUSTAINED_TRANSIENT_FALLBACK_THRESHOLD, is_persistent_embedding_degradation,
+    should_count_embedding_degradation,
+};
+use crate::commands::doctor::util::age_label_ms;
 
 /// Map the canonical language slug emitted by `language_from_tags` /
 /// `language_from_file_patterns` to a short display label suitable for
@@ -60,22 +67,134 @@ pub(super) async fn doctor_command_version(cmd: &str) -> String {
     }
 }
 
-pub(super) fn daemon_section(s: &mut String) {
-    let daemon_status = difflore_core::daemon::status();
+pub(super) async fn daemon_section(ctx: &crate::runtime::CommandContext, s: &mut String) {
+    let daemon_status = difflore_core::infra::daemon::status();
     let daemon_mark = match &daemon_status {
-        difflore_core::daemon::DaemonStatus::Running { .. } => "✓",
-        difflore_core::daemon::DaemonStatus::Stale { .. } => "✗",
-        difflore_core::daemon::DaemonStatus::NotRunning => "⚠",
+        difflore_core::infra::daemon::DaemonStatus::Running { .. } => "✓",
+        difflore_core::infra::daemon::DaemonStatus::Stale { .. } => "✗",
+        difflore_core::infra::daemon::DaemonStatus::NotRunning => "⚠",
     };
     sw!(s, "\n## {daemon_mark} Daemon\n");
     sw!(s, "- status: `{}`", daemon_status.short());
-    if let Ok(pid_path) = difflore_core::daemon::pid_path() {
+    if let Ok(pid_path) = difflore_core::infra::daemon::pid_path() {
         sw!(s, "- pid path: `{}`", pid_path.display());
+    }
+    if let Ok(state_path) = difflore_core::infra::daemon::state_path() {
+        sw!(s, "- state path: `{}`", state_path.display());
+    }
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    match difflore_core::infra::daemon::read_state() {
+        Ok(Some(state)) => {
+            sw!(
+                s,
+                "- heartbeat: {}",
+                format_ms_with_age(state.heartbeat_at_ms, now_ms)
+            );
+            sw!(
+                s,
+                "- started: {}",
+                format_ms_with_age(state.started_at_ms, now_ms)
+            );
+            if let Some(ts) = state.last_drain_at_ms {
+                sw!(s, "- last daemon drain: {}", format_ms_with_age(ts, now_ms));
+                sw!(
+                    s,
+                    "- last daemon drain result: attempted={}, confirmed={}, error={}",
+                    state.last_attempted,
+                    state.last_confirmed,
+                    state.last_error.as_deref().unwrap_or("none")
+                );
+            } else {
+                sw!(s, "- last daemon drain: `not recorded`");
+            }
+        }
+        Ok(None) => sw!(s, "- daemon state: `not recorded`"),
+        Err(e) => sw!(s, "- daemon state: unreadable ({e})"),
+    }
+    match difflore_core::cloud::outbox::read_drain_state() {
+        Ok(Some(state)) => {
+            sw!(
+                s,
+                "- last outbox drain: {}",
+                format_ms_with_age(state.last_drain_at_ms, now_ms)
+            );
+            sw!(
+                s,
+                "- last outbox drain result: attempted={}, confirmed={}, error={}",
+                state.attempted,
+                state.confirmed,
+                state.last_error.as_deref().unwrap_or("none")
+            );
+        }
+        Ok(None) => sw!(s, "- last outbox drain: `not recorded`"),
+        Err(e) => sw!(s, "- last outbox drain: unreadable ({e})"),
+    }
+    let queue = difflore_core::cloud::outbox::OutboxQueue::new(ctx.db.clone());
+    match queue.counts().await {
+        Ok(counts) => {
+            sw!(
+                s,
+                "- cloud_outbox backlog: pending={}, processing={}, failed={}, abandoned={}",
+                counts.pending,
+                counts.processing,
+                counts.failed,
+                counts.abandoned
+            );
+        }
+        Err(e) => sw!(s, "- cloud_outbox backlog: unavailable ({e})"),
+    }
+    match queue.pending_counts_by_kind().await {
+        Ok(kinds) if kinds.is_empty() => sw!(s, "- cloud_outbox pending by kind: none"),
+        Ok(kinds) => {
+            let rendered = kinds
+                .iter()
+                .map(|(kind, count)| format!("{kind}={count}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            sw!(s, "- cloud_outbox pending by kind: {rendered}");
+        }
+        Err(e) => sw!(s, "- cloud_outbox pending by kind: unavailable ({e})"),
+    }
+    match difflore_core::cloud::observations::ObservationEmitter::open_default().await {
+        Ok(emitter) => match emitter.pending_upload_count().await {
+            Ok(count) => sw!(
+                s,
+                "- observation_events backlog: pending_or_sending={count}"
+            ),
+            Err(e) => sw!(s, "- observation_events backlog: unavailable ({e})"),
+        },
+        Err(e) => sw!(s, "- observation_events backlog: unavailable ({e})"),
+    }
+    match difflore_core::cloud::outbox::hook_spill_stats() {
+        Ok(stats) => {
+            sw!(
+                s,
+                "- hook spill backlog: {} file(s), {} byte(s)",
+                stats.count,
+                stats.bytes
+            );
+            if let Some(path) = &stats.path {
+                sw!(s, "- hook spill path: `{}`", path.display());
+            }
+            if let Some(ts) = stats.newest_created_at_ms {
+                sw!(s, "- newest hook spill: {}", format_ms_with_age(ts, now_ms));
+            }
+            if let Some(err) = stats.newest_error.as_deref() {
+                sw!(s, "- newest hook spill error: {err}");
+            }
+        }
+        Err(e) => sw!(s, "- hook spill backlog: unavailable ({e})"),
     }
     sw!(
         s,
         "- degradation policy: hook uploads enqueue locally first; the daemon drains opportunistically and stale pid files are treated as recoverable state"
     );
+}
+
+fn format_ms_with_age(ts_ms: i64, now_ms: i64) -> String {
+    let when = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ts_ms)
+        .map_or_else(|| format!("unix-ms:{ts_ms}"), |dt| dt.to_rfc3339());
+    format!("`{when}` ({})", age_label_ms(now_ms.saturating_sub(ts_ms)))
 }
 
 pub(super) fn distribution_section(s: &mut String) {
@@ -129,7 +248,7 @@ struct McpValueProof {
 }
 
 pub(super) async fn mcp_section(ctx: &crate::runtime::CommandContext, s: &mut String) {
-    let snapshot = mcp_install::collect_status_snapshot_with_runtime_probe();
+    let snapshot = installer::collect_status_snapshot_with_runtime_probe();
     let value_proof = load_mcp_value_proof(ctx, &snapshot).await;
     mcp_installed_subsection(s, &snapshot, &value_proof);
     mcp_per_tool_subsection(s, &snapshot);
@@ -137,7 +256,7 @@ pub(super) async fn mcp_section(ctx: &crate::runtime::CommandContext, s: &mut St
 
 fn mcp_installed_subsection(
     s: &mut String,
-    snapshot: &mcp_install::McpStatusSnapshot,
+    snapshot: &installer::McpStatusSnapshot,
     value_proof: &McpValueProof,
 ) {
     sw!(
@@ -153,17 +272,17 @@ fn mcp_installed_subsection(
     let installed_count = snapshot
         .agents
         .iter()
-        .filter(|a| matches!(a.state, mcp_install::InstallState::Installed))
+        .filter(|a| matches!(a.state, installer::InstallState::Installed))
         .count();
     let conflict_count = snapshot
         .agents
         .iter()
-        .filter(|a| matches!(a.state, mcp_install::InstallState::Conflict))
+        .filter(|a| matches!(a.state, installer::InstallState::Conflict))
         .count();
     let unknown_count = snapshot
         .agents
         .iter()
-        .filter(|a| matches!(a.state, mcp_install::InstallState::Unknown))
+        .filter(|a| matches!(a.state, installer::InstallState::Unknown))
         .count();
     sw!(s, "- binary: `{}`", snapshot.binary);
     sw!(
@@ -232,7 +351,7 @@ fn mcp_installed_subsection(
 
 async fn load_mcp_value_proof(
     ctx: &crate::runtime::CommandContext,
-    snapshot: &mcp_install::McpStatusSnapshot,
+    snapshot: &installer::McpStatusSnapshot,
 ) -> McpValueProof {
     let mut proof = McpValueProof {
         installed_clients: report_installed_clients(snapshot).len(),
@@ -247,7 +366,7 @@ async fn load_mcp_value_proof(
     if let Ok(stats) = difflore_core::skills::stats(pool).await {
         proof.active_rules = Some(stats.total);
     }
-    let counts = difflore_core::db::table_counts(pool, &["review_items"]).await;
+    let counts = difflore_core::infra::db::table_counts(pool, &["review_items"]).await;
     for (table, result) in counts {
         if table == "review_items"
             && let Ok(n) = result
@@ -255,12 +374,12 @@ async fn load_mcp_value_proof(
             proof.imported_prs = Some(n);
         }
     }
-    if let Ok(summary) = difflore_core::fix_outcomes::summary(pool, 30).await {
+    if let Ok(summary) = difflore_core::observability::fix_outcomes::summary(pool, 30).await {
         let total = summary.applied + summary.failed + summary.rejected;
         proof.local_accepted_edits_last30 = Some(summary.applied);
         proof.local_total_outcomes_last30 = Some(total);
         proof.local_saved_review_time =
-            crate::commands::impact_payload::saved_review_time_label(summary.applied * 4);
+            crate::support::impact_payload::saved_review_time_label(summary.applied * 4);
     }
     if let Ok(emitter) =
         difflore_core::cloud::observations::ObservationEmitter::open_default().await
@@ -273,7 +392,7 @@ async fn load_mcp_value_proof(
                 Some(proof.local_total_outcomes_last30.unwrap_or(0) + hook_outcomes);
             let accepted_total = local_accepted_proof_total(&proof);
             proof.local_saved_review_time =
-                crate::commands::impact_payload::saved_review_time_label(accepted_total * 4);
+                crate::support::impact_payload::saved_review_time_label(accepted_total * 4);
         }
         if let Ok(summary) = emitter.accepted_recall_link_summary(30, 7).await {
             proof.local_accepted_outcomes_linked_to_prior_recall_last30 =
@@ -292,9 +411,9 @@ async fn load_mcp_value_proof(
         proof.accepted_fixes_last30 = Some(scorecard.last30.accepted);
         proof.total_fixes_last30 = Some(scorecard.last30.total);
         let saved_minutes =
-            crate::commands::impact_payload::saved_review_minutes_for_scorecard(&scorecard);
+            crate::support::impact_payload::saved_review_minutes_for_scorecard(&scorecard);
         proof.saved_review_time =
-            crate::commands::impact_payload::saved_review_time_label(saved_minutes);
+            crate::support::impact_payload::saved_review_time_label(saved_minutes);
     }
 
     proof
@@ -302,7 +421,7 @@ async fn load_mcp_value_proof(
 
 fn mcp_support_bundle_subsection(
     s: &mut String,
-    snapshot: &mcp_install::McpStatusSnapshot,
+    snapshot: &installer::McpStatusSnapshot,
     value_proof: &McpValueProof,
 ) {
     sw!(s, "\n### MCP support bundle\n");
@@ -344,7 +463,7 @@ fn mcp_support_bundle_subsection(
                 .map_or("none".to_owned(), one_line);
             sw!(
                 s,
-                "tool call: {tool_name} | {injected} · {indexed} · top={top}"
+                "tool call: {tool_name} | {injected} | {indexed} | top={top}"
             );
         }
     } else {
@@ -364,7 +483,7 @@ fn mcp_support_bundle_subsection(
 
     let installed = report_installed_clients(snapshot);
     sw!(s, "installed clients: {}", report_list_or_none(&installed));
-    sw!(s, "value proof:");
+    sw!(s, "value summary:");
     for line in mcp_value_proof_lines(value_proof) {
         sw!(s, "- {line}");
     }
@@ -399,7 +518,7 @@ fn mcp_value_proof_lines(proof: &McpValueProof) -> Vec<String> {
     let memory = match (proof.active_rules, proof.imported_prs) {
         (Some(rules), Some(prs)) => {
             format!(
-                "synced memory: {rules} active rule{} ready for recall · {prs} imported PR{}",
+                "synced memory: {rules} active rule{} ready for recall | {prs} imported PR{}",
                 plural(rules),
                 plural(prs)
             )
@@ -418,7 +537,7 @@ fn mcp_value_proof_lines(proof: &McpValueProof) -> Vec<String> {
         |n| format!("{n} MCP tools"),
     );
     lines.push(format!(
-        "agent reach: {} installed client{} · {tools} served by the runtime",
+        "agent reach: {} installed client{} | {tools} served by the runtime",
         proof.installed_clients,
         plural_usize(proof.installed_clients),
     ));
@@ -427,14 +546,10 @@ fn mcp_value_proof_lines(proof: &McpValueProof) -> Vec<String> {
     if local_accepted > 0
         && let Some(total) = proof.local_total_outcomes_last30
     {
-        let saved = proof
-            .local_saved_review_time
-            .as_deref()
-            .unwrap_or("saved review time unavailable");
         let source_note = local_accepted_source_note(proof);
         let recall_note = local_accepted_recall_note(proof);
         lines.push(format!(
-            "local accepted proof: {local_accepted} accepted edit proof{}{} in the last 30d ({total} local outcome{}){recall_note} · {saved}",
+            "local accepted activity: {local_accepted} accepted edit{}{} in the last 30d ({total} local outcome{}){recall_note}",
             plural(local_accepted),
             source_note,
             plural(total),
@@ -442,17 +557,13 @@ fn mcp_value_proof_lines(proof: &McpValueProof) -> Vec<String> {
     }
 
     if let (Some(accepted), Some(total)) = (proof.accepted_fixes_last30, proof.total_fixes_last30) {
-        let saved = proof
-            .saved_review_time
-            .as_deref()
-            .unwrap_or("saved review time unavailable");
         lines.push(format!(
-            "remote Impact proof: {accepted}/{total} accepted edits in the last 30d · {saved}"
+            "remote Impact activity: {accepted}/{total} accepted edits in the last 30d"
         ));
     } else if local_accepted > 0 {
-        lines.push("remote Impact proof: unavailable; local proof captured above".to_owned());
+        lines.push("remote Impact activity: unavailable; local activity captured above".to_owned());
     } else {
-        lines.push("remote Impact proof: unavailable in this report; run `difflore status` for local proof or `difflore cloud impact` after login".to_owned());
+        lines.push("remote Impact activity: unavailable in this report; run `difflore status` for local activity or `difflore cloud impact` after login".to_owned());
     }
 
     lines
@@ -497,7 +608,7 @@ fn local_accepted_recall_note(proof: &McpValueProof) -> String {
             .local_accepted_outcomes_linked_to_edit_attribution_last30
             .unwrap_or(0),
     );
-    format!(" · {linked} after prior memory-use proof{breakdown} within 7d")
+    format!(" | {linked} after prior memory recall{breakdown} within 7d")
 }
 
 const fn plural(n: i64) -> &'static str {
@@ -508,24 +619,24 @@ const fn plural_usize(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-fn report_installed_clients(snapshot: &mcp_install::McpStatusSnapshot) -> Vec<String> {
+fn report_installed_clients(snapshot: &installer::McpStatusSnapshot) -> Vec<String> {
     snapshot
         .clients
         .iter()
         .filter(|client| {
-            client.detected && matches!(client.state, mcp_install::InstallState::Installed)
+            client.detected && matches!(client.state, installer::InstallState::Installed)
         })
         .map(|client| client.name.to_owned())
         .collect()
 }
 
-fn report_installed_surfaces(snapshot: &mcp_install::McpStatusSnapshot) -> Vec<String> {
+fn report_installed_surfaces(snapshot: &installer::McpStatusSnapshot) -> Vec<String> {
     snapshot
         .clients
         .iter()
         .flat_map(|client| &client.surfaces)
         .filter(|surface| {
-            surface.detected && matches!(surface.state, mcp_install::InstallState::Installed)
+            surface.detected && matches!(surface.state, installer::InstallState::Installed)
         })
         .map(|surface| {
             let detail = surface.detail.as_deref().unwrap_or("installed");
@@ -546,10 +657,10 @@ fn one_line(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn mcp_per_tool_subsection(s: &mut String, snapshot: &mcp_install::McpStatusSnapshot) {
+fn mcp_per_tool_subsection(s: &mut String, snapshot: &installer::McpStatusSnapshot) {
     sw!(s, "\n## ✓ MCP raw surfaces\n");
     for agent in &snapshot.agents {
-        if !agent.detected && matches!(agent.state, mcp_install::InstallState::NotInstalled) {
+        if !agent.detected && matches!(agent.state, installer::InstallState::NotInstalled) {
             continue;
         }
         sw!(
@@ -565,25 +676,25 @@ fn mcp_per_tool_subsection(s: &mut String, snapshot: &mcp_install::McpStatusSnap
     }
 }
 
-const fn doctor_runtime_probe_state_label(state: mcp_install::RuntimeProbeState) -> &'static str {
+const fn doctor_runtime_probe_state_label(state: installer::RuntimeProbeState) -> &'static str {
     match state {
-        mcp_install::RuntimeProbeState::Ok => "ok",
-        mcp_install::RuntimeProbeState::Failed => "failed",
-        mcp_install::RuntimeProbeState::Timeout => "timeout",
+        installer::RuntimeProbeState::Ok => "ok",
+        installer::RuntimeProbeState::Failed => "failed",
+        installer::RuntimeProbeState::Timeout => "timeout",
     }
 }
 
-const fn doctor_runtime_probe_mark(state: mcp_install::RuntimeProbeState) -> &'static str {
+const fn doctor_runtime_probe_mark(state: installer::RuntimeProbeState) -> &'static str {
     match state {
-        mcp_install::RuntimeProbeState::Ok => "✓",
-        mcp_install::RuntimeProbeState::Failed => "✗",
-        mcp_install::RuntimeProbeState::Timeout => "⚠",
+        installer::RuntimeProbeState::Ok => "✓",
+        installer::RuntimeProbeState::Failed => "✗",
+        installer::RuntimeProbeState::Timeout => "⚠",
     }
 }
 
 pub(super) fn settings_section(s: &mut String) {
     sw!(s, "\n## ⚠ Settings (redacted)\n");
-    let Ok(config) = difflore_core::paths::config_file() else {
+    let Ok(config) = difflore_core::infra::paths::config_file() else {
         return;
     };
     if config.exists() {
@@ -609,7 +720,7 @@ pub(super) fn footer_section(s: &mut String) {
     sw!(
         s,
         "_Paste into a GitHub issue at {issues} —\
-         API keys are redacted, but scan once more before sharing._"
+         known secret-shaped values are redacted, but scan once more before sharing._"
     );
 
     let repo = difflore_core::cloud::endpoints::github_repo_url();
@@ -619,13 +730,10 @@ pub(super) fn footer_section(s: &mut String) {
     );
 }
 
-/// `## ✓ Embedding` section. Surfaces the active embedder source so a
-/// triage reader can distinguish "Cloud-managed Free hit the embedding cap"
-/// from "user is on BYOK with a custom proxy" from "no key configured,
-/// running on the local-lexical hash + FTS5 hybrid". Keys are never logged.
-///
-/// Classification delegates to `probe_active_embedder` (single source of
-/// truth), which mirrors the runtime resolver used by `get_embedder`.
+/// `## ✓ Embedding` section. Surfaces the active embedder source (cloud-managed,
+/// BYOK, or local-lexical) for triage; keys are never logged. Classification
+/// delegates to `probe_active_embedder`, mirroring the resolver `get_embedder`
+/// uses.
 pub(super) async fn embedding_section(ctx: &crate::runtime::CommandContext, s: &mut String) {
     use difflore_core::context::embedding::ActiveEmbedderKind;
 
@@ -639,7 +747,7 @@ pub(super) async fn embedding_section(ctx: &crate::runtime::CommandContext, s: &
             sw!(s, "- switch modes: run `difflore embeddings setup`");
             activity.write_degradation_line(s);
         }
-        ActiveEmbedderKind::Cloud { .. } => {
+        ActiveEmbedderKind::Cloud => {
             let plan = difflore_core::cloud::sync::fetch_cloud_status(ctx.cloud().await)
                 .await
                 .plan
@@ -674,8 +782,8 @@ pub(super) async fn embedding_section(ctx: &crate::runtime::CommandContext, s: &
             );
             sw!(
                 s,
-                "- switch modes: `difflore cloud login` for cloud-managed, \
-                 or `difflore embeddings setup` to bring your own OpenAI-compatible key"
+                "- semantic vector options: managed with `difflore cloud login`, \
+                 or BYOK with `difflore embeddings setup`"
             );
         }
     }
@@ -684,6 +792,7 @@ pub(super) async fn embedding_section(ctx: &crate::runtime::CommandContext, s: &
 #[derive(Default)]
 struct EmbeddingActivitySummary {
     fallback_count: usize,
+    persistent_fallback_count: usize,
     cap_hits: usize,
     latest_reason: Option<String>,
     latest_cap: Option<(u32, u32)>,
@@ -691,7 +800,9 @@ struct EmbeddingActivitySummary {
 
 impl EmbeddingActivitySummary {
     const fn has_degradation(&self) -> bool {
-        self.fallback_count > 0 || self.cap_hits > 0
+        self.persistent_fallback_count > 0
+            || self.cap_hits > 0
+            || self.fallback_count >= SUSTAINED_TRANSIENT_FALLBACK_THRESHOLD
     }
 
     fn cap_detail(&self) -> Option<String> {
@@ -719,23 +830,43 @@ impl EmbeddingActivitySummary {
         }
         sw!(
             s,
-            "- recent degradation: {} in the last 200 activity events; run `difflore embeddings setup` if SHA1 fallback persists",
+            "- recent degradation: {} in the last 10m; run `difflore embeddings setup` if SHA1 fallback persists",
             parts.join(" · ")
         );
     }
 }
 
+/// `## Embedding`-section view of the 200-event activity tail.
+///
+/// This is deliberately a *different* slice of the same tail than
+/// `memory_pipeline_section` (in `env_probes.rs`): there, `EmbedCapReached`
+/// events get their own dedicated cap line and are excluded from the
+/// SHA1-fallback alert; here they are **folded into** `cap_hits` so that
+/// `has_degradation` (and the single "recent degradation" line it gates) treats
+/// a cap-driven local-lexical fallback as degradation too. As a result this
+/// section's 10m count can legitimately exceed the memory-pipeline fallback
+/// count by the number of cap hits — the memory-pipeline cap line cross-links
+/// here so a reader can reconcile the two numbers.
 fn embedding_activity_summary() -> EmbeddingActivitySummary {
     let mut summary = EmbeddingActivitySummary::default();
-    for event in difflore_core::activity_stream::tail(200) {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    for event in difflore_core::observability::activity_stream::tail(200) {
         match event.payload {
-            difflore_core::activity_stream::ActivityPayload::EmbeddingFallback { reason } => {
+            difflore_core::observability::activity_stream::ActivityPayload::EmbeddingFallback {
+                reason,
+            } if should_count_embedding_degradation(event.ts_ms, &reason, now_ms) => {
                 summary.fallback_count += 1;
+                if is_persistent_embedding_degradation(&reason) {
+                    summary.persistent_fallback_count += 1;
+                }
                 if summary.latest_reason.is_none() {
                     summary.latest_reason = Some(reason);
                 }
             }
-            difflore_core::activity_stream::ActivityPayload::EmbedCapReached { cap, used } => {
+            difflore_core::observability::activity_stream::ActivityPayload::EmbedCapReached {
+                cap,
+                used,
+            } => {
                 summary.cap_hits += 1;
                 summary.latest_cap.get_or_insert((cap, used));
             }
@@ -745,12 +876,8 @@ fn embedding_activity_summary() -> EmbeddingActivitySummary {
     summary
 }
 
-// ── Secret redaction ─────────────────────────────────────────────────────
-
-/// Walk the parsed TOML and redact values whose key matches one of the
-/// secret-shaped patterns. Falls back to passthrough on parse failure rather
-/// than crashing — better to print a config than to swallow it because of
-/// one stray multi-line string.
+/// Walk the parsed TOML and redact values whose key matches a secret-shaped
+/// pattern. Falls back to passthrough on parse failure rather than crashing.
 pub(super) fn redact_secrets(raw: &str) -> String {
     let Ok(mut value) = raw.parse::<toml::Value>() else {
         return raw.to_owned();
@@ -761,10 +888,51 @@ pub(super) fn redact_secrets(raw: &str) -> String {
 
 fn key_is_secret(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
-    k.contains("token") || k.contains("secret") || k.contains("api_key") || k.contains("password")
+    k.contains("token")
+        || k.contains("secret")
+        || k.contains("api_key")
+        || k.contains("apikey")
+        || k.contains("password")
+        || key_has_secret_part(key)
+}
+
+fn key_has_secret_part(key: &str) -> bool {
+    let mut part = String::new();
+    let mut previous_was_lower_or_digit = false;
+    for ch in key.chars() {
+        if !ch.is_ascii_alphanumeric() {
+            if key_part_is_secret(&part) {
+                return true;
+            }
+            part.clear();
+            previous_was_lower_or_digit = false;
+            continue;
+        }
+
+        if ch.is_ascii_uppercase() && previous_was_lower_or_digit && !part.is_empty() {
+            if key_part_is_secret(&part) {
+                return true;
+            }
+            part.clear();
+        }
+        part.push(ch.to_ascii_lowercase());
+        previous_was_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+    }
+    key_part_is_secret(&part)
+}
+
+fn key_part_is_secret(part: &str) -> bool {
+    matches!(
+        part,
+        "key" | "auth" | "bearer" | "credential" | "credentials" | "pat" | "pwd" | "passwd"
+    )
 }
 
 fn walk_redact(value: &mut toml::Value) {
+    if value_is_secret_shaped(value) {
+        redact_value(value);
+        return;
+    }
     match value {
         toml::Value::Table(t) => {
             for (k, v) in t.iter_mut() {
@@ -784,34 +952,68 @@ fn walk_redact(value: &mut toml::Value) {
     }
 }
 
-fn redact_value(value: &mut toml::Value) {
-    let len = match value {
-        toml::Value::String(s) => s.len(),
-        toml::Value::Integer(i) => i.to_string().len(),
-        toml::Value::Float(f) => f.to_string().len(),
-        toml::Value::Boolean(_)
-        | toml::Value::Datetime(_)
-        | toml::Value::Array(_)
-        | toml::Value::Table(_) => 0,
+fn value_is_secret_shaped(value: &toml::Value) -> bool {
+    let toml::Value::String(s) = value else {
+        return false;
     };
-    *value = toml::Value::String(format!("<redacted:len={len}>"));
+    difflore_core::observability::privacy::redact_secrets(s) != s.as_str()
+}
+
+fn redact_value(value: &mut toml::Value) {
+    *value = toml::Value::String("<redacted>".to_owned());
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        McpValueProof, mcp_support_bundle_subsection, mcp_value_proof_lines, redact_secrets,
+        EmbeddingActivitySummary, McpValueProof, mcp_support_bundle_subsection,
+        mcp_value_proof_lines, redact_secrets,
     };
-    use crate::mcp_install::{
+    use crate::installer::{
         CanonicalRecordState, CanonicalRecordStatus, InstallState, McpClientStatus,
         McpRuntimeProbe, McpStatusDiagnosis, McpStatusSnapshot, RuntimeProbeState, TargetStatus,
     };
 
     #[test]
+    fn embedding_summary_folds_cap_hits_into_degradation() {
+        // Distinct-view contract with `env_probes::memory_pipeline_section`:
+        // the embedding section counts a cap hit as degradation even with zero
+        // SHA1 fallbacks, whereas the memory-pipeline alert excludes cap hits.
+        let cap_only = EmbeddingActivitySummary {
+            cap_hits: 1,
+            ..EmbeddingActivitySummary::default()
+        };
+        assert!(
+            cap_only.has_degradation(),
+            "a cap hit must register as embedding-section degradation"
+        );
+
+        // A lone transient fallback below the sustained threshold is *not*
+        // degradation here — matching the memory-pipeline below-threshold path.
+        let one_transient = EmbeddingActivitySummary {
+            fallback_count: 1,
+            ..EmbeddingActivitySummary::default()
+        };
+        assert!(
+            !one_transient.has_degradation(),
+            "a single transient fallback is below the sustained threshold"
+        );
+
+        // A persistent fallback always counts, with no cap hit involved.
+        let persistent = EmbeddingActivitySummary {
+            fallback_count: 1,
+            persistent_fallback_count: 1,
+            ..EmbeddingActivitySummary::default()
+        };
+        assert!(persistent.has_degradation());
+    }
+
+    #[test]
     fn redacts_top_level_token() {
         let input = "token = \"abc123xyz\"\nname = \"alice\"\n";
         let out = redact_secrets(input);
-        assert!(out.contains("redacted:len=9"), "out = {out}");
+        assert!(out.contains("<redacted>"), "out = {out}");
+        assert!(!out.contains("redacted:len"), "out = {out}");
         assert!(out.contains("alice"));
     }
 
@@ -821,6 +1023,54 @@ mod tests {
         let out = redact_secrets(input);
         assert!(out.contains("redacted"));
         assert!(out.contains("gpt-4"));
+    }
+
+    #[test]
+    fn redacts_broader_secret_key_names() {
+        let input = r#"
+key = "bare-key-value"
+auth = "auth-value"
+bearer = "bearer-value"
+credential = "credential-value"
+pat = "pat-value"
+pwd = "pwd-value"
+providerKey = "camel-key-value"
+name = "safe"
+"#;
+        let out = redact_secrets(input);
+        for leaked in [
+            "bare-key-value",
+            "auth-value",
+            "bearer-value",
+            "credential-value",
+            "pat-value",
+            "pwd-value",
+            "camel-key-value",
+        ] {
+            assert!(!out.contains(leaked), "{leaked} leaked in {out}");
+        }
+        assert!(out.contains("safe"));
+        assert!(out.contains("redacted"));
+    }
+
+    #[test]
+    fn redacts_value_shaped_secrets_under_safe_keys() {
+        let openai_key = "sk-abcdefghijklmnopqrstuvwxyz1234";
+        let github_key = "ghp_abcdefghijklmnopqrstuvwxyz0123";
+        let input = format!(
+            "[provider]\nname = \"openai\"\nvalue = \"{openai_key}\"\nnotes = \"Bearer abcdef1234567890XYZ\"\naliases = [\"safe\", \"{github_key}\"]\n"
+        );
+        let out = redact_secrets(&input);
+
+        assert!(!out.contains(openai_key), "OpenAI-shaped key leaked: {out}");
+        assert!(!out.contains(github_key), "GitHub-shaped key leaked: {out}");
+        assert!(
+            !out.contains("abcdef1234567890XYZ"),
+            "bearer value leaked: {out}"
+        );
+        assert!(out.contains("openai"));
+        assert!(out.contains("safe"));
+        assert!(out.contains("redacted"));
     }
 
     #[test]
@@ -909,28 +1159,28 @@ mod tests {
             local_accepted_outcomes_linked_to_mcp_rule_serve_last30: Some(1),
             local_accepted_outcomes_linked_to_edit_attribution_last30: Some(0),
             local_total_outcomes_last30: Some(4),
-            local_saved_review_time: Some("16m review time saved".to_owned()),
+            local_saved_review_time: None,
             accepted_fixes_last30: Some(46),
             total_fixes_last30: Some(46),
-            saved_review_time: Some("3h 4m review time saved".to_owned()),
+            saved_review_time: None,
         };
         mcp_support_bundle_subsection(&mut out, &snapshot, &proof);
 
         assert!(out.contains("### MCP support bundle"));
         assert!(out.contains("runtime: ok | stdio self-check served initialize + tools/list"));
         assert!(out.contains("tools: 2 | search_rules, get_rules"));
-        assert!(out.contains("tool call: search_rules | 1 injected · 3 indexed"));
+        assert!(out.contains("tool call: search_rules | 1 injected | 3 indexed"));
         assert!(out.contains("top=Review memory probe rule"));
         assert!(out.contains("installed clients: Cursor"));
         assert!(out.contains("synced memory: 3882 active rules ready for recall"));
-        assert!(out.contains("agent reach: 1 installed client · 2 MCP tools served"));
-        assert!(out.contains("local accepted proof: 4 accepted edit proofs"));
+        assert!(out.contains("agent reach: 1 installed client | 2 MCP tools served"));
+        assert!(out.contains("local accepted activity: 4 accepted edits"));
         assert!(out.contains("(3 signed local fixes + 1 agent/hook outcome)"));
         assert!(
-            out.contains("2 after prior memory-use proof (1 rule recall + 1 MCP serve) within 7d")
+            out.contains("2 after prior memory recall (1 rule recall + 1 agent recall) within 7d")
         );
-        assert!(out.contains("16m review time saved"));
-        assert!(out.contains("remote Impact proof: 46/46 accepted edits in the last 30d"));
+        assert!(!out.contains("review time saved"));
+        assert!(out.contains("remote Impact activity: 46/46 accepted edits in the last 30d"));
         assert!(out.contains("affected clients: none"));
         assert!(out.contains("Cursor: run `Developer: Reload Window`"));
         assert!(out.contains("installed surfaces:"));
@@ -951,7 +1201,7 @@ mod tests {
             local_accepted_outcomes_linked_to_mcp_rule_serve_last30: None,
             local_accepted_outcomes_linked_to_edit_attribution_last30: None,
             local_total_outcomes_last30: Some(3),
-            local_saved_review_time: Some("8m review time saved".to_owned()),
+            local_saved_review_time: None,
             accepted_fixes_last30: None,
             total_fixes_last30: None,
             saved_review_time: None,
@@ -960,12 +1210,12 @@ mod tests {
 
         assert!(lines[0].contains("1 active rule ready for recall"));
         assert!(lines[0].contains("2 imported PRs"));
-        assert!(lines[1].contains("3 installed clients · 7 MCP tools"));
-        assert!(lines[2].contains("local accepted proof: 2 accepted edit proofs"));
-        assert!(lines[2].contains("8m review time saved"));
+        assert!(lines[1].contains("3 installed clients | 7 MCP tools"));
+        assert!(lines[2].contains("local accepted activity: 2 accepted edits"));
+        assert!(!lines[2].contains("review time saved"));
         assert_eq!(
             lines[3],
-            "remote Impact proof: unavailable; local proof captured above"
+            "remote Impact activity: unavailable; local activity captured above"
         );
     }
 
@@ -983,22 +1233,24 @@ mod tests {
             local_accepted_outcomes_linked_to_mcp_rule_serve_last30: Some(1),
             local_accepted_outcomes_linked_to_edit_attribution_last30: Some(1),
             local_total_outcomes_last30: Some(2),
-            local_saved_review_time: Some("8m review time saved".to_owned()),
+            local_saved_review_time: None,
             accepted_fixes_last30: None,
             total_fixes_last30: None,
             saved_review_time: None,
         };
         let lines = mcp_value_proof_lines(&proof);
 
-        assert!(lines[2].contains("local accepted proof: 2 accepted edit proofs"));
+        assert!(lines[2].contains("local accepted activity: 2 accepted edits"));
         assert!(lines[2].contains("(2 agent/hook outcomes)"));
-        assert!(lines[2].contains(
-            "2 after prior memory-use proof (1 MCP serve + 1 edit attribution) within 7d"
-        ));
-        assert!(lines[2].contains("8m review time saved"));
+        assert!(
+            lines[2].contains(
+                "2 after prior memory recall (1 agent recall + 1 accepted edit) within 7d"
+            )
+        );
+        assert!(!lines[2].contains("review time saved"));
         assert_eq!(
             lines[3],
-            "remote Impact proof: unavailable; local proof captured above"
+            "remote Impact activity: unavailable; local activity captured above"
         );
     }
 }
