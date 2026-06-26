@@ -5,6 +5,12 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-26
+
+### Added
+
+- Re-enabled managed binary self-update for official installer installs.
+
 ## [0.2.0] - 2026-06-24
 
 First general release. DiffLore turns past code-review feedback into local

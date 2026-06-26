@@ -1,6 +1,6 @@
 [package]
 name = "difflore-cli"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 # Two binaries ship from this crate (`difflore` + the `difflore-hook` shim), so
 # `cargo run -p difflore-cli` is ambiguous without this. CI's "Verify plugin
@@ -44,7 +44,7 @@ path = "src/bin/difflore-launcher.rs"
 # Path + version: `path` for local workspace dev, `version` for crates.io
 # resolution after publish. Both required — cargo publish rejects path-only.
 # Publish order on each release: difflore-core → difflore-cli.
-difflore-core = { path = "../difflore-core", version = "0.2.0" }
+difflore-core = { path = "../difflore-core", version = "0.3.0" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", default-features = false, features = [
   "fs",

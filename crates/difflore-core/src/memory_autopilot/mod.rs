@@ -45,7 +45,7 @@ pub use self::cluster::session_mined_candidates_semantically_match;
 pub use self::conflicts::load_memory_conflicts;
 pub use self::digest::load_memory_digest;
 pub use self::log::{disable_memory_rule, load_autopilot_log};
-pub use self::run::run_memory_autopilot;
+pub use self::run::{promote_candidate_with_curator_recommendation, run_memory_autopilot};
 
 pub(crate) use self::log::{
     AutopilotEventInput, ensure_autopilot_events_table, record_autopilot_event,
@@ -1727,6 +1727,77 @@ mod tests {
             digest.candidate_groups[0].title,
             "Use base media components"
         );
+    }
+
+    #[tokio::test]
+    async fn manual_approve_uses_cached_curator_recommendation() {
+        let pool = fresh_pool().await;
+        let raw_description = "Rule:\nAvoid raw media tags.\n\nSource evidence:\nSource: owner/repo#1\nComment: https://example.test/review\nFile: src/components/developers/Hero.tsx\n\nReviewer said:\nUse base media components.";
+        sqlx::query(
+            "INSERT INTO skills \
+                (id, name, source, directory, version, description, type, engines, tags, status, origin, source_repo, file_patterns) \
+             VALUES \
+                ('draft-pr-scope', 'Raw media review', 'local', '', '1.0.0', ?1, \
+                 'review_standard', '[]', '[]', 'pending', 'pr_review', 'owner/repo', '[\"src/components/developers/hero/**/*.tsx\",\"**/package.json\"]')",
+        )
+        .bind(raw_description)
+        .execute(&pool)
+        .await
+        .expect("insert pr draft");
+        let draft = list_candidates(&pool, None, Some(1))
+            .await
+            .expect("load candidate")
+            .into_iter()
+            .next()
+            .expect("candidate");
+        let candidate = pending_from_draft(draft, &HashSet::new());
+        let group_id = candidate_group_key(&candidate);
+        let digest = digest_group(
+            group_id,
+            std::slice::from_ref(&candidate),
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+        );
+        let mut group = PlannedGroup {
+            digest,
+            candidates: vec![candidate],
+            conflict: None,
+        };
+        let input_hash = group_input_hash(&group);
+        let mut decision = high_confidence_curator_decision(
+            group.digest.group_id.clone(),
+            Some(MemoryCuratorScope::LanguageWide),
+        );
+        decision.confidence = 0.74;
+        apply_curator_decision(&mut group, &decision, MemoryCuratorOptions::default());
+        upsert_curator_recommendation(&pool, &group, &input_hash)
+            .await
+            .expect("cache recommendation");
+
+        let rule = promote_candidate_with_curator_recommendation(&pool, "draft-pr-scope")
+            .await
+            .expect("promote");
+
+        assert_eq!(rule.id, "draft-pr-scope");
+        let row = sqlx::query(
+            "SELECT status, name, description, file_patterns FROM skills WHERE id = 'draft-pr-scope'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load promoted rule");
+        let status: String = row.try_get("status").expect("status");
+        let name: String = row.try_get("name").expect("name");
+        let description: String = row.try_get("description").expect("description");
+        let file_patterns_raw: Option<String> = row.try_get("file_patterns").expect("patterns");
+        let file_patterns: Vec<String> =
+            serde_json::from_str(file_patterns_raw.as_deref().unwrap_or("[]")).expect("json");
+
+        assert_eq!(status, "active");
+        assert_eq!(name, "Use base media components");
+        assert!(description.contains("Use base media components for images and videos"));
+        assert!(description.contains("Source evidence:"));
+        assert_eq!(file_patterns, vec!["**/*.tsx"]);
     }
 
     #[tokio::test]

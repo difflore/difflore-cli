@@ -34,6 +34,10 @@ function touch(file) {
   fs.writeFileSync(file, "fake\n");
 }
 
+function realpath(file) {
+  return fs.realpathSync(file);
+}
+
 function fixture() {
   const root = tempDir("difflore-plugin-root-");
   const pluginRoot = path.join(root, "plugin");
@@ -45,7 +49,7 @@ function fixture() {
   fs.writeFileSync(path.join(repoRoot, "Cargo.toml"), "[workspace]\n");
   writeJson(path.join(repoRoot, ".codex-plugin", "plugin.json"), {
     name: "difflore",
-    version: "0.2.0"
+    version: "0.3.0"
   });
   const executable = new Set();
   const versions = new Map();
@@ -68,7 +72,7 @@ function fixture() {
       if (!executable.has(resolved)) {
         return { ok: false, reason: "not marked executable" };
       }
-      const version = versions.get(resolved) || "0.2.0";
+      const version = versions.get(resolved) || "0.3.0";
       return kind === KIND_CLI
         ? { ok: true, version, output: `difflore ${version}` }
         : { ok: true };
@@ -92,7 +96,7 @@ function binPair(dir) {
 
 test("expectedVersion reads the Codex plugin manifest next to plugin/", () => {
   const fx = fixture();
-  assert.equal(expectedVersion(fx), "0.2.0");
+  assert.equal(expectedVersion(fx), "0.3.0");
 });
 
 test("install record resolves difflore and adjacent difflore-hook without PATH", () => {
@@ -163,8 +167,8 @@ test("recordRuntime writes paths only and does not copy binaries", () => {
   const metadata = recordRuntime(fx);
   const saved = JSON.parse(fs.readFileSync(runtimeMetadataPath(fx), "utf8"));
 
-  assert.equal(metadata.binaries.difflore, path.resolve(pair.cli));
-  assert.equal(saved.binaries.diffloreHook, path.resolve(pair.hook));
+  assert.equal(metadata.binaries.difflore, realpath(pair.cli));
+  assert.equal(saved.binaries.diffloreHook, realpath(pair.hook));
   assert.equal(saved.sources.difflore, "repo");
 });
 
@@ -185,7 +189,7 @@ test("CLI version mismatch is rejected unless explicitly allowed", () => {
 
   const rejected = inspectRuntime(fx);
   assert.equal(rejected.selected.difflore, undefined);
-  assert.match(rejected.candidates.difflore.find((c) => c.source === "repo").reason, /expected 0\.2\.0/);
+  assert.match(rejected.candidates.difflore.find((c) => c.source === "repo").reason, /expected 0\.3\.0/);
 
   const allowed = inspectRuntime({
     ...fx,
