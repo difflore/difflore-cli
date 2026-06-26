@@ -43,7 +43,7 @@ fn is_windows_broken_stdout_pipe(err: &io::Error) -> bool {
 }
 
 #[cfg(not(windows))]
-fn is_windows_broken_stdout_pipe(_: &io::Error) -> bool {
+const fn is_windows_broken_stdout_pipe(_: &io::Error) -> bool {
     false
 }
 
