@@ -759,7 +759,7 @@ dependencies = [
 
 [[package]]
 name = "difflore-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -792,7 +792,7 @@ dependencies = [
 
 [[package]]
 name = "difflore-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "async-trait",

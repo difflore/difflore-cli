@@ -13,22 +13,19 @@ const INSTALL_SCRIPT_URL: &str = if cfg!(windows) {
     "https://difflore.dev/install.sh"
 };
 
-/// Pinned SHA-256 of the install script, in `sha256:<hex>` form, verified
-/// before the script is executed so a single difflore.dev / TLS-MITM
+/// Pinned SHA-256 of the public install script, in `sha256:<hex>` form,
+/// verified before the script is executed so a single difflore.dev / TLS-MITM
 /// compromise is not instant RCE on every updating client.
-///
-/// `None` = unpinned. While unpinned we DO NOT silently fall back to the old
-/// blind `curl | sh` pipe (that would defeat the purpose); instead the managed
-/// self-update refuses to auto-run and tells the user to update manually with
-/// the one-line installer they can inspect. Set this at release time once the
-/// installer is published & frozen.
 ///
 /// TODO(security, #43): replace this pinned-checksum mechanism with a proper
 /// signature scheme — publish a detached signature of install.{ps1,sh} and
 /// verify it here against a public key baked into the binary, so the install
 /// host does not have to be trusted at all (a checksum still trusts whoever
 /// publishes the pinned value at build time).
-const PINNED_INSTALL_SCRIPT_SHA256: Option<&str> = None;
+const PINNED_INSTALL_SH_SHA256: &str =
+    "sha256:2e9562f4a5e45fc2184a0fb271934ef2c4a9fd11ef9105634f667d2ea3fb8cce";
+const PINNED_INSTALL_PS1_SHA256: &str =
+    "sha256:87c4441fc0d216fcd13a423b236d8485e5f97d54c50926e44a5647f81ce74493";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UpdateArgs {
@@ -167,21 +164,17 @@ const fn public_install_command() -> &'static str {
 }
 
 async fn run_installer_update() -> Result<(), String> {
-    // Refuse to auto-run an unverifiable script: without a pinned checksum we
-    // can't tell a legitimate installer from one served by a compromised host
-    // or TLS MITM, so we never blindly `curl | sh`. The user can still update
-    // by running the inspectable one-line installer themselves.
-    let Some(expected) = PINNED_INSTALL_SCRIPT_SHA256 else {
-        return Err(format!(
-            "self-update is not pinned to a verified installer checksum yet; \
-             update manually with: {}",
-            public_install_command()
-        ));
-    };
-
     let script = download_install_script().await?;
-    verify_install_script(script.as_bytes(), expected)?;
+    verify_install_script(script.as_bytes(), pinned_install_script_sha256())?;
     run_verified_script(&script)
+}
+
+const fn pinned_install_script_sha256() -> &'static str {
+    if cfg!(windows) {
+        PINNED_INSTALL_PS1_SHA256
+    } else {
+        PINNED_INSTALL_SH_SHA256
+    }
 }
 
 /// Fetch the install script over HTTPS (TLS via rustls). Returns the raw script
@@ -292,5 +285,19 @@ mod tests {
         let expected = difflore_core::infra::crypto::sha256_block_hex(b"original");
         let err = verify_install_script(b"tampered", &expected).unwrap_err();
         assert!(err.contains("checksum mismatch"), "msg: {err}");
+    }
+
+    #[test]
+    fn self_update_has_platform_specific_pinned_checksum() {
+        let expected = if cfg!(windows) {
+            PINNED_INSTALL_PS1_SHA256
+        } else {
+            PINNED_INSTALL_SH_SHA256
+        };
+        assert_eq!(pinned_install_script_sha256(), expected);
+        assert!(
+            pinned_install_script_sha256().starts_with("sha256:"),
+            "pinned checksum must include the digest algorithm"
+        );
     }
 }
