@@ -143,6 +143,100 @@ pub async fn run_memory_autopilot(
     })
 }
 
+pub async fn promote_candidate_with_curator_recommendation(
+    pool: &SqlitePool,
+    draft_id: &str,
+) -> Result<SkillRecord> {
+    apply_cached_curator_recommendation_to_draft(pool, draft_id).await?;
+    promote_candidate(pool, draft_id).await
+}
+
+async fn apply_cached_curator_recommendation_to_draft(
+    pool: &SqlitePool,
+    draft_id: &str,
+) -> Result<()> {
+    let Some(mut group) = planned_single_draft_group(pool, draft_id).await? else {
+        return Ok(());
+    };
+    if !pr_review_candidate_group(&group)
+        || group.digest.state != MemoryCandidateGroupState::NeedsReview
+    {
+        return Ok(());
+    }
+
+    let input_hash = group_input_hash(&group);
+    let recommendations = load_curator_recommendations(pool).await?;
+    let Some(cached) = recommendations.get(&group.digest.group_id) else {
+        return Ok(());
+    };
+    if cached.prompt_version != MEMORY_AUTOPILOT_SCHEMA_VERSION || cached.input_hash != input_hash {
+        return Ok(());
+    }
+
+    let Some(original) = group.candidates.first().cloned() else {
+        return Ok(());
+    };
+    apply_cached_curator_recommendation(&mut group, cached);
+    if !matches!(
+        group.digest.state,
+        MemoryCandidateGroupState::AutoEnable | MemoryCandidateGroupState::Recommended
+    ) {
+        return Ok(());
+    }
+    let Some(refined) = group.candidates.first() else {
+        return Ok(());
+    };
+    if draft_refinement_changed(&original, refined) {
+        update_pending_draft_with_refined_rule(pool, draft_id, refined).await?;
+    }
+    Ok(())
+}
+
+async fn planned_single_draft_group(
+    pool: &SqlitePool,
+    draft_id: &str,
+) -> Result<Option<PlannedGroup>> {
+    let draft = list_candidates(pool, None, None)
+        .await?
+        .into_iter()
+        .find(|draft| draft.id == draft_id);
+    let Some(draft) = draft else {
+        return Ok(None);
+    };
+    let disabled_rule_ids = load_autopilot_disabled_rule_ids(pool).await?;
+    let candidate = pending_from_draft(draft, &disabled_rule_ids);
+    let active_rules = load_active_rules(pool, MAX_PENDING_SCAN).await?;
+    let active_keys = active_rules
+        .iter()
+        .map(active_memory_key)
+        .collect::<HashSet<_>>();
+    let active_content_hashes = active_rules
+        .iter()
+        .filter_map(|rule| rule.content_hash.as_deref())
+        .map(str::to_owned)
+        .collect::<HashSet<_>>();
+    let group_id = candidate_group_key(&candidate);
+    let digest = digest_group(
+        group_id,
+        std::slice::from_ref(&candidate),
+        &active_keys,
+        &active_content_hashes,
+        &active_rules,
+    );
+    Ok(Some(PlannedGroup {
+        digest,
+        candidates: vec![candidate],
+        conflict: None,
+    }))
+}
+
+fn draft_refinement_changed(original: &PendingMemory, refined: &PendingMemory) -> bool {
+    original.title != refined.title
+        || original.body != refined.body
+        || normalize_patterns(original.file_patterns.clone())
+            != normalize_patterns(refined.file_patterns.clone())
+}
+
 pub(super) async fn refine_pr_review_groups_with_local_ai(
     pool: &SqlitePool,
     groups: &mut [PlannedGroup],

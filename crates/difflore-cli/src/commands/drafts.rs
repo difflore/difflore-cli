@@ -4,7 +4,8 @@ use std::io::{self, BufRead, IsTerminal, Write};
 
 use serde_json::json;
 
-use difflore_core::skills::{CandidateRule, list_candidates, promote_candidate, reject_candidate};
+use difflore_core::memory_autopilot::promote_candidate_with_curator_recommendation;
+use difflore_core::skills::{CandidateRule, list_candidates, reject_candidate};
 
 use crate::style;
 use crate::support::util::{
@@ -104,7 +105,7 @@ pub(crate) async fn handle_review(repo: Option<String>, limit: Option<usize>) {
             }
             match line.trim().to_ascii_lowercase().as_str() {
                 "a" | "approve" => {
-                    match promote_candidate(&db, &draft.id).await {
+                    match promote_candidate_with_curator_recommendation(&db, &draft.id).await {
                         Ok(_) => {
                             println!("  {} approved {}\n", style::ok(style::sym::OK), draft.id);
                         }
@@ -159,7 +160,7 @@ pub(crate) async fn handle_approve(
         }
         let mut approved = Vec::new();
         for draft in drafts {
-            promote_candidate(&db, &draft.id)
+            promote_candidate_with_curator_recommendation(&db, &draft.id)
                 .await
                 .unwrap_or_else(|e| exit_action_err("approve", &draft.id, &e, json));
             approved.push(draft.id);
@@ -174,7 +175,7 @@ pub(crate) async fn handle_approve(
             json,
         );
     };
-    let activated = promote_candidate(&db, &id)
+    let activated = promote_candidate_with_curator_recommendation(&db, &id)
         .await
         .unwrap_or_else(|e| exit_action_err("approve", &id, &e, json));
     if json {

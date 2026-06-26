@@ -6,6 +6,7 @@ pub(crate) mod file_ext;
 pub(crate) mod impact_payload;
 pub(crate) mod proven_rule;
 pub(crate) mod review_text;
+pub(crate) mod stdio;
 #[cfg(test)]
 pub(crate) mod test_home;
 pub(crate) mod util;

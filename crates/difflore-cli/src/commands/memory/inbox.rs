@@ -3,6 +3,7 @@ use std::io::{self, BufRead, IsTerminal, Read, Write};
 use difflore_core::domain::models::RememberRuleInput;
 use serde_json::json;
 
+use difflore_core::memory_autopilot::promote_candidate_with_curator_recommendation;
 use difflore_core::memory_autopilot_schedule::{
     MemoryAutopilotScheduleStatus, load_autopilot_schedule_status,
 };
@@ -13,7 +14,7 @@ use difflore_core::memory_inbox::{
     load_memory_inbox, load_memory_inbox_default, load_memory_items, parse_session_item_id,
     reject_session_mined_candidate,
 };
-use difflore_core::skills::{CandidateRule, list_candidates, promote_candidate, reject_candidate};
+use difflore_core::skills::{CandidateRule, list_candidates, reject_candidate};
 
 use crate::runtime::CommandContext;
 use crate::style;
@@ -432,7 +433,7 @@ pub(crate) async fn handle_review(ctx: &CommandContext, limit: Option<usize>) {
 
 pub(crate) async fn handle_approve(ctx: &CommandContext, item_id: String, json: bool) {
     if let Some(draft_id) = item_id.strip_prefix("draft:") {
-        let activated = promote_candidate(&ctx.db, draft_id)
+        let activated = promote_candidate_with_curator_recommendation(&ctx.db, draft_id)
             .await
             .unwrap_or_else(|err| exit_structured_err(&err.to_string(), json));
         if json {

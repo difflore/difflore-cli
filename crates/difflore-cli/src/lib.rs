@@ -8,6 +8,21 @@
     )
 )]
 
+macro_rules! print {
+    ($($arg:tt)*) => {
+        $crate::support::stdio::safe_print(format_args!($($arg)*))
+    };
+}
+
+macro_rules! println {
+    () => {
+        $crate::support::stdio::safe_println(format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        $crate::support::stdio::safe_println(format_args!($($arg)*))
+    };
+}
+
 use clap::FromArgMatches;
 
 pub mod agent_exec;
