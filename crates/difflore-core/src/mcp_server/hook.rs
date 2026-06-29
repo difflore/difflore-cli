@@ -257,7 +257,7 @@ async fn fetch_relevant_rules_for_hook_inner(
         });
     }
 
-    let query = format!("{file} {intent}");
+    let query = crate::context::retrieval::build_recall_query_with_signals(file, intent);
     // Scope to the calling repo/project only. On 0 hits we return no
     // rules; runtime recall must not fall back to another project.
     let detected_repos = if let Some(repo_scopes) = repo_scopes_override {
@@ -327,6 +327,13 @@ async fn fetch_relevant_rules_for_hook_inner(
         .await
         .unwrap_or_default();
     let strict_skill_ids = tools::evidence::strict_file_match_ids_for_meta(&meta_map, target_file);
+    if is_post_edit_path {
+        scored.retain(|rule| {
+            meta_map
+                .get(&rule.skill_id)
+                .is_none_or(|row| hook_auto_injection_allowed(row, &strict_skill_ids))
+        });
+    }
     scored = tools::serve_stats::rerank_scored_rule_chunks_for_mcp_by_strict_file_matches(
         scored,
         intent,
@@ -578,6 +585,17 @@ use super::serve_render::{RuleBlockArgs, RuleServe, render_rule_block, serve_and
 
 fn hook_serve_record_err_prefix() -> Option<&'static str> {
     crate::infra::env::debug_telemetry().then_some(HOOK_SERVE_RECORD_ERR_PREFIX)
+}
+
+fn hook_auto_injection_allowed(
+    row: &tools::evidence::SkillDetailRow,
+    strict_skill_ids: &std::collections::HashSet<String>,
+) -> bool {
+    // A mined PR-review rule without a file-pattern hit is often a workflow or
+    // meta-review note. Keep it discoverable through explicit search/get_rules,
+    // but do not silently steer code generation with it on post-edit hooks.
+    (row.origin != "pr_review" || strict_skill_ids.contains(&row.id))
+        && tools::evidence::kind_gate_allows_silent_injection(row, strict_skill_ids)
 }
 use super::{
     McpState, emit_trajectory_step, estimate_tokens, handle_message, jsonrpc_error,

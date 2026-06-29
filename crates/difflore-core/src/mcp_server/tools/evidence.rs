@@ -61,7 +61,8 @@ pub(crate) fn render_full_rule_with_examples(
         check_prompt: row.check_prompt.as_deref(),
         examples: examples.map(Vec::as_slice),
     };
-    crate::context::rule_render::render_code_spec(&input)
+    let body = crate::context::rule_render::render_code_spec(&input);
+    render_explicit_recall_application_guidance(row, body)
 }
 
 /// Extract a short preview (<= 120 chars) of a rule body. Prefers the
@@ -90,6 +91,124 @@ pub fn parse_file_patterns(raw: Option<&str>) -> Vec<String> {
         return Vec::new();
     }
     serde_json::from_str::<Vec<String>>(trimmed).unwrap_or_default()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AutoServeRuleKind {
+    Faq,
+    Pitfall,
+    Other,
+}
+
+pub(crate) fn infer_auto_serve_rule_kind(row: &SkillDetailRow) -> AutoServeRuleKind {
+    let type_lc = row.r#type.trim().to_ascii_lowercase();
+    if type_lc == "faq" {
+        return AutoServeRuleKind::Faq;
+    }
+    if type_lc == "pitfall" {
+        return AutoServeRuleKind::Pitfall;
+    }
+
+    let text = format!(
+        "{}\n{}\n{}\n{}",
+        row.r#type,
+        row.name,
+        row.description,
+        row.trigger.as_deref().unwrap_or("")
+    )
+    .to_ascii_lowercase();
+    let title = row.name.trim().to_ascii_lowercase();
+    if title.ends_with('?')
+        || title.starts_with("why ")
+        || title.starts_with("how ")
+        || title.starts_with("what ")
+        || title.starts_with("when ")
+        || title.starts_with("where ")
+        || title.starts_with("can ")
+        || title.starts_with("should ")
+        || title.starts_with("do we ")
+        || text.contains("faq")
+        || text.contains("question:")
+        || text.contains("answer:")
+    {
+        return AutoServeRuleKind::Faq;
+    }
+    if [
+        "don't ",
+        "do not ",
+        "never ",
+        "must not ",
+        "avoid ",
+        "pitfall",
+        "breaks ",
+        "regression",
+        "causes ",
+        "wrong ",
+        "instead of ",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+    {
+        return AutoServeRuleKind::Pitfall;
+    }
+    AutoServeRuleKind::Other
+}
+
+pub(crate) fn kind_gate_allows_silent_injection(
+    row: &SkillDetailRow,
+    strict_skill_ids: &HashSet<String>,
+) -> bool {
+    match infer_auto_serve_rule_kind(row) {
+        AutoServeRuleKind::Faq => false,
+        AutoServeRuleKind::Pitfall => strict_skill_ids.contains(&row.id),
+        AutoServeRuleKind::Other => true,
+    }
+}
+
+pub(crate) fn explicit_recall_kind_gate_multiplier(
+    row: &SkillDetailRow,
+    strict_skill_ids: &HashSet<String>,
+) -> f64 {
+    match infer_auto_serve_rule_kind(row) {
+        AutoServeRuleKind::Faq => 0.20,
+        AutoServeRuleKind::Pitfall if strict_skill_ids.contains(&row.id) => 1.0,
+        AutoServeRuleKind::Pitfall => 0.30,
+        AutoServeRuleKind::Other => 1.0,
+    }
+}
+
+pub(crate) fn explicit_recall_application_kind(row: &SkillDetailRow) -> &'static str {
+    match infer_auto_serve_rule_kind(row) {
+        AutoServeRuleKind::Faq => "background",
+        AutoServeRuleKind::Pitfall => "pitfall_guardrail",
+        AutoServeRuleKind::Other => "rule",
+    }
+}
+
+pub(crate) fn explicit_recall_application_guidance(row: &SkillDetailRow) -> Option<&'static str> {
+    match infer_auto_serve_rule_kind(row) {
+        AutoServeRuleKind::Faq => Some(
+            "Use this as background behavior/constraint for interpreting the task. Do not force a code change or workaround unless the current change directly asks for it and the evidence matches.",
+        ),
+        AutoServeRuleKind::Pitfall => Some(
+            "Apply this only when the current file/task matches the failure mode. Follow the positive replacement; do not copy the forbidden wording as an instruction.",
+        ),
+        AutoServeRuleKind::Other => None,
+    }
+}
+
+fn render_explicit_recall_application_guidance(row: &SkillDetailRow, body: String) -> String {
+    let Some(guidance) = explicit_recall_application_guidance(row) else {
+        return body;
+    };
+    let section = format!("### Application guidance\n{guidance}\n");
+    if let Some(split) = body.find("\n\n") {
+        let (header, rest) = body.split_at(split);
+        let rest = rest.trim_start();
+        format!("{header}\n\n{section}\n{rest}")
+    } else {
+        format!("{body}\n\n{section}")
+    }
 }
 
 pub(crate) fn first_matching_pattern(patterns: &[String], target_file: &str) -> Option<String> {

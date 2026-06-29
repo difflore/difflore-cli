@@ -1196,6 +1196,25 @@ fn import_reviews_rejects_candidate_budget_flag() {
 
 #[test]
 fn import_reviews_parses_local_agent_distill_and_rejects_upload_conflict() {
+    let default_cli = Cli::try_parse_from(["difflore", "import-reviews"])
+        .expect("import-reviews should parse with default distill");
+    match default_cli.command.expect("subcommand") {
+        Commands::ImportReviews(args) => {
+            assert_eq!(args.distill, ImportDistillArg::Auto);
+        }
+        _ => panic!("expected import-reviews command"),
+    }
+
+    let upload_cli = Cli::try_parse_from(["difflore", "import-reviews", "--upload"])
+        .expect("--upload should remain explicit and valid with default auto distill");
+    match upload_cli.command.expect("subcommand") {
+        Commands::ImportReviews(args) => {
+            assert!(args.upload);
+            assert_eq!(args.distill, ImportDistillArg::Auto);
+        }
+        _ => panic!("expected import-reviews command"),
+    }
+
     let cli = Cli::try_parse_from(["difflore", "import-reviews", "--distill", "local-agent"])
         .expect("import-reviews should parse local-agent distill");
 

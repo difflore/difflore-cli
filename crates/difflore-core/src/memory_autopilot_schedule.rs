@@ -462,6 +462,14 @@ mod tests {
         pool
     }
 
+    async fn migrated_pool() -> SqlitePool {
+        let pool = pool().await;
+        crate::infra::db::run_migrations(&pool)
+            .await
+            .expect("migrate");
+        pool
+    }
+
     #[tokio::test]
     async fn lease_acquire_is_atomic_for_dirty_schedule() {
         let pool = pool().await;
@@ -494,6 +502,102 @@ mod tests {
         assert_eq!(status.lease_owner.as_deref(), Some("owner-a"));
         assert_eq!(status.spawn_attempt_count, 2);
         assert_eq!(status.skip_count, 1);
+    }
+
+    #[tokio::test]
+    async fn lease_requires_dirty_mark_before_schedule() {
+        let pool = pool().await;
+
+        let without_dirty = try_acquire_autopilot_lease(
+            &pool,
+            AutopilotScheduleRequest {
+                reason: "session_end",
+                cooldown_secs: 0,
+                lease_owner: "owner-before-dirty",
+            },
+        )
+        .await
+        .expect("acquire without dirty");
+        assert!(!without_dirty);
+        let skipped = load_autopilot_schedule_status(&pool).await.expect("status");
+        assert_eq!(skipped.last_skip_reason.as_deref(), Some("not_dirty"));
+
+        mark_autopilot_dirty(&pool, "session_end")
+            .await
+            .expect("dirty");
+        let with_dirty = try_acquire_autopilot_lease(
+            &pool,
+            AutopilotScheduleRequest {
+                reason: "session_end",
+                cooldown_secs: 0,
+                lease_owner: "owner-after-dirty",
+            },
+        )
+        .await
+        .expect("acquire with dirty");
+        assert!(with_dirty);
+
+        let status = load_autopilot_schedule_status(&pool).await.expect("status");
+        assert_eq!(status.lease_owner.as_deref(), Some("owner-after-dirty"));
+        assert!(status.dirty);
+    }
+
+    #[tokio::test]
+    async fn background_run_enables_cleaned_pr_review_after_dirty_mark() {
+        let pool = migrated_pool().await;
+        sqlx::query(
+            "INSERT INTO skills \
+                (id, name, source, directory, version, description, type, engines, tags, status, origin, source_repo, file_patterns) \
+             VALUES \
+                ('draft-pr-background-clean', 'Use base media components', 'local', '', '1.0.0', \
+                 'Rule:\nUse base media components for images and videos in UI code instead of raw media tags outside the base component implementations.\n\nSource evidence:\nSource: owner/repo#57\nComment: https://example.test/review\nFile: src/components/Hero.tsx', \
+                 'review_standard', '[]', '[]', 'pending', 'pr_review', 'owner/repo', '[\"src/components/Hero.tsx\"]')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert cleaned pr draft");
+
+        mark_autopilot_dirty(&pool, "session_end")
+            .await
+            .expect("dirty");
+        sqlx::query(
+            "UPDATE memory_autopilot_schedule
+             SET last_dirty_at = '2026-01-01T00:00:00.000'
+             WHERE id = 1",
+        )
+        .execute(&pool)
+        .await
+        .expect("age dirty mark");
+        let lease_owner = "background-pr-clean";
+        let acquired = try_acquire_autopilot_lease(
+            &pool,
+            AutopilotScheduleRequest {
+                reason: "session_end",
+                cooldown_secs: 0,
+                lease_owner,
+            },
+        )
+        .await
+        .expect("acquire");
+        assert!(acquired);
+
+        let run = run_background_memory_autopilot(&pool, lease_owner)
+            .await
+            .expect("background run");
+
+        assert!(run.productive);
+        assert_eq!(run.enabled_count, 1);
+        assert_eq!(run.result["enabledCount"], json!(1));
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM skills WHERE id = 'draft-pr-background-clean'")
+                .fetch_one(&pool)
+                .await
+                .expect("status");
+        assert_eq!(status, "active");
+        let schedule = load_autopilot_schedule_status(&pool).await.expect("status");
+        assert!(!schedule.dirty);
+        assert_eq!(schedule.run_count, 1);
+        assert_eq!(schedule.productive_run_count, 1);
     }
 
     #[tokio::test]

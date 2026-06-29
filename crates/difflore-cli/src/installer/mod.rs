@@ -328,8 +328,13 @@ mod tests {
         )
         .expect("write config");
 
-        let status =
-            common::probe_json_install("Cursor", &path, "mcpServers", "/tmp/fake/difflore");
+        let status = common::probe_json_install(
+            "Cursor",
+            &path,
+            "mcpServers",
+            "/tmp/fake/difflore",
+            json_config::McpEntryShape::Standard,
+        );
         assert_eq!(status.state, InstallState::Conflict);
         assert!(
             status
@@ -343,9 +348,48 @@ mod tests {
             r#"{ "mcpServers": { "difflore": { "command": "/tmp/fake/difflore", "args": ["mcp-server"] } } }"#,
         )
         .expect("write config");
-        let status =
-            common::probe_json_install("Cursor", &path, "mcpServers", "/tmp/fake/difflore");
+        let status = common::probe_json_install(
+            "Cursor",
+            &path,
+            "mcpServers",
+            "/tmp/fake/difflore",
+            json_config::McpEntryShape::Standard,
+        );
         assert_eq!(status.state, InstallState::Installed);
+    }
+
+    #[test]
+    fn json_probe_accepts_opencode_command_array_shape() {
+        let (_tmp, path) = test_util::tmp_named_path("opencode.json");
+        fs::write(
+            &path,
+            r#"{ "mcp": { "difflore": { "type": "local", "command": ["/tmp/fake/difflore", "mcp-server"], "enabled": true } } }"#,
+        )
+        .expect("write config");
+
+        let status = common::probe_json_install(
+            "OpenCode",
+            &path,
+            "mcp",
+            "/tmp/fake/difflore",
+            json_config::McpEntryShape::Opencode,
+        );
+        assert_eq!(status.state, InstallState::Installed);
+
+        fs::write(
+            &path,
+            r#"{ "mcp": { "difflore": { "type": "local", "command": ["/tmp/old/difflore", "mcp-server"], "enabled": true } } }"#,
+        )
+        .expect("write config");
+
+        let status = common::probe_json_install(
+            "OpenCode",
+            &path,
+            "mcp",
+            "/tmp/fake/difflore",
+            json_config::McpEntryShape::Opencode,
+        );
+        assert_eq!(status.state, InstallState::Conflict);
     }
 
     #[test]

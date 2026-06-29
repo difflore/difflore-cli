@@ -529,13 +529,14 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
         if !cloud_logged_in {
             return NextAction {
                 command: "difflore cloud login".to_owned(),
-                reason: "log in before uploading local accepted edits".to_owned(),
+                reason: "optional: sync local accepted-edit proof to a team workspace".to_owned(),
                 blocked_by: None,
             };
         }
         return NextAction {
             command: "difflore cloud team --json".to_owned(),
-            reason: "confirm your team workspace before uploading accepted edits".to_owned(),
+            reason: "optional: confirm team workspace before syncing accepted-edit proof"
+                .to_owned(),
             blocked_by: None,
         };
     }
@@ -592,10 +593,10 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
                 .clone()
                 .unwrap_or_else(|| "difflore import-reviews".to_owned()),
             reason: if scope.review_source_repo_full_name.is_some() {
-                "create local rules from upstream PR reviews and attach them to this fork"
+                "import upstream private review backlog locally and attach it to this fork"
                     .to_owned()
             } else {
-                "create local review rules without Cloud".to_owned()
+                "import private review backlog into local rules without Cloud".to_owned()
             },
             blocked_by: None,
         };
@@ -612,7 +613,7 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
 
     NextAction {
         command: "difflore import-reviews".to_owned(),
-        reason: "seed local rules from past PR reviews".to_owned(),
+        reason: "import private review backlog into local rules".to_owned(),
         blocked_by: None,
     }
 }
@@ -682,7 +683,6 @@ pub(super) fn proof_path_commands(next: &NextAction, cloud_logged_in: bool) -> V
         path.push("difflore review --diff all".to_owned());
     }
 
-    path.extend(cloud_proof_path(cloud_logged_in, cloud_logged_in));
     path
 }
 
@@ -1118,7 +1118,7 @@ mod tests {
             next.command,
             "difflore import-reviews --repo me/app --from-upstream upstream/app"
         );
-        assert!(next.reason.contains("upstream PR reviews"));
+        assert!(next.reason.contains("upstream private review backlog"));
     }
 
     #[test]
@@ -1132,7 +1132,7 @@ mod tests {
     }
 
     #[test]
-    fn proof_path_includes_cloud_pre_capture_readiness() {
+    fn proof_path_keeps_cloud_optional_after_local_import() {
         let import = NextAction {
             command: "difflore import-reviews --repo acme/app".to_owned(),
             reason: String::new(),
@@ -1144,8 +1144,6 @@ mod tests {
                 "difflore import-reviews --repo acme/app",
                 "difflore recall --diff",
                 "difflore review --diff all",
-                "difflore cloud team --json",
-                "difflore cloud impact",
             ]
         );
         assert_eq!(
@@ -1154,8 +1152,6 @@ mod tests {
                 "difflore import-reviews --repo acme/app",
                 "difflore recall --diff",
                 "difflore review --diff all",
-                "difflore cloud login",
-                "difflore cloud team --json",
             ]
         );
 
@@ -1270,7 +1266,7 @@ mod tests {
         });
 
         assert_eq!(next.command, "difflore cloud team --json");
-        assert!(next.reason.contains("accepted edits"));
+        assert!(next.reason.contains("accepted-edit proof"));
     }
 
     #[test]
@@ -1305,10 +1301,7 @@ mod tests {
         });
 
         assert_eq!(next.command, "difflore cloud login");
-        assert!(
-            next.reason
-                .contains("before uploading local accepted edits")
-        );
+        assert!(next.reason.contains("sync local accepted-edit proof"));
     }
 
     #[test]

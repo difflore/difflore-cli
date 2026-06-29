@@ -14,8 +14,9 @@ use super::super::{
     rule_hits_by_origin,
 };
 use super::evidence::{
-    build_match_evidence, fetch_skills_by_ids, has_strict_file_patterns_match, parse_file_patterns,
-    rule_preview, strict_file_match_ids_for_rules,
+    build_match_evidence, explicit_recall_kind_gate_multiplier, fetch_skills_by_ids,
+    has_strict_file_patterns_match, parse_file_patterns, rule_preview,
+    strict_file_match_ids_for_meta, strict_file_match_ids_for_rules,
 };
 use super::serve_stats::{
     build_empty_recall_retry_query, drain_mcp_query_outbox, enqueue_mcp_query_outbox,
@@ -159,7 +160,7 @@ async fn retrieve_and_gate_rules(
     } = parsed;
     let (file, intent, top_k, target_file) = (*file, *intent, *top_k, *target_file);
 
-    let mut query = format!("{file} {intent}");
+    let mut query = crate::context::retrieval::build_recall_query_with_signals(file, intent);
 
     let rules = crate::context::rule_source::load_rules_from_db(&state.db)
         .await
@@ -280,8 +281,7 @@ async fn retrieve_and_gate_rules(
     // Cold-start fallback: only repos with no scoped memory get strict-file
     // cross-repo suggestions.
     let mut cross_repo_starter = false;
-    if scored.is_empty()
-        && rules_indexed == 0
+    if should_try_cross_repo_starter(scored.is_empty(), repo_scopes, rules_indexed, target_file)
         && let Some(tf) = target_file
     {
         let cross = super::serve_stats::cross_repo_starter_scored(
@@ -319,6 +319,15 @@ async fn retrieve_and_gate_rules(
             after_relevance_gate: candidates_after_relevance_gate,
         },
     })
+}
+
+const fn should_try_cross_repo_starter(
+    scored_empty: bool,
+    repo_scopes: &[String],
+    rules_indexed: usize,
+    target_file: Option<&str>,
+) -> bool {
+    scored_empty && !repo_scopes.is_empty() && rules_indexed == 0 && target_file.is_some()
 }
 
 /// Build the empty-result response: emit the no-rules telemetry (injection log,
@@ -384,13 +393,8 @@ async fn build_empty_response(
             let _ = drain_mcp_query_outbox(&db, &cloud, 8).await;
         });
     }
-    let empty_message = if repo_scopes.is_empty() {
-        "No GitHub repo scope detected. Run inside a GitHub repo or pass repo_full_name; DiffLore will not inject global memory without a repo scope."
-    } else if retry_kind.is_some() {
-        "No rules found after a targeted retry. Pass a concrete file and intent, or add/import rules for this repo."
-    } else {
-        "No rules found for this file and intent."
-    };
+    let no_current_repo_rules = no_current_repo_rules(repo_scopes, rules_indexed);
+    let empty_message = empty_recall_message(repo_scopes, rules_indexed, retry_kind);
     let body = json!({
         "results": [],
         "message": empty_message,
@@ -398,6 +402,7 @@ async fn build_empty_response(
             "attempts": retrieval_attempts,
             "retry_kind": retry_kind,
             "repo_scopes": repo_scopes,
+            "no_current_repo_rules": no_current_repo_rules,
             "trace": recall_trace_json(*counts, 0, 0),
         }
     });
@@ -449,11 +454,32 @@ async fn build_empty_response(
                 "retrievalAttempts": retrieval_attempts,
                 "retryKind": retry_kind,
                 "repoScopes": repo_scopes,
+                "noCurrentRepoRules": no_current_repo_rules,
             },
             "trace": recall_trace_json(*counts, 0, 0),
             "embedding": serde_json::to_value(embedding_diag).unwrap_or(Value::Null),
         }
     }))
+}
+
+const fn no_current_repo_rules(repo_scopes: &[String], rules_indexed: usize) -> bool {
+    !repo_scopes.is_empty() && rules_indexed == 0
+}
+
+const fn empty_recall_message(
+    repo_scopes: &[String],
+    rules_indexed: usize,
+    retry_kind: Option<&'static str>,
+) -> &'static str {
+    if repo_scopes.is_empty() {
+        "No GitHub repo scope detected. Run inside a GitHub repo or pass repo_full_name; DiffLore will not inject global memory without a repo scope."
+    } else if no_current_repo_rules(repo_scopes, rules_indexed) {
+        "No rules are scoped to THIS repo yet, so DiffLore served nothing as team memory. Run `difflore import-reviews` for this repo, or pass an explicit repo_full_name if this is not the repo you meant."
+    } else if retry_kind.is_some() {
+        "No rules found after a targeted retry. Pass a concrete file and intent, or add/import rules for this repo."
+    } else {
+        "No rules found for this file and intent."
+    }
 }
 
 /// Build the non-empty response: supplement late metadata, run serve
@@ -500,6 +526,16 @@ async fn build_results_response(
             .await
             .map_err(|e| (-32603, format!("Failed to fetch rule metadata: {e}")))?;
         meta_map.extend(extra);
+    }
+    let strict_skill_ids = if cross_repo_starter {
+        strict_file_match_ids_for_meta(&meta_map, target_file)
+    } else {
+        strict_skill_ids
+    };
+    for rule in &mut scored {
+        if let Some(meta) = meta_map.get(&rule.skill_id) {
+            rule.score *= explicit_recall_kind_gate_multiplier(meta, &strict_skill_ids);
+        }
     }
 
     // Deterministic serve arbitration AFTER the double gate (intent alignment
@@ -729,6 +765,7 @@ async fn build_results_response(
                 "rulesIndexed": rules_indexed,
                 "kind": "rules_index",
                 "crossRepoStarter": cross_repo_starter,
+                "noCurrentRepoRules": no_current_repo_rules(repo_scopes, rules_indexed),
                 "topRelevance": scored.first().map_or(0.0, |s| public_relevance_score(s.score)),
                 "retrievalAttempts": retrieval_attempts,
                 "retryKind": retry_kind,
@@ -923,6 +960,53 @@ mod tests {
 
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].skill_id, "wanted");
+    }
+
+    #[test]
+    fn empty_recall_message_warns_when_current_repo_has_no_rules() {
+        let scopes = vec!["acme/widgets".to_owned()];
+        let message = empty_recall_message(&scopes, 0, Some("deterministic_empty_retry"));
+
+        assert!(message.contains("No rules are scoped to THIS repo yet"));
+        assert!(message.contains("difflore import-reviews"));
+        assert!(no_current_repo_rules(&scopes, 0));
+    }
+
+    #[test]
+    fn empty_recall_message_keeps_no_scope_guard_distinct() {
+        let scopes = Vec::new();
+        let message = empty_recall_message(&scopes, 0, None);
+
+        assert!(message.contains("No GitHub repo scope detected"));
+        assert!(!no_current_repo_rules(&scopes, 0));
+    }
+
+    #[test]
+    fn cross_repo_starter_requires_detected_repo_scope() {
+        assert!(!should_try_cross_repo_starter(
+            true,
+            &[],
+            0,
+            Some("src/lib.rs")
+        ));
+        assert!(should_try_cross_repo_starter(
+            true,
+            &["acme/widgets".to_owned()],
+            0,
+            Some("src/lib.rs")
+        ));
+        assert!(!should_try_cross_repo_starter(
+            true,
+            &["acme/widgets".to_owned()],
+            3,
+            Some("src/lib.rs")
+        ));
+        assert!(!should_try_cross_repo_starter(
+            true,
+            &["acme/widgets".to_owned()],
+            0,
+            None
+        ));
     }
 
     #[test]

@@ -763,7 +763,7 @@ mod tests {
     #[test]
     fn wrap_human_text_ignores_ansi_escape_width() {
         let wrapped = wrap_human_text_for_width(
-            "  - review command: \x1b[34mdifflore import-reviews --upload\x1b[0m after setup",
+            "  - review command: \x1b[34mdifflore import-reviews --max-prs 50\x1b[0m after setup",
             44,
         );
 

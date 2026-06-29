@@ -1,4 +1,4 @@
-//! `difflore status` -- local-only proof that the CLI has usable memory.
+//! `difflore status` -- local proof that review rules are ready for agents.
 //!
 //! Three-layer split:
 //! - `queries`: SQL + DTOs the queries materialise.

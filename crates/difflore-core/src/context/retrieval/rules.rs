@@ -14,13 +14,17 @@ use super::scoring::{directive_intent_aligned, effective_confidence, infer_rule_
 use super::{
     ADAPTIVE_INJECT_THRESHOLD, EXPLICIT_RECALL_MIN_RELEVANCE, EXPLICIT_RECALL_RELATIVE_FLOOR,
     INTENT_ALIGNMENT_EXEMPT_SCORE, MIN_RELEVANCE_SCORE, RELATIVE_RELEVANCE_FLOOR, RRF_K,
-    ScoredRuleChunk, concreteness_score, lexical_terms,
+    ScoredRuleChunk, lexical_terms, rule_quality_weight,
 };
 
 const MAX_RULE_RETRIEVAL_TOP_K: usize = 50;
 const MAX_ANN_CANDIDATES: usize = 150;
 /// Path hints should break close ties, not override semantic relevance.
 const PATH_HINT_SCORE_BOOST: f64 = 1.08;
+const SEMANTIC_EMBED_RRF_WEIGHT: f64 = 0.35;
+const SEMANTIC_FTS_RRF_WEIGHT: f64 = 0.65;
+const LOCAL_HASH_EMBED_RRF_WEIGHT: f64 = 0.20;
+const LOCAL_HASH_FTS_RRF_WEIGHT: f64 = 0.80;
 
 /// Retrieve rules with confidence-weighted ranking.
 /// Final score = hybrid rank score with one final confidence tie-breaker.
@@ -48,6 +52,41 @@ pub async fn retrieve_rules(
 /// parse error (over-recall is correct for retrieval).
 pub(super) fn pattern_allows(file_patterns_json: Option<&str>, target_file: &str) -> bool {
     glob_match(file_patterns_json, target_file, GlobErrorPolicy::OverRecall)
+        || documentation_code_pattern_allows(file_patterns_json, target_file)
+}
+
+fn documentation_code_pattern_allows(file_patterns_json: Option<&str>, target_file: &str) -> bool {
+    let normalized_target = target_file
+        .trim_start_matches('/')
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    let is_documentation_markdown = (normalized_target.ends_with(".md")
+        || normalized_target.ends_with(".mdx"))
+        && (normalized_target.starts_with("docs/") || normalized_target.contains("/docs/"));
+    if !is_documentation_markdown {
+        return false;
+    }
+
+    let Some(raw) = file_patterns_json
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+    else {
+        return false;
+    };
+    let Ok(patterns) = serde_json::from_str::<Vec<String>>(raw) else {
+        return false;
+    };
+    patterns.iter().any(|pattern| {
+        let lower = pattern.to_ascii_lowercase();
+        lower.contains(".ts")
+            || lower.contains(".tsx")
+            || lower.contains(".mts")
+            || lower.contains(".cts")
+            || lower.contains(".js")
+            || lower.contains(".jsx")
+            || lower.contains(".mjs")
+            || lower.contains(".cjs")
+    })
 }
 
 /// The target files used to score path hints: a single file (hook / MCP
@@ -404,9 +443,11 @@ pub async fn retrieve_rules_with_confidence(
     //
     //    score(chunk) = w_emb * 1/(k+rank_emb) + w_fts * 1/(k+rank_fts)
     //
-    // When the embedder is not semantic, skew toward the FTS baseline because
-    // local SHA1 is noise-dominated.
-    let (w_emb, w_fts) = if is_semantic { (0.5, 0.5) } else { (0.2, 0.8) };
+    // FTS remains the precision anchor even when the query vector is semantic:
+    // the vector lane should recover paraphrases, not let broad neighbours beat
+    // explicit code/API tokens. Local lexical hashes are noisier, so they get a
+    // smaller lane share.
+    let (w_emb, w_fts) = rrf_lane_weights(is_semantic);
 
     let mut fused: HashMap<&str, (f64, &IndexedRuleChunk, f64 /*confidence*/)> = HashMap::new();
     // `_sim` is unused directly in RRF (ranks already encode it). The
@@ -462,13 +503,9 @@ pub async fn retrieve_rules_with_confidence(
         });
     }
 
-    // Final score = fused RRF score × a *small* confidence multiplier, so
-    // confidence breaks near-ties without overturning a clear lexical/
-    // semantic winner. The 0.9 + 0.1 * confidence form keeps spread at 8%
-    // (conf=0.2 → 0.92; conf=1.0 → 1.0), below the 5-20% RRF gaps between
-    // adjacent ranks. A stronger weight (e.g. `sqrt(confidence)`) wrongly
-    // demoted freshly-captured high-relevance rules below lower-overlap
-    // higher-confidence ones.
+    // Final score = fused RRF score × quality signals. Confidence and
+    // concreteness are deliberately stronger than the old near-tie-only
+    // multiplier so a long generic chunk cannot win by raw text overlap alone.
     let mut scored: Vec<ScoredRuleChunk> = fused
         .into_values()
         .map(|(score, chunk, confidence)| {
@@ -483,10 +520,8 @@ pub async fn retrieve_rules_with_confidence(
                 .and_then(|m| m.get(&chunk.skill_id).copied())
                 .unwrap_or(0.0);
             let eff_conf = f64::from(effective_confidence(confidence as f32, &kind, age_days));
-            let conf_weight = 0.1f64.mul_add(eff_conf.clamp(0.0, 1.0), 0.9);
-            let conc = concreteness_score(&chunk.content);
-            // Each concreteness "point" adds 5% to score, capped at +30%.
-            let conc_weight = 0.05f64.mul_add(conc.min(6) as f64, 1.0);
+            let conf_weight = 0.3f64.mul_add(eff_conf.clamp(0.0, 1.0), 0.75);
+            let quality_weight = rule_quality_weight(&chunk.content);
             let path_weight = if path_hint_matches(target_scope, chunk.file_patterns.as_deref()) {
                 PATH_HINT_SCORE_BOOST
             } else {
@@ -495,7 +530,7 @@ pub async fn retrieve_rules_with_confidence(
             ScoredRuleChunk {
                 skill_id: chunk.skill_id.clone(),
                 content: chunk.content.clone(),
-                score: score * conf_weight * conc_weight * path_weight,
+                score: score * conf_weight * quality_weight * path_weight,
                 confidence,
             }
         })
@@ -549,6 +584,14 @@ pub async fn retrieve_rules_with_confidence(
     );
 
     Ok(scored)
+}
+
+const fn rrf_lane_weights(is_semantic: bool) -> (f64, f64) {
+    if is_semantic {
+        (SEMANTIC_EMBED_RRF_WEIGHT, SEMANTIC_FTS_RRF_WEIGHT)
+    } else {
+        (LOCAL_HASH_EMBED_RRF_WEIGHT, LOCAL_HASH_FTS_RRF_WEIGHT)
+    }
 }
 
 /// Drop the RRF noise tail from an already-sorted (descending) scored
@@ -789,6 +832,27 @@ mod tests {
         let mut scored: Vec<ScoredRuleChunk> = Vec::new();
         apply_explicit_recall_threshold(&mut scored);
         assert!(scored.is_empty());
+    }
+
+    #[test]
+    fn semantic_rrf_keeps_fts_as_precision_anchor() {
+        let (semantic_emb, semantic_fts) = rrf_lane_weights(true);
+        let (local_emb, local_fts) = rrf_lane_weights(false);
+
+        assert!(
+            semantic_fts > semantic_emb,
+            "semantic vectors may recover paraphrases, but FTS must remain the precision anchor"
+        );
+        assert!(
+            semantic_emb > local_emb,
+            "real semantic embeddings should carry more weight than local lexical hashes"
+        );
+        assert!(
+            local_fts > semantic_fts,
+            "local lexical hashes are noisier, so FTS should dominate more strongly"
+        );
+        assert!((semantic_emb + semantic_fts - 1.0).abs() < f64::EPSILON);
+        assert!((local_emb + local_fts - 1.0).abs() < f64::EPSILON);
     }
 
     // -- Intent-alignment gate tests (precision fix) --

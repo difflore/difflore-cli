@@ -1063,28 +1063,6 @@ mod tests {
         );
     }
 
-    // keyring-encrypted embedding key round-trip.
-    //
-    // Marked `#[ignore]` so they never block headless runs that lack any
-    // credential backend (e.g. sandboxed CI without `dirs::home_dir`). Run
-    // locally with: cargo test -p difflore-core embedding_key -- --ignored
-    #[test]
-    #[ignore = "requires OS keyring or stable home dir; run with --ignored"]
-    fn store_and_load_embedding_key_round_trip() {
-        let plaintext = "sk-test-abcdef123456";
-        let storage_key = store_embedding_key(plaintext).expect("store should succeed");
-        assert_ne!(
-            storage_key, plaintext,
-            "stored value must not equal plaintext"
-        );
-        assert!(
-            !storage_key.is_empty(),
-            "storage key should be non-empty hex"
-        );
-        let recovered = load_embedding_key(&storage_key).expect("load should succeed");
-        assert_eq!(recovered, plaintext);
-    }
-
     // CloudEmbedder tests use a tiny TcpListener-backed HTTP/1.1 mock rather
     // than a mock-server crate, to avoid bloating the dev-dep tree.
 

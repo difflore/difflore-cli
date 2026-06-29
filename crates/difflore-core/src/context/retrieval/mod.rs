@@ -1,6 +1,7 @@
 mod arbitration;
 mod past_verdicts;
 mod query_embed;
+mod query_signals;
 mod rule_bodies;
 mod rules;
 mod scoring;
@@ -13,6 +14,7 @@ pub use past_verdicts::{
     PastVerdictRecaller, merge_past_verdicts, retrieve_past_verdicts_by_text,
     retrieve_past_verdicts_by_text_with_team,
 };
+pub use query_signals::build_recall_query_with_signals;
 pub use rule_bodies::{RenderedRuleBody, RenderedRuleExample, render_full_rule_bodies};
 pub use rules::{
     RetrievalOptions, TargetScope, apply_explicit_recall_threshold, apply_intent_alignment_gate,
@@ -176,6 +178,29 @@ fn lexical_boost(chunk: &ScoredRuleChunk, terms: &[String]) -> f64 {
         boost += 0.08;
     }
     boost.min(0.45)
+}
+
+/// Multiplicative quality signal for retrieval scoring. It rewards concise,
+/// concrete rules and penalises long generic boilerplate so raw text volume
+/// cannot beat a shorter rule with the same intent signal.
+fn rule_quality_weight(content: &str) -> f64 {
+    let concrete = concreteness_score(content).min(6) as f64;
+    let concreteness_weight = 0.08f64.mul_add(concrete, 1.0);
+
+    let body = content
+        .split_once("\n\n")
+        .map_or(content, |(_, body)| body)
+        .trim();
+    let word_count = body.split_whitespace().count();
+    let verbosity_penalty = match word_count {
+        0..=80 => 1.0,
+        81..=160 => 0.96,
+        161..=280 => 0.90,
+        281..=420 => 0.82,
+        _ => 0.74,
+    };
+
+    (concreteness_weight * verbosity_penalty).clamp(0.70, 1.48)
 }
 
 pub fn rerank_scored_rule_chunks_by_lexical_query(
@@ -618,6 +643,20 @@ mod tests {
         assert!((chunks[0].score - 0.42).abs() < 1e-9);
     }
 
+    #[test]
+    fn quality_weight_prefers_concrete_concise_rule_over_long_boilerplate() {
+        let concise = "Rule ID: c\nRule Name: Check auth token expiry\n\nWhen touching `auth/session.ts`, reject expired `JWT` tokens before issuing a session.";
+        let boilerplate = format!(
+            "Rule ID: b\nRule Name: Review carefully\n\n{}",
+            "Follow best practices and review the implementation carefully. ".repeat(90)
+        );
+
+        assert!(
+            rule_quality_weight(concise) > rule_quality_weight(&boilerplate),
+            "specific concise rules should get a stronger quality signal"
+        );
+    }
+
     use crate::context::index_db::{QueryFilter, open_pool_at, upsert_rule_chunks};
     use crate::context::rule_source::RuleDocument;
     use crate::context::types::{PastVerdict, PastVerdictScope};
@@ -657,6 +696,16 @@ mod tests {
                 Some(r#"["tokio/src/io/**"]"#),
                 "/tokio/src/io/uring.rs",
                 true,
+            ),
+            (
+                Some(r#"["**/*.tsx", "**/*.ts"]"#),
+                "docs/start/framework/solid/tutorial/reading-writing-file.md",
+                true,
+            ),
+            (
+                Some(r#"["**/*.tsx", "**/*.ts"]"#),
+                "notes/release-plan.md",
+                false,
             ),
             // Invalid JSON shouldn't silently drop a rule — better to over-recall
             // than to lose signal on a parse error.

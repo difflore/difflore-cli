@@ -21,7 +21,7 @@ mod parse;
 mod schema;
 
 use client::GitlabClient;
-use schema::{Discussion, MergeRequest};
+use schema::{DiffNode, Discussion, MergeRequest};
 
 /// Options for one GitLab MR-review import run. Mirrors the GitHub
 /// `ImportOptions` shape minus fork-flow fields (no `--from-upstream` in
@@ -111,11 +111,12 @@ pub async fn import_mr_reviews(
     // Fetch discussions and drop content-free MRs (approval-only, system
     // notes only) so progress stays honest — mirrors the GitHub importer's
     // client-side emptiness filter.
-    let mut with_discussions: Vec<(MergeRequest, Vec<Discussion>)> = Vec::new();
+    let mut with_discussions: Vec<(MergeRequest, Vec<Discussion>, Vec<DiffNode>)> = Vec::new();
     for mr in merge_requests {
         let discussions = client.list_discussions(&opts.project_path, mr.iid).await?;
         if parse::has_importable_notes(&discussions) {
-            with_discussions.push((mr, discussions));
+            let diffs = client.list_diffs(&opts.project_path, mr.iid).await?;
+            with_discussions.push((mr, discussions, diffs));
         }
     }
 
@@ -124,8 +125,8 @@ pub async fn import_mr_reviews(
         cb(&progress);
     }
 
-    for (mr, discussions) in &with_discussions {
-        parse::persist_merge_request(db, &opts, mr, discussions, &mut progress).await?;
+    for (mr, discussions, diffs) in &with_discussions {
+        parse::persist_merge_request(db, &opts, mr, discussions, diffs, &mut progress).await?;
         progress.prs_fetched += 1;
         if let Some(ref cb) = on_progress {
             cb(&progress);

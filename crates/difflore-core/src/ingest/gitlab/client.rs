@@ -18,7 +18,7 @@ use serde::de::DeserializeOwned;
 
 use crate::error::CoreError;
 
-use super::schema::{Discussion, MergeRequest};
+use super::schema::{DiffNode, Discussion, MergeRequest};
 
 const GITLAB_API_TIMEOUT_SECS: u64 = 45;
 const MAX_ATTEMPTS: usize = 4;
@@ -27,6 +27,8 @@ const MAX_ATTEMPTS: usize = 4;
 const MR_PAGE_SIZE: usize = 50;
 const DISCUSSIONS_PAGE_SIZE: usize = 100;
 const MAX_DISCUSSIONS_PER_MR: usize = 1_000;
+const DIFFS_PAGE_SIZE: usize = 100;
+const MAX_DIFFS_PER_MR: usize = 1_000;
 /// Upper bound honored for `Retry-After`: respect the server's pacing but
 /// never let one header park the CLI for minutes.
 const RETRY_AFTER_CAP_SECS: u64 = 120;
@@ -100,6 +102,21 @@ impl GitlabClient {
             "/api/v4/projects/{project}/merge_requests/{iid}/discussions?per_page={DISCUSSIONS_PAGE_SIZE}"
         );
         self.get_paged(&path, Some(MAX_DISCUSSIONS_PER_MR)).await
+    }
+
+    /// File diffs for one MR. We only use the path fields for rule scope;
+    /// GitLab documents this as the replacement for the deprecated
+    /// `/changes` endpoint.
+    pub(super) async fn list_diffs(
+        &self,
+        project_path: &str,
+        iid: i64,
+    ) -> crate::Result<Vec<DiffNode>> {
+        let project = encode_project_path(project_path);
+        let path = format!(
+            "/api/v4/projects/{project}/merge_requests/{iid}/diffs?per_page={DIFFS_PAGE_SIZE}"
+        );
+        self.get_paged(&path, Some(MAX_DIFFS_PER_MR)).await
     }
 
     /// Preflight: confirm the project is visible to this token before any

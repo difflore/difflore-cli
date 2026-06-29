@@ -18,11 +18,18 @@ pub(super) struct MergeRequest {
     /// the importer keys on — never the global `id`.
     pub(super) iid: i64,
     #[serde(default)]
+    #[allow(dead_code)]
     pub(super) title: String,
     pub(super) author: Option<UserRef>,
     /// Browser URL of the MR; note permalinks are derived as
     /// `{web_url}#note_{id}`.
     pub(super) web_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct DiffNode {
+    pub(super) old_path: Option<String>,
+    pub(super) new_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

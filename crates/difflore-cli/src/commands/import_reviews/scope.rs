@@ -257,6 +257,128 @@ fn review_file_paths_from_content(content: &str) -> Vec<String> {
     paths
 }
 
+fn collect_source_path_value(value: &serde_json::Value, push_path: &mut impl FnMut(&str)) {
+    match value {
+        serde_json::Value::String(path) => push_path(path),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_source_path_value(item, push_path);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            for key in [
+                "path", "filePath", "filename", "newPath", "new_path", "oldPath", "old_path",
+            ] {
+                if let Some(path) = object.get(key).and_then(serde_json::Value::as_str) {
+                    push_path(path);
+                }
+            }
+            if let Some(nodes) = object.get("nodes") {
+                collect_source_path_value(nodes, push_path);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn source_paths_from_item_metadata(metadata: Option<&str>) -> Vec<String> {
+    let Some(metadata) = metadata else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(metadata) else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut push_path = |value: &str| {
+        if let Some(path) = normalize_review_file_path(value)
+            && seen.insert(path.clone())
+        {
+            paths.push(path);
+        }
+    };
+    for key in [
+        "sourcePaths",
+        "source_paths",
+        "changedFilePaths",
+        "changed_file_paths",
+        "changedFiles",
+        "changed_files",
+        "filePaths",
+        "file_paths",
+        "files",
+    ] {
+        if let Some(value) = value.get(key) {
+            collect_source_path_value(value, &mut push_path);
+        }
+    }
+    paths
+}
+
+fn strip_diff_path_prefix(value: &str) -> Option<&str> {
+    let value = value.trim().trim_matches('"');
+    if value == "/dev/null" {
+        return None;
+    }
+    Some(
+        value
+            .strip_prefix("a/")
+            .or_else(|| value.strip_prefix("b/"))
+            .unwrap_or(value),
+    )
+}
+
+fn diff_git_b_path(line: &str) -> Option<&str> {
+    line.strip_prefix("diff --git ")?
+        .split_whitespace()
+        .find_map(|token| token.strip_prefix("b/"))
+}
+
+fn source_paths_from_diff_content(diff_content: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut push_path = |value: &str| {
+        if let Some(value) = strip_diff_path_prefix(value)
+            && let Some(path) = normalize_review_file_path(value)
+            && seen.insert(path.clone())
+        {
+            paths.push(path);
+        }
+    };
+    for line in diff_content.lines() {
+        let trimmed = line.trim();
+        if let Some(path) = diff_git_b_path(trimmed) {
+            push_path(path);
+        } else if let Some(path) = trimmed.strip_prefix("+++ ") {
+            push_path(path);
+        } else if let Some(path) = trimmed.strip_prefix("--- ") {
+            push_path(path);
+        } else if let Some(path) = trimmed.strip_prefix("rename to ") {
+            push_path(path);
+        } else if let Some(path) = trimmed.strip_prefix("rename from ") {
+            push_path(path);
+        }
+    }
+    paths
+}
+
+fn item_source_paths(item: &ReviewItemWithComments) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut push_path = |path: String| {
+        if seen.insert(path.clone()) {
+            paths.push(path);
+        }
+    };
+    for path in source_paths_from_item_metadata(item.item.metadata.as_deref()) {
+        push_path(path);
+    }
+    for path in source_paths_from_diff_content(&item.item.diff_content) {
+        push_path(path);
+    }
+    paths
+}
+
 pub(super) fn candidate_scope_paths(
     item: &ReviewItemWithComments,
     comment: &ReviewCommentRecord,
@@ -275,6 +397,9 @@ pub(super) fn candidate_scope_paths(
     }
     push_path(&item.item.file_path);
     for path in review_file_paths_from_content(&comment.content) {
+        push_path(&path);
+    }
+    for path in item_source_paths(item) {
         push_path(&path);
     }
     drop_manifest_scope_when_source_anchor_exists(paths)
@@ -356,5 +481,60 @@ mod tests {
         let paths = candidate_scope_paths(&item, &comment);
 
         assert_eq!(paths, vec!["package.json"]);
+    }
+
+    #[test]
+    fn candidate_scope_paths_backfill_item_changed_file_metadata() {
+        let mut item = review_item("Release checklist");
+        item.item.metadata = Some(
+            serde_json::json!({
+                "changedFilePaths": [
+                    "src/http/request.rs",
+                    { "path": "web/components/Button.tsx" },
+                    { "newPath": "packages/ui/src/dialog.ts" }
+                ]
+            })
+            .to_string(),
+        );
+        let comment = review_comment(
+            "We should validate the request before decoding because malformed payloads can panic.",
+        );
+
+        let paths = candidate_scope_paths(&item, &comment);
+
+        assert_eq!(
+            paths,
+            vec![
+                "src/http/request.rs",
+                "web/components/Button.tsx",
+                "packages/ui/src/dialog.ts",
+            ]
+        );
+    }
+
+    #[test]
+    fn candidate_scope_paths_backfill_item_diff_content_paths() {
+        let mut item = review_item("PR summary");
+        item.item.diff_content = "\
+diff --git a/src/http/request.rs b/src/http/request.rs
+index 111..222 100644
+--- a/src/http/request.rs
++++ b/src/http/request.rs
+diff --git a/web/old.tsx b/web/new.tsx
+similarity index 91%
+rename from web/old.tsx
+rename to web/new.tsx
+"
+        .to_owned();
+        let comment = review_comment(
+            "Please keep validation consistent before decoding because malformed payloads can panic.",
+        );
+
+        let paths = candidate_scope_paths(&item, &comment);
+
+        assert_eq!(
+            paths,
+            vec!["src/http/request.rs", "web/new.tsx", "web/old.tsx"]
+        );
     }
 }
