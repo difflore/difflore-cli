@@ -1,6 +1,6 @@
 {
   "name": "difflore",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "DiffLore team knowledge injection for Claude Code via MCP and lifecycle hooks. Requires the `difflore` CLI on PATH (install with `cargo install --git https://github.com/difflore/difflore-cli difflore-cli` until the crate ships on crates.io).",
   "author": {
     "name": "Zachary"

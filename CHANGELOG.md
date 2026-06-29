@@ -5,6 +5,28 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-29
+
+### Added
+
+- Added local-agent review import distillation for extracting higher-quality
+  memory candidates from GitHub and GitLab review history.
+- Added richer MCP rule evidence, safety guidance, and recall diagnostics for
+  agents consuming DiffLore memory.
+
+### Changed
+
+- Improved review import filtering, repo/file scoping, and deterministic
+  fallback behavior when local agent distillation is unavailable.
+- Improved recall ranking with query-signal expansion, stricter file-pattern
+  handling, and safer hook rule injection budgets.
+- Updated installer and onboarding flows for more reliable MCP configuration.
+
+### Fixed
+
+- Fixed release preflight stability by removing obsolete ignored benchmark
+  tests.
+
 ## [0.3.0] - 2026-06-26
 
 ### Added
