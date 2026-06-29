@@ -174,7 +174,7 @@ fn format_embedding_status(
         return Some(vec![
             "semantic recall: local keyword fallback".to_owned(),
             format!(
-                "managed semantic recall: {}",
+                "optional managed semantic recall: {}",
                 style::cmd("difflore cloud login")
             ),
             format!("advanced/BYOK: {}", style::cmd("difflore embeddings setup")),
@@ -337,7 +337,7 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
         {
             let _ = writeln!(
                 out,
-                "    detected supported git remote; turn past PR reviews into team rules"
+                "    detected supported git remote; import private PR review backlog into local rules"
             );
             let _ = writeln!(
                 out,
@@ -735,7 +735,7 @@ mod tests {
             "must report local keyword fallback: {line}"
         );
         assert!(
-            line.contains("managed semantic recall: difflore cloud login")
+            line.contains("optional managed semantic recall: difflore cloud login")
                 && line.contains("advanced/BYOK: difflore embeddings setup"),
             "must name the enablement paths: {line}"
         );
@@ -882,7 +882,7 @@ mod tests {
         };
         let next = NextAction {
             command: "difflore import-reviews".to_owned(),
-            reason: "seed local rules from past PR reviews".to_owned(),
+            reason: "import private review backlog into local rules".to_owned(),
             blocked_by: None,
         };
         let memory_inbox = empty_memory_inbox();
@@ -951,7 +951,7 @@ mod tests {
         };
         let next = NextAction {
             command: "difflore import-reviews --repo acme/widgets".to_owned(),
-            reason: "create local review rules without Cloud".to_owned(),
+            reason: "import private review backlog into local rules without Cloud".to_owned(),
             blocked_by: None,
         };
         let memory_inbox = empty_memory_inbox();
@@ -985,7 +985,7 @@ mod tests {
 
         assert!(out.contains("this repo: acme/widgets"), "{out}");
         assert!(
-            out.contains("turn past PR reviews into team rules"),
+            out.contains("import private PR review backlog into local rules"),
             "{out}"
         );
         assert!(
@@ -1199,7 +1199,7 @@ mod tests {
         };
         let next = NextAction {
             command: "difflore import-reviews".to_owned(),
-            reason: "seed local rules from past PR reviews".to_owned(),
+            reason: "import private review backlog into local rules".to_owned(),
             blocked_by: None,
         };
         let memory_inbox = empty_memory_inbox();

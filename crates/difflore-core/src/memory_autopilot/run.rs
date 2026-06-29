@@ -322,6 +322,7 @@ pub(super) fn pr_review_curator_candidate(group: &PlannedGroup) -> Option<Memory
             .as_deref()
             .map(compact_source_evidence)
             .unwrap_or_default(),
+        behavior_observations: Vec::new(),
     })
 }
 

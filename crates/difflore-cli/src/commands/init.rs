@@ -120,18 +120,13 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) -> anyh
     }
 
     let cloud_client = ctx.cloud().await;
-    let cloud_logged_in = cloud_client.is_logged_in();
 
     let total_rules = match difflore_core::skills::stats(db).await {
         Ok(s) => s.total,
         Err(_) => 0,
     };
     let memory_value = if total_rules == 0 {
-        style::amber(&format!(
-            "0 rules - run `{}`",
-            memory_import_command(cloud_logged_in)
-        ))
-        .to_string()
+        style::amber(&format!("0 rules - run `{}`", memory_import_command())).to_string()
     } else {
         style::title(&format!(
             "{} rule{}",
@@ -206,17 +201,17 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) -> anyh
     if !on_cloud_team {
         let pricing = difflore_core::cloud::endpoints::pricing_url();
         println!();
-        println!("{}", style::pewter("Cloud Team adds (paid):"));
+        println!("{}", style::pewter("Optional cloud path:"));
         println!(
-            "  {} GitHub App team review history",
+            "  {} Team sync for shared review rules",
             style::pewter(sym::BULLET),
         );
         println!(
-            "  {} Hot team rules + multi-device sync",
+            "  {} GitHub App imports without local tokens",
             style::pewter(sym::BULLET),
         );
         println!(
-            "  {} Managed embeddings + accepted-edit dashboards",
+            "  {} Managed embeddings, tokens, and accepted-edit dashboards",
             style::pewter(sym::BULLET),
         );
         println!("  {}", style::pewter(&pricing));
@@ -225,7 +220,7 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) -> anyh
     println!();
     println!("{}", style::pewter("Why this matters"));
     println!(
-        "  {} Agents recall team review judgment before they edit, so fewer comments repeat.",
+        "  {} Import private review backlog locally so agents see team judgment before they edit.",
         style::pewter(sym::BULLET),
     );
     println!(
@@ -235,7 +230,7 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) -> anyh
         style::cmd("difflore recall --diff"),
     );
 
-    let next = pick_next_best_action(total_rules, installed, active.is_some(), cloud_logged_in);
+    let next = pick_next_best_action(total_rules, installed, active.is_some());
     println!();
     println!("{}", style::pewter("Next best action"));
     println!("  {}", style::cmd(next));
@@ -286,16 +281,16 @@ pub(crate) fn tier_badge_line(status: &difflore_core::cloud::sync::CloudStatus) 
             tier.default_label()
         )
     } else if status.logged_in {
-        "Cloud Free | logged in | local runtime + upgrade path".to_owned()
+        "Cloud Free | logged in | optional team sync path".to_owned()
     } else {
-        "OSS | local-only | agent recall + on-device fix".to_owned()
+        "Local | private repos + local AI CLI recall".to_owned()
     }
 }
 
 /// Pick the single highest-leverage next command for this user state.
 ///
 /// Priority order:
-///   1. No memory: import local candidates, uploading PR history if already logged in.
+///   1. No memory: import private review backlog locally.
 ///   2. Memory but no agents wired: wire an agent so recall is reachable.
 ///   3. Memory + agents but no provider: set up a provider (unblocks fix).
 ///   4. All set: preview recall on the current diff.
@@ -303,10 +298,9 @@ const fn pick_next_best_action(
     total_rules: i64,
     installed_agents: usize,
     has_active_provider: bool,
-    cloud_logged_in: bool,
 ) -> &'static str {
     if total_rules == 0 {
-        memory_import_command(cloud_logged_in)
+        memory_import_command()
     } else if installed_agents == 0 {
         "difflore agents install"
     } else if !has_active_provider {
@@ -316,12 +310,8 @@ const fn pick_next_best_action(
     }
 }
 
-const fn memory_import_command(cloud_logged_in: bool) -> &'static str {
-    if cloud_logged_in {
-        "difflore import-reviews --max-prs 50 --upload"
-    } else {
-        "difflore import-reviews --max-prs 50"
-    }
+const fn memory_import_command() -> &'static str {
+    "difflore import-reviews --max-prs 50"
 }
 
 /// One rule preview row used by `init`'s memory section. Lightweight
@@ -429,9 +419,9 @@ mod tests {
         let s = status(false, None);
         assert!(!is_cloud_team(&s));
         let line = tier_badge_line(&s);
-        assert!(line.starts_with("OSS"), "unexpected: {line}");
-        assert!(line.contains("local-only"));
-        assert!(line.contains("agent recall"));
+        assert!(line.starts_with("Local"), "unexpected: {line}");
+        assert!(line.contains("private repos"));
+        assert!(line.contains("local AI CLI recall"));
     }
 
     #[test]
@@ -469,12 +459,8 @@ mod tests {
     #[test]
     fn memory_import_command_is_single_source_for_zero_rule_next_step() {
         assert_eq!(
-            memory_import_command(false),
+            memory_import_command(),
             "difflore import-reviews --max-prs 50"
-        );
-        assert_eq!(
-            memory_import_command(true),
-            "difflore import-reviews --max-prs 50 --upload"
         );
     }
 

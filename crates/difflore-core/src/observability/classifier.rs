@@ -600,63 +600,6 @@ mod tests {
         );
     }
 
-    /// Prints a wire-format example for each `obs_type`. Run with
-    /// `cargo test -p difflore-core --lib
-    /// observation::tests::print_wire_samples -- --ignored --nocapture`.
-    #[test]
-    #[ignore = "doc helper for sample wire output, run manually"]
-    fn print_wire_samples() {
-        let samples = [
-            (
-                "feature",
-                input(
-                    "Write",
-                    "src/new_mod.rs",
-                    Some("+fn hello() {}\n+pub fn world() {}\n"),
-                    Some("fn hello() {}\npub fn world() {}\n"),
-                    None,
-                ),
-            ),
-            (
-                "bugfix",
-                input(
-                    "Edit",
-                    "src/foo.rs",
-                    Some(
-                        "-// FIXME: crash on None\n-foo.unwrap();\n+if let Some(x) = foo { use_x(x); }\n",
-                    ),
-                    Some("if let Some(x) = foo { use_x(x); }\n"),
-                    Some("// FIXME: crash on None\nfoo.unwrap();\n"),
-                ),
-            ),
-            (
-                "refactor",
-                input(
-                    "Edit",
-                    "src/foo.rs",
-                    Some("-let x=1;let y=2;\n+let x = 1;\n+let y = 2;\n"),
-                    Some("let x = 1;\nlet y = 2;"),
-                    Some("let x=1;let y=2;"),
-                ),
-            ),
-            (
-                "change",
-                input(
-                    "Edit",
-                    "src/foo.rs",
-                    Some("-let x = 1;\n+let x = compute_answer();\n"),
-                    Some("let x = compute_answer();"),
-                    Some("let x = 1;"),
-                ),
-            ),
-        ];
-        for (label, inp) in samples {
-            let obs = classify(&inp).expect("some");
-            let json = serde_json::to_string_pretty(&obs).unwrap();
-            println!("=== {label} ===\n{json}\n");
-        }
-    }
-
     #[test]
     fn diff_excerpt_truncates_large_diffs() {
         let big: String = (0..4096).map(|_| 'x').collect();

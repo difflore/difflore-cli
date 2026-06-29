@@ -478,8 +478,8 @@ async fn try_handle_login_with_refresh(
     );
     println!(
         "    {}      {}",
-        style::cmd("difflore import-reviews --upload"),
-        style::pewter("first device - turn PR review history into memories"),
+        style::cmd("difflore import-reviews --max-prs 50"),
+        style::pewter("first device - build local memories from PR reviews"),
     );
     println!(
         "    {}                {}",

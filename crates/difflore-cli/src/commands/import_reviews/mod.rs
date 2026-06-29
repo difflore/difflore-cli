@@ -315,6 +315,7 @@ fn sorted_exclude_prs(exclude_prs: &std::collections::HashSet<i32>) -> Vec<i32> 
 
 const fn distill_wire(distill: ImportDistillArg) -> &'static str {
     match distill {
+        ImportDistillArg::Auto => "auto",
         ImportDistillArg::Heuristic => "heuristic",
         ImportDistillArg::LocalAgent => "local-agent",
     }
@@ -322,6 +323,7 @@ const fn distill_wire(distill: ImportDistillArg) -> &'static str {
 
 const fn distill_label(distill: ImportDistillArg) -> &'static str {
     match distill {
+        ImportDistillArg::Auto => "local-agent when available, then local heuristics",
         ImportDistillArg::Heuristic => "local heuristics",
         ImportDistillArg::LocalAgent => "local-agent",
     }
@@ -625,9 +627,12 @@ async fn run_local_candidate_distillation(
     repo: &str,
     source_repo: &RepoScope,
     v: &ValidatedArgs,
-) -> LocalCandidateProgress {
+) -> (LocalCandidateProgress, ImportDistillArg) {
     let budget = local_candidate_budget(v);
-    if v.distill == ImportDistillArg::LocalAgent {
+    if matches!(
+        v.distill,
+        ImportDistillArg::Auto | ImportDistillArg::LocalAgent
+    ) {
         match run_local_agent_candidates(
             db,
             source,
@@ -639,7 +644,7 @@ async fn run_local_candidate_distillation(
         )
         .await
         {
-            Ok(progress) => return progress,
+            Ok(progress) => return (progress, ImportDistillArg::LocalAgent),
             Err(e) => {
                 if difflore_core::infra::env::debug_telemetry() {
                     eprintln!(
@@ -650,7 +655,7 @@ async fn run_local_candidate_distillation(
         }
     }
 
-    run_local_candidates(
+    let progress = run_local_candidates(
         db,
         source,
         repo,
@@ -659,7 +664,8 @@ async fn run_local_candidate_distillation(
         &v.pr_numbers,
         &v.exclude_prs,
     )
-    .await
+    .await;
+    (progress, ImportDistillArg::Heuristic)
 }
 
 /// The fields rendered into the `--json` import report. Built once at the call
@@ -826,10 +832,12 @@ async fn try_handle_github(
 
     let import_result = run_import(db, opts, &local_repo, &source_repo, v.upload, v.json).await?;
 
+    let mut actual_distill = v.distill;
     let local_candidate_progress = if v.local_candidates {
-        let progress =
+        let (progress, distill) =
             run_local_candidate_distillation(db, "github", &local_repo, &source_repo_scope, &v)
                 .await;
+        actual_distill = distill;
         if !v.json {
             print_local_candidate_next_steps(&progress, &local_repo);
         }
@@ -863,7 +871,7 @@ async fn try_handle_github(
             max_prs: v.max_prs,
             requested_max_prs: v.requested_max_prs,
             result: &import_result,
-            distill: v.distill,
+            distill: actual_distill,
             local_candidates: local_candidate_progress.as_ref(),
             uploaded_reviews,
         });
@@ -935,10 +943,12 @@ async fn try_handle_gitlab(
 
     let import_result = run_gitlab_import(db, opts, v.upload, v.json).await?;
 
+    let mut actual_distill = v.distill;
     let local_candidate_progress = if v.local_candidates {
-        let progress =
+        let (progress, distill) =
             run_local_candidate_distillation(db, "gitlab", &gitlab_project, &gitlab_repo_scope, &v)
                 .await;
+        actual_distill = distill;
         if !v.json {
             print_local_candidate_next_steps(&progress, &gitlab_project);
         }
@@ -981,7 +991,7 @@ async fn try_handle_gitlab(
             max_prs: v.max_prs,
             requested_max_prs: v.requested_max_prs,
             result: &import_result,
-            distill: v.distill,
+            distill: actual_distill,
             local_candidates: local_candidate_progress.as_ref(),
             uploaded_reviews,
         });
@@ -1093,6 +1103,15 @@ mod tests {
     }
 
     #[test]
+    fn strip_review_markdown_noise_drops_github_shortcodes_and_headings() {
+        let raw = "### :red_circle: Report :open_file_folder:";
+        let out = strip_review_markdown_noise(raw);
+        assert_eq!(out, "Report");
+        assert!(!out.contains(":red_circle:"));
+        assert!(!out.starts_with('#'));
+    }
+
+    #[test]
     fn clean_review_comment_strips_coderabbit_summary_wrappers() {
         let raw = "<details>\n<summary>Actionable comments posted: 3</summary>\n\n\
                    _⚠️ Potential issue_ | _🟡 Minor_\n\n\
@@ -1122,14 +1141,11 @@ mod tests {
     }
 
     #[test]
-    fn candidate_title_uses_clean_first_sentence() {
+    fn candidate_title_avoids_raw_clean_first_sentence_without_directive() {
         let raw = "_⚠️ Potential issue_ | _🟡 Minor_ Wait for the async submit \
                    path before asserting state. The current code races.";
         let title = candidate_title(raw, "form-core/src/index.ts");
-        assert!(
-            title.starts_with("Review: Wait for the async submit"),
-            "got: {title}"
-        );
+        assert_eq!(title, "Review rule for form-core/src/index.ts");
         assert!(!title.contains('⚠'));
         assert!(!title.contains('_'));
     }
@@ -1888,6 +1904,10 @@ mod tests {
                 None,
                 "Actionable comments posted: 0. Review skipped because this PR only updates generated files.",
             ),
+            (
+                Some("check-spelling-bot"),
+                "MUST: Report ### :red_circle: Please review See the [:open_file_folder: files] for spelling findings.",
+            ),
         ] {
             let mut item = imported_item(
                 Some("user/fork"),
@@ -2350,9 +2370,10 @@ We should validate the header before parsing because malformed requests panic.\n
     }
 
     #[test]
-    fn local_candidate_auto_activates_resolved_bot_directive() {
-        // A bot directive that WAS adopted (resolved thread) earns the
-        // resolved bonus and clears the HIGH threshold, so it auto-activates.
+    fn local_candidate_never_auto_activates_resolved_bot_directive() {
+        // A bot directive may be strong and adopted enough to clear the raw
+        // HIGH threshold, but known bot authors must still stay pending for
+        // human review.
         let mut item = imported_item(
             Some("user/fork"),
             Some(r#"{"sourceRepoFullName":"upstream/project","attachedRepoFullName":"user/fork"}"#),
@@ -2371,15 +2392,15 @@ We should validate the header before parsing because malformed requests panic.\n
                 .expect("resolved bot directive should draft a candidate");
         assert_eq!(
             candidate.route,
-            CaptureRoute::Active,
-            "resolved+approved bot directive must auto-activate, got confidence {}",
+            CaptureRoute::Candidate,
+            "resolved+approved bot directive must stay pending, got confidence {}",
             candidate.confidence,
         );
         assert!(candidate.confidence >= CAPTURE_CONFIDENCE_HIGH);
     }
 
     #[test]
-    fn local_candidate_auto_activates_resolved_human_directive() {
+    fn local_candidate_keeps_resolved_human_directive_pending_without_distillation() {
         let mut item = imported_item(
             Some("user/fork"),
             Some(r#"{"sourceRepoFullName":"upstream/project","attachedRepoFullName":"user/fork"}"#),
@@ -2394,7 +2415,7 @@ We should validate the header before parsing because malformed requests panic.\n
         let candidate =
             local_candidate_input(&item, &item.comments[0], &github_scope("upstream/project"))
                 .expect("resolved human directive should draft a candidate");
-        assert_eq!(candidate.route, CaptureRoute::Active);
+        assert_eq!(candidate.route, CaptureRoute::Candidate);
         assert!(candidate.confidence >= CAPTURE_CONFIDENCE_HIGH);
     }
 
@@ -2476,9 +2497,10 @@ We should validate the header before parsing because malformed requests panic.\n
     }
 
     #[test]
-    fn local_candidate_keeps_resolved_directive_active_despite_single_downvote() {
+    fn local_candidate_keeps_resolved_directive_pending_despite_single_downvote() {
         // A tied 👍/👎 is not a veto: only a strict 👎-majority penalizes, so
-        // the resolved bonus still carries the directive to active.
+        // the resolved bonus still carries the directive into the high-confidence
+        // band, but heuristic imports still stay pending.
         let mut item = imported_item(
             Some("user/fork"),
             Some(r#"{"sourceRepoFullName":"upstream/project","attachedRepoFullName":"user/fork"}"#),
@@ -2497,8 +2519,8 @@ We should validate the header before parsing because malformed requests panic.\n
                 .expect("resolved directive should draft a candidate");
         assert_eq!(
             candidate.route,
-            CaptureRoute::Active,
-            "a tied 👍/👎 must not penalize a resolved directive, got confidence {}",
+            CaptureRoute::Candidate,
+            "a tied 👍/👎 must not drop a resolved directive, got confidence {}",
             candidate.confidence,
         );
         assert!(candidate.confidence >= CAPTURE_CONFIDENCE_HIGH);
@@ -2728,17 +2750,17 @@ We should validate the header before parsing because malformed requests panic.\n
         .await;
 
         assert_eq!(progress.candidates_created, 2);
-        // Seeded comments are resolved threads, so the gate auto-activates
-        // both — none stay pending.
-        assert_eq!(progress.candidates_activated, 2);
-        assert_eq!(progress.candidates_pending, 0);
+        // Deterministic heuristic import drafts only. Local-agent distillation
+        // owns the auto-active path for high-confidence rewritten rules.
+        assert_eq!(progress.candidates_activated, 0);
+        assert_eq!(progress.candidates_pending, 2);
         assert_eq!(progress.candidates_duplicate_in_run, 1);
         assert!(local_candidate_budget_reached(&progress));
         assert!(progress.capped);
 
-        let memories = difflore_core::skills::list_all_skills(&db)
+        let memories = difflore_core::skills::list_candidates(&db, None, None)
             .await
-            .expect("list active memories");
+            .expect("list pending memories");
         assert_eq!(memories.len(), 2);
         assert!(
             memories
@@ -2753,7 +2775,103 @@ We should validate the header before parsing because malformed requests panic.\n
     }
 
     #[tokio::test]
-    async fn gitlab_local_import_recalls_and_stays_isolated_from_same_github_namespace() {
+    async fn local_candidates_backfill_file_patterns_from_item_source_paths() {
+        let db = fresh_import_pool().await;
+        let project_path = std::path::PathBuf::from(std::env::var("DIFFLORE_HOME").expect("home"))
+            .join("fixtures")
+            .join("acme-source-paths");
+        std::fs::create_dir_all(&project_path).expect("create project fixture dir");
+        let project = difflore_core::domain::projects::add(
+            &db,
+            difflore_core::domain::models::AddProjectInput {
+                path: project_path.to_string_lossy().to_string(),
+            },
+        )
+        .await
+        .expect("insert project");
+        let item_id = "gh-import:acme/widgets#77";
+        difflore_core::review_store::ensure_item(
+            &db,
+            difflore_core::review_store::EnsureItemInput {
+                id: Some(item_id.to_owned()),
+                session_id: None,
+                project_id: project.id,
+                file_path: "PR summary".to_owned(),
+                diff_content: String::new(),
+                status: "imported".to_owned(),
+                source: "github".to_owned(),
+                source_kind: "github_import".to_owned(),
+                external_review_id: Some(item_id.to_owned()),
+                repo_full_name: Some("acme/widgets".to_owned()),
+                pr_number: Some(77),
+                author: Some("alice".to_owned()),
+                synced_at: None,
+                metadata: Some(
+                    serde_json::json!({
+                        "changedFilePaths": [
+                            "src/http/request.rs",
+                            "web/components/Button.tsx"
+                        ]
+                    })
+                    .to_string(),
+                ),
+                reviewed_at: None,
+            },
+        )
+        .await
+        .expect("insert imported review item");
+        difflore_core::review_store::add_comment(
+            &db,
+            difflore_core::review_store::AddCommentInput {
+                review_item_id: item_id.to_owned(),
+                external_comment_id: Some("discussion-77".to_owned()),
+                line_number: None,
+                content: "We should validate the request body before decoding because malformed payloads can panic.".to_owned(),
+                author: Some("reviewer".to_owned()),
+                comment_url: Some(
+                    "https://github.com/acme/widgets/pull/77#issuecomment-77".to_owned(),
+                ),
+                thread_id: Some("review-77".to_owned()),
+                metadata: Some(serde_json::json!({ "resolved": true }).to_string()),
+            },
+        )
+        .await
+        .expect("insert imported review comment");
+
+        let source_scope = github_scope("acme/widgets");
+        let progress = run_local_candidates(
+            &db,
+            "github",
+            "acme/widgets",
+            &source_scope,
+            5,
+            &[],
+            &HashSet::new(),
+        )
+        .await;
+
+        assert_eq!(progress.candidates_created, 1);
+        assert_eq!(progress.candidates_activated, 0);
+        assert_eq!(progress.candidates_pending, 1);
+        let raw_patterns: Option<String> =
+            sqlx::query_scalar("SELECT file_patterns FROM skills WHERE source_repo = ?1")
+                .bind(source_scope.as_str())
+                .fetch_one(&db)
+                .await
+                .expect("load file patterns");
+        let patterns: Vec<String> =
+            serde_json::from_str(&raw_patterns.expect("file patterns")).expect("parse patterns");
+        assert_eq!(
+            patterns,
+            vec![
+                "src/http/**/*.rs".to_owned(),
+                "web/components/**/*.tsx".to_owned(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn gitlab_local_import_candidates_stay_isolated_from_same_github_namespace() {
         let db = fresh_import_pool().await;
         seed_gitlab_pr_with_directive(
             &db,
@@ -2785,7 +2903,8 @@ We should validate the header before parsing because malformed requests panic.\n
         )
         .await;
         assert_eq!(gitlab_progress.candidates_created, 1);
-        assert_eq!(gitlab_progress.candidates_activated, 1);
+        assert_eq!(gitlab_progress.candidates_activated, 0);
+        assert_eq!(gitlab_progress.candidates_pending, 1);
 
         let github_source_scope = github_scope("group/project");
         let github_progress = run_local_candidates(
@@ -2799,15 +2918,15 @@ We should validate the header before parsing because malformed requests panic.\n
         )
         .await;
         assert_eq!(github_progress.candidates_created, 1);
-        assert_eq!(github_progress.candidates_activated, 1);
+        assert_eq!(github_progress.candidates_activated, 0);
+        assert_eq!(github_progress.candidates_pending, 1);
 
-        let source_repos = difflore_core::skills::list_source_repos(&db)
-            .await
-            .expect("load source repos");
-        let mut source_repo_values = source_repos
-            .values()
-            .filter_map(|repo| repo.as_deref())
-            .collect::<Vec<_>>();
+        let mut source_repo_values: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT source_repo FROM skills WHERE source_repo IS NOT NULL",
+        )
+        .fetch_all(&db)
+        .await
+        .expect("load source repos from pending candidates");
         source_repo_values.sort_unstable();
         assert_eq!(
             source_repo_values,
@@ -2825,124 +2944,24 @@ We should validate the header before parsing because malformed requests panic.\n
                 .expect("parse gitlab file patterns");
         assert_eq!(gitlab_patterns, vec!["src/http/**/*.rs"]);
 
-        let gitlab_export = difflore_core::export::collect_rules_for_export_with_scopes(
-            &db,
-            &[gitlab_source_scope.as_str().to_owned()],
-            difflore_core::export::ExportCollectOptions::default(),
-        )
-        .await
-        .expect("collect gitlab export");
-        assert_eq!(gitlab_export.rules.len(), 1);
+        let gitlab_candidates =
+            difflore_core::skills::list_candidates(&db, Some(gitlab_source_scope.as_str()), None)
+                .await
+                .expect("list gitlab pending candidates");
+        assert_eq!(gitlab_candidates.len(), 1);
         assert!(
-            gitlab_export.rules[0].name.contains("Validate the header"),
-            "gitlab export: {:?}",
-            gitlab_export.rules
+            gitlab_candidates[0].name.contains("Validate the header"),
+            "gitlab candidates: {gitlab_candidates:?}"
         );
 
-        let github_export = difflore_core::export::collect_rules_for_export_with_scopes(
-            &db,
-            &[github_source_scope.as_str().to_owned()],
-            difflore_core::export::ExportCollectOptions::default(),
-        )
-        .await
-        .expect("collect github export");
-        assert_eq!(github_export.rules.len(), 1);
+        let github_candidates =
+            difflore_core::skills::list_candidates(&db, Some(github_source_scope.as_str()), None)
+                .await
+                .expect("list github pending candidates");
+        assert_eq!(github_candidates.len(), 1);
         assert!(
-            github_export.rules[0].name.contains("Prefer Mapping"),
-            "github export: {:?}",
-            github_export.rules
-        );
-
-        let gitlab_project_path: String = sqlx::query_scalar(
-            "SELECT p.path FROM projects p \
-             INNER JOIN review_items ri ON ri.project_id = p.id \
-             WHERE ri.source = ?1 LIMIT 1",
-        )
-        .bind("gitlab")
-        .fetch_one(&db)
-        .await
-        .expect("load gitlab project path");
-        let project_hash = difflore_core::infra::db::project_hash_from_root(std::path::Path::new(
-            &gitlab_project_path,
-        ));
-        let index_pool = difflore_core::context::index_db::get_pool_for_project(&project_hash)
-            .await
-            .expect("open test index pool");
-        let repo_scopes = vec![
-            gitlab_source_scope.as_str().to_owned(),
-            github_source_scope.as_str().to_owned(),
-        ];
-        difflore_core::context::orchestrator::ensure_rules_indexed_for_repo_scopes_with_embedding_timeout(
-            &db,
-            &index_pool,
-            &repo_scopes,
-            Some(std::time::Duration::from_millis(0)),
-        )
-        .await
-        .expect("index scoped rules");
-
-        let gitlab_filter = difflore_core::context::index_db::QueryFilter {
-            language: Some("rust".to_owned()),
-            repo_scope: Some(gitlab_source_scope.as_str().to_owned()),
-        };
-        let gitlab_hits = difflore_core::context::retrieval::retrieve_rules_with_confidence(
-            &index_pool,
-            "validate header parsing malformed requests",
-            difflore_core::context::retrieval::RetrievalOptions {
-                top_k: Some(5),
-                target_scope: Some(difflore_core::context::retrieval::TargetScope::File(
-                    "src/http/request.rs",
-                )),
-                filter: Some(&gitlab_filter),
-                ann_enabled: false,
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("retrieve gitlab rules");
-        assert!(
-            gitlab_hits
-                .iter()
-                .any(|rule| rule.content.contains("Validate the header")),
-            "gitlab recall hits: {gitlab_hits:?}"
-        );
-        assert!(
-            !gitlab_hits
-                .iter()
-                .any(|rule| rule.content.contains("Prefer Mapping")),
-            "gitlab recall leaked github rule: {gitlab_hits:?}"
-        );
-
-        let github_filter = difflore_core::context::index_db::QueryFilter {
-            language: Some("python".to_owned()),
-            repo_scope: Some(github_source_scope.as_str().to_owned()),
-        };
-        let github_hits = difflore_core::context::retrieval::retrieve_rules_with_confidence(
-            &index_pool,
-            "prefer mapping strings flexible callers",
-            difflore_core::context::retrieval::RetrievalOptions {
-                top_k: Some(5),
-                target_scope: Some(difflore_core::context::retrieval::TargetScope::File(
-                    "src/http/headers.py",
-                )),
-                filter: Some(&github_filter),
-                ann_enabled: false,
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("retrieve github rules");
-        assert!(
-            github_hits
-                .iter()
-                .any(|rule| rule.content.contains("Prefer Mapping")),
-            "github recall hits: {github_hits:?}"
-        );
-        assert!(
-            !github_hits
-                .iter()
-                .any(|rule| rule.content.contains("Validate the header")),
-            "github recall leaked gitlab rule: {github_hits:?}"
+            github_candidates[0].name.contains("Prefer Mapping"),
+            "github candidates: {github_candidates:?}"
         );
     }
 
@@ -3073,13 +3092,10 @@ We should validate the header before parsing because malformed requests panic.\n
     }
 
     #[tokio::test]
-    async fn reimport_of_auto_promoted_rule_matches_active_without_duplicating() {
-        // Companion to the rejection regression: a HIGH-confidence (resolved-
-        // thread) comment auto-promotes to `active` on first import. The next
-        // import re-reads the same comment and must dedup into the approved
-        // rule — counted as matched-active (NOT a strengthened dedup) and never
-        // forking a fresh draft, which would trip promote_candidate's
-        // "duplicates active rule" guard and abort the whole import.
+    async fn reimport_of_heuristic_candidate_dedups_pending_without_duplicating() {
+        // Companion to the rejection regression: heuristic imports now stop at
+        // pending even for HIGH-confidence resolved threads. The next import
+        // must fold into that pending draft instead of forking a duplicate.
         let db = fresh_import_pool().await;
         seed_imported_review_comments_with_resolution(
             &db,
@@ -3093,7 +3109,7 @@ We should validate the header before parsing because malformed requests panic.\n
 
         let source_scope = github_scope("acme/widgets");
 
-        // First import: resolved thread auto-promotes to an active rule.
+        // First import: resolved thread drafts a pending rule.
         let first = run_local_candidates(
             &db,
             "github",
@@ -3106,8 +3122,8 @@ We should validate the header before parsing because malformed requests panic.\n
         .await;
         assert_eq!(first.candidates_created, 1);
         assert_eq!(
-            first.candidates_activated, 1,
-            "a resolved thread should auto-activate"
+            first.candidates_pending, 1,
+            "a resolved heuristic thread should stay pending"
         );
 
         // Second import re-reads the same comment.
@@ -3123,22 +3139,22 @@ We should validate the header before parsing because malformed requests panic.\n
         .await;
         assert_eq!(
             second.candidates_created, 0,
-            "re-import of an active rule must not create a new row"
+            "re-import of a pending rule must not create a new row"
         );
         assert_eq!(
-            second.candidates_deduped, 0,
-            "an untouched active match must not be reported as a strengthened dedup"
+            second.candidates_deduped, 1,
+            "pending re-import should be counted as a strengthened dedup"
         );
         assert_eq!(
-            second.candidates_matched_active, 1,
-            "re-import must record the already-active match"
+            second.candidates_matched_active, 0,
+            "heuristic re-import should not match an active rule"
         );
         assert_eq!(
             difflore_core::skills::count_pending_candidates(&db, None)
                 .await
-                .expect("count pending after active re-import"),
-            0,
-            "re-import must not fork a pending duplicate of the active rule"
+                .expect("count pending after pending re-import"),
+            1,
+            "re-import must not fork a duplicate pending rule"
         );
     }
 
@@ -3364,7 +3380,7 @@ We should validate the header before parsing because malformed requests panic.\n
             since: None,
             include_open: false,
             upload: false,
-            distill: ImportDistillArg::Heuristic,
+            distill: ImportDistillArg::Auto,
             dry_run: false,
             json: true,
             wall_timeout_secs: None,
@@ -3414,9 +3430,9 @@ We should validate the header before parsing because malformed requests panic.\n
             "excluded PR #8 must contribute zero rules"
         );
 
-        let memories = difflore_core::skills::list_all_skills(&db)
+        let memories = difflore_core::skills::list_candidates(&db, None, None)
             .await
-            .expect("list active memories");
+            .expect("list pending memories");
         assert_eq!(memories.len(), 1, "memories: {memories:?}");
         assert!(
             memories

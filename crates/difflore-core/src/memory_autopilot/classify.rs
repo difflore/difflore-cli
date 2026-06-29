@@ -129,6 +129,21 @@ pub(super) fn classify_group(
         .iter()
         .any(|candidate| candidate.origin == "pr_review")
     {
+        if pr_review_group_is_auto_enable_safe(candidates, source_repo, file_patterns) {
+            return (
+                MemoryCandidateGroupState::AutoEnable,
+                format!(
+                    "{} cleaned PR-review {} has narrow scope and source evidence",
+                    candidates.len(),
+                    if candidates.len() == 1 {
+                        "rule"
+                    } else {
+                        "rules"
+                    }
+                ),
+                Some(AUTOPILOT_CONFIDENCE.to_owned()),
+            );
+        }
         return (
             MemoryCandidateGroupState::NeedsReview,
             "imported PR review needs human rule cleanup before autopilot can enable it".to_owned(),
@@ -174,4 +189,68 @@ pub(super) fn classify_group(
         "needs human review before becoming active memory".to_owned(),
         None,
     )
+}
+
+fn pr_review_group_is_auto_enable_safe(
+    candidates: &[PendingMemory],
+    source_repo: Option<&str>,
+    file_patterns: &[String],
+) -> bool {
+    source_repo.is_some_and(|repo| !repo.trim().is_empty())
+        && !file_patterns.is_empty()
+        && candidates.iter().all(|candidate| {
+            candidate.origin == "pr_review"
+                && matches!(candidate.kind, PendingMemoryKind::Draft { .. })
+                && pr_review_candidate_is_clean_rule(candidate)
+        })
+}
+
+fn pr_review_candidate_is_clean_rule(candidate: &PendingMemory) -> bool {
+    let title = candidate.title.trim();
+    let body = candidate.body.trim();
+    if title.is_empty() || body.is_empty() {
+        return false;
+    }
+    let title_lower = title.to_ascii_lowercase();
+    if title_lower.starts_with("review:")
+        || title_lower.starts_with("review rule for ")
+        || title_lower == "review rule from imported pr comment"
+        || title_lower == "imported pr review rule"
+    {
+        return false;
+    }
+    let rule_body = split_rule_body_and_evidence(body).map_or(body, |(rule_body, _)| rule_body);
+    let source_text = candidate.raw_description.as_deref().unwrap_or(body);
+    if !has_source_evidence(source_text) {
+        return false;
+    }
+    let text = format!("{title}\n{rule_body}").to_ascii_lowercase();
+    if [
+        "reviewer asked",
+        "reviewer said",
+        "reviewer requested",
+        "do we really",
+        "not sure",
+        " imo ",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+    {
+        return false;
+    }
+    curator_rule_is_safe(title, rule_body)
+}
+
+fn split_rule_body_and_evidence(body: &str) -> Option<(&str, &str)> {
+    let marker = "\n\nsource evidence:";
+    let body_lower = body.to_ascii_lowercase();
+    let evidence_start = body_lower.find(marker)?;
+    let (rule_body, evidence_body) = body.split_at(evidence_start);
+    Some((rule_body.trim(), evidence_body[marker.len()..].trim()))
+}
+
+fn has_source_evidence(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("source evidence:")
+        && (lower.contains("source:") || lower.contains("comment:") || lower.contains("file:"))
 }

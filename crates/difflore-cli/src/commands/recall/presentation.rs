@@ -430,15 +430,15 @@ pub(super) fn render_cloud_recall_human(
             );
         }
         let seed_hint = if recall.scope == PastVerdictScope::Team.as_str() {
-            "Import PR reviews or sync source-backed team rules to seed Cloud recall"
+            "Import PR reviews locally first; sync later if you want Cloud recall"
         } else {
-            "Import PR reviews to seed Cloud Free personal recall"
+            "Import PR reviews locally to seed Free personal recall"
         };
         println!(
             "  {} {}: {}",
             style::pewter(sym::TIP),
             seed_hint,
-            style::cmd("difflore import-reviews --max-prs 50 --upload"),
+            style::cmd("difflore import-reviews --max-prs 50"),
         );
         return;
     }

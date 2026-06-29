@@ -95,6 +95,10 @@ pub(crate) fn render_rule_block(args: &RuleBlockArgs<'_>) -> String {
         text.push_str(&format!("Proof: {label}\n\n"));
     }
     text.push_str(&rule.content);
+    if let Some(safety) = render_safety_notes(&rule.content) {
+        text.push_str("\n\n### Apply Safely\n");
+        text.push_str(&safety);
+    }
 
     if let Some(examples) = examples
         && !examples.is_empty()
@@ -114,6 +118,156 @@ pub(crate) fn render_rule_block(args: &RuleBlockArgs<'_>) -> String {
     }
     text.push_str("\n---\n\n");
     text
+}
+
+fn render_safety_notes(content: &str) -> Option<String> {
+    let mut notes = Vec::new();
+    let lower = content.to_lowercase();
+
+    if is_faq_rule(&lower) {
+        notes.push("Use this as background behavior/constraint; do not force a workaround that contradicts the rule.");
+    }
+    if contains_any(
+        &lower,
+        &[
+            "sync.once",
+            "race",
+            "concurrent",
+            "goroutine",
+            "thread",
+            "lock",
+            "mutex",
+            "shared state",
+            "live shared",
+            "mutat",
+        ],
+    ) {
+        notes.push("Concurrency guardrail: a lock/sync.Once is not automatically sufficient; avoid mutating data structures that active readers may traverse.");
+    }
+    if contains_any(
+        &lower,
+        &[
+            "markdown",
+            "link syntax",
+            "hyperlink",
+            "angle brackets",
+            "nested link",
+        ],
+    ) {
+        notes.push("Markup guardrail: do not reuse a full Markdown link as a URL destination; extract the raw URL and render simple valid syntax.");
+    }
+    if has_named_api_reference(&lower) {
+        notes.push("Completeness guardrail: if applying an API named by this memory, include the required imports/setup and keep the snippet compile-complete.");
+    }
+    if contains_any(
+        &lower,
+        &[
+            "slot",
+            "state",
+            "status",
+            "pending",
+            "submitted",
+            "cancelled",
+            "canceled",
+            "reset",
+            "lifecycle",
+            "transition",
+        ],
+    ) {
+        notes.push("State guardrail: update only the target transition/slot the rule names; do not reset unrelated entries.");
+    }
+    if contains_any(
+        &lower,
+        &[
+            "lint",
+            "test enforcement",
+            "static assertion",
+            "runtime wrapper",
+            "wrapping both",
+            "telemetry/wrapper",
+            "command convention",
+        ],
+    ) {
+        notes.push("Enforcement guardrail: if the memory prefers tests/lint/static assertions, satisfy it with static validation; do not expand runtime wrappers, telemetry hooks, or command execution paths unless the task explicitly asks.");
+    }
+    if contains_any(
+        &lower,
+        &[
+            "command stub",
+            "commandstubber",
+            "stub",
+            "regex",
+            "regexp",
+            "wrong directory",
+            "-c <cwdrepo>",
+            "-c <targetrepo>",
+        ],
+    ) {
+        notes.push("Test-stub guardrail: make stubs exact and language-valid; for Go regexp, avoid PCRE-only escapes like \\Q...\\E and use regexp.QuoteMeta or RE2-compatible escaping/literals.");
+    }
+    if is_pitfall_rule(&lower) {
+        notes
+            .push("Pitfall guardrail: follow the positive replacement, not the forbidden wording.");
+    }
+
+    if notes.is_empty() {
+        return None;
+    }
+
+    Some(format!("Safety notes: {}", notes.join(" ")))
+}
+
+fn is_faq_rule(lower: &str) -> bool {
+    if contains_any(
+        lower,
+        &["type: faq", "kind: faq", "faq", "question:", "answer:"],
+    ) {
+        return true;
+    }
+
+    lower.lines().any(|line| {
+        line.strip_prefix("rule name:")
+            .map(str::trim)
+            .is_some_and(|title| {
+                ["what ", "when ", "why ", "how "]
+                    .iter()
+                    .any(|prefix| title.starts_with(prefix))
+            })
+    })
+}
+
+fn is_pitfall_rule(lower: &str) -> bool {
+    contains_any(
+        lower,
+        &[
+            "type: pitfall",
+            "kind: pitfall",
+            "pitfall",
+            "don't",
+            "do not",
+            "never",
+            "avoid",
+            "breaks",
+            "regression",
+            "causes",
+            "wrong",
+            "instead of",
+            "invalid",
+        ],
+    )
+}
+
+fn has_named_api_reference(lower: &str) -> bool {
+    contains_any(
+        lower,
+        &["asyncio.", "tokio::", "std::", "import ", "await "],
+    ) || lower
+        .split_whitespace()
+        .any(|token| token.contains('.') && token.contains('('))
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
 }
 
 /// Shared scalar inputs for the local serve ledger row and the cloud
@@ -199,9 +353,16 @@ mod tests {
     use crate::mcp_server::trust_proof::RuleTrustMap;
 
     fn rule() -> ScoredRuleChunk {
+        rule_with(
+            "why-budget",
+            "Rule ID: why-budget\nRule Name: Avoid unwrap in handlers\nSource: acme/widgets\n\nNever unwrap request payloads in handlers.",
+        )
+    }
+
+    fn rule_with(skill_id: &str, content: &str) -> ScoredRuleChunk {
         ScoredRuleChunk {
-            skill_id: "why-budget".to_owned(),
-            content: "Rule ID: why-budget\nRule Name: Avoid unwrap in handlers\nSource: acme/widgets\n\nNever unwrap request payloads in handlers.".to_owned(),
+            skill_id: skill_id.to_owned(),
+            content: content.to_owned(),
             score: 0.012,
             confidence: 0.7,
         }
@@ -255,5 +416,167 @@ mod tests {
             (1..=13).contains(&overhead),
             "why overhead must be ~5–12 estimated tokens, got {overhead}"
         );
+    }
+
+    #[test]
+    fn faq_concurrency_rules_render_apply_safely_notes() {
+        let trust = RuleTrustMap::new();
+        let rule = rule_with(
+            "gin-route-race",
+            "Rule ID: gin-route-race\nRule Name: Why sync.Once does not make dynamic route registration safe\nType: faq\nSource: gin-gonic/gin\n\nDo not mutate live shared router trees while active readers may traverse them; build a fresh tree and atomically swap the reference.",
+        );
+        let rendered = render_rule_block(&RuleBlockArgs {
+            position: 1,
+            rel: 0.95,
+            rule: &rule,
+            trust_evidence: &trust,
+            examples: None,
+            example_bad_label: "- Bad:",
+            example_good_label: "- Good:",
+            why: None,
+        });
+
+        assert!(rendered.contains("### Apply Safely"));
+        assert!(rendered.contains("background behavior/constraint"));
+        assert!(rendered.contains("lock/sync.Once is not automatically sufficient"));
+        assert!(rendered.contains("avoid mutating data structures"));
+    }
+
+    #[test]
+    fn markdown_pitfalls_render_markup_and_positive_replacement_notes() {
+        let trust = RuleTrustMap::new();
+        let rule = rule_with(
+            "vite-markdown-links",
+            "Rule ID: vite-markdown-links\nRule Name: Nested markdown link syntax breaks hyperlinks\nType: pitfall\nSource: vitejs/vite\n\nDo not reuse a full Markdown link as another link destination. Extract the raw URL and render a simple link instead.",
+        );
+        let rendered = render_rule_block(&RuleBlockArgs {
+            position: 1,
+            rel: 0.95,
+            rule: &rule,
+            trust_evidence: &trust,
+            examples: None,
+            example_bad_label: "- Bad:",
+            example_good_label: "- Good:",
+            why: None,
+        });
+
+        assert!(rendered.contains("### Apply Safely"));
+        assert!(rendered.contains("do not reuse a full Markdown link as a URL destination"));
+        assert!(rendered.contains("positive replacement"));
+    }
+
+    #[test]
+    fn named_api_rules_render_completeness_notes() {
+        let trust = RuleTrustMap::new();
+        let rule = rule_with(
+            "fastapi-yield",
+            "Rule ID: fastapi-yield\nRule Name: Use await asyncio.sleep(0) to yield after scheduling background work\nType: decision\nSource: tiangolo/fastapi\n\nCall await asyncio.sleep(0) before returning so the scheduled task has a chance to advance.",
+        );
+        let rendered = render_rule_block(&RuleBlockArgs {
+            position: 1,
+            rel: 0.95,
+            rule: &rule,
+            trust_evidence: &trust,
+            examples: None,
+            example_bad_label: "- Bad:",
+            example_good_label: "- Good:",
+            why: None,
+        });
+
+        assert!(rendered.contains("### Apply Safely"));
+        assert!(rendered.contains("include the required imports/setup"));
+        assert!(rendered.contains("compile-complete"));
+    }
+
+    #[test]
+    fn state_rules_render_minimal_transition_notes() {
+        let trust = RuleTrustMap::new();
+        let rule = rule_with(
+            "tokio-uring-cancel",
+            "Rule ID: tokio-uring-cancel\nRule Name: Mark only the pending slot cancelled when cancelling io_uring open\nType: faq\nSource: tokio-rs/tokio\n\nWhen a cancel targets a pending open operation, mark that slot Cancelled; do not reset submitted or completed entries.",
+        );
+        let rendered = render_rule_block(&RuleBlockArgs {
+            position: 1,
+            rel: 0.95,
+            rule: &rule,
+            trust_evidence: &trust,
+            examples: None,
+            example_bad_label: "- Bad:",
+            example_good_label: "- Good:",
+            why: None,
+        });
+
+        assert!(rendered.contains("### Apply Safely"));
+        assert!(rendered.contains("target transition/slot"));
+        assert!(rendered.contains("do not reset unrelated entries"));
+    }
+
+    #[test]
+    fn static_enforcement_rules_do_not_expand_runtime_wrappers() {
+        let trust = RuleTrustMap::new();
+        let rule = rule_with(
+            "cli-runner-enforcement",
+            "Rule ID: cli-runner-enforcement\nRule Name: Prefer lint/test enforcement over runtime wrapper when adding command conventions\nType: decision\nSource: cli/cli\n\nWhen enforcing a new convention across Cobra commands, prefer adding a test or lint assertion over expanding the runtime wrapper to handle both Run and RunE.",
+        );
+        let rendered = render_rule_block(&RuleBlockArgs {
+            position: 1,
+            rel: 0.95,
+            rule: &rule,
+            trust_evidence: &trust,
+            examples: None,
+            example_bad_label: "- Bad:",
+            example_good_label: "- Good:",
+            why: None,
+        });
+
+        assert!(rendered.contains("### Apply Safely"));
+        assert!(rendered.contains("tests/lint/static assertions"));
+        assert!(rendered.contains("do not expand runtime wrappers"));
+    }
+
+    #[test]
+    fn command_stub_rules_render_valid_regexp_note() {
+        let trust = RuleTrustMap::new();
+        let rule = rule_with(
+            "cli-command-stubs",
+            "Rule ID: cli-command-stubs\nRule Name: Overly broad test stubs can make tests pass even when testing the wrong code path\nType: pitfall\nSource: cli/cli\n\nDon't write command stubs with regexes that match -C <cwdRepo> and -C <targetRepo> interchangeably. Tighten stubs to match the specific expected argument.",
+        );
+        let rendered = render_rule_block(&RuleBlockArgs {
+            position: 1,
+            rel: 0.95,
+            rule: &rule,
+            trust_evidence: &trust,
+            examples: None,
+            example_bad_label: "- Bad:",
+            example_good_label: "- Good:",
+            why: None,
+        });
+
+        assert!(rendered.contains("### Apply Safely"));
+        assert!(rendered.contains("make stubs exact and language-valid"));
+        assert!(rendered.contains("\\Q...\\E"));
+        assert!(rendered.contains("regexp.QuoteMeta"));
+    }
+
+    #[test]
+    fn positive_rules_do_not_add_apply_safely_noise() {
+        let trust = RuleTrustMap::new();
+        let rule = rule_with(
+            "positive-helper",
+            "Rule ID: positive-helper\nRule Name: Prefer helper extraction\nType: convention\nSource: acme/widgets\n\nExtract repeated validation into a small helper before wiring handlers.",
+        );
+        let rendered = render_rule_block(&RuleBlockArgs {
+            position: 1,
+            rel: 0.95,
+            rule: &rule,
+            trust_evidence: &trust,
+            examples: None,
+            example_bad_label: "- Bad:",
+            example_good_label: "- Good:",
+            why: None,
+        });
+
+        assert!(!rendered.contains("### Apply Safely"));
+        assert!(!rendered.contains("Safety notes:"));
     }
 }

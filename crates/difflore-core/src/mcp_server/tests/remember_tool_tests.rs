@@ -1341,6 +1341,90 @@ async fn get_rules_batches_multiple_ids() {
 }
 
 #[tokio::test]
+async fn get_rules_marks_faq_as_background_guidance_before_contract() {
+    let state = build_state().await;
+    let faq = remember_rule_with_patterns(
+        &state,
+        "Why request validation helpers matter",
+        "Question: why use the request validation helper? Answer: it documents how payload validation works for handlers.",
+        &["src/**/*.rs"],
+    )
+    .await;
+    sqlx::query("UPDATE skills SET type = 'faq' WHERE id = ?1")
+        .bind(&faq)
+        .execute(&state.db)
+        .await
+        .expect("mark FAQ rule");
+
+    let (body, _) = call_tool_json(
+        &state,
+        513,
+        "get_rules",
+        json!({ "ids": [faq.clone()], "file": "src/handler.rs" }),
+    )
+    .await;
+    let result = &body["results"][0];
+    assert_eq!(result["application_kind"].as_str(), Some("background"));
+    assert!(
+        result["application_guidance"]
+            .as_str()
+            .is_some_and(|guidance| guidance.contains("Do not force a code change")),
+        "FAQ result should expose weak-constraint guidance: {result}"
+    );
+    let rendered = result["body"].as_str().expect("rendered body");
+    let guidance_pos = rendered
+        .find("### Application guidance")
+        .expect("application guidance section");
+    let contract_pos = rendered.find("### Contract").expect("contract section");
+    assert!(
+        guidance_pos < contract_pos,
+        "agents should see background guidance before the contract: {rendered}"
+    );
+}
+
+#[tokio::test]
+async fn get_rules_marks_pitfall_as_conditional_guardrail() {
+    let state = build_state().await;
+    let pitfall = remember_rule_with_patterns(
+        &state,
+        "Avoid broad command stubs",
+        "Do not write command stubs that match the wrong repository. Tighten the expected argument instead.",
+        &["src/**/*.rs"],
+    )
+    .await;
+    sqlx::query("UPDATE skills SET type = 'pitfall' WHERE id = ?1")
+        .bind(&pitfall)
+        .execute(&state.db)
+        .await
+        .expect("mark pitfall rule");
+
+    let (body, _) = call_tool_json(
+        &state,
+        514,
+        "get_rules",
+        json!({ "ids": [pitfall.clone()], "file": "src/handler.rs" }),
+    )
+    .await;
+    let result = &body["results"][0];
+    assert_eq!(
+        result["application_kind"].as_str(),
+        Some("pitfall_guardrail")
+    );
+    assert!(
+        result["application_guidance"]
+            .as_str()
+            .is_some_and(|guidance| guidance.contains("current file/task matches")),
+        "pitfall result should expose conditional guardrail guidance: {result}"
+    );
+    assert!(
+        result["body"]
+            .as_str()
+            .is_some_and(|body| body.contains("Follow the positive replacement")),
+        "pitfall body should include the same guidance before the rule contract: {result}"
+    );
+}
+
+#[tokio::test]
 async fn get_rules_records_optional_file_scope_for_local_proof() {
     let state = build_state().await;
     let rule_id = remember_rule_with_patterns(
@@ -1546,6 +1630,124 @@ async fn hook_post_edit_gate_keeps_on_subject_and_drops_adjacent_rule() {
     assert!(
         ctx.rules_injected >= 1,
         "gate must not empty an aligned post-edit injection"
+    );
+}
+
+#[tokio::test]
+async fn hook_post_edit_drops_pr_review_rules_without_strict_file_scope() {
+    let _repo_detection_guard = repo_detection_test_guard().await;
+    let state = build_state().await;
+    let repo_scopes = test_repo_scopes();
+    let unscoped = remember_rule_with_patterns(
+        &state,
+        "Reference existing PR changes when suggesting alternatives",
+        "When suggesting alternatives during review, reference the specific existing PR change instead of making a broad rewrite recommendation.",
+        &[],
+    )
+    .await;
+    scope_rule_to_test_repo(&state, &unscoped).await;
+    sqlx::query("UPDATE skills SET origin = 'pr_review' WHERE id = ?1")
+        .bind(&unscoped)
+        .execute(&state.db)
+        .await
+        .expect("mark rule as PR-review mined");
+
+    let index_pool = state.index_pool.as_ref().expect("index pool");
+    let ctx = fetch_relevant_rules_for_hook_with_repo_scopes(
+        &state.db,
+        index_pool,
+        "review/change.go",
+        "post-edit\nreference existing PR changes when suggesting alternatives",
+        Some("hook-session"),
+        &repo_scopes,
+    )
+    .await
+    .expect("post-edit recall");
+
+    assert!(
+        !ctx.rule_ids.contains(&unscoped),
+        "PR-review rules without a strict file-pattern hit must not be silently injected, got {:?}",
+        ctx.rule_ids
+    );
+    assert_eq!(ctx.rules_injected, 0);
+
+    let scoped = remember_rule_with_patterns(
+        &state,
+        "Reference existing PR changes when suggesting alternatives in Go handlers",
+        "When suggesting alternatives in Go handlers, reference the specific existing PR change instead of making a broad rewrite recommendation.",
+        &["**/*.go"],
+    )
+    .await;
+    scope_rule_to_test_repo(&state, &scoped).await;
+    sqlx::query("UPDATE skills SET origin = 'pr_review' WHERE id = ?1")
+        .bind(&scoped)
+        .execute(&state.db)
+        .await
+        .expect("mark scoped rule as PR-review mined");
+
+    let ctx = fetch_relevant_rules_for_hook_with_repo_scopes(
+        &state.db,
+        index_pool,
+        "review/change.go",
+        "post-edit\nreference existing PR changes when suggesting alternatives",
+        Some("hook-session"),
+        &repo_scopes,
+    )
+    .await
+    .expect("post-edit recall with scoped PR rule");
+
+    assert!(
+        ctx.rule_ids.contains(&scoped),
+        "PR-review rules with a strict file-pattern hit should still inject, got {:?}",
+        ctx.rule_ids
+    );
+}
+
+#[tokio::test]
+async fn hook_post_edit_drops_faq_kind_even_with_strict_file_scope() {
+    let _repo_detection_guard = repo_detection_test_guard().await;
+    let state = build_state().await;
+    let repo_scopes = test_repo_scopes();
+    let faq = remember_rule_with_patterns(
+        &state,
+        "Why request validation helpers matter",
+        "Question: why use the request validation helper? Answer: the helper documents how request payload validation works for handlers.",
+        &["**/*.go"],
+    )
+    .await;
+    sqlx::query("UPDATE skills SET type = 'faq' WHERE id = ?1")
+        .bind(&faq)
+        .execute(&state.db)
+        .await
+        .expect("mark FAQ rule");
+    let decision = remember_rule_with_patterns(
+        &state,
+        "Use typed request validation helper",
+        "Use the typed request validation helper when parsing Go handler payloads so malformed requests return structured errors.",
+        &["**/*.go"],
+    )
+    .await;
+
+    let ctx = fetch_relevant_rules_for_hook_with_repo_scopes(
+        &state.db,
+        state.index_pool.as_ref().expect("index pool"),
+        "handler/user.go",
+        "post-edit\nuse request validation helper for handler payloads",
+        Some("hook-session"),
+        &repo_scopes,
+    )
+    .await
+    .expect("post-edit recall");
+
+    assert!(
+        ctx.rule_ids.contains(&decision),
+        "non-FAQ rule should still inject, got {:?}",
+        ctx.rule_ids
+    );
+    assert!(
+        !ctx.rule_ids.contains(&faq),
+        "FAQ rules are discoverable by explicit recall but must not silently inject, got {:?}",
+        ctx.rule_ids
     );
 }
 

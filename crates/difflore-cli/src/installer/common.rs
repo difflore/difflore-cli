@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use super::{
     CanonicalRecordState, CanonicalRecordStatus, InstallState, McpRuntimeProbe, RuntimeProbeState,
     Status, TargetOutcome, TargetStatus,
-    json_config::load_json_object,
+    json_config::{McpEntryShape, load_json_object},
     manifest::{self, InstallManifest, ManifestTarget},
     registry,
 };
@@ -206,7 +206,12 @@ pub(super) const fn error_outcome(name: &'static str, e: String) -> TargetOutcom
     }
 }
 
-pub(super) fn probe_cli_mcp(name: &'static str, tool: &'static str, args: &[&str]) -> TargetStatus {
+pub(super) fn probe_cli_mcp(
+    name: &'static str,
+    tool: &'static str,
+    args: &[&str],
+    expected_command: &str,
+) -> TargetStatus {
     let detected = which::which(tool).is_ok();
     if !detected {
         return TargetStatus {
@@ -217,12 +222,13 @@ pub(super) fn probe_cli_mcp(name: &'static str, tool: &'static str, args: &[&str
         };
     }
     match Command::new(tool).args(args).output() {
-        Ok(o) if o.status.success() => TargetStatus {
+        Ok(o) if o.status.success() => evaluate_cli_mcp_get_output(
             name,
-            detected: true,
-            state: InstallState::Installed,
-            detail: None,
-        },
+            tool,
+            args,
+            expected_command,
+            &String::from_utf8_lossy(&o.stdout),
+        ),
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr).trim().to_owned();
             let state = if stderr.contains("invalid")
@@ -254,11 +260,131 @@ pub(super) fn probe_cli_mcp(name: &'static str, tool: &'static str, args: &[&str
     }
 }
 
+fn evaluate_cli_mcp_get_output(
+    name: &'static str,
+    tool: &str,
+    args: &[&str],
+    expected_command: &str,
+    stdout: &str,
+) -> TargetStatus {
+    let Some(command) = labeled_cli_value(stdout, "command") else {
+        return TargetStatus {
+            name,
+            detected: true,
+            state: InstallState::Unknown,
+            detail: Some(format!(
+                "`{tool} {}` succeeded but DiffLore could not parse a command from its output",
+                args.join(" ")
+            )),
+        };
+    };
+    let actual_args = labeled_cli_value(stdout, "args")
+        .as_deref()
+        .map(parse_cli_args_value)
+        .unwrap_or_default();
+    let command_ok = cli_command_matches(&command, expected_command);
+    let args_ok = actual_args.len() == 1
+        && actual_args
+            .first()
+            .is_some_and(|arg| arg.as_str() == MCP_SERVER_ARG);
+    if command_ok && args_ok {
+        return TargetStatus {
+            name,
+            detected: true,
+            state: InstallState::Installed,
+            detail: None,
+        };
+    }
+
+    TargetStatus {
+        name,
+        detected: true,
+        state: InstallState::Conflict,
+        detail: Some(format!(
+            "`{tool} {}` difflore entry drifted (command={}, args={})",
+            args.join(" "),
+            command,
+            format_cli_args_detail(&actual_args)
+        )),
+    }
+}
+
+fn labeled_cli_value(stdout: &str, label: &str) -> Option<String> {
+    stdout.lines().find_map(|line| {
+        let (key, value) = line.trim().split_once(':')?;
+        key.trim()
+            .eq_ignore_ascii_case(label)
+            .then(|| value.trim().to_owned())
+    })
+}
+
+fn parse_cli_args_value(value: &str) -> Vec<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed == "-" {
+        return Vec::new();
+    }
+    if let Ok(json) = serde_json::from_str::<Value>(trimmed)
+        && let Some(items) = json.as_array()
+    {
+        return items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(ToOwned::to_owned)
+            .collect();
+    }
+    trimmed.split_whitespace().map(ToOwned::to_owned).collect()
+}
+
+fn format_cli_args_detail(args: &[String]) -> String {
+    if args.is_empty() {
+        "(missing)".to_owned()
+    } else {
+        format!("{args:?}")
+    }
+}
+
+fn cli_command_matches(actual: &str, expected: &str) -> bool {
+    let actual = unquote_cli_value(actual);
+    let expected = unquote_cli_value(expected);
+    commands_equal(&actual, &expected)
+        || canonical_command(&actual)
+            .zip(canonical_command(&expected))
+            .is_some_and(|(actual, expected)| commands_equal(&actual, &expected))
+}
+
+fn unquote_cli_value(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_owned()
+}
+
+fn canonical_command(command: &str) -> Option<String> {
+    PathBuf::from(command)
+        .canonicalize()
+        .ok()
+        .map(|path| path_for_command(&path))
+}
+
+#[cfg(windows)]
+fn commands_equal(left: &str, right: &str) -> bool {
+    left.replace('\\', "/")
+        .eq_ignore_ascii_case(&right.replace('\\', "/"))
+}
+
+#[cfg(not(windows))]
+fn commands_equal(left: &str, right: &str) -> bool {
+    left == right
+}
+
 pub(super) fn probe_json_install(
     name: &'static str,
     path: &PathBuf,
     servers_key: &str,
     expected_command: &str,
+    shape: McpEntryShape,
 ) -> TargetStatus {
     if !path.exists() {
         return TargetStatus {
@@ -310,17 +436,7 @@ pub(super) fn probe_json_install(
             )),
         };
     };
-    let args_ok = entry_obj
-        .get("args")
-        .and_then(|v| v.as_array())
-        .is_some_and(|args| {
-            args.len() == 1 && args.first().and_then(Value::as_str) == Some(MCP_SERVER_ARG)
-        });
-    let command_ok = entry_obj
-        .get("command")
-        .and_then(|v| v.as_str())
-        .is_some_and(|cmd| cmd == expected_command);
-    if command_ok && args_ok {
+    if mcp_json_entry_matches(entry_obj, expected_command, shape) {
         return TargetStatus {
             name,
             detected: true,
@@ -328,21 +444,81 @@ pub(super) fn probe_json_install(
             detail: Some(path.display().to_string()),
         };
     }
-    let command = entry_obj
-        .get("command")
-        .and_then(|v| v.as_str())
-        .unwrap_or("(missing)");
-    let args = entry_obj
-        .get("args")
-        .map_or_else(|| "(missing)".to_owned(), ToString::to_string);
     TargetStatus {
         name,
         detected: true,
         state: InstallState::Conflict,
         detail: Some(format!(
-            "{}: difflore entry drifted (command={command}, args={args})",
-            path.display()
+            "{}: difflore entry drifted ({})",
+            path.display(),
+            mcp_json_entry_detail(entry_obj, shape)
         )),
+    }
+}
+
+fn mcp_json_entry_matches(
+    entry_obj: &serde_json::Map<String, Value>,
+    expected_command: &str,
+    shape: McpEntryShape,
+) -> bool {
+    match shape {
+        McpEntryShape::Standard => {
+            let command_ok = entry_obj
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|cmd| cli_command_matches(cmd, expected_command));
+            let args_ok = entry_obj
+                .get("args")
+                .and_then(Value::as_array)
+                .is_some_and(|args| {
+                    args.len() == 1 && args.first().and_then(Value::as_str) == Some(MCP_SERVER_ARG)
+                });
+            command_ok && args_ok
+        }
+        McpEntryShape::Opencode => {
+            let Some(command) = entry_obj.get("command").and_then(Value::as_array) else {
+                return false;
+            };
+            let command_ok = command
+                .first()
+                .and_then(Value::as_str)
+                .is_some_and(|cmd| cli_command_matches(cmd, expected_command));
+            let args_ok = command.len() == 2
+                && command.get(1).and_then(Value::as_str) == Some(MCP_SERVER_ARG);
+            let type_ok = entry_obj.get("type").and_then(Value::as_str) == Some("local");
+            let enabled_ok = entry_obj.get("enabled").and_then(Value::as_bool) == Some(true);
+            command_ok && args_ok && type_ok && enabled_ok
+        }
+    }
+}
+
+fn mcp_json_entry_detail(
+    entry_obj: &serde_json::Map<String, Value>,
+    shape: McpEntryShape,
+) -> String {
+    match shape {
+        McpEntryShape::Standard => {
+            let command = entry_obj
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or("(missing)");
+            let args = entry_obj
+                .get("args")
+                .map_or_else(|| "(missing)".to_owned(), ToString::to_string);
+            format!("command={command}, args={args}")
+        }
+        McpEntryShape::Opencode => {
+            let type_value = entry_obj
+                .get("type")
+                .map_or_else(|| "(missing)".to_owned(), ToString::to_string);
+            let command = entry_obj
+                .get("command")
+                .map_or_else(|| "(missing)".to_owned(), ToString::to_string);
+            let enabled = entry_obj
+                .get("enabled")
+                .map_or_else(|| "(missing)".to_owned(), ToString::to_string);
+            format!("type={type_value}, command={command}, enabled={enabled}")
+        }
     }
 }
 
@@ -844,5 +1020,54 @@ mod atomic_write_tests {
         fs::write(&exe, b"bin").expect("write exe");
 
         assert_eq!(preferred_agent_binary(&exe), None);
+    }
+
+    #[test]
+    fn cli_mcp_probe_accepts_claude_get_output_when_command_matches() {
+        let stdout = concat!(
+            "difflore:\n",
+            "  Scope: User config (available in all your projects)\n",
+            "  Status: OK\n",
+            "  Type: stdio\n",
+            "  Command: C:\\Users\\lizq\\.cargo\\bin\\difflore-launcher.exe\n",
+            "  Args: mcp-server\n"
+        );
+
+        let status = evaluate_cli_mcp_get_output(
+            "Claude Code",
+            "claude",
+            &["mcp", "get", "difflore"],
+            r"C:\Users\lizq\.cargo\bin\difflore-launcher.exe",
+            stdout,
+        );
+
+        assert_eq!(status.state, InstallState::Installed);
+    }
+
+    #[test]
+    fn cli_mcp_probe_flags_stale_external_cli_command() {
+        let stdout = concat!(
+            "difflore\n",
+            "  enabled: true\n",
+            "  transport: stdio\n",
+            "  command: C:\\Users\\lizq\\.difflore\\versions\\0.2.0\\difflore.exe\n",
+            "  args: mcp-server\n"
+        );
+
+        let status = evaluate_cli_mcp_get_output(
+            "Codex",
+            "codex",
+            &["mcp", "get", "difflore"],
+            r"C:\Users\lizq\.cargo\bin\difflore-launcher.exe",
+            stdout,
+        );
+
+        assert_eq!(status.state, InstallState::Conflict);
+        assert!(
+            status
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("entry drifted"))
+        );
     }
 }

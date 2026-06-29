@@ -21,21 +21,28 @@ const FALLBACK_REVIEW_DIRECTIVE: &str =
 
 // Each surviving high-signal comment is scored on [0.0, 1.0] from a handful
 // of features (directive strength, adoption proxy = resolved thread,
-// reaction approval, later-reply contradiction, bot authorship). The score
-// drives a 3-way route:
-//   * `>= HIGH` → promote to active immediately.
+// reaction approval, later-reply contradiction, bot authorship). Heuristic
+// imports intentionally stop at pending candidates. Local-agent distillation
+// owns the default auto-active path because it rewrites the comment into a
+// durable, file-scoped rule before promotion.
+// The score still drives a 3-way quality route for shared tests / callers:
+//   * `>= HIGH` → strong enough to promote only on distilled paths.
 //   * `[LOW, HIGH)` → leave as a `status='pending'` candidate for review.
 //   * `< LOW`  → drop (don't even draft a candidate).
+//
+// Known bot authors stay quarantined like every heuristic import: reusable
+// coding findings may draft pending candidates, but never skip human review.
 
-/// At/above this, a captured review memory is auto-activated.
+/// At/above this, a captured review memory is high-confidence. Heuristic
+/// imports still stay pending; distilled imports may use this as one signal.
 pub(super) const CAPTURE_CONFIDENCE_HIGH: f32 = 0.62;
 /// Below this, the comment is dropped entirely (too weak/contradicted).
 pub(super) const CAPTURE_CONFIDENCE_LOW: f32 = 0.40;
 /// Baseline confidence a comment earns just by clearing the existing
 /// content gate (a real human-or-bot directive sentence, score >= 4).
 /// Tuned so a bare strong directive with no adoption/approval signal lands
-/// as a *pending* candidate (>= LOW, < HIGH) — the v1 quarantine the spec
-/// asks for — and only adoption/approval lifts it to auto-active.
+/// as a *pending* candidate (>= LOW, < HIGH); adoption/approval lifts it only
+/// into the high-confidence band.
 const CAPTURE_CONFIDENCE_BASE: f32 = 0.50;
 /// A resolved review thread is the v1 adoption proxy (the maintainer marked
 /// the discussion settled — the suggestion was almost always applied).
@@ -43,7 +50,7 @@ const CAPTURE_BONUS_RESOLVED: f32 = 0.20;
 /// Net-positive reactions (👍 outweighs 👎, or any approval with no
 /// pushback) nudge confidence up.
 const CAPTURE_BONUS_APPROVAL: f32 = 0.10;
-/// Net-negative reactions (👎 strictly outweighs 👍) withhold auto-activation.
+/// Net-negative reactions (👎 strictly outweighs 👍) withhold high confidence.
 /// Sized so a resolved-but-disapproved directive drops into the pending band
 /// (0.50 + 0.20 − 0.15 = 0.55, still ≥ LOW so it is reviewed) while a bare
 /// disapproved directive falls below LOW (0.50 − 0.15 = 0.35) and is dropped.
@@ -52,8 +59,8 @@ const CAPTURE_PENALTY_DISAPPROVAL: f32 = 0.15;
 /// no", "nvm", "disregard", …) is a strong negative — push below LOW so a
 /// bare directive with a contradiction is dropped.
 const CAPTURE_PENALTY_CONTRADICTION: f32 = 0.30;
-/// Bot authorship is a *small* negative feature (not a veto): a bot can
-/// still clear HIGH on a strong, adopted directive.
+/// Bot authorship is still a confidence penalty; heuristic import routing
+/// below also hard-vetoes auto-activation for every author.
 const CAPTURE_PENALTY_BOT: f32 = 0.08;
 /// An extra-strong directive (score well past the gate floor) earns a small
 /// top-up so an obviously imperative review line can reach active on its own
@@ -63,8 +70,9 @@ const CAPTURE_BONUS_STRONG_DIRECTIVE: f32 = 0.05;
 #[derive(Debug, Default)]
 pub(super) struct LocalCandidateProgress {
     pub(super) comments_considered: usize,
-    /// Newly drafted rules (both auto-activated AND left pending). The
-    /// budget gate counts this total so a flood of either kind still caps.
+    /// Newly drafted rules (both auto-activated distilled rules AND pending
+    /// candidates). The budget gate counts this total so a flood of either
+    /// kind still caps.
     pub(super) candidates_created: usize,
     /// Of `candidates_created`, those whose capture confidence cleared the
     /// HIGH threshold and were promoted to active immediately.
@@ -118,7 +126,7 @@ pub(super) fn clean_review_comment(content: &str) -> String {
                 || lower == "<br>"
                 || lower.starts_with("actionable comments posted"))
         })
-        .map(|line| line.trim_start_matches(['>', '-', '*']).trim())
+        .map(|line| line.trim_start_matches(['>', '-', '*', '#']).trim())
         .collect::<Vec<_>>()
         .join(" ");
     let stripped = strip_review_markdown_noise(&joined);
@@ -187,6 +195,246 @@ fn is_reviewer_meta_instruction(lower: &str) -> bool {
     lower.contains("if you propose a fix")
         || lower.contains("when reviewing this pr")
         || lower.contains("as an ai reviewer")
+}
+
+fn is_review_report_boilerplate(lower: &str) -> bool {
+    let normalized = lower.replace('#', " ");
+    lower.contains("check-spelling-bot")
+        || lower.contains("spelling check report")
+        || lower.contains("spelling report")
+        || ((normalized.starts_with("must: report") || normalized.starts_with("report "))
+            && (normalized.contains("please review")
+                || normalized.contains("see the")
+                || normalized.contains("files")))
+        || (normalized.contains("report")
+            && normalized.contains("please review")
+            && normalized.contains("files")
+            && !has_code_rule_signal(&normalized))
+}
+
+fn has_ascii_word(lower: &str, word: &str) -> bool {
+    lower.match_indices(word).any(|(idx, _)| {
+        let before = lower[..idx].chars().next_back();
+        let after = lower[idx + word.len()..].chars().next();
+        before.is_none_or(|ch| !ch.is_ascii_alphanumeric() && ch != '_')
+            && after.is_none_or(|ch| !ch.is_ascii_alphanumeric() && ch != '_')
+    })
+}
+
+fn has_ascii_word_or_phrase(lower: &str, needle: &str) -> bool {
+    if needle.contains(' ') {
+        lower.contains(needle)
+    } else {
+        has_ascii_word(lower, needle)
+    }
+}
+
+fn has_any_ascii_word_or_phrase(lower: &str, needles: &[&str]) -> bool {
+    needles
+        .iter()
+        .any(|needle| has_ascii_word_or_phrase(lower, needle))
+}
+
+fn has_reusable_directive_trigger(lower: &str) -> bool {
+    has_any_ascii_word_or_phrase(
+        lower,
+        &[
+            "should",
+            "need to",
+            "needs to",
+            "must",
+            "make sure",
+            "ensure",
+            "avoid",
+            "prefer",
+            "instead",
+            "rather than",
+            "don't",
+            "do not",
+            "please",
+        ],
+    ) || [
+        "add ",
+        "assert ",
+        "check ",
+        "configure ",
+        "cover ",
+        "drop ",
+        "extract ",
+        "guard ",
+        "handle ",
+        "keep ",
+        "mark ",
+        "move ",
+        "rename ",
+        "replace ",
+        "return ",
+        "sync ",
+        "test ",
+        "validate ",
+        "verify ",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+}
+
+fn has_code_rule_signal(lower: &str) -> bool {
+    has_any_ascii_word_or_phrase(
+        lower,
+        &[
+            "add",
+            "api",
+            "assert",
+            "await",
+            "behavior",
+            "build",
+            "builds",
+            "cache",
+            "call",
+            "catch",
+            "check",
+            "ci",
+            "class",
+            "config",
+            "configure",
+            "consistent",
+            "cover",
+            "decode",
+            "defer",
+            "deserialize",
+            "encode",
+            "error",
+            "escape",
+            "export",
+            "format",
+            "generate",
+            "generated",
+            "guard",
+            "handle",
+            "header",
+            "http",
+            "import",
+            "index",
+            "lint",
+            "lock",
+            "migrate",
+            "mock",
+            "module",
+            "normalize",
+            "option",
+            "panic",
+            "parse",
+            "public api",
+            "query",
+            "regenerate",
+            "regression",
+            "release",
+            "rename",
+            "render",
+            "replace",
+            "return",
+            "route",
+            "sanitize",
+            "schema",
+            "security",
+            "serialize",
+            "state",
+            "sync",
+            "test",
+            "type",
+            "untranslated",
+            "unwrap",
+            "validate",
+            "verify",
+            "version",
+            "workflow",
+            "wrap",
+        ],
+    )
+}
+
+fn is_code_like_word(token: &str) -> bool {
+    if token.len() < 3 {
+        return false;
+    }
+    if token.contains('_') {
+        return true;
+    }
+    let mut saw_lower = false;
+    for ch in token.chars() {
+        if saw_lower && ch.is_ascii_uppercase() {
+            return true;
+        }
+        saw_lower = ch.is_ascii_lowercase();
+    }
+    false
+}
+
+fn has_code_reference(text: &str) -> bool {
+    if text.contains('`') || text.contains("::") || (text.contains('[') && text.contains(']')) {
+        return true;
+    }
+    text.split_whitespace().any(|raw| {
+        let token = raw.trim_matches(|ch: char| {
+            !(ch.is_ascii_alphanumeric()
+                || matches!(ch, '_' | '.' | ':' | '(' | ')' | '[' | ']' | '-'))
+        });
+        if token.ends_with("()") || token.contains("::") {
+            return true;
+        }
+        if token.contains('.')
+            && token.split('.').filter(|part| !part.is_empty()).count() >= 2
+            && token
+                .chars()
+                .any(|ch| ch.is_ascii_uppercase() || ch == '_' || ch.is_ascii_digit())
+        {
+            return true;
+        }
+        is_code_like_word(token)
+    })
+}
+
+fn has_code_or_config_scope(scope_paths: &[String]) -> bool {
+    scope_paths
+        .iter()
+        .any(|path| !file_patterns_from_path(path).is_empty())
+}
+
+fn is_non_reusable_operational_review(lower: &str) -> bool {
+    contains_any(
+        lower,
+        &[
+            "automated review score",
+            "code quality score",
+            "hold for review",
+            "holding for review",
+            "human review required",
+            "manual review required",
+            "not a code issue",
+            "not a code rule",
+            "no code change needed",
+            "no code change required",
+            "review skipped",
+        ],
+    )
+}
+
+fn is_reusable_coding_convention(candidate: &str, scope_paths: &[String]) -> bool {
+    let lower = candidate.to_ascii_lowercase();
+    if is_review_report_boilerplate(&lower) || is_non_reusable_operational_review(&lower) {
+        return false;
+    }
+    let has_code_signal = has_code_rule_signal(&lower)
+        || has_code_reference(candidate)
+        || has_reusable_docs_engineering_signal(candidate);
+    if !has_code_signal {
+        return false;
+    }
+    let has_scope = has_code_or_config_scope(scope_paths);
+    if !has_reusable_directive_trigger(&lower) && !has_scope {
+        return false;
+    }
+    has_code_reference(candidate) || has_scope || has_code_rule_signal(&lower)
 }
 
 fn is_dependency_maintenance_noise(lower: &str) -> bool {
@@ -305,6 +553,7 @@ fn is_weak_question_noise(lower: &str) -> bool {
 fn is_import_review_noise_comment(clean: &str) -> bool {
     let lower = clean.to_ascii_lowercase();
     is_coverage_report_noise(&lower)
+        || is_review_report_boilerplate(&lower)
         || is_ai_review_summary_noise(&lower)
         || is_dependency_maintenance_noise(&lower)
         || is_acknowledgement_noise(&lower)
@@ -361,7 +610,7 @@ pub(super) fn is_high_signal_review_comment_for_paths(
     {
         return false;
     }
-    best_review_directive_sentence(content).is_some()
+    best_review_directive_scored_for_paths(content, scope_paths).is_some()
 }
 
 fn is_low_value_docs_translation_comment(clean: &str, scope_paths: &[String]) -> bool {
@@ -554,9 +803,17 @@ fn normalize_review_directive_sentence(sentence: &str) -> String {
     lower_first_ascii(text.trim().trim_end_matches(['.', '!', '?']).trim())
 }
 
+#[cfg(test)]
 fn directive_candidate_score(candidate: &str) -> usize {
+    directive_candidate_score_for_paths(candidate, &[])
+}
+
+fn directive_candidate_score_for_paths(candidate: &str, scope_paths: &[String]) -> usize {
     let trimmed = candidate.trim();
-    if trimmed.is_empty() || is_bad_review_directive(trimmed) {
+    if trimmed.is_empty()
+        || is_bad_review_directive(trimmed)
+        || !is_reusable_coding_convention(trimmed, scope_paths)
+    {
         return 0;
     }
     let lower = trimmed.to_ascii_lowercase();
@@ -631,14 +888,21 @@ fn best_review_directive_sentence(content: &str) -> Option<String> {
     best_review_directive_scored(content).map(|(_, candidate)| candidate)
 }
 
+fn best_review_directive_scored(content: &str) -> Option<(usize, String)> {
+    best_review_directive_scored_for_paths(content, &[])
+}
+
 /// Like [`best_review_directive_sentence`] but also returns the winning
 /// directive's `directive_candidate_score`. The confidence gate uses the
 /// raw score to award a small bonus for unusually strong directives.
-fn best_review_directive_scored(content: &str) -> Option<(usize, String)> {
+fn best_review_directive_scored_for_paths(
+    content: &str,
+    scope_paths: &[String],
+) -> Option<(usize, String)> {
     let mut best: Option<(usize, String)> = None;
     for sentence in review_sentences(content).into_iter().take(16) {
         let candidate = normalize_review_directive_sentence(&sentence);
-        let score = directive_candidate_score(&candidate);
+        let score = directive_candidate_score_for_paths(&candidate, scope_paths);
         if score >= 4 {
             return Some((score, candidate));
         }
@@ -703,8 +967,9 @@ fn related_files_body_line(scope_paths: &[String]) -> Option<String> {
 }
 
 pub(super) fn candidate_title(content: &str, fallback_path: &str) -> String {
-    let directive = review_directive(content);
-    if directive.chars().count() >= 12 && directive != FALLBACK_REVIEW_DIRECTIVE {
+    if let Some(directive) = best_review_directive_sentence(content).filter(|directive| {
+        directive.chars().count() >= 12 && directive != FALLBACK_REVIEW_DIRECTIVE
+    }) {
         format!(
             "Review: {}",
             truncate_chars(&upper_first_ascii(&directive), 76)
@@ -712,12 +977,7 @@ pub(super) fn candidate_title(content: &str, fallback_path: &str) -> String {
     } else if fallback_path.trim().is_empty() {
         "Review rule from imported PR comment".to_owned()
     } else {
-        let sentence = first_sentence(content);
-        if sentence.chars().count() >= 12 {
-            format!("Review: {}", truncate_chars(&sentence, 76))
-        } else {
-            format!("Review rule for {}", truncate_chars(fallback_path, 64))
-        }
+        format!("Review rule for {}", truncate_chars(fallback_path, 64))
     }
 }
 
@@ -1105,7 +1365,7 @@ fn capture_confidence(
 /// 3-way route a scored comment takes through the candidate pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CaptureRoute {
-    /// `>= HIGH`: promote to an active rule immediately.
+    /// `>= HIGH`: strong enough for distilled paths to promote.
     Active,
     /// `[LOW, HIGH)`: keep as a pending candidate for review.
     Candidate,
@@ -1120,6 +1380,13 @@ pub(super) fn route_for_confidence(confidence: f32) -> CaptureRoute {
         CaptureRoute::Candidate
     } else {
         CaptureRoute::Drop
+    }
+}
+
+fn route_for_comment_confidence(confidence: f32, _is_bot: bool) -> CaptureRoute {
+    match route_for_confidence(confidence) {
+        CaptureRoute::Active => CaptureRoute::Candidate,
+        route => route,
     }
 }
 
@@ -1152,10 +1419,11 @@ pub(super) fn local_candidate_input(
     if !is_high_signal_review_comment_for_paths(&comment.content, &scope_paths) {
         return None;
     }
-    let (directive_score, directive) = match best_review_directive_scored(&comment.content) {
-        Some((score, _)) => (score, review_directive(&comment.content)),
-        None => return None,
-    };
+    let (directive_score, directive) =
+        match best_review_directive_scored_for_paths(&comment.content, &scope_paths) {
+            Some((score, _)) => (score, review_directive(&comment.content)),
+            None => return None,
+        };
     if directive == FALLBACK_REVIEW_DIRECTIVE {
         return None;
     }
@@ -1164,7 +1432,7 @@ pub(super) fn local_candidate_input(
     let signal = parse_durability_signal(comment);
     let is_bot = is_bot_author(comment.author.as_deref());
     let confidence = capture_confidence(directive_score, is_bot, &signal);
-    let route = route_for_confidence(confidence);
+    let route = route_for_comment_confidence(confidence, is_bot);
     if route == CaptureRoute::Drop {
         return None;
     }
@@ -1368,8 +1636,8 @@ pub(super) async fn run_local_candidates(
             }
             seen_candidate_signatures.insert(signature);
             // Seed the draft with the gate's capture confidence instead of the
-            // flat conversation default, then route: HIGH → promote to active,
-            // MEDIUM → leave as a pending candidate for review.
+            // flat conversation default. Heuristic review import never promotes
+            // directly; local-agent distillation owns the active route.
             match difflore_core::skills::remember_as_candidate_with_confidence_for_repo(
                 db,
                 input,
@@ -1389,18 +1657,12 @@ pub(super) async fn run_local_candidates(
                         }
                     } else {
                         match route {
-                            CaptureRoute::Active => {
-                                if let Err(e) =
-                                    difflore_core::skills::promote_candidate(db, &outcome.skill.id)
-                                        .await
-                                {
-                                    exit_err(&format!("failed to activate imported memory: {e}"));
-                                }
-                                progress.candidates_activated += 1;
-                            }
-                            // MEDIUM band: keep quarantined as a pending draft;
-                            // do NOT promote.
-                            CaptureRoute::Candidate => {
+                            CaptureRoute::Active | CaptureRoute::Candidate => {
+                                debug_assert_ne!(
+                                    route,
+                                    CaptureRoute::Active,
+                                    "heuristic import must downgrade active routes before persistence"
+                                );
                                 progress.candidates_pending += 1;
                             }
                             // Dropped comments never reach here.
@@ -1472,10 +1734,13 @@ pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress
             style::pewter(style::sym::BULLET),
         );
         style::println_wrapped(&format!(
-            "  {} Try a larger import window, or upload reviews so DiffLore can find deeper team patterns.",
+            "  {} Try a larger import window, then review pending local memory before enabling agents.",
             style::pewter(style::sym::BULLET),
         ));
-        println!("    {}", style::cmd("difflore import-reviews --upload"));
+        println!(
+            "    {}",
+            style::cmd("difflore import-reviews --max-prs 100")
+        );
         style::println_wrapped(&format!(
             "  {} Or see recall fire on a bundled sample in seconds: {}",
             style::pewter(style::sym::BULLET),
@@ -1716,7 +1981,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_confidence_routes_resolved_human_directive_to_active() {
+    fn capture_confidence_scores_resolved_human_directive_high_but_import_keeps_pending() {
         let signal = CaptureDurabilitySignal {
             resolved: true,
             ..signal()
@@ -1726,6 +1991,22 @@ mod tests {
 
         assert_confidence(confidence, 0.70);
         assert_eq!(route_for_confidence(confidence), CaptureRoute::Active);
+        assert_eq!(
+            route_for_comment_confidence(confidence, false),
+            CaptureRoute::Candidate
+        );
+    }
+
+    #[test]
+    fn heuristic_comment_route_vetoes_auto_activation_for_all_authors() {
+        assert_eq!(
+            route_for_comment_confidence(CAPTURE_CONFIDENCE_HIGH + 0.10, true),
+            CaptureRoute::Candidate
+        );
+        assert_eq!(
+            route_for_comment_confidence(CAPTURE_CONFIDENCE_HIGH + 0.10, false),
+            CaptureRoute::Candidate
+        );
     }
 
     #[test]
@@ -1788,7 +2069,7 @@ mod tests {
     }
 
     #[test]
-    fn strong_directive_with_real_approval_can_auto_activate_without_resolved_thread() {
+    fn strong_directive_with_real_approval_stays_pending_without_local_agent_distillation() {
         let signal = CaptureDurabilitySignal {
             reactions_total: 1,
             thumbs_up: 1,
@@ -1800,6 +2081,10 @@ mod tests {
 
         assert_confidence(confidence, 0.65);
         assert_eq!(route_for_confidence(confidence), CaptureRoute::Active);
+        assert_eq!(
+            route_for_comment_confidence(confidence, false),
+            CaptureRoute::Candidate
+        );
     }
 
     #[test]
@@ -1812,6 +2097,19 @@ mod tests {
             is_import_review_noise_comment(&summary),
             "greptile summary should be rejected: {summary:?}"
         );
+    }
+
+    #[test]
+    fn spelling_report_boilerplate_is_not_a_directive() {
+        let report = clean_review_comment(
+            "MUST: Report ### :red_circle: Please review See the \
+             [:open_file_folder: files] for spelling findings.",
+        );
+        assert!(
+            is_import_review_noise_comment(&report),
+            "spelling report should be rejected: {report:?}"
+        );
+        assert_eq!(directive_candidate_score(&report), 0);
     }
 
     #[test]
@@ -1853,6 +2151,21 @@ mod tests {
         assert_eq!(
             progress.candidates_deduped, 0,
             "in-run duplicate comments must not be reported as store-level strengthening"
+        );
+    }
+
+    #[test]
+    fn candidate_title_avoids_raw_review_sentence_when_no_directive() {
+        assert_eq!(
+            candidate_title(
+                "This endpoint became easier to maintain after the refactor.",
+                "src/api/router.rs",
+            ),
+            "Review rule for src/api/router.rs",
+        );
+        assert_eq!(
+            candidate_title("This endpoint became easier to maintain.", ""),
+            "Review rule from imported PR comment",
         );
     }
 }
