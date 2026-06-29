@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::Result;
 
 pub const DEFAULT_CURATOR_BATCH_LIMIT: usize = 20;
-pub const DEFAULT_CURATOR_MIN_CONFIDENCE: f32 = 0.85;
+pub const DEFAULT_CURATOR_MIN_CONFIDENCE: f32 = 0.82;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -49,7 +49,7 @@ impl Default for MemoryCuratorOptions {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryCuratorCandidate {
     pub group_id: String,
@@ -59,6 +59,8 @@ pub struct MemoryCuratorCandidate {
     pub source_repo: Option<String>,
     pub file_patterns: Vec<String>,
     pub source_evidence: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub behavior_observations: Vec<MemoryCuratorBehaviorObservation>,
 }
 
 impl MemoryCuratorCandidate {
@@ -76,8 +78,18 @@ impl MemoryCuratorCandidate {
             source_repo: None,
             file_patterns: Vec::new(),
             source_evidence: String::new(),
+            behavior_observations: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryCuratorBehaviorObservation {
+    pub base_rate: f32,
+    pub lift_oracle: f32,
+    pub lift_e2e: f32,
+    pub corrected: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,15 +132,6 @@ pub struct MemoryCuratorDecision {
 pub struct MemoryCuratorOutcome {
     pub decisions: Vec<MemoryCuratorDecision>,
     pub unavailable_reason: Option<String>,
-}
-
-impl MemoryCuratorOutcome {
-    fn unavailable(detail: impl Into<String>) -> Self {
-        Self {
-            decisions: Vec::new(),
-            unavailable_reason: Some(truncate_chars(&detail.into(), 240)),
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -208,8 +211,43 @@ pub async fn curate_memory_candidates_with_local_ai(
         });
     }
 
-    let prompt_json = serde_json::to_string_pretty(&candidates)?;
-    let source_summary = summarize_sources(&candidates);
+    let mut deterministic_decisions = Vec::new();
+    let candidates_for_ai = candidates
+        .iter()
+        .filter(|candidate| {
+            if matches!(
+                behavior_redundancy_decision(&candidate.behavior_observations),
+                BehaviorRedundancyDecision::DropRedundant
+            ) {
+                deterministic_decisions.push(MemoryCuratorDecision {
+                    group_id: candidate.group_id.clone(),
+                    action: MemoryCuratorAction::Review,
+                    confidence: 0.0,
+                    title: None,
+                    rule: None,
+                    reason: Some(
+                        "local-cli behavior evidence shows this rule is already followed without memory"
+                            .to_owned(),
+                    ),
+                    scope: None,
+                });
+                false
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if candidates_for_ai.is_empty() {
+        return Ok(MemoryCuratorOutcome {
+            decisions: deterministic_decisions,
+            unavailable_reason: None,
+        });
+    }
+
+    let prompt_json = serde_json::to_string_pretty(&candidates_for_ai)?;
+    let source_summary = summarize_sources(&candidates_for_ai);
     let system_prompt = "You are DiffLore's local memory curator. You turn raw coding evidence \
         into durable coding-agent rules only when the evidence contains a clear, reusable team \
         preference. Return JSON only. Never approve vague comments, one-off questions, jokes, \
@@ -220,8 +258,19 @@ pub async fn curate_memory_candidates_with_local_ai(
          For each candidate return one decision:\n\
          - action: \"enable\" only if the rule is durable, actionable, repo-specific, and safe \
            for an agent to apply without more context.\n\
-         - action: \"review\" for vague, low-context, one-off, subjective, question-shaped, or \
-           conflict-prone evidence.\n\
+         - action: \"review\" for vague, low-context, one-off, subjective, question-shaped, \
+           behavior-redundant, already-covered, or conflict-prone evidence. Also choose \
+           \"review\" when a capable general coding model or existing active memory would \
+           probably do the same thing by default (validate input, add tests, handle errors, \
+           improve readability, remove dead code) and the evidence adds no non-obvious project \
+           API/helper, generated artifact, schema/contract coupling, module boundary, version \
+           constraint, or named team convention.\n\
+         - behaviorObservations, when present, are local-cli before/after evidence: baseRate is \
+           how often the model already followed the rule without memory, liftOracle/liftE2E are \
+           improvements from injecting it, and corrected marks rescued failures. Treat >=3 \
+           observations with baseRate=1.0 and no positive lift as behavior-redundant. Treat any \
+           positive lift or corrected observation as evidence that the rule is not merely \
+           obvious, even if it mentions a common platform habit.\n\
          - confidence: 0.0 to 1.0.\n\
          - title: short imperative title when enabling.\n\
          - rule: rewritten rule text when enabling. The rule must be explicit, imperative, and \
@@ -244,12 +293,23 @@ pub async fn curate_memory_candidates_with_local_ai(
         .await
     {
         Ok(raw) => raw,
-        Err(err) => return Ok(MemoryCuratorOutcome::unavailable(err.to_string())),
+        Err(err) => {
+            return Ok(MemoryCuratorOutcome {
+                decisions: deterministic_decisions,
+                unavailable_reason: Some(truncate_chars(&err.to_string(), 240)),
+            });
+        }
     };
-    let decisions = match parse_curator_decisions(&raw) {
+    let mut decisions = match parse_curator_decisions(&raw) {
         Ok(decisions) => decisions,
-        Err(err) => return Ok(MemoryCuratorOutcome::unavailable(err.to_string())),
+        Err(err) => {
+            return Ok(MemoryCuratorOutcome {
+                decisions: deterministic_decisions,
+                unavailable_reason: Some(truncate_chars(&err.to_string(), 240)),
+            });
+        }
     };
+    decisions.extend(deterministic_decisions);
 
     Ok(MemoryCuratorOutcome {
         decisions,
@@ -267,6 +327,14 @@ pub fn curator_decisions_by_group(
 }
 
 pub fn curator_rule_is_safe(title: &str, rule: &str) -> bool {
+    curator_rule_is_safe_with_behavior(title, rule, &[])
+}
+
+pub fn curator_rule_is_safe_with_behavior(
+    title: &str,
+    rule: &str,
+    behavior_observations: &[MemoryCuratorBehaviorObservation],
+) -> bool {
     let title = title.trim();
     let rule = rule.trim();
     if !(8..=140).contains(&title.chars().count()) {
@@ -285,6 +353,17 @@ pub fn curator_rule_is_safe(title: &str, rule: &str) -> bool {
     {
         return false;
     }
+    let behavior_decision = behavior_redundancy_decision(behavior_observations);
+    if matches!(behavior_decision, BehaviorRedundancyDecision::DropRedundant) {
+        return false;
+    }
+    if !matches!(
+        behavior_decision,
+        BehaviorRedundancyDecision::ProtectPositive
+    ) && rule_is_obvious_low_value(title, rule)
+    {
+        return false;
+    }
     [
         "use ",
         "avoid ",
@@ -292,6 +371,7 @@ pub fn curator_rule_is_safe(title: &str, rule: &str) -> bool {
         "do not ",
         "don't ",
         "replace ",
+        "call ",
         "extract ",
         "inline ",
         "centralize ",
@@ -300,6 +380,184 @@ pub fn curator_rule_is_safe(title: &str, rule: &str) -> bool {
     ]
     .iter()
     .any(|needle| text.contains(needle))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BehaviorRedundancyDecision {
+    DropRedundant,
+    ProtectPositive,
+    Neutral,
+}
+
+fn behavior_redundancy_decision(
+    observations: &[MemoryCuratorBehaviorObservation],
+) -> BehaviorRedundancyDecision {
+    const MIN_OBSERVATIONS: usize = 3;
+    const REDUNDANT_BASE_RATE: f32 = 0.99;
+    const POSITIVE_LIFT: f32 = 0.001;
+
+    let usable = observations
+        .iter()
+        .copied()
+        .filter(|observation| {
+            observation.base_rate.is_finite() && (0.0..=1.0).contains(&observation.base_rate)
+        })
+        .collect::<Vec<_>>();
+
+    if usable.iter().any(|observation| {
+        observation.corrected
+            || observation.lift_oracle > POSITIVE_LIFT
+            || observation.lift_e2e > POSITIVE_LIFT
+    }) {
+        return BehaviorRedundancyDecision::ProtectPositive;
+    }
+
+    if usable.len() >= MIN_OBSERVATIONS
+        && usable
+            .iter()
+            .all(|observation| observation.base_rate >= REDUNDANT_BASE_RATE)
+    {
+        return BehaviorRedundancyDecision::DropRedundant;
+    }
+
+    BehaviorRedundancyDecision::Neutral
+}
+
+fn rule_is_obvious_low_value(title: &str, rule: &str) -> bool {
+    let text = format!("{title}\n{rule}");
+    let lower = text.to_ascii_lowercase();
+    let has_common_platform = has_common_platform_knowledge(&lower);
+    if !has_obvious_default_action(&lower) && !has_common_platform {
+        return false;
+    }
+
+    let has_named_anchor = has_named_code_anchor(&text);
+    let has_project_contract = has_project_contract_signal(&lower);
+    if has_common_platform && !has_project_contract {
+        return true;
+    }
+    let has_strong_rationale = [
+        "because",
+        " so ",
+        "otherwise",
+        "break",
+        "miss",
+        "stale",
+        "regression",
+        "contract",
+        "in sync",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+
+    !(has_named_anchor && (has_project_contract || has_strong_rationale))
+}
+
+fn has_obvious_default_action(lower: &str) -> bool {
+    [
+        "add test",
+        "write test",
+        "include test",
+        "cover test",
+        "handle error",
+        "handle exception",
+        "handle edge case",
+        "catch error",
+        "surface error",
+        "validate input",
+        "validate parameter",
+        "validate argument",
+        "validate payload",
+        "validate request",
+        "input validation",
+        "payload validation",
+        "request validation",
+        "improve readability",
+        "improve clarity",
+        "improve performance",
+        "improve maintainability",
+        "remove dead code",
+        "remove unused code",
+        "delete dead code",
+        "delete unused code",
+        "avoid duplication",
+        "reduce duplication",
+        "reduce complexity",
+        "consistent casing",
+        "consistent capitalization",
+        "consistent naming",
+        "matching casing",
+        "group related test",
+        "group similar test",
+        "consolidate related test",
+        "consolidate similar test",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn has_common_platform_knowledge(lower: &str) -> bool {
+    lower.contains("preventdefault")
+        || lower.contains("page reload")
+        || lower.contains("version suffix casing")
+        || (lower.contains("blocking code") && lower.contains("async"))
+}
+
+fn has_project_contract_signal(lower: &str) -> bool {
+    [
+        "shared",
+        "generated",
+        "schema",
+        "contract",
+        "boundary",
+        "adapter",
+        "router",
+        "provider",
+        "cache",
+        "migration",
+        "protocol",
+        "compatibility",
+        "serialization",
+        "deserialization",
+        "fixture",
+        "in sync",
+        "module's test file",
+        "module test file",
+        "different module",
+        "module they exercise",
+        "module boundary",
+        "versioned schema",
+        "versioned protocol",
+        "versioned contract",
+        "versioned compatibility",
+        "version schema",
+        "version protocol",
+        "version contract",
+        "version compatibility",
+        "api version",
+        "protocol version",
+        "schema version",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn has_named_code_anchor(text: &str) -> bool {
+    if text.contains('`') || text.contains('/') {
+        return true;
+    }
+    for token in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+        let mut has_lower = false;
+        let mut has_upper = false;
+        for ch in token.chars() {
+            has_lower |= ch.is_ascii_lowercase();
+            has_upper |= ch.is_ascii_uppercase();
+        }
+        if token.len() >= 5 && ((has_lower && has_upper) || token.contains('_')) {
+            return true;
+        }
+    }
+    false
 }
 
 fn parse_curator_decisions(raw: &str) -> Result<Vec<MemoryCuratorDecision>> {
@@ -596,6 +854,128 @@ mod tests {
         assert!(curator_rule_is_safe(
             "Avoid unknown for typed event payloads",
             "Avoid `unknown` for event payloads when the expected payload shape is known. Define or reuse a typed payload interface instead, and reserve `unknown` for truly opaque external data."
+        ));
+    }
+
+    #[test]
+    fn curator_rule_safety_rejects_obvious_default_model_rules() {
+        assert!(!curator_rule_is_safe(
+            "Use request validation in handlers",
+            "Use request validation when changing HTTP handlers so invalid payloads do not cause errors. This is the default safe handling expected for ordinary request parsing."
+        ));
+        assert!(curator_rule_is_safe(
+            "Use requireUser for auth loaders",
+            "Use requireUser when wiring auth loaders because direct cookie reads miss refreshed sessions; the shared helper preserves the team's session refresh behavior."
+        ));
+    }
+
+    #[test]
+    fn curator_rule_safety_rejects_common_platform_version_casing() {
+        assert!(!curator_rule_is_safe(
+            "Use consistent version suffix casing in type names",
+            "When naming versioned types in TypeScript, use uppercase V2 rather than lowercase v2. Mixing casing across related type names in the same file creates inconsistency."
+        ));
+    }
+
+    #[test]
+    fn curator_behavior_gate_rejects_stably_redundant_rules() {
+        let behavior = vec![
+            MemoryCuratorBehaviorObservation {
+                base_rate: 1.0,
+                lift_oracle: 0.0,
+                lift_e2e: 0.0,
+                corrected: false,
+            },
+            MemoryCuratorBehaviorObservation {
+                base_rate: 1.0,
+                lift_oracle: 0.0,
+                lift_e2e: 0.0,
+                corrected: false,
+            },
+            MemoryCuratorBehaviorObservation {
+                base_rate: 1.0,
+                lift_oracle: 0.0,
+                lift_e2e: 0.0,
+                corrected: false,
+            },
+        ];
+
+        assert!(!curator_rule_is_safe_with_behavior(
+            "Use requireUser for auth loaders",
+            "Use requireUser when wiring auth loaders because direct cookie reads miss refreshed sessions; the shared helper preserves the team's session refresh behavior.",
+            &behavior
+        ));
+    }
+
+    #[tokio::test]
+    async fn behavior_redundant_candidates_are_reviewed_before_ai() {
+        let mut candidate = MemoryCuratorCandidate::new(
+            "group-a".to_owned(),
+            "Use requireUser for auth loaders".to_owned(),
+            "Use requireUser when wiring auth loaders because direct cookie reads miss refreshed sessions; the shared helper preserves the team's session refresh behavior."
+                .to_owned(),
+            MemoryCuratorSource::PrReview,
+        );
+        candidate.behavior_observations = vec![
+            MemoryCuratorBehaviorObservation {
+                base_rate: 1.0,
+                lift_oracle: 0.0,
+                lift_e2e: 0.0,
+                corrected: false,
+            },
+            MemoryCuratorBehaviorObservation {
+                base_rate: 1.0,
+                lift_oracle: 0.0,
+                lift_e2e: 0.0,
+                corrected: false,
+            },
+            MemoryCuratorBehaviorObservation {
+                base_rate: 1.0,
+                lift_oracle: 0.0,
+                lift_e2e: 0.0,
+                corrected: false,
+            },
+        ];
+
+        let outcome =
+            curate_memory_candidates_with_local_ai(&[candidate], MemoryCuratorOptions::default())
+                .await
+                .expect("curate");
+
+        assert_eq!(outcome.unavailable_reason, None);
+        assert_eq!(outcome.decisions.len(), 1);
+        assert_eq!(outcome.decisions[0].group_id, "group-a");
+        assert_eq!(outcome.decisions[0].action, MemoryCuratorAction::Review);
+        assert!(
+            outcome.decisions[0]
+                .reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("already followed without memory")
+        );
+    }
+
+    #[test]
+    fn curator_behavior_gate_protects_positive_platform_rules() {
+        let behavior = vec![MemoryCuratorBehaviorObservation {
+            base_rate: 0.67,
+            lift_oracle: 0.33,
+            lift_e2e: 0.0,
+            corrected: false,
+        }];
+
+        assert!(curator_rule_is_safe_with_behavior(
+            "Call preventDefault in form submit handlers",
+            "When writing form submit handlers, call preventDefault before router mutations so the page does not reload.",
+            &behavior
+        ));
+    }
+
+    #[test]
+    fn curator_rule_safety_keeps_module_boundary_test_placement() {
+        assert!(curator_rule_is_safe(
+            "Don't add tests for unrelated utilities in a module's test file",
+            "When adding a new utility, place its tests in a test file scoped to that utility, not in an existing test file for a different module. Tests should live with the module they exercise."
         ));
     }
 

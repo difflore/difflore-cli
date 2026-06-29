@@ -263,6 +263,14 @@ async fn dispatch_hook_event_with_state(
                 );
             }
             if capture_enabled && let Ok(db) = difflore_core::infra::db::init_db().await {
+                // The background lease is intentionally dirty-gated; arm it
+                // before scheduling so session-end triggers do not skip as
+                // `not_dirty` while pending local memory exists.
+                crate::commands::memory::mark_memory_autopilot_dirty_best_effort(
+                    &db,
+                    "session_end",
+                )
+                .await;
                 crate::commands::memory::schedule_memory_autopilot_best_effort(
                     &db,
                     "session_end",

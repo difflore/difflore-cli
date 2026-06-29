@@ -2,8 +2,9 @@
 //! emphasis/banner markup never reaches user-visible surfaces.
 //!
 //! Two layers, applied in order:
-//!  - `strip_review_markdown_noise`: drops emoji, markdown emphasis runs
-//!    (`**`, `__`, `_`, `*`), and leading severity banners.
+//!  - `strip_review_markdown_noise`: drops GitHub `:shortcode:` emoji,
+//!    unicode emoji, markdown emphasis runs (`**`, `__`, `_`, `*`),
+//!    and leading markdown/severity banners.
 //!  - `clean_display_title`: also drops the `Review:` ingest prefix when
 //!    nothing useful remains after the colon, and trims residual delimiters.
 //!
@@ -126,17 +127,48 @@ fn strip_html_tags(input: &str) -> String {
     out
 }
 
-/// Drop HTML tags, emoji, markdown emphasis markers, and leading severity
-/// banners. Idempotent.
+const fn is_github_shortcode_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '+')
+}
+
+fn strip_github_emoji_shortcodes(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(start) = rest.find(':') {
+        out.push_str(&rest[..start]);
+        let after_start = &rest[start + 1..];
+        if let Some(end) = after_start.find(':') {
+            let candidate = &after_start[..end];
+            let is_shortcode = !candidate.is_empty()
+                && candidate.len() <= 64
+                && candidate.chars().all(is_github_shortcode_char)
+                && (candidate.chars().any(|ch| ch.is_ascii_alphabetic())
+                    || matches!(candidate, "+1" | "-1"));
+            if is_shortcode {
+                out.push(' ');
+                rest = &after_start[end + 1..];
+                continue;
+            }
+        }
+        out.push(':');
+        rest = after_start;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Drop HTML tags, GitHub `:shortcode:` emoji, unicode emoji, markdown
+/// emphasis markers, and leading severity banners. Idempotent.
 pub(crate) fn strip_review_markdown_noise(input: &str) -> String {
     // 0. Strip recognized HTML tags (Greptile anchors/headers, CodeRabbit
     //    toggles) before anything else so their attribute residue never
     //    survives into rule titles.
     let de_tagged = strip_html_tags(input);
+    let no_shortcodes = strip_github_emoji_shortcodes(&de_tagged);
 
     // 1. Drop emoji and variation/zero-width selectors that don't help
     //    retrieval and look noisy in plain-text contexts.
-    let no_emoji: String = de_tagged
+    let no_emoji: String = no_shortcodes
         .chars()
         .filter(|ch| {
             let code = *ch as u32;
@@ -296,6 +328,15 @@ mod tests {
         assert!(out.contains("Use"));
         assert!(out.contains("errors.Is"));
         assert!(!out.contains('*'));
+    }
+
+    #[test]
+    fn strip_drops_github_shortcodes_and_markdown_heading_prefix() {
+        let raw = "### :red_circle: Report :open_file_folder:";
+        let out = strip_review_markdown_noise(raw);
+        assert_eq!(out, "Report");
+        assert!(!out.contains(":red_circle:"));
+        assert!(!out.starts_with('#'));
     }
 
     #[test]

@@ -533,9 +533,11 @@ pub(super) fn resolve_path(spec: &AgentSpec) -> Result<PathBuf, String> {
 /// `spec`.
 pub(super) fn detect(spec: &AgentSpec, bin: &str) -> TargetStatus {
     match &spec.format {
-        ConfigFormat::CliDelegate { cli, get_args, .. } => probe_cli_mcp(spec.name, cli, get_args),
+        ConfigFormat::CliDelegate { cli, get_args, .. } => {
+            probe_cli_mcp(spec.name, cli, get_args, bin)
+        }
         ConfigFormat::Json { servers_key } => with_path(spec, |path| {
-            probe_json_install(spec.name, path, servers_key, bin)
+            probe_json_install(spec.name, path, servers_key, bin, mcp_entry_shape_of(spec))
         }),
         ConfigFormat::Yaml => with_path(spec, |path| probe_goose_install(spec.name, path, bin)),
         ConfigFormat::Hooks { surface } => with_path(spec, |path| match surface {

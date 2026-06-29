@@ -1096,6 +1096,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cleaned_pr_review_draft_auto_enables_without_ai_curator() {
+        let pool = fresh_pool().await;
+        sqlx::query(
+            "INSERT INTO skills \
+                (id, name, source, directory, version, description, type, engines, tags, status, origin, source_repo, file_patterns) \
+             VALUES \
+                ('draft-pr-clean', 'Use base media components', 'local', '', '1.0.0', \
+                 'Rule:\nUse base media components for images and videos in UI code instead of raw media tags outside the base component implementations.\n\nSource evidence:\nSource: owner/repo#57\nComment: https://example.test/review\nFile: src/components/developers/Hero.tsx', \
+                 'review_standard', '[]', '[]', 'pending', 'pr_review', 'owner/repo', '[\"src/components/developers/hero/**/*.tsx\"]')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert cleaned pr draft");
+
+        let report = run_memory_autopilot(&pool, MemoryAutopilotOptions::default())
+            .await
+            .expect("autopilot");
+
+        assert_eq!(report.auto_enabled.len(), 1);
+        assert_eq!(
+            report.auto_enabled[0].rule_id.as_deref(),
+            Some("draft-pr-clean")
+        );
+        assert!(
+            report.auto_enabled[0]
+                .reason
+                .contains("cleaned PR-review rule")
+        );
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM skills WHERE id = 'draft-pr-clean'")
+                .fetch_one(&pool)
+                .await
+                .expect("status");
+        assert_eq!(status, "active");
+    }
+
+    #[tokio::test]
+    async fn cleaned_pr_review_draft_obvious_default_rule_waits_for_review() {
+        let pool = fresh_pool().await;
+        sqlx::query(
+            "INSERT INTO skills \
+                (id, name, source, directory, version, description, type, engines, tags, status, origin, source_repo, file_patterns) \
+             VALUES \
+                ('draft-pr-obvious', 'Use request validation in handlers', 'local', '', '1.0.0', \
+                 'Rule:\nUse request validation when changing HTTP handlers so invalid payloads do not cause errors. This is the default safe handling expected for ordinary request parsing.\n\nSource evidence:\nSource: owner/repo#61\nComment: https://example.test/review\nFile: src/http/user.ts', \
+                 'review_standard', '[]', '[]', 'pending', 'pr_review', 'owner/repo', '[\"src/http/**/*.ts\"]')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert obvious pr draft");
+
+        let report = run_memory_autopilot(&pool, MemoryAutopilotOptions::default())
+            .await
+            .expect("autopilot");
+
+        assert!(report.auto_enabled.is_empty());
+        assert_eq!(report.digest.counts.pending_drafts, 1);
+        assert_eq!(report.digest.counts.auto_enable_groups, 0);
+        assert_eq!(report.digest.counts.needs_review_groups, 1);
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM skills WHERE id = 'draft-pr-obvious'")
+                .fetch_one(&pool)
+                .await
+                .expect("status");
+        assert_eq!(status, "pending");
+    }
+
+    #[tokio::test]
+    async fn fallback_titled_pr_review_draft_still_waits_for_cleanup() {
+        let pool = fresh_pool().await;
+        sqlx::query(
+            "INSERT INTO skills \
+                (id, name, source, directory, version, description, type, engines, tags, status, origin, source_repo, file_patterns) \
+             VALUES \
+                ('draft-pr-fallback-title', 'Review rule for src/components/Hero.tsx', 'local', '', '1.0.0', \
+                 'Rule:\nUse base media components for images and videos in UI code instead of raw media tags outside the base component implementations.\n\nSource evidence:\nSource: owner/repo#58\nComment: https://example.test/review\nFile: src/components/Hero.tsx', \
+                 'review_standard', '[]', '[]', 'pending', 'pr_review', 'owner/repo', '[\"src/components/Hero.tsx\"]')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert fallback-title pr draft");
+
+        let report = run_memory_autopilot(&pool, MemoryAutopilotOptions::default())
+            .await
+            .expect("autopilot");
+
+        assert!(report.auto_enabled.is_empty());
+        assert_eq!(report.digest.counts.needs_review_groups, 1);
+        assert!(
+            report.digest.candidate_groups[0]
+                .reason
+                .contains("human rule cleanup")
+        );
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM skills WHERE id = 'draft-pr-fallback-title'")
+                .fetch_one(&pool)
+                .await
+                .expect("status");
+        assert_eq!(status, "pending");
+    }
+
+    #[tokio::test]
     async fn active_duplicate_drafts_are_skipped_without_ai_or_failure() {
         let pool = fresh_pool().await;
         sqlx::query(
@@ -1669,6 +1771,24 @@ mod tests {
                 .contains("local memory curator recommends")
         );
         assert_eq!(group.digest.confidence.as_deref(), Some("0.74"));
+    }
+
+    #[test]
+    fn curator_default_threshold_auto_enables_at_observed_high_confidence() {
+        let mut group = planned_pr_review_group(vec!["src/components/developers/hero/**/*.tsx"]);
+        let mut decision = high_confidence_curator_decision(
+            group.digest.group_id.clone(),
+            Some(MemoryCuratorScope::PathScoped),
+        );
+        decision.confidence = crate::memory_curator::DEFAULT_CURATOR_MIN_CONFIDENCE;
+
+        apply_curator_decision(&mut group, &decision, MemoryCuratorOptions::default());
+
+        assert_eq!(group.digest.state, MemoryCandidateGroupState::AutoEnable);
+        assert_eq!(
+            group.digest.confidence.as_deref(),
+            Some(AUTOPILOT_CONFIDENCE)
+        );
     }
 
     #[tokio::test]

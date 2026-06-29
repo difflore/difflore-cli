@@ -7,8 +7,8 @@ use super::super::{
     McpState, build_cost_meta, emit_trajectory_step, estimate_tokens, rule_hits_by_origin,
 };
 use super::evidence::{
-    fetch_skills_by_ids, parse_file_patterns, render_full_rule_with_examples,
-    strict_file_match_count_for_ids,
+    explicit_recall_application_guidance, explicit_recall_application_kind, fetch_skills_by_ids,
+    parse_file_patterns, render_full_rule_with_examples, strict_file_match_count_for_ids,
 };
 
 const MAX_GET_RULE_IDS: usize = 20;
@@ -81,6 +81,8 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
             Some(row) => {
                 let examples = examples_map.get(id.as_str());
                 let body = render_full_rule_with_examples(row, examples);
+                let application_kind = explicit_recall_application_kind(row);
+                let application_guidance = explicit_recall_application_guidance(row);
                 let example_entries: Vec<Value> = examples
                     .map(|ex| {
                         ex.iter()
@@ -101,6 +103,8 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
                     "title": row.name,
                     "origin": row.origin,
                     "confidence": row.confidence_score,
+                    "application_kind": application_kind,
+                    "application_guidance": application_guidance,
                     "file_patterns": parse_file_patterns(row.file_patterns.as_deref()),
                     "source_repo": row.source_repo
                         .as_deref()

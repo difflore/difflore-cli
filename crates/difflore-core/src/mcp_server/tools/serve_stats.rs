@@ -6,6 +6,7 @@ use serde_json::json;
 use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
 
+use super::evidence::{SkillDetailRow, fetch_skills_by_ids, has_strict_file_scope_match};
 use crate::error::CoreError;
 
 #[cfg(test)]
@@ -296,9 +297,34 @@ pub(crate) async fn cross_repo_starter_scored(
     else {
         return Vec::new();
     };
-    let mut keep = candidates;
+    let candidate_ids: Vec<String> = candidates
+        .iter()
+        .map(|candidate| candidate.skill_id.clone())
+        .collect();
+    let meta_map = fetch_skills_by_ids(db, &candidate_ids)
+        .await
+        .unwrap_or_default();
+    let mut keep: Vec<_> = candidates
+        .into_iter()
+        .filter(|candidate| {
+            meta_map
+                .get(&candidate.skill_id)
+                .is_some_and(|row| starter_candidate_allowed(row, target_file))
+        })
+        .collect();
+    crate::context::retrieval::apply_intent_alignment_gate(&mut keep, query);
+    crate::context::retrieval::apply_explicit_recall_threshold(&mut keep);
     keep.truncate(top_k);
     keep
+}
+
+fn starter_candidate_allowed(row: &SkillDetailRow, target_file: &str) -> bool {
+    row.confidence_score >= 0.55
+        && row
+            .source_repo
+            .as_deref()
+            .is_some_and(|repo| !repo.trim().is_empty())
+        && has_strict_file_scope_match(row.file_patterns.as_deref(), target_file)
 }
 
 pub(crate) fn build_empty_recall_retry_query(file: &str, intent: &str) -> Option<String> {
@@ -391,6 +417,27 @@ mod tests {
             .find(|chunk| chunk.skill_id == id)
             .map(|chunk| chunk.score)
             .expect("expected score for rule id")
+    }
+
+    fn skill_row(
+        id: &str,
+        confidence_score: f64,
+        file_patterns: Option<&str>,
+        source_repo: Option<&str>,
+    ) -> SkillDetailRow {
+        SkillDetailRow {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            description: String::new(),
+            r#type: "review_standard".to_owned(),
+            tags: "[]".to_owned(),
+            confidence_score,
+            file_patterns: file_patterns.map(str::to_owned),
+            origin: "pr_review".to_owned(),
+            source_repo: source_repo.map(str::to_owned),
+            trigger: None,
+            check_prompt: None,
+        }
     }
 
     #[test]
@@ -534,6 +581,40 @@ mod tests {
         );
 
         assert_eq!(strict_ids, ["strict".to_owned()].into());
+    }
+
+    #[test]
+    fn starter_candidate_guard_requires_source_confidence_and_path_match() {
+        assert!(starter_candidate_allowed(
+            &skill_row("good", 0.8, Some("[\"src/**/*.rs\"]"), Some("acme/widgets")),
+            "src/http/handler.rs"
+        ));
+        assert!(!starter_candidate_allowed(
+            &skill_row("unscoped", 0.8, None, Some("acme/widgets")),
+            "src/http/handler.rs"
+        ));
+        assert!(!starter_candidate_allowed(
+            &skill_row(
+                "wrong-file",
+                0.8,
+                Some("[\"docs/**/*.md\"]"),
+                Some("acme/widgets")
+            ),
+            "src/http/handler.rs"
+        ));
+        assert!(!starter_candidate_allowed(
+            &skill_row("anonymous", 0.8, Some("[\"src/**/*.rs\"]"), None),
+            "src/http/handler.rs"
+        ));
+        assert!(!starter_candidate_allowed(
+            &skill_row(
+                "low-confidence",
+                0.3,
+                Some("[\"src/**/*.rs\"]"),
+                Some("acme/widgets")
+            ),
+            "src/http/handler.rs"
+        ));
     }
 
     #[tokio::test]

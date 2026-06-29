@@ -1261,13 +1261,13 @@ async fn emit_cold_start_hint(db: &difflore_core::SqlitePool) {
             "  {} {}",
             style::emerald(style::sym::TIP),
             style::pewter(
-                "No new rules yet. Import PR reviews, extract team rules in cloud, then sync again."
+                "No cloud rules yet. Import PR reviews locally first; upload only when you want Cloud extraction."
             ),
         );
         println!(
-            "  {} import: {}",
+            "  {} local import: {}",
             style::pewter(style::sym::BULLET),
-            style::cmd("difflore import-reviews --max-prs 50 --upload"),
+            style::cmd("difflore import-reviews --max-prs 50"),
         );
         println!(
             "  {} dashboard: {}",

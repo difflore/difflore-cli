@@ -17,7 +17,7 @@ use crate::ingest::common::{CommentDurabilitySignal, comment_exists, comment_met
 use crate::review_store::{AddCommentInput, EnsureItemInput};
 
 use super::ImportOptions;
-use super::schema::{Discussion, MergeRequest, Note};
+use super::schema::{DiffNode, Discussion, MergeRequest, Note};
 
 /// `gl-import:{host}/{namespace_path}#{iid}` — host included so the same
 /// `group/project` path on gitlab.com and a self-managed mirror never
@@ -35,8 +35,37 @@ pub(super) fn gitlab_external_comment_id(note_id: i64) -> String {
 /// Per-item metadata carrying the instance host. The upload path reads
 /// `sourceRepoFullName` from item metadata and correctly finds none here
 /// (GitLab v1 has no fork-import flow).
-pub(super) fn item_metadata_json(host: &str) -> String {
-    serde_json::json!({ "gitlabHost": host }).to_string()
+pub(super) fn item_metadata_json(host: &str, diffs: &[DiffNode]) -> String {
+    let changed_file_paths = changed_file_paths(diffs);
+    if changed_file_paths.is_empty() {
+        serde_json::json!({ "gitlabHost": host }).to_string()
+    } else {
+        serde_json::json!({
+            "gitlabHost": host,
+            "changedFilePaths": changed_file_paths,
+        })
+        .to_string()
+    }
+}
+
+pub(super) fn changed_file_paths(diffs: &[DiffNode]) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut push_path = |value: Option<&str>| {
+        let Some(path) = value.map(str::trim).filter(|path| !path.is_empty()) else {
+            return;
+        };
+        if seen.insert(path.to_owned()) {
+            paths.push(path.to_owned());
+        }
+    };
+    for diff in diffs {
+        push_path(diff.new_path.as_deref());
+        if diff.old_path != diff.new_path {
+            push_path(diff.old_path.as_deref());
+        }
+    }
+    paths
 }
 
 /// Convert a `--since YYYY-MM-DD` date into the ISO8601 instant GitLab's
@@ -83,9 +112,9 @@ pub(super) fn note_comment_url(mr_web_url: Option<&str>, note_id: i64) -> Option
 }
 
 /// Representative file path for the review item: first inline note's
-/// `new_path`, else the MR title (same fallback the GitHub importer uses so
-/// the item stays queryable).
-pub(super) fn representative_file_path(mr: &MergeRequest, discussions: &[Discussion]) -> String {
+/// `new_path`, else the first changed path. Leave it empty when the MR has no
+/// path anchor rather than writing an MR title into a path-typed field.
+pub(super) fn representative_file_path(discussions: &[Discussion], diffs: &[DiffNode]) -> String {
     discussions
         .iter()
         .flat_map(|d| d.notes.iter())
@@ -98,7 +127,8 @@ pub(super) fn representative_file_path(mr: &MergeRequest, discussions: &[Discuss
                 .filter(|p| !p.is_empty())
                 .map(str::to_owned)
         })
-        .unwrap_or_else(|| mr.title.clone())
+        .or_else(|| changed_file_paths(diffs).into_iter().next())
+        .unwrap_or_default()
 }
 
 /// Durability signal for one note: discussion resolution is the adoption
@@ -133,10 +163,11 @@ pub(super) async fn persist_merge_request(
     opts: &ImportOptions,
     mr: &MergeRequest,
     discussions: &[Discussion],
+    diffs: &[DiffNode],
     progress: &mut ImportProgress,
 ) -> crate::Result<()> {
     let item_id = gitlab_item_id(&opts.host, &opts.project_path, mr.iid);
-    let file_path = representative_file_path(mr, discussions);
+    let file_path = representative_file_path(discussions, diffs);
 
     crate::review_store::ensure_item(
         db,
@@ -154,7 +185,7 @@ pub(super) async fn persist_merge_request(
             pr_number: i32::try_from(mr.iid).ok(),
             author: mr.author.as_ref().map(|a| a.username.clone()),
             synced_at: None,
-            metadata: Some(item_metadata_json(&opts.host)),
+            metadata: Some(item_metadata_json(&opts.host, diffs)),
             reviewed_at: None,
         },
     )
@@ -273,7 +304,7 @@ mod tests {
     #[test]
     fn item_metadata_carries_the_instance_host() {
         let value: serde_json::Value =
-            serde_json::from_str(&item_metadata_json("gitlab.corp.example")).expect("json");
+            serde_json::from_str(&item_metadata_json("gitlab.corp.example", &[])).expect("json");
         assert_eq!(value["gitlabHost"], "gitlab.corp.example");
         assert!(
             value.get("sourceRepoFullName").is_none(),
@@ -344,8 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn representative_path_prefers_inline_anchor_then_title() {
-        let mr = merge_request(42, "Validate request headers");
+    fn representative_path_prefers_inline_anchor_then_changed_file() {
         let inline = vec![
             discussion(
                 "top",
@@ -363,7 +393,7 @@ mod tests {
             ),
         ];
         assert_eq!(
-            representative_file_path(&mr, &inline),
+            representative_file_path(&inline, &[]),
             "src/http/request.rs"
         );
 
@@ -371,10 +401,12 @@ mod tests {
             "top",
             vec![note(1, "Please add a changelog.", false, false, false)],
         )];
+        let diffs = vec![diff("docs/CHANGELOG.md", "docs/CHANGELOG.md")];
         assert_eq!(
-            representative_file_path(&mr, &no_inline),
-            "Validate request headers"
+            representative_file_path(&no_inline, &diffs),
+            "docs/CHANGELOG.md"
         );
+        assert_eq!(representative_file_path(&no_inline, &[]), "");
     }
 
     #[test]
@@ -472,6 +504,7 @@ mod tests {
                 )],
             ),
         ];
+        let diffs = vec![diff("src/http/request.rs", "src/http/request.rs")];
 
         let mut progress = ImportProgress {
             prs_fetched: 0,
@@ -481,7 +514,7 @@ mod tests {
             prs_missing: 0,
             missing_pr_numbers: Vec::new(),
         };
-        persist_merge_request(&pool, &opts, &mr, &discussions, &mut progress)
+        persist_merge_request(&pool, &opts, &mr, &discussions, &diffs, &mut progress)
             .await
             .expect("persist");
         assert_eq!(progress.comments_imported, 3, "system note must be dropped");
@@ -510,6 +543,10 @@ mod tests {
             serde_json::from_str(item.item.metadata.as_deref().expect("item metadata"))
                 .expect("metadata json");
         assert_eq!(item_meta["gitlabHost"], "gitlab.com");
+        assert_eq!(
+            item_meta["changedFilePaths"],
+            serde_json::json!(["src/http/request.rs"])
+        );
 
         assert_eq!(item.comments.len(), 3);
         let inline = item
@@ -550,10 +587,36 @@ mod tests {
             prs_missing: 0,
             missing_pr_numbers: Vec::new(),
         };
-        persist_merge_request(&pool, &opts, &mr, &discussions, &mut rerun)
+        persist_merge_request(&pool, &opts, &mr, &discussions, &diffs, &mut rerun)
             .await
             .expect("rerun persists");
         assert_eq!(rerun.comments_imported, 0);
         assert_eq!(rerun.comments_skipped, 3);
+    }
+
+    fn diff(old_path: &str, new_path: &str) -> DiffNode {
+        serde_json::from_value(serde_json::json!({
+            "old_path": old_path,
+            "new_path": new_path,
+        }))
+        .expect("diff fixture deserializes")
+    }
+
+    #[test]
+    fn changed_paths_include_renames_once_in_new_then_old_order() {
+        let diffs = vec![
+            diff("src/old.rs", "src/new.rs"),
+            diff("docs/README.md", "docs/README.md"),
+            diff("src/new.rs", "src/new.rs"),
+        ];
+
+        assert_eq!(
+            changed_file_paths(&diffs),
+            vec![
+                "src/new.rs".to_owned(),
+                "src/old.rs".to_owned(),
+                "docs/README.md".to_owned(),
+            ]
+        );
     }
 }

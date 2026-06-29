@@ -12,7 +12,7 @@
 //!
 //! One public async function:
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use std::time::Duration;
 //! use difflore_cli::agent_exec::{AgentKind, dispatch_gate};
 //!

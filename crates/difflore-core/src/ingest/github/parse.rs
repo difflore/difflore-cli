@@ -42,6 +42,42 @@ pub(super) fn imported_external_id(repo: &str, source_repo: &str, db_id: i64) ->
     }
 }
 
+pub(super) fn changed_file_paths(pr: &PrNode) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for file in &pr.files.nodes {
+        if let Some(path) = non_empty_path(Some(file.path.as_str()))
+            && seen.insert(path.to_owned())
+        {
+            paths.push(path.to_owned());
+        }
+    }
+    paths
+}
+
+pub(super) fn item_metadata_json(opts: &ImportOptions, pr: &PrNode) -> Option<String> {
+    let mut metadata = serde_json::Map::new();
+    if opts.source_repo != opts.repo {
+        metadata.insert(
+            "sourceRepoFullName".to_owned(),
+            serde_json::Value::String(opts.source_repo.clone()),
+        );
+        metadata.insert(
+            "attachedRepoFullName".to_owned(),
+            serde_json::Value::String(opts.repo.clone()),
+        );
+    }
+    let paths = changed_file_paths(pr);
+    if !paths.is_empty() {
+        metadata.insert("changedFilePaths".to_owned(), serde_json::json!(paths));
+    }
+    if metadata.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(metadata).to_string())
+    }
+}
+
 /// Drop any fetched PR whose `number` is in `exclude_prs`, in place. Runs
 /// before comments become candidates so an excluded PR contributes zero rules
 /// — the leak-free guarantee `--exclude-prs` relies on for recall evaluation.
@@ -71,17 +107,7 @@ pub(super) async fn persist_pull_request(
     progress: &mut ImportProgress,
 ) -> crate::Result<()> {
     let item_id = format!("gh-import:{}#{}", opts.repo, pr_number);
-    let source_metadata = if opts.source_repo == opts.repo {
-        None
-    } else {
-        Some(
-            serde_json::json!({
-                "sourceRepoFullName": &opts.source_repo,
-                "attachedRepoFullName": &opts.repo,
-            })
-            .to_string(),
-        )
-    };
+    let source_metadata = item_metadata_json(opts, pr);
 
     // Pick a representative real file path: first inline comment's path,
     // then first changed file. Leave it empty when the PR has no path
@@ -374,6 +400,48 @@ mod tests {
             remaining,
             vec![1, 2],
             "empty exclude set must keep every PR"
+        );
+    }
+
+    #[test]
+    fn item_metadata_carries_changed_file_paths_for_top_level_scope() {
+        let pr: PrNode = serde_json::from_str(
+            r#"{
+                "number": 7,
+                "files": {
+                    "nodes": [
+                        { "path": "src/http/request.rs" },
+                        { "path": "src/http/request.rs" },
+                        { "path": "web/components/Button.tsx" }
+                    ]
+                }
+            }"#,
+        )
+        .expect("PR fixture deserializes");
+        let opts = ImportOptions {
+            repo: "acme/app".to_owned(),
+            source_repo: "acme/app".to_owned(),
+            project_id: "project-1".to_owned(),
+            max_prs: 50,
+            pr_numbers: Vec::new(),
+            exclude_prs: std::collections::HashSet::new(),
+            since: None,
+            upload_to_cloud: false,
+            include_open: false,
+        };
+
+        let value: serde_json::Value = serde_json::from_str(
+            &item_metadata_json(&opts, &pr).expect("changed paths produce metadata"),
+        )
+        .expect("metadata json");
+
+        assert_eq!(
+            value["changedFilePaths"],
+            serde_json::json!(["src/http/request.rs", "web/components/Button.tsx"])
+        );
+        assert!(
+            value.get("sourceRepoFullName").is_none(),
+            "same-repo imports should not invent fork metadata"
         );
     }
 }

@@ -157,6 +157,8 @@ pub(crate) enum ImportProviderArg {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum ImportDistillArg {
+    /// Prefer an installed local agent CLI, falling back to deterministic heuristics.
+    Auto,
     /// Use deterministic local heuristics.
     Heuristic,
     /// Ask an installed local agent CLI to distill pending candidates.
@@ -209,7 +211,7 @@ pub(crate) struct ImportReviewsCliArgs {
     #[arg(
         long,
         value_enum,
-        default_value_t = ImportDistillArg::Heuristic,
+        default_value_t = ImportDistillArg::Auto,
         conflicts_with = "upload"
     )]
     pub(crate) distill: ImportDistillArg,

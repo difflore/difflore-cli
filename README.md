@@ -4,11 +4,11 @@
 [![Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-stdio-green.svg)](https://modelcontextprotocol.io)
 
-DiffLore is an open-source CLI that turns past PR/MR review feedback into
-source-backed local rules for AI coding agents.
+DiffLore is an open-source CLI that imports your private PR/MR review backlog
+into source-backed local rules for AI coding agents.
 
-It imports review history, stores rules in local SQLite, and serves relevant
-rules through MCP, hooks, and CLI commands before an agent edits code.
+It stores rules in local SQLite, wires them into local AI CLIs through MCP and
+hooks, and serves the relevant review judgment before an agent edits code.
 
 ## Install
 
@@ -56,7 +56,8 @@ difflore status
 difflore recall --diff
 ```
 
-DiffLore never commits, pushes, opens PRs, or posts GitHub comments.
+DiffLore works with private repos and local AI CLIs. It never requires a public
+repo, and it never commits, pushes, opens PRs, or posts GitHub comments.
 
 ## Commands
 
@@ -64,8 +65,8 @@ DiffLore never commits, pushes, opens PRs, or posts GitHub comments.
 | --- | --- |
 | `difflore try` | Run the demo |
 | `difflore init` | Set up the current repo |
-| `difflore import-reviews` | Import GitHub PR or GitLab MR review history |
-| `difflore agents install` | Wire DiffLore into local agents |
+| `difflore import-reviews` | Import private GitHub PR or GitLab MR review backlog locally |
+| `difflore agents install` | Wire DiffLore into local AI CLIs and agents |
 | `difflore status` | Show readiness and the next command |
 | `difflore memory` | Inspect local rules, drafts, queues, and autopilot state |
 | `difflore memory review` | Review pending local memory |
@@ -88,7 +89,9 @@ Local AI CLI calls that need an LLM backend use `gate4agent`.
 DiffLore is local-first:
 
 - Rules and activity are stored in local SQLite by default.
-- Cloud sync is optional and explicit through `difflore cloud ...`.
+- Private review imports do not require public repos or cloud upload.
+- Cloud sync is optional and explicit through `difflore cloud ...`; use it for
+  team sync, multi-device access, or managed token/embedding paths.
 - MCP is for agent context, retrieval, explanation, and proposals.
 - Approval, rejection, sync, auth, provider setup, and file mutation stay in the CLI.
 
