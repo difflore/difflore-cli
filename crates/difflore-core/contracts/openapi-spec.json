@@ -18659,6 +18659,46 @@
                               }
                             ]
                           },
+                          "serveCount": {
+                            "type": "number",
+                            "default": 0
+                          },
+                          "acceptedOutcomeCount": {
+                            "type": "number",
+                            "default": 0
+                          },
+                          "rejectedOutcomeCount": {
+                            "type": "number",
+                            "default": 0
+                          },
+                          "falsePositiveCount": {
+                            "type": "number",
+                            "default": 0
+                          },
+                          "scopeConfidence": {
+                            "type": "number",
+                            "default": 0
+                          },
+                          "roiScore": {
+                            "type": "number",
+                            "default": 0
+                          },
+                          "usefulnessScore": {
+                            "type": "number",
+                            "default": 0
+                          },
+                          "redundancyScore": {
+                            "type": "number",
+                            "default": 0
+                          },
+                          "regressionScore": {
+                            "type": "number",
+                            "default": 0
+                          },
+                          "teamSpecificityScore": {
+                            "type": "number",
+                            "default": 0
+                          },
                           "proofChain": {
                             "anyOf": [
                               {
@@ -18889,6 +18929,62 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "highRoiRules": {
+                      "type": "number",
+                      "default": 0
+                    },
+                    "redundantRules": {
+                      "type": "number",
+                      "default": 0
+                    },
+                    "regressionRiskRules": {
+                      "type": "number",
+                      "default": 0
+                    },
+                    "medianRoiScore": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "medianRedundancyScore": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "medianRegressionScore": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "medianTeamSpecificityScore": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
                     },
                     "duplicateGroups": {
                       "type": "number"
