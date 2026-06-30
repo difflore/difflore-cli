@@ -280,6 +280,37 @@ jobs:
         run: |
           # Write and read notes from a file to avoid quoting breaking things
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
+          awk '
+            /^## Install difflore-cli / {
+              print
+              print ""
+              print "```sh"
+              print "curl -fsSL https://difflore.dev/install.sh | sh"
+              print "```"
+              print ""
+              in_install = 1
+              replaced = 1
+              next
+            }
+
+            in_install && /^## Download difflore-cli / {
+              in_install = 0
+              print
+              next
+            }
+
+            !in_install {
+              print
+            }
+
+            END {
+              if (!replaced) {
+                print "error: release notes did not contain an install section" > "/dev/stderr"
+                exit 1
+              }
+            }
+          ' "$RUNNER_TEMP/notes.txt" > "$RUNNER_TEMP/notes.rewritten.txt"
+          mv "$RUNNER_TEMP/notes.rewritten.txt" "$RUNNER_TEMP/notes.txt"
 
           gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
 
