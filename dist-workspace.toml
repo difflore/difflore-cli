@@ -21,6 +21,9 @@ hosting = "github"
 plan-jobs = ["./release-preflight"]
 # Whether to install an updater program
 install-updater = true
+# Keep the generated workflow check from rejecting the intentionally customized
+# GitHub Release notes install section.
+allow-dirty = ["ci"]
 
 [dist.dependencies.apt]
 libdbus-1-dev = "*"
