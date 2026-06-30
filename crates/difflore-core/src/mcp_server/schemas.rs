@@ -4,8 +4,8 @@ use super::tools::CONTROL_PLANE_DENIED_TOOL_NAMES;
 
 pub(super) use super::skill_docs::{
     DIFFLORE_ONBOARD_SKILL_MD, KNOWLEDGE_AGENT_SKILL_MD, MEMORY_CANDIDATE_TRIAGE_SKILL_MD,
-    PRE_SUBMIT_REVIEW_SKILL_MD, RULE_DIFF_SKILL_MD, RULE_GAP_SKILL_MD, RULE_JOURNEY_SKILL_MD,
-    RULE_SEARCH_SKILL_MD, RULE_WHY_FIRED_SKILL_MD, SESSION_RECAP_SKILL_MD, SMART_EXPLORE_SKILL_MD,
+    RULE_DIFF_SKILL_MD, RULE_GAP_SKILL_MD, RULE_JOURNEY_SKILL_MD, RULE_SEARCH_SKILL_MD,
+    RULE_WHY_FIRED_SKILL_MD, SESSION_RECAP_SKILL_MD, SMART_EXPLORE_SKILL_MD,
 };
 
 pub(super) fn tools_list() -> Value {
@@ -441,12 +441,6 @@ pub(super) const SKILL_RESOURCES: &[SkillResource] = &[
         name: "session-recap SKILL",
         description: "Surface concrete difflore accepted-edit activity in one quiet wrap-up line when this task captured it.",
         markdown: SESSION_RECAP_SKILL_MD,
-    },
-    SkillResource {
-        uri: "difflore://skills/pre-submit-review",
-        name: "pre-submit-review SKILL",
-        description: "Run a local DiffLore review before commit, push, PR, or handoff, then fix and re-check.",
-        markdown: PRE_SUBMIT_REVIEW_SKILL_MD,
     },
     SkillResource {
         uri: "difflore://skills/difflore-onboard",

@@ -879,31 +879,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disable_moves_active_rule_back_to_pending_and_records_log() {
+    async fn disable_moves_active_rule_to_disabled_and_excludes_it_from_pending() {
         let pool = fresh_pool().await;
         sqlx::query(
             "INSERT INTO skills (id, name, source, directory, version, description, type, engines, tags, status, origin) \
-             VALUES ('rule-1', 'Prefer block modals', 'local', '', '1.0.0', 'Use block wrappers.', 'review_standard', '[]', '[]', 'active', 'manual')",
+             VALUES \
+                ('rule-1', 'Prefer block modals', 'local', '', '1.0.0', 'Use block wrappers.', 'review_standard', '[]', '[]', 'active', 'manual'), \
+                ('draft-1', 'Prefer semantic buttons', 'local', '', '1.0.0', 'Use semantic buttons.', 'review_standard', '[]', '[]', 'pending', 'manual')",
         )
         .execute(&pool)
         .await
-        .expect("insert rule");
+        .expect("insert rules");
 
         let outcome = disable_memory_rule(&pool, "rule:rule-1", Some("too noisy"))
             .await
             .expect("disable");
 
         assert_eq!(outcome.rule_id, "rule-1");
-        assert_eq!(outcome.current_state, "pending");
+        assert_eq!(outcome.previous_state, "active");
+        assert_eq!(outcome.current_state, "disabled");
         let status: String = sqlx::query_scalar("SELECT status FROM skills WHERE id = 'rule-1'")
             .fetch_one(&pool)
             .await
             .expect("status");
-        assert_eq!(status, "pending");
+        assert_eq!(status, "disabled");
+        let inbox = load_memory_inbox(&pool, 5).await.expect("inbox");
+        assert_eq!(inbox.local_draft_count(), 1);
+        assert_eq!(inbox.local_drafts.latest[0].id, "draft-1");
+        let candidates = list_candidates(&pool, None, None)
+            .await
+            .expect("candidates");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].id, "draft-1");
         let log = load_autopilot_log(&pool, MemoryAutopilotLogFilter { limit: 5 })
             .await
             .expect("log");
         assert_eq!(log.events[0].event_type, "disabled");
+        assert_eq!(
+            log.events[0].payload,
+            json!({ "previousState": "active", "currentState": "disabled" })
+        );
     }
 
     #[tokio::test]
@@ -1051,12 +1066,15 @@ mod tests {
             .expect("autopilot");
 
         assert!(report.auto_enabled.is_empty());
-        assert_eq!(report.digest.counts.needs_review_groups, 1);
-        assert!(
-            report.digest.candidate_groups[0]
-                .reason
-                .contains("disabled by user")
-        );
+        assert_eq!(report.digest.counts.active_rules, 0);
+        assert_eq!(report.digest.counts.pending_drafts, 0);
+        assert_eq!(report.digest.counts.needs_review_groups, 0);
+        assert!(report.digest.candidate_groups.is_empty());
+        let status: String = sqlx::query_scalar("SELECT status FROM skills WHERE id = 'rule-1'")
+            .fetch_one(&pool)
+            .await
+            .expect("status");
+        assert_eq!(status, "disabled");
     }
 
     #[tokio::test]

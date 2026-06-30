@@ -20,25 +20,10 @@ use crate::runtime::CommandContext;
 use crate::style;
 use crate::support::util::{exit_err, json_compact_or};
 
-use super::types::{MemoryCloudSummary, MemoryInboxOutput, MemoryNextAction, MemorySummaryOutput};
+use super::types::{MemoryCloudSummary, MemoryInboxOutput, MemoryNextAction};
 use super::{count_phrase, exit_structured_err, plural};
 
 const ACTIVE_BACKFILL_LIMIT: usize = 1_000;
-
-pub(crate) async fn handle_summary(ctx: &CommandContext, json: bool) {
-    let inbox = load_inbox(ctx, json).await;
-    let autopilot = load_autopilot_status(ctx, json).await;
-    let cloud = MemoryCloudSummary::load().await;
-    let next = next_action(&inbox, &cloud);
-
-    if json {
-        let output = MemorySummaryOutput::from_parts(&inbox, autopilot, cloud, next);
-        println!("{}", json_compact_or(&output, "{}"));
-        return;
-    }
-
-    print_summary(&inbox, &autopilot, &cloud, &next);
-}
 
 pub(crate) async fn handle_inbox(
     ctx: &CommandContext,
@@ -853,80 +838,6 @@ fn next_action(inbox: &MemoryInbox, _cloud: &MemoryCloudSummary) -> MemoryNextAc
     )
 }
 
-fn print_summary(
-    inbox: &MemoryInbox,
-    autopilot: &MemoryAutopilotScheduleStatus,
-    cloud: &MemoryCloudSummary,
-    next: &MemoryNextAction,
-) {
-    println!("{}", style::title("Memory"));
-    println!(
-        "  active rules       {} available to agents",
-        style::ident(&inbox.active_rule_count().to_string())
-    );
-    println!(
-        "  local drafts       {} pending local review {}",
-        style::ident(&inbox.local_draft_count().to_string()),
-        plural(inbox.local_draft_count(), "draft", "drafts")
-    );
-    println!(
-        "  candidate memories {} found from recent agent sessions (not active yet)",
-        style::ident(&inbox.session_mined_count().to_string()),
-    );
-    println!(
-        "  autopilot          {} | runs {} ({} useful) | triggers {}",
-        if autopilot.enabled { "on" } else { "off" },
-        style::ident(&autopilot.run_count.to_string()),
-        style::ident(&autopilot.productive_run_count.to_string()),
-        style::ident(&autopilot.trigger_count.to_string())
-    );
-    if inbox.session_mined_count() > 0 {
-        println!(
-            "  inspect            {}",
-            style::cmd("difflore memory inbox")
-        );
-        if let Some(discovery) = inbox.local_discoveries.latest.first() {
-            println!(
-                "                     {}",
-                style::cmd(&format!("difflore memory show {}", discovery.item_id))
-            );
-        }
-        println!("  background log     {}", style::cmd("difflore memory log"));
-        println!(
-            "  review one         {}",
-            style::cmd("difflore memory approve session:<content_hash>")
-        );
-        println!(
-            "  team sync          {} optional after local approval",
-            style::cmd("difflore memory sync")
-        );
-    } else if inbox.local_draft_count() > 0 {
-        println!(
-            "  review queue       {}",
-            style::cmd("difflore memory review")
-        );
-        if let Some(draft) = inbox.local_drafts.latest.first() {
-            println!(
-                "                     {}",
-                style::cmd(&format!("difflore memory approve draft:{}", draft.id))
-            );
-        }
-    }
-
-    let queue_line = compact_queue_line(inbox);
-    if !queue_line.is_empty() {
-        println!("  optional sync      {queue_line}");
-    }
-    print_team_line(cloud);
-    println!(
-        "  usage              served to agents {} locally",
-        style::ident(&inbox.usage.local_agent_serves.to_string())
-    );
-    println!();
-    println!("  next: {}", style::cmd(&next.command));
-    println!("        {}", style::pewter(&next.reason));
-}
-
 fn print_inbox(
     inbox: &MemoryInbox,
     autopilot: &MemoryAutopilotScheduleStatus,
@@ -1324,36 +1235,6 @@ fn print_cloud_outbox_counts(counts: &[OutboxQueueCount]) {
             cloud_outbox_label(&count.kind)
         );
     }
-}
-
-fn compact_queue_line(inbox: &MemoryInbox) -> String {
-    let mut parts = Vec::new();
-    let memory = inbox.memory_candidates_pending();
-    if memory > 0 {
-        parts.push(format!(
-            "{memory} memory {}",
-            plural(memory, "candidate", "candidates")
-        ));
-    }
-    let cloud_observations = inbox.cloud_observations_pending();
-    if cloud_observations > 0 {
-        parts.push(format!(
-            "{cloud_observations} activity {}",
-            plural(cloud_observations, "record", "records")
-        ));
-    }
-    let observation_events = inbox.observation_events_pending();
-    if observation_events > 0 {
-        parts.push(format!(
-            "{observation_events} activity {}",
-            plural(observation_events, "event", "events")
-        ));
-    }
-    parts.join(", ")
-}
-
-fn print_team_line(cloud: &MemoryCloudSummary) {
-    print_team_status(cloud, true);
 }
 
 fn print_team_status(cloud: &MemoryCloudSummary, with_label: bool) {

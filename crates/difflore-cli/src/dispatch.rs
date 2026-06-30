@@ -298,6 +298,35 @@ async fn dispatch_memory(root_json: bool, command: Option<MemoryCommands>) {
             let ctx = ctx(json).await;
             commands::memory::handle_reject(&ctx, item_id, json).await;
         }
+        Some(MemoryCommands::TeamCandidates {
+            team_id,
+            limit,
+            offset,
+            status,
+            json,
+            command,
+        }) => {
+            let command_json = command.as_ref().is_some_and(|command| match command {
+                crate::cli::TeamCandidateCommands::Count { json, .. }
+                | crate::cli::TeamCandidateCommands::Show { json, .. }
+                | crate::cli::TeamCandidateCommands::Approve { json, .. }
+                | crate::cli::TeamCandidateCommands::Reject { json, .. } => *json,
+            });
+            let effective_json = root_json || json || command_json;
+            let ctx = ctx(effective_json).await;
+            commands::memory::handle_team_candidates(
+                &ctx,
+                commands::memory::TeamCandidateListArgs {
+                    team_id,
+                    limit,
+                    offset,
+                    status,
+                    json: effective_json,
+                    command,
+                },
+            )
+            .await;
+        }
         Some(MemoryCommands::Sync(args)) => {
             let ctx = ctx(args.json).await;
             commands::memory::handle_sync(&ctx, args.into()).await;

@@ -51,21 +51,6 @@ pub(super) struct MemoryLocalDiscoveriesOutput {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct MemorySummaryOutput {
-    pub schema_version: &'static str,
-    pub active_rules: i64,
-    pub local_drafts: i64,
-    pub local_discoveries: MemoryLocalDiscoveriesOutput,
-    pub autopilot: MemoryAutopilotScheduleStatus,
-    pub queues: MemoryQueueSection,
-    pub cloud: MemoryCloudSummary,
-    pub next: MemoryNextAction,
-    pub usage: MemoryUsage,
-    pub warnings: Vec<MemoryInboxWarning>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(super) struct MemoryInboxOutput {
     pub schema_version: &'static str,
     pub active_rules: i64,
@@ -79,31 +64,6 @@ pub(super) struct MemoryInboxOutput {
     pub next: MemoryNextAction,
     pub usage: MemoryUsage,
     pub warnings: Vec<MemoryInboxWarning>,
-}
-
-impl MemorySummaryOutput {
-    pub(super) fn from_parts(
-        inbox: &MemoryInbox,
-        autopilot: MemoryAutopilotScheduleStatus,
-        cloud: MemoryCloudSummary,
-        next: MemoryNextAction,
-    ) -> Self {
-        Self {
-            schema_version: CLI_SCHEMA_VERSION,
-            active_rules: inbox.active_rule_count(),
-            local_drafts: inbox.local_draft_count(),
-            local_discoveries: MemoryLocalDiscoveriesOutput {
-                session_mined_candidates: inbox.session_mined_count(),
-                latest: inbox.local_discoveries.latest.clone(),
-            },
-            autopilot,
-            queues: inbox.queues.clone(),
-            cloud,
-            next,
-            usage: inbox.usage.clone(),
-            warnings: inbox.warnings.clone(),
-        }
-    }
 }
 
 impl MemoryInboxOutput {
