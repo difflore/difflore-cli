@@ -17,7 +17,6 @@ const REQUIRED_SKILL_DIRS: &[&str] = &[
     "difflore-onboard",
     "knowledge-agent",
     "memory-candidate-triage",
-    "pre-submit-review",
     "remember-rule-guide",
     "rule-diff",
     "rule-gap",

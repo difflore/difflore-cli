@@ -5,6 +5,26 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-30
+
+### Added
+
+- Added `difflore memory team-candidates` for reviewing, counting, showing,
+  approving, and rejecting team memory suggestions.
+- Added a richer `difflore memory summary` overview covering remembered rules,
+  review queues, paused rules, sync state, and recent recall activity.
+- Added cloud candidate client support for team memory governance workflows.
+
+### Changed
+
+- Disabling a memory rule now pauses it as `disabled` instead of moving it back
+  to pending review.
+- Disabled rules are excluded from recall and local review queues.
+
+### Removed
+
+- Removed the bundled `pre-submit-review` MCP skill.
+
 ## [0.4.0] - 2026-06-29
 
 ### Added
