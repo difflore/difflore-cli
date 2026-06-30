@@ -64,7 +64,7 @@ pub async fn disable_memory_rule(
     }
     let title: String = row.try_get("name").unwrap_or_else(|_| id.clone());
     sqlx::query(
-        "UPDATE skills SET status = 'pending', updated_at = datetime('now') WHERE id = ?1 AND status = 'active'",
+        "UPDATE skills SET status = 'disabled', updated_at = datetime('now') WHERE id = ?1 AND status = 'active'",
     )
     .bind(&id)
     .execute(pool)
@@ -85,7 +85,7 @@ pub async fn disable_memory_rule(
             group_id: None,
             title: &title,
             reason: &reason,
-            payload: json!({ "previousState": "active", "currentState": "pending" }),
+            payload: json!({ "previousState": "active", "currentState": "disabled" }),
         },
     )
     .await?;
@@ -95,7 +95,7 @@ pub async fn disable_memory_rule(
         rule_id: id,
         title,
         previous_state: "active".to_owned(),
-        current_state: "pending".to_owned(),
+        current_state: "disabled".to_owned(),
         reason,
     })
 }

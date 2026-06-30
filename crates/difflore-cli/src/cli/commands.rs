@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use super::args::{
     ExportCliArgs, FixCliArgs, ImportReviewsCliArgs, InitCliArgs, LearnCliArgs,
@@ -684,6 +684,32 @@ pub(crate) enum MemoryCommands {
         json: bool,
     },
 
+    /// Review memory suggestions generated from team activity.
+    TeamCandidates {
+        /// Team id. Defaults to the current cloud team.
+        #[arg(long)]
+        team_id: Option<String>,
+
+        /// Maximum suggestions to show.
+        #[arg(long, default_value_t = 20)]
+        limit: i64,
+
+        /// Result offset for pagination.
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
+
+        /// Candidate status to show.
+        #[arg(long, value_enum, default_value_t = TeamCandidateStatusArg::Pending)]
+        status: TeamCandidateStatusArg,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+
+        #[command(subcommand)]
+        command: Option<TeamCandidateCommands>,
+    },
+
     /// Pull published team rules; raw local queues require opt-in flags.
     Sync(SyncCliArgs),
 
@@ -750,6 +776,89 @@ pub(crate) enum MemoryCommands {
     Drafts {
         #[command(subcommand)]
         command: DraftsCommands,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum TeamCandidateStatusArg {
+    Pending,
+    Approved,
+    Rejected,
+    All,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum TeamCandidateSeverityArg {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum TeamCandidateCommands {
+    /// Count team memory suggestions.
+    Count {
+        /// Team id. Defaults to the current cloud team.
+        #[arg(long)]
+        team_id: Option<String>,
+
+        /// Candidate status to count.
+        #[arg(long, value_enum)]
+        status: Option<TeamCandidateStatusArg>,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show one team memory suggestion.
+    Show {
+        /// Team candidate id.
+        candidate_id: String,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Approve one team memory suggestion.
+    Approve {
+        /// Team candidate id.
+        candidate_id: String,
+
+        /// Optional title edit before publishing.
+        #[arg(long, value_name = "TEXT")]
+        name: Option<String>,
+
+        /// Optional description edit before publishing.
+        #[arg(long, value_name = "TEXT")]
+        description: Option<String>,
+
+        /// Optional severity edit before publishing.
+        #[arg(long, value_enum)]
+        severity: Option<TeamCandidateSeverityArg>,
+
+        /// Optional rule content edit before publishing.
+        #[arg(long, value_name = "TEXT")]
+        content: Option<String>,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Reject one team memory suggestion.
+    Reject {
+        /// Team candidate id.
+        candidate_id: String,
+
+        /// Reason to store with the rejection.
+        #[arg(long)]
+        reason: Option<String>,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 

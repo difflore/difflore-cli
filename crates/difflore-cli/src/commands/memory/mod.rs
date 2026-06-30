@@ -1,7 +1,9 @@
 mod agent_files;
 mod autopilot;
 mod inbox;
+mod overview;
 mod package;
+mod team_candidates;
 mod types;
 
 use serde_json::json;
@@ -41,9 +43,11 @@ pub(crate) use autopilot::{
 };
 pub(crate) use inbox::{
     handle_active, handle_activity, handle_approve, handle_inbox, handle_reject, handle_remember,
-    handle_review, handle_show, handle_summary,
+    handle_review, handle_show,
 };
+pub(crate) use overview::handle_summary;
 pub(crate) use package::{handle_export_package, handle_import_package};
+pub(crate) use team_candidates::{TeamCandidateListArgs, handle_team_candidates};
 
 pub(crate) async fn handle_sync(
     ctx: &CommandContext,

@@ -2462,7 +2462,6 @@ async fn resources_list_advertises_explore_and_journey_skills() {
         "difflore://skills/memory-candidate-triage",
         "difflore://skills/session-recap",
         "difflore://skills/difflore-onboard",
-        "difflore://skills/pre-submit-review",
     ] {
         assert!(
             resources.iter().any(|t| t == uri),
@@ -2515,31 +2514,6 @@ async fn resource_read_rule_search_tells_agents_to_pass_file_to_get_rules() {
         text.contains("get_rules(ids=[\"conv-a1f9c\"], file=\"src/worker.rs\")"),
         "rule-search skill should preserve file path hints on get_rules: {text}"
     );
-}
-
-#[tokio::test]
-async fn resource_read_pre_submit_review_returns_skill_markdown() {
-    let state = build_state().await;
-    let result = call_ok(
-        &state,
-        &rpc_with(
-            706,
-            "resources/read",
-            json!({ "uri": "difflore://skills/pre-submit-review" }),
-        ),
-    )
-    .await;
-    let contents = result["contents"][0].clone();
-    assert_eq!(
-        contents["uri"].as_str(),
-        Some("difflore://skills/pre-submit-review")
-    );
-    assert_eq!(contents["mimeType"].as_str(), Some("text/markdown"));
-    let text = contents["text"].as_str().expect("skill text");
-    assert!(text.contains("# Pre-Submit Review"));
-    assert!(text.contains("difflore review --diff all"));
-    assert!(text.contains("Do not commit, push, open a PR"));
-    assert!(text.contains("Do not run `difflore fix --yes`"));
 }
 
 #[tokio::test]

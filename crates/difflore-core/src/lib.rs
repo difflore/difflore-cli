@@ -22,6 +22,7 @@ pub mod memory_autopilot;
 pub mod memory_autopilot_schedule;
 pub mod memory_curator;
 pub mod memory_inbox;
+pub mod memory_overview;
 pub mod migration;
 pub mod observability;
 pub mod review_engine;

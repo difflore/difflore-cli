@@ -1,3 +1,4 @@
+pub mod candidates;
 pub mod capture;
 pub mod client;
 pub mod endpoints;
