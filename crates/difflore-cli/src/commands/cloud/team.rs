@@ -32,7 +32,7 @@ fn accepted_fix_proof_readiness_message(logged_in: bool, team_name: Option<&str>
     if !logged_in {
         "run `difflore cloud login`, then create or join a team before uploading accepted edits"
     } else if accepted_fix_proof_ready(logged_in, team_name) {
-        "accepted edits can link to team review history"
+        "accepted edits can upload audit proof and link to team review history"
     } else {
         "create or join a team before uploading accepted edits: https://difflore.dev/team"
     }
@@ -58,13 +58,21 @@ const fn accepted_fix_proof_per_fix_required_fields() -> [&'static str; 7] {
     ]
 }
 
-const fn accepted_fix_proof_non_counting_warnings() -> [&'static str; 5] {
+const fn accepted_edit_audit_proof_sources() -> [&'static str; 2] {
+    [
+        "acceptanceSource=agent_retained_edit, client=difflore_hook",
+        "acceptanceSource=difflore_fix, client=difflore_cli",
+    ]
+}
+
+const fn accepted_fix_proof_non_counting_warnings() -> [&'static str; 6] {
     [
         "missing team workspace",
         "missing recalled rule id",
         "missing linked memory activity",
         "unexpected client",
         "missing target PR number",
+        "unlinked local rule id",
     ]
 }
 
@@ -78,7 +86,10 @@ pub(super) fn accepted_fix_proof_readiness_value(
         "message": accepted_fix_proof_readiness_message(logged_in, team_name),
         "readinessScope": "pre_capture_only",
         "countsAsEvidence": false,
-        "countingEvidence": "cloud DB fix_acceptances rows with acceptanceSource=difflore_fix, client=difflore_cli, targetPrNumber>0, team_id, and linked accepted fix_outcome activity",
+        "auditEvidence": "cloud DB fix_acceptances rows uploaded from retained agent edits or accepted DiffLore fixes",
+        "auditProofSources": accepted_edit_audit_proof_sources(),
+        "countingEvidence": "cloud DB fix_acceptances rows count as accepted edit audit proof; launch-grade rule attribution additionally requires acceptanceSource=difflore_fix, client=difflore_cli, targetPrNumber>0, team_id, and linked accepted fix_outcome activity",
+        "launchGradeRequiredFields": accepted_fix_proof_per_fix_required_fields(),
         "preCaptureRequiredFields": accepted_fix_proof_pre_capture_required_fields(),
         "perFixRequiredFields": accepted_fix_proof_per_fix_required_fields(),
         "nonCountingWarnings": accepted_fix_proof_non_counting_warnings(),
@@ -301,6 +312,12 @@ mod tests {
                 .expect("counting accepted-edit description")
                 .contains("fix_acceptances")
         );
+        assert!(
+            logged_out["auditEvidence"]
+                .as_str()
+                .expect("audit accepted-edit description")
+                .contains("retained agent edits")
+        );
         assert_eq!(logged_out["preCaptureRequiredFields"][0], "loggedIn=true");
 
         let missing_team = accepted_fix_proof_readiness_value(true, None);
@@ -318,6 +335,20 @@ mod tests {
         let ready = accepted_fix_proof_readiness_value(true, Some("Launch Partners"));
         assert_eq!(ready["teamWorkspaceReady"], true);
         assert_eq!(ready["state"], "team_link_ready");
+        assert!(
+            ready["auditProofSources"]
+                .as_array()
+                .expect("audit proof sources are an array")
+                .iter()
+                .any(|value| value == "acceptanceSource=agent_retained_edit, client=difflore_hook")
+        );
+        assert!(
+            ready["launchGradeRequiredFields"]
+                .as_array()
+                .expect("launch-grade requirements are an array")
+                .iter()
+                .any(|value| value == "acceptanceSource=difflore_fix")
+        );
         assert!(
             ready["perFixRequiredFields"]
                 .as_array()

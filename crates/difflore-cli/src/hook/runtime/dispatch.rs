@@ -2,10 +2,14 @@ use crate::hook::{adapters, banner, cache, forward};
 
 use super::drift_report::{read_last_assistant_text, stated_vs_actual_warning};
 use super::fire_log::remember_hook_fire_maybe_deferred;
+use difflore_core::contract::RecordAcceptedEditRequest;
 use difflore_core::domain::rule_fingerprint::rule_fingerprint;
 use difflore_core::observability::injection_log::InjectionDropReason;
 
 const HOOK_SPILL_REPLAY_MAX: usize = 16;
+const AGENT_ACCEPTANCE_SOURCE: &str = "agent_retained_edit";
+const AGENT_ACCEPTANCE_CLIENT: &str = "difflore_hook";
+const ACCEPTED_EDIT_MAX_CODE_BYTES: usize = 100_000;
 
 fn maybe_spawn_outbox_daemon() {
     if difflore_core::infra::env::truthy(difflore_core::infra::env::DIFFLORE_DISABLE_OUTBOX_DAEMON)
@@ -939,6 +943,7 @@ async fn maybe_emit_fix_outcomes(session_id: Option<&str>, cwd: Option<&str>) ->
     if cited.is_empty() {
         return 0;
     }
+    let app_db = difflore_core::infra::db::init_db().await.ok();
 
     let mut by_rule: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
@@ -992,6 +997,16 @@ async fn maybe_emit_fix_outcomes(session_id: Option<&str>, cwd: Option<&str>) ->
         .unwrap_or((false, files.first().cloned()));
         if accepted {
             accepted_count += 1;
+            if let Some(db) = app_db.as_ref() {
+                maybe_enqueue_agent_accepted_edit_proof(
+                    &rule_id,
+                    cwd,
+                    file_path.as_deref(),
+                    repo_full_name,
+                    db,
+                )
+                .await;
+            }
         }
         let occurred_at = chrono::Utc::now();
         // Best-effort: a SQL failure here downgrades to "no inline link" rather
@@ -1021,6 +1036,117 @@ async fn maybe_emit_fix_outcomes(session_id: Option<&str>, cwd: Option<&str>) ->
     let client = difflore_core::cloud::client::CloudClient::create().await;
     let _ = emitter.flush_to_cloud(&client).await;
     accepted_count
+}
+
+async fn maybe_enqueue_agent_accepted_edit_proof(
+    rule_id: &str,
+    cwd: Option<&str>,
+    file_path: Option<&str>,
+    repo_full_name: Option<&str>,
+    db: &difflore_core::SqlitePool,
+) {
+    let Some(file_path) = file_path else {
+        return;
+    };
+    let accepted_edit_rule_ids =
+        resolve_hook_accepted_edit_rule_ids(db, &[rule_id.to_owned()]).await;
+
+    let cwd = cwd.map(ToOwned::to_owned);
+    let file_path = file_path.to_owned();
+    let repo_full_name = repo_full_name.map(ToOwned::to_owned);
+    let request = tokio::task::spawn_blocking(move || {
+        build_agent_accepted_edit_request(cwd.as_deref(), &file_path, repo_full_name.as_deref())
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(mut request) = request else {
+        return;
+    };
+    request.rule_ids = accepted_edit_rule_ids;
+
+    let Ok(payload) = serde_json::to_string(&request) else {
+        return;
+    };
+    let queue = difflore_core::cloud::outbox::OutboxQueue::new(db.clone());
+    if queue
+        .enqueue(difflore_core::cloud::outbox::kind::ACCEPTED_EDIT, &payload)
+        .await
+        .is_ok()
+    {
+        maybe_spawn_outbox_daemon();
+    }
+}
+
+async fn resolve_hook_accepted_edit_rule_ids(
+    db: &difflore_core::SqlitePool,
+    rule_ids: &[String],
+) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for rule_id in rule_ids {
+        let rule_id = rule_id.trim();
+        if rule_id.is_empty() {
+            continue;
+        }
+        let resolved = match difflore_core::team::resolve_known_cloud_rule_id(db, rule_id).await {
+            Ok(Some(cloud_rule_id)) => cloud_rule_id,
+            Ok(None) | Err(_) => rule_id.to_owned(),
+        };
+        if seen.insert(resolved.clone()) {
+            out.push(resolved);
+        }
+    }
+    out
+}
+
+fn build_agent_accepted_edit_request(
+    cwd: Option<&str>,
+    file_path: &str,
+    repo_full_name: Option<&str>,
+) -> Option<RecordAcceptedEditRequest> {
+    let (repo_root, repo_file) = super::project::git_repo_context_for_file(cwd, file_path)?;
+    if !git_file_has_diff(cwd, file_path) {
+        return None;
+    }
+    let before_code = git_show_head_file(&repo_root, &repo_file).unwrap_or_default();
+    let after_code = read_worktree_file(&repo_root, &repo_file).unwrap_or_default();
+    if before_code == after_code
+        || before_code.len() > ACCEPTED_EDIT_MAX_CODE_BYTES
+        || after_code.len() > ACCEPTED_EDIT_MAX_CODE_BYTES
+    {
+        return None;
+    }
+    let diff_signature =
+        difflore_core::contract::accepted_edit_diff_signature(&before_code, &after_code);
+    Some(RecordAcceptedEditRequest {
+        before_code,
+        after_code,
+        file_path: Some(repo_file.clone()),
+        repo_full_name: repo_full_name.map(str::to_owned),
+        target_pr_number: None,
+        language: difflore_core::context::retrieval::detect_language_from_path(&repo_file),
+        acceptance_source: Some(AGENT_ACCEPTANCE_SOURCE.to_owned()),
+        client: Some(AGENT_ACCEPTANCE_CLIENT.to_owned()),
+        diff_signature: Some(diff_signature),
+        rule_ids: Vec::new(),
+    })
+}
+
+fn git_show_head_file(repo_root: &std::path::Path, repo_file: &str) -> Option<String> {
+    let output = difflore_core::infra::git::git_command(repo_root)
+        .args(["show", &format!("HEAD:{repo_file}")])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+fn read_worktree_file(repo_root: &std::path::Path, repo_file: &str) -> Option<String> {
+    std::fs::read_to_string(repo_root.join(repo_file)).ok()
 }
 
 fn accepted_file_path(cwd: Option<&str>, files: &[String]) -> Option<String> {
@@ -1269,6 +1395,146 @@ mod tests {
     }
 
     #[test]
+    fn agent_accepted_edit_request_captures_worktree_before_after() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).expect("repo dir");
+        if !init_repo_with_commit(&repo, "src/app.rs") {
+            return;
+        }
+
+        std::fs::write(repo.join("src/app.rs"), "changed\n").expect("modify target");
+
+        let req = build_agent_accepted_edit_request(
+            Some(repo.to_str().expect("repo utf8")),
+            "src/app.rs",
+            Some("acme/app"),
+        )
+        .expect("request");
+
+        assert_eq!(req.before_code, "seed\n");
+        assert_eq!(req.after_code, "changed\n");
+        assert_eq!(req.file_path.as_deref(), Some("src/app.rs"));
+        assert_eq!(req.repo_full_name.as_deref(), Some("acme/app"));
+        assert_eq!(
+            req.acceptance_source.as_deref(),
+            Some(AGENT_ACCEPTANCE_SOURCE)
+        );
+        assert_eq!(req.client.as_deref(), Some(AGENT_ACCEPTANCE_CLIENT));
+        assert_eq!(req.language.as_deref(), Some("rust"));
+        assert!(req.diff_signature.is_some());
+        assert!(req.rule_ids.is_empty());
+    }
+
+    #[test]
+    fn agent_accepted_edit_request_returns_none_without_diff() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).expect("repo dir");
+        if !init_repo_with_commit(&repo, "src/app.rs") {
+            return;
+        }
+
+        assert!(
+            build_agent_accepted_edit_request(
+                Some(repo.to_str().expect("repo utf8")),
+                "src/app.rs",
+                Some("acme/app"),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn agent_accepted_edit_request_captures_staged_new_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).expect("repo dir");
+        if !init_repo_with_commit(&repo, "src/app.rs") {
+            return;
+        }
+
+        std::fs::write(repo.join("src/new.rs"), "pub fn new() {}\n").expect("new file");
+        if !run_git(&repo, &["add", "src/new.rs"]) {
+            return;
+        }
+
+        let req = build_agent_accepted_edit_request(
+            Some(repo.to_str().expect("repo utf8")),
+            "src/new.rs",
+            Some("acme/app"),
+        )
+        .expect("request");
+
+        assert_eq!(req.before_code, "");
+        assert_eq!(req.after_code, "pub fn new() {}\n");
+        assert_eq!(req.file_path.as_deref(), Some("src/new.rs"));
+    }
+
+    #[test]
+    fn agent_accepted_edit_request_skips_oversized_code() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).expect("repo dir");
+        if !init_repo_with_commit(&repo, "src/app.rs") {
+            return;
+        }
+
+        std::fs::write(
+            repo.join("src/app.rs"),
+            "x".repeat(ACCEPTED_EDIT_MAX_CODE_BYTES + 1),
+        )
+        .expect("large file");
+
+        assert!(
+            build_agent_accepted_edit_request(
+                Some(repo.to_str().expect("repo utf8")),
+                "src/app.rs",
+                Some("acme/app"),
+            )
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_hook_accepted_edit_rule_ids_prefers_cloud_mappings_and_keeps_local_ids() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool");
+        sqlx::query("CREATE TABLE auth (key TEXT PRIMARY KEY, value TEXT)")
+            .execute(&pool)
+            .await
+            .expect("auth");
+        sqlx::query("CREATE TABLE skills (id TEXT PRIMARY KEY, cloud_id TEXT)")
+            .execute(&pool)
+            .await
+            .expect("skills");
+        sqlx::query("INSERT INTO skills (id, cloud_id) VALUES (?1, ?2)")
+            .bind("local-rule")
+            .bind("6105b2dd-5b7b-41a4-9af0-5e14c2b245fc")
+            .execute(&pool)
+            .await
+            .expect("insert skill");
+
+        let ids = resolve_hook_accepted_edit_rule_ids(
+            &pool,
+            &[
+                "local-rule".to_owned(),
+                "missing-rule".to_owned(),
+                "6105b2dd-5b7b-41a4-9af0-5e14c2b245fc".to_owned(),
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            ids,
+            vec!["6105b2dd-5b7b-41a4-9af0-5e14c2b245fc", "missing-rule"]
+        );
+    }
+
+    #[test]
     fn rule_numbers_from_citation_text_respects_word_boundaries_and_guards() {
         // Substring inside a larger word must not match: "overrule 4" is not a
         // citation.
@@ -1296,26 +1562,27 @@ mod tests {
     }
 
     fn init_repo_with_commit(repo: &std::path::Path, file: &str) -> bool {
-        let run = |args: &[&str]| {
-            difflore_core::infra::git::git_command(repo)
-                .args(args)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .ok()
-                .is_some_and(|status| status.success())
-        };
-        if !run(&["init"]) {
+        if !run_git(repo, &["init"]) {
             return false;
         }
-        let _ = run(&["config", "user.email", "test@example.com"]);
-        let _ = run(&["config", "user.name", "DiffLore Test"]);
+        let _ = run_git(repo, &["config", "user.email", "test@example.com"]);
+        let _ = run_git(repo, &["config", "user.name", "DiffLore Test"]);
         let path = repo.join(file);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("file parent");
         }
         std::fs::write(path, "seed\n").expect("seed file");
-        run(&["add", "-A"]) && run(&["commit", "-m", "seed"])
+        run_git(repo, &["add", "-A"]) && run_git(repo, &["commit", "-m", "seed"])
+    }
+
+    fn run_git(repo: &std::path::Path, args: &[&str]) -> bool {
+        difflore_core::infra::git::git_command(repo)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .ok()
+            .is_some_and(|status| status.success())
     }
 }
