@@ -1,6 +1,6 @@
 {
   "name": "difflore",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "DiffLore team knowledge injection into coding sessions via MCP and lifecycle hooks.",
   "author": {
     "name": "Zachary",
