@@ -14,7 +14,7 @@ CONOUT$
 # codex review loop runtime artifacts
 .codex-runtime/
 .codex-review-loop/
-docs/difflore-review-loop.md
+docs/
 src-tauri/target/
 target*
 scratch*
