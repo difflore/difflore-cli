@@ -350,6 +350,16 @@ pub async fn sync_providers(
     Ok(())
 }
 
+pub async fn sync_proof_summary(
+    client: &CloudClient,
+    summary: &serde_json::Value,
+) -> Result<(), crate::CoreError> {
+    let _: Success = api!(PUT "/sync/proof-summary", body = summary)
+        .fetch(client)
+        .await?;
+    Ok(())
+}
+
 /// Fetch cloud-side settings blob. Returns (`settings_value`, `updated_at`) or
 /// None if the cloud has no settings stored yet for this user.
 pub async fn pull_settings(

@@ -13,7 +13,8 @@
 use crate::cli::{
     AgentsCommands, AuthCommands, CloudCommands, Commands, DistCommands, DraftsCommands,
     EmbeddingsCommands, FixCliArgs, ImportReviewsCliArgs, InitCliArgs, LearnCliArgs,
-    MemoryCommands, ProviderCommands, RecallCliArgs, ReviewCliArgs, SkillsCommands, SyncCliArgs,
+    MemoryCommands, ProviderCommands, RecallCliArgs, RepoAliasCommands, RepoCommands,
+    ReviewCliArgs, SkillsCommands, SyncCliArgs,
 };
 use crate::commands;
 use crate::commands::cloud::sync::handle_sync;
@@ -42,6 +43,7 @@ pub(crate) async fn dispatch(command: Commands) {
         Commands::Status { json, lane } => commands::status::handle_status(json, lane)
             .await
             .unwrap_or_else(|e| crate::support::util::render_cli_error(e)),
+        Commands::Repo { command } => dispatch_repo(command).await,
         Commands::Capabilities { json } => commands::capabilities::handle_capabilities(json),
         Commands::ImportReviews(args) => dispatch_import_reviews(args).await,
         Commands::Memory { json, command } => dispatch_memory(json, command).await,
@@ -148,6 +150,25 @@ pub(crate) async fn dispatch(command: Commands) {
         Commands::Dist {
             command: DistCommands::Verify { json },
         } => commands::dist::handle_verify(json),
+    }
+}
+
+async fn dispatch_repo(command: RepoCommands) {
+    match command {
+        RepoCommands::Alias { command } => match command {
+            RepoAliasCommands::Set { repo, path, json } => {
+                let ctx = ctx(json).await;
+                commands::repo::handle_alias_set(&ctx, repo, path, json).await;
+            }
+            RepoAliasCommands::List { json } => {
+                let ctx = ctx(json).await;
+                commands::repo::handle_alias_list(&ctx, json).await;
+            }
+            RepoAliasCommands::Clear { path, yes, json } => {
+                let ctx = ctx(json).await;
+                commands::repo::handle_alias_clear(&ctx, path, yes, json).await;
+            }
+        },
     }
 }
 
@@ -266,9 +287,15 @@ async fn dispatch_memory(root_json: bool, command: Option<MemoryCommands>) {
             let ctx = ctx(json).await;
             commands::memory::handle_digest(&ctx, limit, json).await;
         }
-        Some(MemoryCommands::Recommended { all, limit, json }) => {
+        Some(MemoryCommands::Recommended {
+            all,
+            limit,
+            approve,
+            yes,
+            json,
+        }) => {
             let ctx = ctx(json).await;
-            commands::memory::handle_recommended(&ctx, all, limit, json).await;
+            commands::memory::handle_recommended(&ctx, all, limit, approve, yes, json).await;
         }
         Some(MemoryCommands::Log { limit, json }) => {
             let ctx = ctx(json).await;
@@ -474,6 +501,28 @@ async fn dispatch_cloud(command: CloudCommands) {
             enforcement,
             json,
         } => commands::cloud::handle_publish(rule, enforcement, team_id, json).await,
+        CloudCommands::PublishUsed {
+            team_id,
+            enforcement,
+            limit,
+            dry_run,
+            yes,
+            json,
+        } => {
+            let ctx = ctx(json).await;
+            commands::cloud::handle_publish_used(
+                &ctx,
+                commands::cloud::PublishUsedArgs {
+                    team_id,
+                    enforcement,
+                    limit,
+                    dry_run,
+                    yes,
+                    json,
+                },
+            )
+            .await;
+        }
         CloudCommands::Unpublish {
             rule,
             team_id,

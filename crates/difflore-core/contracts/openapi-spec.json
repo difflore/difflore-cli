@@ -8359,6 +8359,280 @@
         }
       }
     },
+    "/sync/proof-summary": {
+      "put": {
+        "operationId": "sync.pushProofSummary",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": {
+                    "const": 1
+                  },
+                  "generatedAt": {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  "windowDays": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 90,
+                    "default": 30
+                  },
+                  "repo": {
+                    "type": "object",
+                    "properties": {
+                      "identity": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 200
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "identitySource": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 64
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "aliasConfigured": {
+                        "type": "boolean",
+                        "default": false
+                      },
+                      "scopeCount": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000000,
+                        "default": 0
+                      }
+                    },
+                    "required": [
+                      "identity",
+                      "identitySource"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "localInventory": {
+                    "type": "object",
+                    "properties": {
+                      "activeRules": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000000,
+                        "default": 0
+                      },
+                      "recommendedGroups": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000000,
+                        "default": 0
+                      },
+                      "needsReviewGroups": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000000,
+                        "default": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "queues": {
+                    "type": "object",
+                    "properties": {
+                      "observationsSkipped": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000000,
+                        "default": 0
+                      },
+                      "memoryCandidatesSkipped": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000000,
+                        "default": 0
+                      },
+                      "telemetrySkipped": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000000,
+                        "default": 0
+                      },
+                      "acceptedEditUploadsPending": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000000,
+                        "default": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "acceptedEditProofFunnel": {
+                    "type": "object",
+                    "properties": {
+                      "stage": {
+                        "type": "string",
+                        "maxLength": 80
+                      },
+                      "readyForCloudValue": {
+                        "type": "boolean"
+                      },
+                      "repoScopeReady": {
+                        "type": "boolean"
+                      },
+                      "agentRecallReady": {
+                        "type": "boolean"
+                      },
+                      "acceptedEditCaptured": {
+                        "type": "boolean"
+                      },
+                      "acceptedEditRowsLast30": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000000,
+                        "default": 0
+                      },
+                      "acceptedEditRowsCurrentRepoLast30": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000000,
+                        "default": 0
+                      },
+                      "acceptedEditRowsWithoutRepoLast30": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000000,
+                        "default": 0
+                      },
+                      "pendingUploads": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000000,
+                        "default": 0
+                      },
+                      "failedUploads": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000000,
+                        "default": 0
+                      },
+                      "missingRuleIds": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000000,
+                        "default": 0
+                      },
+                      "cloudUuidRuleIds": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000000,
+                        "default": 0
+                      },
+                      "localRuleIds": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10000000,
+                        "default": 0
+                      },
+                      "blockers": {
+                        "type": "array",
+                        "maxItems": 20,
+                        "items": {
+                          "type": "string",
+                          "maxLength": 240
+                        },
+                        "default": []
+                      },
+                      "nextCommands": {
+                        "type": "array",
+                        "maxItems": 10,
+                        "items": {
+                          "type": "string",
+                          "maxLength": 240
+                        },
+                        "default": []
+                      }
+                    },
+                    "required": [
+                      "stage",
+                      "readyForCloudValue",
+                      "repoScopeReady",
+                      "agentRecallReady",
+                      "acceptedEditCaptured"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "schemaVersion",
+                  "generatedAt",
+                  "repo",
+                  "localInventory",
+                  "queues",
+                  "acceptedEditProofFunnel"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Success"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "403",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "defined": {
+                      "const": true
+                    },
+                    "code": {
+                      "const": "PLAN_LIMIT_EXCEEDED"
+                    },
+                    "status": {
+                      "const": 403
+                    },
+                    "message": {
+                      "type": "string",
+                      "default": "PLAN_LIMIT_EXCEEDED"
+                    },
+                    "data": {}
+                  },
+                  "required": [
+                    "defined",
+                    "code",
+                    "status",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/billing/plans": {
       "get": {
         "operationId": "billing.plans",
@@ -17609,6 +17883,9 @@
                         "modeledReviewMinutes": {
                           "type": "number"
                         },
+                        "savedReviewMinutesLast30": {
+                          "type": "number"
+                        },
                         "repeatFeedbackReduced": {
                           "type": "number"
                         },
@@ -17620,16 +17897,33 @@
                         },
                         "reviewerContextRulesServedLast30": {
                           "type": "number"
+                        },
+                        "agentRulesServedLast30": {
+                          "type": "number"
+                        },
+                        "agentRulesFiredLast30": {
+                          "type": "number"
+                        },
+                        "agentRulesCitedLast30": {
+                          "type": "number"
+                        },
+                        "acceptedFixOutcomesLast30": {
+                          "type": "number"
                         }
                       },
                       "required": [
                         "acceptedFixesLast30",
                         "repeatCommentSignals",
                         "modeledReviewMinutes",
+                        "savedReviewMinutesLast30",
                         "repeatFeedbackReduced",
                         "sourceEvidenceItems",
                         "acceptedProofRules",
-                        "reviewerContextRulesServedLast30"
+                        "reviewerContextRulesServedLast30",
+                        "agentRulesServedLast30",
+                        "agentRulesFiredLast30",
+                        "agentRulesCitedLast30",
+                        "acceptedFixOutcomesLast30"
                       ]
                     },
                     "localAttribution": {
@@ -17671,6 +17965,243 @@
                           "accepted"
                         ]
                       }
+                    },
+                    "localProofSummary": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "schemaVersion": {
+                              "const": 1
+                            },
+                            "generatedAt": {
+                              "type": "string",
+                              "maxLength": 64
+                            },
+                            "uploadedAt": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "maxLength": 64
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "windowDays": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 90,
+                              "default": 30
+                            },
+                            "repo": {
+                              "type": "object",
+                              "properties": {
+                                "identity": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "maxLength": 200
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "identitySource": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "maxLength": 64
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "aliasConfigured": {
+                                  "type": "boolean",
+                                  "default": false
+                                },
+                                "scopeCount": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 10000000,
+                                  "default": 0
+                                }
+                              },
+                              "required": [
+                                "identity",
+                                "identitySource"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "localInventory": {
+                              "type": "object",
+                              "properties": {
+                                "activeRules": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 10000000,
+                                  "default": 0
+                                },
+                                "recommendedGroups": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 10000000,
+                                  "default": 0
+                                },
+                                "needsReviewGroups": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 10000000,
+                                  "default": 0
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "queues": {
+                              "type": "object",
+                              "properties": {
+                                "observationsSkipped": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 10000000,
+                                  "default": 0
+                                },
+                                "memoryCandidatesSkipped": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 10000000,
+                                  "default": 0
+                                },
+                                "telemetrySkipped": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 10000000,
+                                  "default": 0
+                                },
+                                "acceptedEditUploadsPending": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 10000000,
+                                  "default": 0
+                                }
+                              },
+                              "additionalProperties": false
+                            },
+                            "acceptedEditProofFunnel": {
+                              "type": "object",
+                              "properties": {
+                                "stage": {
+                                  "type": "string",
+                                  "maxLength": 80
+                                },
+                                "readyForCloudValue": {
+                                  "type": "boolean"
+                                },
+                                "repoScopeReady": {
+                                  "type": "boolean"
+                                },
+                                "agentRecallReady": {
+                                  "type": "boolean"
+                                },
+                                "acceptedEditCaptured": {
+                                  "type": "boolean"
+                                },
+                                "acceptedEditRowsLast30": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 10000000,
+                                  "default": 0
+                                },
+                                "acceptedEditRowsCurrentRepoLast30": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 10000000,
+                                  "default": 0
+                                },
+                                "acceptedEditRowsWithoutRepoLast30": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 10000000,
+                                  "default": 0
+                                },
+                                "pendingUploads": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 10000000,
+                                  "default": 0
+                                },
+                                "failedUploads": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 10000000,
+                                  "default": 0
+                                },
+                                "missingRuleIds": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 10000000,
+                                  "default": 0
+                                },
+                                "cloudUuidRuleIds": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 10000000,
+                                  "default": 0
+                                },
+                                "localRuleIds": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 10000000,
+                                  "default": 0
+                                },
+                                "blockers": {
+                                  "type": "array",
+                                  "maxItems": 20,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 240
+                                  },
+                                  "default": []
+                                },
+                                "nextCommands": {
+                                  "type": "array",
+                                  "maxItems": 10,
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 240
+                                  },
+                                  "default": []
+                                }
+                              },
+                              "required": [
+                                "stage",
+                                "readyForCloudValue",
+                                "repoScopeReady",
+                                "agentRecallReady",
+                                "acceptedEditCaptured"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "schemaVersion",
+                            "generatedAt",
+                            "repo",
+                            "localInventory",
+                            "queues",
+                            "acceptedEditProofFunnel"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
                     }
                   },
                   "required": [
@@ -19133,6 +19664,9 @@
                     "prs": {
                       "type": "number"
                     },
+                    "prReviewsIndexed": {
+                      "type": "number"
+                    },
                     "files": {
                       "type": "number"
                     },
@@ -19149,6 +19683,7 @@
                   "required": [
                     "repos",
                     "prs",
+                    "prReviewsIndexed",
                     "files",
                     "reviewCommentsIndexed",
                     "aiReviewerCommentsIndexed",

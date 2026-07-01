@@ -48,6 +48,34 @@ pub(crate) fn project_path() -> String {
         .into_owned()
 }
 
+pub(crate) async fn repo_scope_detection_for_path(
+    db: &difflore_core::SqlitePool,
+    path: &str,
+) -> difflore_core::repo_aliases::RepoScopeDetection {
+    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
+    difflore_core::repo_aliases::detect_repo_scopes_for_path(db, path, &configured_gitlab_hosts)
+        .await
+        .unwrap_or_else(|_| {
+            let detected_remotes =
+                difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
+                    path,
+                    &configured_gitlab_hosts,
+                );
+            difflore_core::repo_aliases::RepoScopeDetection {
+                repo_scopes: detected_remotes.clone(),
+                detected_remotes,
+                manual_aliases: Vec::new(),
+            }
+        })
+}
+
+pub(crate) async fn repo_scopes_for_path(
+    db: &difflore_core::SqlitePool,
+    path: &str,
+) -> Vec<String> {
+    repo_scope_detection_for_path(db, path).await.repo_scopes
+}
+
 pub(crate) fn exit_err(msg: &str) -> ! {
     eprintln!("{} {}", "error:".red().bold(), msg);
     process::exit(1);

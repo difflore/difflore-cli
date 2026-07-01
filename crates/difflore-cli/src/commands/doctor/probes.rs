@@ -61,7 +61,16 @@ pub(crate) enum CloudProbe {
     LoggedIn {
         plan: String,
         team_name: Option<String>,
+        impact: Box<CloudImpactProbe>,
     },
+}
+
+#[derive(Default)]
+pub(crate) struct CloudImpactProbe {
+    pub(crate) coverage: Option<difflore_core::contract::dto::ImpactCoverageDto>,
+    pub(crate) fix_scorecard: Option<difflore_core::contract::dto::ImpactFixScorecardDto>,
+    pub(crate) coverage_error: Option<String>,
+    pub(crate) fix_scorecard_error: Option<String>,
 }
 
 /// Raw embedder inputs; the `table.rs` shapers decode the activity tail and
@@ -274,10 +283,21 @@ async fn probe_provider(pool: Option<&difflore_core::SqlitePool>) -> ProviderPro
 async fn probe_cloud(ctx: &crate::runtime::CommandContext) -> CloudProbe {
     let cloud_client = ctx.cloud().await;
     if cloud_client.is_logged_in() {
-        let status = difflore_core::cloud::sync::fetch_cloud_status(cloud_client).await;
+        let (status, coverage, fix_scorecard) = tokio::join!(
+            difflore_core::cloud::sync::fetch_cloud_status(cloud_client),
+            cloud_client.get_impact_coverage(),
+            cloud_client.get_impact_fix_scorecard(),
+        );
+        let impact = CloudImpactProbe {
+            coverage: coverage.as_ref().ok().cloned(),
+            fix_scorecard: fix_scorecard.as_ref().ok().cloned(),
+            coverage_error: coverage.err().map(|e| e.to_string()),
+            fix_scorecard_error: fix_scorecard.err().map(|e| e.to_string()),
+        };
         CloudProbe::LoggedIn {
             plan: status.plan.as_deref().unwrap_or("free").to_owned(),
             team_name: status.team_name,
+            impact: Box::new(impact),
         }
     } else {
         CloudProbe::NotLoggedIn

@@ -6,8 +6,9 @@ use serde_json::json;
 use difflore_core::SqlitePool;
 use difflore_core::memory_autopilot::{
     DEFAULT_AUTOPILOT_LIMIT, MemoryAutopilotLogFilter, MemoryAutopilotOptions,
-    MemoryCandidateGroup, MemoryCandidateGroupState, MemoryConflictFilter, disable_memory_rule,
-    load_autopilot_log, load_memory_conflicts, load_memory_digest, run_memory_autopilot,
+    MemoryCandidateGroup, MemoryCandidateGroupState, MemoryConflictFilter,
+    approve_memory_candidate_group, disable_memory_rule, load_autopilot_log, load_memory_conflicts,
+    load_memory_digest, run_memory_autopilot,
 };
 use difflore_core::memory_autopilot_schedule::{
     AutopilotScheduleRequest, load_autopilot_schedule_status, mark_autopilot_dirty,
@@ -18,7 +19,7 @@ use difflore_core::memory_inbox::{parse_session_item_id, reject_session_mined_ca
 
 use crate::runtime::CommandContext;
 use crate::style;
-use crate::support::util::{exit_code, json_compact_or};
+use crate::support::util::{confirm_destructive, exit_code, json_compact_or};
 
 use super::{count_phrase, exit_structured_err};
 
@@ -79,6 +80,24 @@ struct MemoryCleanupReport {
     planned: Vec<MemoryCleanupAction>,
     removed: Vec<MemoryCleanupRemoved>,
     failed: Vec<MemoryCleanupFailure>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecommendedApproveFailure {
+    group_id: String,
+    title: String,
+    error: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecommendedApproveReport {
+    dry_run: bool,
+    selected: usize,
+    approved: Vec<difflore_core::memory_autopilot::MemoryAutopilotAction>,
+    failed: Vec<RecommendedApproveFailure>,
+    groups: Vec<MemoryCandidateGroup>,
 }
 
 pub(crate) async fn handle_autopilot(
@@ -428,6 +447,8 @@ pub(crate) async fn handle_recommended(
     ctx: &CommandContext,
     all: bool,
     limit: Option<usize>,
+    approve: bool,
+    yes: bool,
     json: bool,
 ) {
     let digest = load_memory_digest(&ctx.db, 1_000)
@@ -447,16 +468,24 @@ pub(crate) async fn handle_recommended(
     }
 
     if json {
-        println!(
-            "{}",
-            json_compact_or(
-                &json!({
-                    "schemaVersion": digest.schema_version,
-                    "recommendedGroups": recommended,
-                }),
+        if !approve {
+            println!(
                 "{}",
-            )
-        );
+                json_compact_or(
+                    &json!({
+                        "schemaVersion": digest.schema_version,
+                        "recommendedGroups": recommended,
+                    }),
+                    "{}",
+                )
+            );
+            return;
+        }
+        let report = approve_recommended_groups(ctx, recommended, yes, json).await;
+        println!("{}", json_compact_or(&report, "{}"));
+        if !report.failed.is_empty() {
+            exit_code(1);
+        }
         return;
     }
 
@@ -471,12 +500,103 @@ pub(crate) async fn handle_recommended(
     }
 
     print_group_section("Recommended", recommended.iter());
+    if approve {
+        let report = approve_recommended_groups(ctx, recommended, yes, json).await;
+        print_recommended_approve_report(&report);
+        if !report.failed.is_empty() {
+            exit_code(1);
+        }
+        return;
+    }
     println!();
     println!(
         "  approve: {}",
-        style::cmd("difflore memory approve <item-id>")
+        style::cmd("difflore memory recommended --approve")
     );
     println!("  review:  {}", style::cmd("difflore memory review"));
+}
+
+async fn approve_recommended_groups(
+    ctx: &CommandContext,
+    groups: Vec<MemoryCandidateGroup>,
+    yes: bool,
+    json: bool,
+) -> RecommendedApproveReport {
+    if groups.is_empty() {
+        return RecommendedApproveReport {
+            dry_run: false,
+            selected: 0,
+            approved: Vec::new(),
+            failed: Vec::new(),
+            groups,
+        };
+    }
+    if !json
+        && let Err(err) = confirm_destructive(
+            yes,
+            &format!("approve {} recommended memory group(s)?", groups.len()),
+        )
+    {
+        exit_structured_err(&err.to_string(), json);
+    }
+    if json && !yes {
+        return RecommendedApproveReport {
+            dry_run: true,
+            selected: groups.len(),
+            approved: Vec::new(),
+            failed: Vec::new(),
+            groups,
+        };
+    }
+
+    let mut approved = Vec::new();
+    let mut failed = Vec::new();
+    for group in &groups {
+        match approve_memory_candidate_group(&ctx.db, &group.group_id).await {
+            Ok(action) => approved.push(action),
+            Err(err) => failed.push(RecommendedApproveFailure {
+                group_id: group.group_id.clone(),
+                title: group.title.clone(),
+                error: err.to_string(),
+            }),
+        }
+    }
+    RecommendedApproveReport {
+        dry_run: false,
+        selected: groups.len(),
+        approved,
+        failed,
+        groups,
+    }
+}
+
+fn print_recommended_approve_report(report: &RecommendedApproveReport) {
+    println!();
+    println!("{}", style::title("Approval Result"));
+    if report.dry_run {
+        println!(
+            "  preview only; pass {} to approve in JSON/non-interactive mode",
+            style::cmd("--yes")
+        );
+        return;
+    }
+    println!(
+        "  approved {} of {} recommended group(s)",
+        report.approved.len(),
+        report.selected
+    );
+    for action in &report.approved {
+        let rule = action.rule_id.as_deref().unwrap_or("-");
+        println!("  - {} -> {}", action.title, style::ident(rule));
+    }
+    for failure in &report.failed {
+        println!(
+            "  {} {}: {}",
+            style::amber(style::sym::WARN),
+            failure.title,
+            failure.error
+        );
+    }
 }
 
 pub(crate) async fn handle_log(ctx: &CommandContext, limit: Option<usize>, json: bool) {

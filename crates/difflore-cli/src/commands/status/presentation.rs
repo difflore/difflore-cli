@@ -9,12 +9,12 @@ use std::fmt::Write as _;
 
 use crate::style::{self, sym};
 
-use super::RecallTraceSummary;
 use super::queries::{
-    LocalAcceptedProof, LocalHeroEvidence, LocalMcpRuleServe, LocalRecallProof, MemoryInboxSummary,
-    ProvenRuleDrilldown,
+    AcceptedEditProofFunnel, LocalAcceptedProof, LocalHeroEvidence, LocalMcpRuleServe,
+    LocalRecallProof, MemoryInboxSummary, ProvenRuleDrilldown,
 };
 use super::transform::{CandidatePreview, NextAction, RepoScopeStatus, plural};
+use super::{CloudProofSummary, RecallTraceSummary};
 // Lane classification is rendered only by the `#[cfg(test)]` `format_readiness`
 // helper and the tests; the human view itself never renders it.
 #[cfg(test)]
@@ -228,6 +228,8 @@ pub(super) struct StatusTextView<'a> {
     pub(super) local_proof: &'a LocalAcceptedProof,
     pub(super) local_recall_proof: &'a LocalRecallProof,
     pub(super) local_mcp_serves: &'a LocalMcpRuleServe,
+    pub(super) accepted_edit_funnel: &'a AcceptedEditProofFunnel,
+    pub(super) cloud_proof: Option<&'a CloudProofSummary>,
     pub(super) recall_trace: &'a RecallTraceSummary,
     pub(super) proven_rule: Option<&'a ProvenRuleDrilldown>,
     pub(super) local_hero_evidence: Option<&'a LocalHeroEvidence>,
@@ -248,6 +250,8 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
         local_proof,
         local_recall_proof,
         local_mcp_serves,
+        accepted_edit_funnel,
+        cloud_proof,
         recall_trace,
         proven_rule,
         local_hero_evidence,
@@ -404,6 +408,9 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
     if !signal_parts.is_empty() {
         let _ = writeln!(out, "  {bullet} signals: {}", signal_parts.join(" | "));
     }
+    if let Some(line) = format_accepted_edit_funnel(accepted_edit_funnel) {
+        let _ = writeln!(out, "  {bullet} {line}");
+    }
     if recall_trace.events > 0 {
         let mut trace = format!(
             "{} trace (24h): {} event{} | {} rule{} injected",
@@ -436,6 +443,11 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
             } else {
                 let _ = writeln!(out, "    {}", style::pewter(&line));
             }
+        }
+    }
+    if let Some(cloud_proof) = cloud_proof.filter(|proof| proof.has_signal()) {
+        for line in format_cloud_proof(cloud_proof) {
+            let _ = writeln!(out, "  {bullet} {line}");
         }
     }
 
@@ -504,6 +516,91 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
     }
 
     style::wrap_human_text(&out)
+}
+
+fn format_cloud_proof(summary: &CloudProofSummary) -> Vec<String> {
+    let mut lines = Vec::new();
+    if summary.prs > 0 || summary.review_comments_indexed > 0 {
+        let mut parts = Vec::new();
+        if summary.repos > 0 {
+            parts.push(format!("{} repo{}", summary.repos, plural(summary.repos)));
+        }
+        if summary.prs > 0 {
+            parts.push(format!("{} PR{}", summary.prs, plural(summary.prs)));
+        }
+        if summary.review_comments_indexed > 0 {
+            parts.push(format!(
+                "{} review comment{}",
+                summary.review_comments_indexed,
+                plural(summary.review_comments_indexed)
+            ));
+        }
+        if summary.files > 0 {
+            parts.push(format!("{} file{}", summary.files, plural(summary.files)));
+        }
+        if !parts.is_empty() {
+            lines.push(format!("cloud corpus: {}", parts.join(" | ")));
+        }
+    }
+
+    let mut proof_parts = Vec::new();
+    if summary.source_evidence_items > 0 {
+        proof_parts.push(format!(
+            "{} source evidence item{}",
+            summary.source_evidence_items,
+            plural(summary.source_evidence_items)
+        ));
+    }
+    if summary.accepted_fix_outcomes_last30 > 0 {
+        proof_parts.push(format!(
+            "{}/{} accepted outcome{} in 30d",
+            summary.accepted_fix_outcomes_last30,
+            summary
+                .total_fixes_last30
+                .max(summary.accepted_fix_outcomes_last30),
+            if summary
+                .total_fixes_last30
+                .max(summary.accepted_fix_outcomes_last30)
+                == 1
+            {
+                ""
+            } else {
+                "s"
+            }
+        ));
+    }
+    if summary.saved_review_minutes > 0 {
+        proof_parts.push(format!(
+            "{} saved review minute{}",
+            summary.saved_review_minutes,
+            plural(summary.saved_review_minutes)
+        ));
+    }
+    if !proof_parts.is_empty() {
+        lines.push(format!(
+            "cloud accepted-outcome activity: {}",
+            proof_parts.join(" | ")
+        ));
+    }
+    lines
+}
+
+fn format_accepted_edit_funnel(funnel: &AcceptedEditProofFunnel) -> Option<String> {
+    if funnel.ready_for_cloud_value {
+        return Some("accepted-edit proof: cloud attribution ready".to_owned());
+    }
+    if funnel.blockers.is_empty() && funnel.accepted_edit_upload_pending == 0 {
+        return None;
+    }
+
+    let mut line = format!("accepted-edit proof: {}", funnel.stage);
+    if let Some(blocker) = funnel.blockers.first() {
+        let _ = write!(line, " | blocker: {blocker}");
+    }
+    if let Some(command) = funnel.next_commands.first() {
+        let _ = write!(line, " | next: {command}");
+    }
+    Some(line)
 }
 
 fn top_candidates_heading(
@@ -836,6 +933,28 @@ mod tests {
         MemoryInboxSummary::empty(0, 0, false)
     }
 
+    fn empty_accepted_edit_funnel() -> AcceptedEditProofFunnel {
+        AcceptedEditProofFunnel {
+            window_days: 30,
+            stage: "no_accepted_edit_captured".to_owned(),
+            ready_for_cloud_value: false,
+            blockers: Vec::new(),
+            next_commands: Vec::new(),
+            repo_scope_ready: false,
+            agent_recall_ready: false,
+            accepted_edit_captured: false,
+            accepted_edit_rows_last30: 0,
+            accepted_edit_rows_for_current_repo: 0,
+            accepted_edit_rows_without_repo: 0,
+            accepted_edit_upload_pending: 0,
+            accepted_edit_upload_failed: 0,
+            accepted_edit_rows_missing_rule_ids: 0,
+            accepted_edit_rows_with_cloud_rule_ids: 0,
+            accepted_edit_rows_with_local_rule_ids: 0,
+            last_upload_error: None,
+        }
+    }
+
     fn empty_recall_trace() -> RecallTraceSummary {
         RecallTraceSummary {
             window_hours: 24,
@@ -867,6 +986,13 @@ mod tests {
     }
 
     fn render_with_proof(proof: &LocalAcceptedProof) -> String {
+        render_with_proof_and_cloud(proof, None)
+    }
+
+    fn render_with_proof_and_cloud(
+        proof: &LocalAcceptedProof,
+        cloud_proof: Option<&CloudProofSummary>,
+    ) -> String {
         let empty_recall = LocalRecallProof {
             window_days: 30,
             recall_events: 0,
@@ -904,9 +1030,11 @@ mod tests {
             local_proof: proof,
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
+            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: None,
             local_hero_evidence: None,
+            cloud_proof,
             candidate_scope: "none",
             top_candidates: &[],
             next: &next,
@@ -973,9 +1101,11 @@ mod tests {
             local_proof: &proof_with(0, 0, 0),
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
+            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: None,
             local_hero_evidence: None,
+            cloud_proof: None,
             candidate_scope: "none",
             top_candidates: &[],
             next: &next,
@@ -1033,9 +1163,11 @@ mod tests {
             local_proof: &proof_with(0, 0, 0),
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
+            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: None,
             local_hero_evidence: None,
+            cloud_proof: None,
             candidate_scope: "none",
             top_candidates: &[],
             next: &next,
@@ -1094,9 +1226,11 @@ mod tests {
             local_proof: &proof_with(0, 0, 0),
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
+            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: Some(&proven_rule()),
             local_hero_evidence: None,
+            cloud_proof: None,
             candidate_scope: "none",
             top_candidates: &[],
             next: &next,
@@ -1155,9 +1289,11 @@ mod tests {
             local_proof: &empty_proof,
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
+            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: None,
             local_hero_evidence: None,
+            cloud_proof: None,
             candidate_scope: "none",
             top_candidates: &[],
             next: &next,
@@ -1188,6 +1324,35 @@ mod tests {
             untraced.contains("recall-to-edit loop not captured yet"),
             "{untraced}"
         );
+    }
+
+    #[test]
+    fn value_line_surfaces_cloud_proof_summary() {
+        let cloud = CloudProofSummary {
+            repos: 7,
+            prs: 237,
+            files: 195,
+            review_comments_indexed: 484,
+            human_review_comments_indexed: 484,
+            ai_reviewer_comments_indexed: 0,
+            source_evidence_items: 505,
+            accepted_fixes_last30: 0,
+            accepted_fix_outcomes_last30: 58,
+            total_fixes_last30: 58,
+            saved_review_minutes: 232,
+        };
+
+        let out = render_with_proof_and_cloud(&proof_with(0, 0, 0), Some(&cloud));
+
+        assert!(out.contains("cloud corpus: 7 repos | 237 PRs"), "{out}");
+        assert!(out.contains("484 review comments"), "{out}");
+        assert!(
+            out.contains("cloud accepted-outcome activity: 505 source evidence items"),
+            "{out}"
+        );
+        assert!(out.contains("58/58 accepted outcomes in 30d"), "{out}");
+        assert!(out.contains("232 saved"), "{out}");
+        assert!(out.contains("review minutes"), "{out}");
     }
 
     #[test]
@@ -1222,9 +1387,11 @@ mod tests {
                 local_proof: &proof,
                 local_recall_proof: &recall,
                 local_mcp_serves: serves,
+                accepted_edit_funnel: &empty_accepted_edit_funnel(),
                 recall_trace: &empty_recall_trace(),
                 proven_rule: None,
                 local_hero_evidence: None,
+                cloud_proof: None,
                 candidate_scope: "none",
                 top_candidates: &[],
                 next: &next,
@@ -1304,9 +1471,11 @@ mod tests {
             local_proof: &proof,
             local_recall_proof: &recall,
             local_mcp_serves: &serves,
+            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &recall_trace_with_drop("retrieval_empty"),
             proven_rule: None,
             local_hero_evidence: None,
+            cloud_proof: None,
             candidate_scope: "none",
             top_candidates: &[],
             next: &next,

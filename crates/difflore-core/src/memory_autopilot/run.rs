@@ -143,6 +143,60 @@ pub async fn run_memory_autopilot(
     })
 }
 
+pub async fn approve_memory_candidate_group(
+    pool: &SqlitePool,
+    group_id: &str,
+) -> Result<MemoryAutopilotAction> {
+    let plan = build_plan(
+        pool,
+        MAX_PENDING_SCAN,
+        BuildPlanOptions {
+            local_ai_curator: false,
+            curator_max_candidates: None,
+        },
+    )
+    .await?;
+    let group = plan
+        .groups
+        .into_iter()
+        .find(|group| group.digest.group_id == group_id)
+        .ok_or_else(|| CoreError::NotFound(format!("memory candidate group {group_id}")))?;
+    if group.digest.state != MemoryCandidateGroupState::Recommended {
+        return Err(CoreError::Validation(format!(
+            "memory candidate group {group_id} is {:?}, not recommended",
+            group.digest.state
+        )));
+    }
+
+    let rule = enable_group(pool, &group.candidates).await?;
+    let action = MemoryAutopilotAction {
+        group_id: group.digest.group_id,
+        title: group.digest.title,
+        rule_id: Some(rule.id.clone()),
+        item_ids: group.digest.item_ids,
+        reason: group.digest.reason,
+        dry_run: false,
+    };
+    record_autopilot_event(
+        pool,
+        AutopilotEventInput {
+            event_type: "user_approved_recommended",
+            rule_id: Some(&rule.id),
+            item_ids: &action.item_ids,
+            group_id: Some(&action.group_id),
+            title: &action.title,
+            reason: &action.reason,
+            payload: json!({
+                "ruleId": rule.id,
+                "ruleTitle": rule.name,
+                "source": "memory_recommended",
+            }),
+        },
+    )
+    .await?;
+    Ok(action)
+}
+
 pub async fn promote_candidate_with_curator_recommendation(
     pool: &SqlitePool,
     draft_id: &str,

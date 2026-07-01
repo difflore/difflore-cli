@@ -16,6 +16,7 @@ pub(crate) mod learn;
 pub(crate) mod memory;
 pub(crate) mod providers;
 pub(crate) mod recall;
+pub(crate) mod repo;
 pub(crate) mod skills;
 pub(crate) mod status;
 pub(crate) mod trajectory;

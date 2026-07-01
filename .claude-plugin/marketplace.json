@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "difflore",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "source": ".",
       "description": "Inject DiffLore team rules into Claude Code via lifecycle hooks + MCP server"
     }

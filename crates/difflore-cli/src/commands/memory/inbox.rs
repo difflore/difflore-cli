@@ -18,7 +18,7 @@ use difflore_core::skills::{CandidateRule, list_candidates, reject_candidate};
 
 use crate::runtime::CommandContext;
 use crate::style;
-use crate::support::util::{exit_err, json_compact_or};
+use crate::support::util::{exit_err, json_compact_or, repo_scopes_for_path};
 
 use super::types::{MemoryCloudSummary, MemoryInboxOutput, MemoryNextAction};
 use super::{count_phrase, exit_structured_err, plural};
@@ -591,18 +591,8 @@ fn truncate_inbox_display(inbox: &mut MemoryInbox, display_limit: usize) {
 }
 
 async fn current_repo_scope_keys(ctx: &CommandContext) -> std::collections::HashSet<String> {
-    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
     let project = ctx.project.to_string_lossy();
-    let detected_repo_remotes = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
-        project.as_ref(),
-        &configured_gitlab_hosts,
-    );
-    let repo_scopes = difflore_core::skills::expand_repo_scopes_with_source_aliases(
-        &ctx.db,
-        &detected_repo_remotes,
-    )
-    .await
-    .unwrap_or(detected_repo_remotes);
+    let repo_scopes = repo_scopes_for_path(&ctx.db, project.as_ref()).await;
     repo_scope_keys(&repo_scopes)
 }
 
@@ -713,17 +703,11 @@ async fn attach_current_repo_scope(
     rule_id: &str,
     json: bool,
 ) -> Option<String> {
-    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
     let project = ctx.project.to_string_lossy();
-    let detected_repo_remotes = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
-        project.as_ref(),
-        &configured_gitlab_hosts,
-    );
-    let repo_scope = detected_repo_remotes
-        .first()
-        .map(String::as_str)
-        .and_then(difflore_core::infra::git::RepoScope::canonical)?;
-    let repo_full_name = repo_scope.as_str().to_owned();
+    let repo_full_name = repo_scopes_for_path(&ctx.db, project.as_ref())
+        .await
+        .into_iter()
+        .next()?;
     sqlx::query(
         "UPDATE skills
          SET source_repo = CASE

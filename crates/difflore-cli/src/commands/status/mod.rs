@@ -11,13 +11,13 @@ mod transform;
 
 use crate::cli::StatusLane;
 use crate::commands::ai_contract::{CLI_SCHEMA_VERSION, NextActionContract};
-use crate::support::util::{init_db, project_path};
+use crate::support::util::{init_db, project_path, repo_scopes_for_path};
 use sqlx::Row;
 use std::collections::BTreeMap;
 
 use queries::{
-    LocalAcceptedProof, LocalHeroEvidence, LocalMcpRuleServe, LocalRecallProof, MemoryInboxSummary,
-    ProvenRuleDrilldown, ValueLoopEvidence,
+    AcceptedEditProofFunnel, LocalAcceptedProof, LocalHeroEvidence, LocalMcpRuleServe,
+    LocalRecallProof, MemoryInboxSummary, ProvenRuleDrilldown, ValueLoopEvidence,
 };
 use transform::{
     CandidatePreview, LaneStatusSummary, LocalValueLoopStatus, NextAction, NextActionInputs,
@@ -63,6 +63,39 @@ pub(crate) struct CompactValueSummary {
     pub(crate) agent_serves: i64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RedactedProofSummaryQueueCounts {
+    pub(crate) observations: usize,
+    pub(crate) memory_candidates: usize,
+    pub(crate) telemetry: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CloudProofSummary {
+    pub(super) repos: i64,
+    pub(super) prs: i64,
+    pub(super) files: i64,
+    pub(super) review_comments_indexed: i64,
+    pub(super) human_review_comments_indexed: i64,
+    pub(super) ai_reviewer_comments_indexed: i64,
+    pub(super) source_evidence_items: i64,
+    pub(super) accepted_fixes_last30: i64,
+    pub(super) accepted_fix_outcomes_last30: i64,
+    pub(super) total_fixes_last30: i64,
+    pub(super) saved_review_minutes: i64,
+}
+
+impl CloudProofSummary {
+    const fn has_signal(&self) -> bool {
+        self.prs > 0
+            || self.review_comments_indexed > 0
+            || self.source_evidence_items > 0
+            || self.accepted_fixes_last30 > 0
+            || self.accepted_fix_outcomes_last30 > 0
+    }
+}
+
 impl CompactValueSummary {
     const fn from_parts(
         accepted: &LocalAcceptedProof,
@@ -83,21 +116,106 @@ pub(crate) async fn compact_value_summary_for_current_project(
     db: &difflore_core::SqlitePool,
 ) -> CompactValueSummary {
     let project = project_path();
-    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
-    let detected_repo_remotes = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
-        &project,
-        &configured_gitlab_hosts,
-    );
-    let repo_remotes =
-        difflore_core::skills::expand_repo_scopes_with_source_aliases(db, &detected_repo_remotes)
-            .await
-            .unwrap_or(detected_repo_remotes);
+    let repo_remotes = repo_scopes_for_path(db, &project).await;
 
     let local_proof = queries::local_accepted_proof(db, &repo_remotes).await;
     let local_recall_proof = queries::local_recall_proof(db, &repo_remotes).await;
     let local_mcp_serves = queries::local_mcp_rule_serves(db, &repo_remotes).await;
 
     CompactValueSummary::from_parts(&local_proof, &local_recall_proof, &local_mcp_serves)
+}
+
+pub(crate) async fn redacted_proof_summary_value(
+    db: &difflore_core::SqlitePool,
+    project: &str,
+    queues: RedactedProofSummaryQueueCounts,
+) -> Result<serde_json::Value, String> {
+    let stats = difflore_core::skills::stats(db)
+        .await
+        .map_err(|e| format!("failed to load local rule stats: {e}"))?;
+    let detection = crate::support::util::repo_scope_detection_for_path(db, project).await;
+    let local_proof = queries::local_accepted_proof(db, &detection.repo_scopes).await;
+    let local_mcp_serves = queries::local_mcp_rule_serves(db, &detection.repo_scopes).await;
+    let accepted_edit_funnel = queries::accepted_edit_proof_funnel(
+        db,
+        &detection.repo_scopes,
+        &local_proof,
+        &local_mcp_serves,
+    )
+    .await;
+    let digest = difflore_core::memory_autopilot::load_memory_digest(db, 50)
+        .await
+        .ok();
+    let blockers = accepted_edit_funnel
+        .blockers
+        .iter()
+        .take(20)
+        .map(|s| s.chars().take(240).collect::<String>())
+        .collect::<Vec<_>>();
+    let next_commands = accepted_edit_funnel
+        .next_commands
+        .iter()
+        .take(10)
+        .map(|s| s.chars().take(240).collect::<String>())
+        .collect::<Vec<_>>();
+    let repo_identity = detection.repo_scopes.first().cloned();
+    let repo_identity_source = repo_identity.as_deref().map(|repo| {
+        if detection
+            .manual_aliases
+            .iter()
+            .any(|alias| alias.repo_scope.eq_ignore_ascii_case(repo))
+        {
+            "repo_alias"
+        } else if detection
+            .detected_remotes
+            .iter()
+            .any(|remote| remote.eq_ignore_ascii_case(repo))
+        {
+            "git_remote"
+        } else {
+            "source_alias"
+        }
+    });
+
+    Ok(serde_json::json!({
+        "schemaVersion": 1,
+        "generatedAt": chrono::Utc::now().to_rfc3339(),
+        "windowDays": accepted_edit_funnel.window_days,
+        "repo": {
+            "identity": repo_identity,
+            "identitySource": repo_identity_source,
+            "aliasConfigured": !detection.manual_aliases.is_empty(),
+            "scopeCount": detection.repo_scopes.len(),
+        },
+        "localInventory": {
+            "activeRules": stats.total,
+            "recommendedGroups": digest.as_ref().map_or(0, |d| d.counts.recommended_groups),
+            "needsReviewGroups": digest.as_ref().map_or(0, |d| d.counts.needs_review_groups),
+        },
+        "queues": {
+            "observationsSkipped": queues.observations,
+            "memoryCandidatesSkipped": queues.memory_candidates,
+            "telemetrySkipped": queues.telemetry,
+            "acceptedEditUploadsPending": accepted_edit_funnel.accepted_edit_upload_pending,
+        },
+        "acceptedEditProofFunnel": {
+            "stage": accepted_edit_funnel.stage,
+            "readyForCloudValue": accepted_edit_funnel.ready_for_cloud_value,
+            "repoScopeReady": accepted_edit_funnel.repo_scope_ready,
+            "agentRecallReady": accepted_edit_funnel.agent_recall_ready,
+            "acceptedEditCaptured": accepted_edit_funnel.accepted_edit_captured,
+            "acceptedEditRowsLast30": accepted_edit_funnel.accepted_edit_rows_last30,
+            "acceptedEditRowsCurrentRepoLast30": accepted_edit_funnel.accepted_edit_rows_for_current_repo,
+            "acceptedEditRowsWithoutRepoLast30": accepted_edit_funnel.accepted_edit_rows_without_repo,
+            "pendingUploads": accepted_edit_funnel.accepted_edit_upload_pending,
+            "failedUploads": accepted_edit_funnel.accepted_edit_upload_failed,
+            "missingRuleIds": accepted_edit_funnel.accepted_edit_rows_missing_rule_ids,
+            "cloudUuidRuleIds": accepted_edit_funnel.accepted_edit_rows_with_cloud_rule_ids,
+            "localRuleIds": accepted_edit_funnel.accepted_edit_rows_with_local_rule_ids,
+            "blockers": blockers,
+            "nextCommands": next_commands,
+        },
+    }))
 }
 
 pub(crate) fn render_compact_value_summary(summary: &CompactValueSummary) -> Option<String> {
@@ -148,6 +266,8 @@ struct StatusPayload {
     local_proof: LocalAcceptedProof,
     local_recall_proof: LocalRecallProof,
     local_mcp_serves: LocalMcpRuleServe,
+    accepted_edit_funnel: AcceptedEditProofFunnel,
+    cloud_proof: Option<CloudProofSummary>,
     recall_trace: RecallTraceSummary,
     proven_rule: Option<ProvenRuleDrilldown>,
     value_loop_evidence: Option<ValueLoopEvidence>,
@@ -179,6 +299,8 @@ impl StatusPayload {
             "localAcceptedProof": self.local_proof,
             "localRecallProof": self.local_recall_proof,
             "localMcpRuleServes": self.local_mcp_serves,
+            "acceptedEditProofFunnel": self.accepted_edit_funnel,
+            "cloudProof": self.cloud_proof,
             "recallTrace": self.recall_trace,
             "provenRuleDrilldown": self.proven_rule,
             "valueLoopEvidence": self.value_loop_evidence,
@@ -213,6 +335,8 @@ impl StatusPayload {
             local_proof: &self.local_proof,
             local_recall_proof: &self.local_recall_proof,
             local_mcp_serves: &self.local_mcp_serves,
+            accepted_edit_funnel: &self.accepted_edit_funnel,
+            cloud_proof: self.cloud_proof.as_ref(),
             recall_trace: &self.recall_trace,
             proven_rule: self.proven_rule.as_ref(),
             local_hero_evidence: self.local_hero_evidence.as_ref(),
@@ -343,6 +467,42 @@ async fn memory_pulse_status(
     pulse
 }
 
+async fn fetch_cloud_proof_summary(
+    client: &difflore_core::cloud::client::CloudClient,
+) -> Option<CloudProofSummary> {
+    let (coverage, fix_scorecard) = tokio::join!(
+        client.get_impact_coverage(),
+        client.get_impact_fix_scorecard(),
+    );
+
+    let mut summary = CloudProofSummary::default();
+    if let Ok(coverage) = coverage {
+        summary.repos = coverage.repos;
+        summary.prs = coverage.prs;
+        summary.files = coverage.files;
+        summary.review_comments_indexed = coverage.review_comments_indexed;
+        summary.human_review_comments_indexed = coverage.human_review_comments_indexed;
+        summary.ai_reviewer_comments_indexed = coverage.ai_reviewer_comments_indexed;
+    }
+    if let Ok(fix) = fix_scorecard {
+        summary.accepted_fixes_last30 = fix.last30.accepted;
+        summary.accepted_fix_outcomes_last30 =
+            fix.roi.as_ref().map_or(fix.last30.accepted, |roi| {
+                roi.accepted_fix_outcomes_last30.max(0)
+            });
+        summary.total_fixes_last30 = fix.last30.total;
+        if let Some(roi) = fix.roi {
+            summary.source_evidence_items = roi.source_evidence_items;
+            summary.saved_review_minutes = roi
+                .saved_review_minutes_last30
+                .max(roi.saved_review_minutes)
+                .max(roi.modeled_review_minutes);
+        }
+    }
+
+    summary.has_signal().then_some(summary)
+}
+
 async fn compute_status_payload(
     db: &difflore_core::SqlitePool,
     project: &str,
@@ -362,15 +522,7 @@ async fn compute_status_payload(
         .await
         .unwrap_or_default();
 
-    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
-    let detected_repo_remotes = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
-        project,
-        &configured_gitlab_hosts,
-    );
-    let repo_remotes =
-        difflore_core::skills::expand_repo_scopes_with_source_aliases(db, &detected_repo_remotes)
-            .await
-            .unwrap_or(detected_repo_remotes);
+    let repo_remotes = repo_scopes_for_path(db, project).await;
     let repo_full_name = repo_remotes.first().cloned();
     let review_source_repo_full_name = repo_remotes.get(1).cloned();
     let repo_candidates = if let Some(repo) = repo_full_name.as_deref() {
@@ -403,15 +555,22 @@ async fn compute_status_payload(
     let local_proof = queries::local_accepted_proof(db, &repo_remotes).await;
     let local_recall_proof = queries::local_recall_proof(db, &repo_remotes).await;
     let local_mcp_serves = queries::local_mcp_rule_serves(db, &repo_remotes).await;
+    let accepted_edit_funnel =
+        queries::accepted_edit_proof_funnel(db, &repo_remotes, &local_proof, &local_mcp_serves)
+            .await;
     let recall_trace = RecallTraceSummary::from_injection_log(
         difflore_core::observability::injection_log::summary_24h(),
     );
     let proven_rule = queries::local_proven_rule_drilldown(db, &repo_remotes).await;
     let value_loop_evidence = queries::local_value_loop_evidence(db, &repo_remotes).await;
     let local_hero_evidence = queries::local_hero_evidence(db, &repo_remotes).await;
-    let cloud_logged_in = difflore_core::cloud::client::CloudClient::create()
-        .await
-        .is_logged_in();
+    let cloud_client = difflore_core::cloud::client::CloudClient::create().await;
+    let cloud_logged_in = cloud_client.is_logged_in();
+    let cloud_proof = if cloud_logged_in {
+        fetch_cloud_proof_summary(&cloud_client).await
+    } else {
+        None
+    };
     let memory_inbox =
         queries::memory_inbox_summary(db, stats.total, pending_candidates, cloud_logged_in).await;
     let autopilot = difflore_core::memory_autopilot_schedule::load_autopilot_schedule_status(db)
@@ -459,6 +618,8 @@ async fn compute_status_payload(
         local_proof,
         local_recall_proof,
         local_mcp_serves,
+        accepted_edit_funnel,
+        cloud_proof,
         recall_trace,
         proven_rule,
         value_loop_evidence,
@@ -541,8 +702,10 @@ mod tests {
         assert_eq!(
             keys,
             vec![
+                "acceptedEditProofFunnel",
                 "activeRules",
                 "autopilot",
+                "cloudProof",
                 "embeddingActiveProfile",
                 "embeddingDegraded",
                 "embeddingDegradedReason",

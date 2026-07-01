@@ -15,7 +15,9 @@ use auth::DeviceRegistrationState;
 // Re-exported from the per-domain modules so the dispatch layer keeps calling
 // `commands::cloud::handle_*`.
 pub(crate) use impact::handle_impact;
-pub(crate) use team::{handle_publish, handle_team, handle_unpublish};
+pub(crate) use team::{
+    PublishUsedArgs, handle_publish, handle_publish_used, handle_team, handle_unpublish,
+};
 
 pub(crate) async fn handle_status(json: bool) {
     let client = difflore_core::cloud::client::CloudClient::create().await;

@@ -360,6 +360,8 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
                 all: false,
                 limit: Some(7),
                 json: true,
+                approve: false,
+                yes: false,
             }),
             ..
         })
