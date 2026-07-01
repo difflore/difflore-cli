@@ -50,6 +50,28 @@ pub(in crate::commands::status) struct LocalRecallProof {
     pub(in crate::commands::status) recalled_rules: i64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::commands::status) struct AcceptedEditProofFunnel {
+    pub(in crate::commands::status) window_days: i64,
+    pub(in crate::commands::status) stage: String,
+    pub(in crate::commands::status) ready_for_cloud_value: bool,
+    pub(in crate::commands::status) blockers: Vec<String>,
+    pub(in crate::commands::status) next_commands: Vec<String>,
+    pub(in crate::commands::status) repo_scope_ready: bool,
+    pub(in crate::commands::status) agent_recall_ready: bool,
+    pub(in crate::commands::status) accepted_edit_captured: bool,
+    pub(in crate::commands::status) accepted_edit_rows_last30: i64,
+    pub(in crate::commands::status) accepted_edit_rows_for_current_repo: i64,
+    pub(in crate::commands::status) accepted_edit_rows_without_repo: i64,
+    pub(in crate::commands::status) accepted_edit_upload_pending: i64,
+    pub(in crate::commands::status) accepted_edit_upload_failed: i64,
+    pub(in crate::commands::status) accepted_edit_rows_missing_rule_ids: i64,
+    pub(in crate::commands::status) accepted_edit_rows_with_cloud_rule_ids: i64,
+    pub(in crate::commands::status) accepted_edit_rows_with_local_rule_ids: i64,
+    pub(in crate::commands::status) last_upload_error: Option<String>,
+}
+
 impl LocalAcceptedProof {
     const fn empty() -> Self {
         Self {
@@ -88,6 +110,30 @@ impl LocalRecallProof {
             window_days: LOCAL_PROOF_WINDOW_DAYS,
             recall_events: 0,
             recalled_rules: 0,
+        }
+    }
+}
+
+impl AcceptedEditProofFunnel {
+    fn empty(repo_scope_ready: bool, agent_recall_ready: bool) -> Self {
+        Self {
+            window_days: LOCAL_PROOF_WINDOW_DAYS,
+            stage: "no_accepted_edit_captured".to_owned(),
+            ready_for_cloud_value: false,
+            blockers: Vec::new(),
+            next_commands: Vec::new(),
+            repo_scope_ready,
+            agent_recall_ready,
+            accepted_edit_captured: false,
+            accepted_edit_rows_last30: 0,
+            accepted_edit_rows_for_current_repo: 0,
+            accepted_edit_rows_without_repo: 0,
+            accepted_edit_upload_pending: 0,
+            accepted_edit_upload_failed: 0,
+            accepted_edit_rows_missing_rule_ids: 0,
+            accepted_edit_rows_with_cloud_rule_ids: 0,
+            accepted_edit_rows_with_local_rule_ids: 0,
+            last_upload_error: None,
         }
     }
 }
@@ -240,4 +286,192 @@ pub(in crate::commands::status) async fn local_mcp_rule_serves(
         strict_matches: summary.as_ref().map_or(0, |row| row.strict_matches),
         estimated_tokens: summary.as_ref().map_or(0, |row| row.estimated_tokens),
     }
+}
+
+pub(in crate::commands::status) async fn accepted_edit_proof_funnel(
+    db: &difflore_core::SqlitePool,
+    repo_aliases: &[String],
+    local_proof: &LocalAcceptedProof,
+    local_mcp_serves: &LocalMcpRuleServe,
+) -> AcceptedEditProofFunnel {
+    let normalized_aliases = normalized_repo_aliases(repo_aliases);
+    let repo_scope_ready = !normalized_aliases.is_empty();
+    let agent_recall_ready = local_mcp_serves.rules_served > 0;
+    let accepted_from_fix =
+        local_proof.accepted_proof_signatures + local_proof.accepted_hook_outcomes;
+    let rows = load_accepted_edit_outbox_rows(db).await;
+    if rows.is_empty() && accepted_from_fix == 0 {
+        let mut funnel = AcceptedEditProofFunnel::empty(repo_scope_ready, agent_recall_ready);
+        push_base_blockers(&mut funnel);
+        return funnel;
+    }
+
+    let mut funnel = AcceptedEditProofFunnel {
+        window_days: LOCAL_PROOF_WINDOW_DAYS,
+        stage: "accepted_edit_captured_locally".to_owned(),
+        ready_for_cloud_value: false,
+        blockers: Vec::new(),
+        next_commands: Vec::new(),
+        repo_scope_ready,
+        agent_recall_ready,
+        accepted_edit_captured: true,
+        accepted_edit_rows_last30: i64::try_from(rows.len()).unwrap_or(i64::MAX),
+        ..AcceptedEditProofFunnel::empty(repo_scope_ready, agent_recall_ready)
+    };
+
+    for row in rows {
+        if row.status == "pending" || row.status == "claimed" || row.status == "parked" {
+            funnel.accepted_edit_upload_pending += 1;
+        }
+        if row.status == "failed" || row.status == "abandoned" {
+            funnel.accepted_edit_upload_failed += 1;
+        }
+        if row
+            .last_error
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            funnel.last_upload_error = row.last_error.clone();
+        }
+
+        let repo = row.request.repo_full_name.as_deref().map(normalize_repo);
+        if repo.as_deref().is_none_or(str::is_empty) {
+            funnel.accepted_edit_rows_without_repo += 1;
+        } else if normalized_aliases.is_empty()
+            || repo
+                .as_deref()
+                .is_some_and(|repo| normalized_aliases.iter().any(|alias| alias == repo))
+        {
+            funnel.accepted_edit_rows_for_current_repo += 1;
+        }
+
+        if row.request.rule_ids.is_empty() {
+            funnel.accepted_edit_rows_missing_rule_ids += 1;
+        } else if row
+            .request
+            .rule_ids
+            .iter()
+            .all(|rule_id| looks_like_uuid(rule_id))
+        {
+            funnel.accepted_edit_rows_with_cloud_rule_ids += 1;
+        } else {
+            funnel.accepted_edit_rows_with_local_rule_ids += 1;
+        }
+    }
+
+    if funnel.accepted_edit_upload_failed > 0 {
+        funnel.stage = "accepted_edit_upload_failed".to_owned();
+    } else if funnel.accepted_edit_upload_pending > 0 {
+        funnel.stage = "accepted_edit_waiting_for_cloud_sync".to_owned();
+    } else if funnel.accepted_edit_rows_with_local_rule_ids > 0 {
+        funnel.stage = "accepted_edit_needs_cloud_rule_mapping".to_owned();
+    } else if funnel.accepted_edit_rows_with_cloud_rule_ids > 0 || accepted_from_fix > 0 {
+        funnel.stage = "accepted_edit_cloud_attribution_ready".to_owned();
+        funnel.ready_for_cloud_value = true;
+    }
+    push_base_blockers(&mut funnel);
+    if funnel.accepted_edit_upload_pending > 0 {
+        funnel.next_commands.push("difflore cloud sync".to_owned());
+    }
+    if funnel.accepted_edit_rows_with_local_rule_ids > 0 {
+        funnel
+            .next_commands
+            .push("difflore cloud publish --rule <rule-id>".to_owned());
+    }
+    funnel
+}
+
+fn looks_like_uuid(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    for (idx, byte) in bytes.iter().enumerate() {
+        if matches!(idx, 8 | 13 | 18 | 23) {
+            if *byte != b'-' {
+                return false;
+            }
+        } else if !byte.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
+}
+
+fn push_base_blockers(funnel: &mut AcceptedEditProofFunnel) {
+    if !funnel.repo_scope_ready {
+        funnel.blockers.push("missing_repo_scope".to_owned());
+        funnel
+            .next_commands
+            .push("difflore repo alias set owner/repo".to_owned());
+    }
+    if !funnel.agent_recall_ready {
+        funnel.blockers.push("no_agent_rule_serve_yet".to_owned());
+    }
+    if !funnel.accepted_edit_captured {
+        funnel
+            .blockers
+            .push("no_accepted_edit_captured_yet".to_owned());
+    }
+    if funnel.accepted_edit_rows_without_repo > 0 {
+        funnel
+            .blockers
+            .push("accepted_edit_missing_repo".to_owned());
+    }
+    if funnel.accepted_edit_rows_missing_rule_ids > 0 {
+        funnel
+            .blockers
+            .push("accepted_edit_missing_rule_ids".to_owned());
+    }
+    if funnel.accepted_edit_rows_with_local_rule_ids > 0 {
+        funnel
+            .blockers
+            .push("accepted_edit_rule_ids_not_cloud_uuid".to_owned());
+    }
+    if funnel.accepted_edit_upload_failed > 0 {
+        funnel
+            .blockers
+            .push("accepted_edit_upload_failed".to_owned());
+    }
+}
+
+#[derive(Debug)]
+struct AcceptedEditOutboxRow {
+    status: String,
+    last_error: Option<String>,
+    request: difflore_core::contract::RecordAcceptedEditRequest,
+}
+
+async fn load_accepted_edit_outbox_rows(
+    db: &difflore_core::SqlitePool,
+) -> Vec<AcceptedEditOutboxRow> {
+    let cutoff_ms = chrono::Utc::now()
+        .timestamp_millis()
+        .saturating_sub(LOCAL_PROOF_WINDOW_DAYS * 24 * 60 * 60 * 1_000);
+    let rows = sqlx::query(
+        "SELECT status, payload_json, last_error \
+         FROM cloud_outbox \
+         WHERE kind = 'accepted_edit' AND created_at >= ?1 \
+         ORDER BY created_at DESC",
+    )
+    .bind(cutoff_ms)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+
+    rows.into_iter()
+        .filter_map(|row| {
+            let payload: String = row.try_get("payload_json").ok()?;
+            let request =
+                serde_json::from_str::<difflore_core::contract::RecordAcceptedEditRequest>(
+                    &payload,
+                )
+                .ok()?;
+            Some(AcceptedEditOutboxRow {
+                status: row.try_get("status").unwrap_or_default(),
+                last_error: row.try_get("last_error").ok().flatten(),
+                request,
+            })
+        })
+        .collect()
 }

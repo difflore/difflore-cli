@@ -45,7 +45,10 @@ pub use self::cluster::session_mined_candidates_semantically_match;
 pub use self::conflicts::load_memory_conflicts;
 pub use self::digest::load_memory_digest;
 pub use self::log::{disable_memory_rule, load_autopilot_log};
-pub use self::run::{promote_candidate_with_curator_recommendation, run_memory_autopilot};
+pub use self::run::{
+    approve_memory_candidate_group, promote_candidate_with_curator_recommendation,
+    run_memory_autopilot,
+};
 
 pub(crate) use self::log::{
     AutopilotEventInput, ensure_autopilot_events_table, record_autopilot_event,

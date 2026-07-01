@@ -810,7 +810,7 @@ async fn repo_scopes_for_search_rules(
     db: &crate::SqlitePool,
     args: &Value,
 ) -> Result<Vec<String>, (i32, String)> {
-    let base_scopes = if let Some(raw) = args
+    if let Some(raw) = args
         .get("repo_full_name")
         .and_then(Value::as_str)
         .map(str::trim)
@@ -828,14 +828,20 @@ async fn repo_scopes_for_search_rules(
                     .to_owned(),
             ));
         };
-        vec![repo]
-    } else {
-        crate::mcp_server::hook::refresh_configured_gitlab_hosts_for_remote_detection().await;
-        crate::mcp_server::hook::detect_git_remote_owner_repos()
-    };
+        return crate::skills::expand_repo_scopes_with_source_aliases(db, &[repo])
+            .await
+            .map_err(|e| (-32603, format!("Failed to expand repo scopes: {e}")));
+    }
 
-    crate::skills::expand_repo_scopes_with_source_aliases(db, &base_scopes)
+    crate::mcp_server::hook::refresh_configured_gitlab_hosts_for_remote_detection().await;
+    let configured_gitlab_hosts = crate::ingest::gitlab::auth::configured_hosts().await;
+    let cwd = std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .to_string_lossy()
+        .into_owned();
+    crate::repo_aliases::detect_repo_scopes_for_path(db, &cwd, &configured_gitlab_hosts)
         .await
+        .map(|detection| detection.repo_scopes)
         .map_err(|e| (-32603, format!("Failed to expand repo scopes: {e}")))
 }
 

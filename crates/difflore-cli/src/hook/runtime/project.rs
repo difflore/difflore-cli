@@ -69,15 +69,51 @@ pub(super) async fn index_pool_for_project_context(
     difflore_core::context::index_db::get_pool_for_cwd().await
 }
 
-pub(super) async fn refresh_repo_scopes(context: &mut HookProjectContext) {
+pub(super) async fn refresh_repo_scopes(
+    db: Option<&difflore_core::SqlitePool>,
+    context: &mut HookProjectContext,
+) {
+    let alias_probe_path = context
+        .repo_root
+        .clone()
+        .or_else(|| context.primary_file.as_deref().map(PathBuf::from))
+        .or_else(current_dir_ok);
+
+    let manual_aliases = if let (Some(db), Some(path)) = (db, alias_probe_path.as_deref()) {
+        difflore_core::repo_aliases::aliases_for_path(db, path)
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    if context.repo_root.is_none()
+        && let Some(alias) = manual_aliases.first()
+    {
+        let repo_root = PathBuf::from(&alias.root_path);
+        context.recall_file = context
+            .primary_file
+            .as_deref()
+            .and_then(|path| repo_relative_path(Path::new(path), &repo_root))
+            .or_else(|| context.primary_file.clone())
+            .unwrap_or_else(|| "unknown".to_owned());
+        context.repo_root = Some(repo_root);
+        context.project_hash = Some(alias.project_hash.clone());
+        context.reason = "repo_alias";
+    }
+
     let Some(repo_root) = context.repo_root.as_ref() else {
+        context.repo_scopes = manual_aliases
+            .into_iter()
+            .map(|alias| alias.repo_scope)
+            .collect();
         return;
     };
     let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
     let repo_root = path_to_string(repo_root);
     // git remote detection forks git; run it off the async worker thread so a
     // slow (AV-throttled) spawn doesn't stall other concurrent hook/MCP work.
-    let repo_scopes = tokio::task::spawn_blocking(move || {
+    let detected_scopes = tokio::task::spawn_blocking(move || {
         difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
             &repo_root,
             &configured_gitlab_hosts,
@@ -85,7 +121,13 @@ pub(super) async fn refresh_repo_scopes(context: &mut HookProjectContext) {
     })
     .await
     .unwrap_or_default();
-    context.repo_scopes = repo_scopes;
+    context.repo_scopes = difflore_core::repo_aliases::merge_repo_scopes(
+        manual_aliases
+            .into_iter()
+            .map(|alias| alias.repo_scope)
+            .collect::<Vec<_>>(),
+        detected_scopes,
+    );
 }
 
 pub(super) fn git_repo_context_for_file(
@@ -311,7 +353,7 @@ mod tests {
             reason: "target_file_git_root",
         };
 
-        refresh_repo_scopes(&mut ctx).await;
+        refresh_repo_scopes(None, &mut ctx).await;
 
         assert!(ctx.repo_scopes.is_empty());
     }

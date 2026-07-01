@@ -10,8 +10,8 @@ use std::fmt::Write as _;
 use crate::style::{self, sym};
 
 use super::queries::{
-    LocalAcceptedProof, LocalHeroEvidence, LocalMcpRuleServe, LocalRecallProof, MemoryInboxSummary,
-    ProvenRuleDrilldown,
+    AcceptedEditProofFunnel, LocalAcceptedProof, LocalHeroEvidence, LocalMcpRuleServe,
+    LocalRecallProof, MemoryInboxSummary, ProvenRuleDrilldown,
 };
 use super::transform::{CandidatePreview, NextAction, RepoScopeStatus, plural};
 use super::{CloudProofSummary, RecallTraceSummary};
@@ -228,6 +228,7 @@ pub(super) struct StatusTextView<'a> {
     pub(super) local_proof: &'a LocalAcceptedProof,
     pub(super) local_recall_proof: &'a LocalRecallProof,
     pub(super) local_mcp_serves: &'a LocalMcpRuleServe,
+    pub(super) accepted_edit_funnel: &'a AcceptedEditProofFunnel,
     pub(super) cloud_proof: Option<&'a CloudProofSummary>,
     pub(super) recall_trace: &'a RecallTraceSummary,
     pub(super) proven_rule: Option<&'a ProvenRuleDrilldown>,
@@ -249,6 +250,7 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
         local_proof,
         local_recall_proof,
         local_mcp_serves,
+        accepted_edit_funnel,
         cloud_proof,
         recall_trace,
         proven_rule,
@@ -405,6 +407,9 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
     }
     if !signal_parts.is_empty() {
         let _ = writeln!(out, "  {bullet} signals: {}", signal_parts.join(" | "));
+    }
+    if let Some(line) = format_accepted_edit_funnel(accepted_edit_funnel) {
+        let _ = writeln!(out, "  {bullet} {line}");
     }
     if recall_trace.events > 0 {
         let mut trace = format!(
@@ -578,6 +583,24 @@ fn format_cloud_proof(summary: &CloudProofSummary) -> Vec<String> {
         ));
     }
     lines
+}
+
+fn format_accepted_edit_funnel(funnel: &AcceptedEditProofFunnel) -> Option<String> {
+    if funnel.ready_for_cloud_value {
+        return Some("accepted-edit proof: cloud attribution ready".to_owned());
+    }
+    if funnel.blockers.is_empty() && funnel.accepted_edit_upload_pending == 0 {
+        return None;
+    }
+
+    let mut line = format!("accepted-edit proof: {}", funnel.stage);
+    if let Some(blocker) = funnel.blockers.first() {
+        let _ = write!(line, " | blocker: {blocker}");
+    }
+    if let Some(command) = funnel.next_commands.first() {
+        let _ = write!(line, " | next: {command}");
+    }
+    Some(line)
 }
 
 fn top_candidates_heading(
@@ -910,6 +933,28 @@ mod tests {
         MemoryInboxSummary::empty(0, 0, false)
     }
 
+    fn empty_accepted_edit_funnel() -> AcceptedEditProofFunnel {
+        AcceptedEditProofFunnel {
+            window_days: 30,
+            stage: "no_accepted_edit_captured".to_owned(),
+            ready_for_cloud_value: false,
+            blockers: Vec::new(),
+            next_commands: Vec::new(),
+            repo_scope_ready: false,
+            agent_recall_ready: false,
+            accepted_edit_captured: false,
+            accepted_edit_rows_last30: 0,
+            accepted_edit_rows_for_current_repo: 0,
+            accepted_edit_rows_without_repo: 0,
+            accepted_edit_upload_pending: 0,
+            accepted_edit_upload_failed: 0,
+            accepted_edit_rows_missing_rule_ids: 0,
+            accepted_edit_rows_with_cloud_rule_ids: 0,
+            accepted_edit_rows_with_local_rule_ids: 0,
+            last_upload_error: None,
+        }
+    }
+
     fn empty_recall_trace() -> RecallTraceSummary {
         RecallTraceSummary {
             window_hours: 24,
@@ -985,6 +1030,7 @@ mod tests {
             local_proof: proof,
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
+            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: None,
             local_hero_evidence: None,
@@ -1055,6 +1101,7 @@ mod tests {
             local_proof: &proof_with(0, 0, 0),
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
+            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: None,
             local_hero_evidence: None,
@@ -1116,6 +1163,7 @@ mod tests {
             local_proof: &proof_with(0, 0, 0),
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
+            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: None,
             local_hero_evidence: None,
@@ -1178,6 +1226,7 @@ mod tests {
             local_proof: &proof_with(0, 0, 0),
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
+            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: Some(&proven_rule()),
             local_hero_evidence: None,
@@ -1240,6 +1289,7 @@ mod tests {
             local_proof: &empty_proof,
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
+            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: None,
             local_hero_evidence: None,
@@ -1337,6 +1387,7 @@ mod tests {
                 local_proof: &proof,
                 local_recall_proof: &recall,
                 local_mcp_serves: serves,
+                accepted_edit_funnel: &empty_accepted_edit_funnel(),
                 recall_trace: &empty_recall_trace(),
                 proven_rule: None,
                 local_hero_evidence: None,
@@ -1420,6 +1471,7 @@ mod tests {
             local_proof: &proof,
             local_recall_proof: &recall,
             local_mcp_serves: &serves,
+            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &recall_trace_with_drop("retrieval_empty"),
             proven_rule: None,
             local_hero_evidence: None,

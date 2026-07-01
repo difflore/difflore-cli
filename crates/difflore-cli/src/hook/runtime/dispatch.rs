@@ -474,7 +474,7 @@ async fn handle_post_tool_use(
 
     enqueue_observation_and_replay_outbox(&db, obs_payload.as_deref()).await;
 
-    super::project::refresh_repo_scopes(&mut project_ctx).await;
+    super::project::refresh_repo_scopes(Some(&db), &mut project_ctx).await;
     let Ok(index_pool) = super::project::index_pool_for_project_context(
         hot_state,
         project_ctx.project_hash.as_deref(),

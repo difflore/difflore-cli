@@ -57,6 +57,12 @@ pub(crate) enum Commands {
         lane: StatusLane,
     },
 
+    /// Configure local repository identity for checkouts without a supported remote.
+    Repo {
+        #[command(subcommand)]
+        command: RepoCommands,
+    },
+
     /// Print the stable AI-facing CLI/MCP capability contract.
     Capabilities {
         /// Output as JSON.
@@ -619,6 +625,14 @@ pub(crate) enum MemoryCommands {
         #[arg(long)]
         limit: Option<usize>,
 
+        /// Approve the selected recommended groups after confirmation.
+        #[arg(long)]
+        approve: bool,
+
+        /// Skip the confirmation prompt when using --approve.
+        #[arg(long, requires = "approve")]
+        yes: bool,
+
         /// Output as JSON.
         #[arg(long)]
         json: bool,
@@ -776,6 +790,54 @@ pub(crate) enum MemoryCommands {
     Drafts {
         #[command(subcommand)]
         command: DraftsCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum RepoCommands {
+    /// Map this local project path to a hosted repo scope.
+    Alias {
+        #[command(subcommand)]
+        command: RepoAliasCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum RepoAliasCommands {
+    /// Set or replace a manual repo alias for a local project path.
+    Set {
+        /// Repo scope, such as GitHub owner/repo or GitLab host/group/project.
+        repo: String,
+
+        /// Local project path. Defaults to the current git root or cwd.
+        #[arg(long, value_name = "PATH")]
+        path: Option<PathBuf>,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// List manual repo aliases stored on this device.
+    List {
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Clear manual repo aliases for a local project path.
+    Clear {
+        /// Local project path. Defaults to the current git root or cwd.
+        #[arg(long, value_name = "PATH")]
+        path: Option<PathBuf>,
+
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -955,6 +1017,33 @@ pub(crate) enum CloudCommands {
         /// Team enforcement policy.
         #[arg(long, default_value = "recommended", value_parser = ["recommended", "required"])]
         enforcement: String,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Publish local rules already used by accepted-edit proof rows.
+    PublishUsed {
+        /// Team id. Defaults to the current cloud team.
+        #[arg(long, value_name = "TEAM_ID")]
+        team_id: Option<String>,
+
+        /// Team enforcement policy.
+        #[arg(long, default_value = "recommended", value_parser = ["recommended", "required"])]
+        enforcement: String,
+
+        /// Maximum local rule ids to publish.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+
+        /// Preview without publishing or rewriting outbox payloads.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
 
         /// Output as JSON.
         #[arg(long)]

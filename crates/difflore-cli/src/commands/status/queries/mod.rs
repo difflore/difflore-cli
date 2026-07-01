@@ -24,8 +24,8 @@ mod test_support;
 pub(super) use hero::{LocalHeroEvidence, local_hero_evidence};
 pub(super) use memory_inbox::{MemoryInboxSummary, memory_inbox_summary};
 pub(super) use proof_counters::{
-    LocalAcceptedProof, LocalMcpRuleServe, LocalRecallProof, local_accepted_proof,
-    local_mcp_rule_serves, local_recall_proof,
+    AcceptedEditProofFunnel, LocalAcceptedProof, LocalMcpRuleServe, LocalRecallProof,
+    accepted_edit_proof_funnel, local_accepted_proof, local_mcp_rule_serves, local_recall_proof,
 };
 pub(super) use proven_rule::{ProvenRuleDrilldown, local_proven_rule_drilldown};
 pub(super) use value_loop::{ValueLoopAcceptedRow, ValueLoopEvidence, local_value_loop_evidence};

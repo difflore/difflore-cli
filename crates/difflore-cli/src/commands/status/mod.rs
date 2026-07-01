@@ -11,13 +11,13 @@ mod transform;
 
 use crate::cli::StatusLane;
 use crate::commands::ai_contract::{CLI_SCHEMA_VERSION, NextActionContract};
-use crate::support::util::{init_db, project_path};
+use crate::support::util::{init_db, project_path, repo_scopes_for_path};
 use sqlx::Row;
 use std::collections::BTreeMap;
 
 use queries::{
-    LocalAcceptedProof, LocalHeroEvidence, LocalMcpRuleServe, LocalRecallProof, MemoryInboxSummary,
-    ProvenRuleDrilldown, ValueLoopEvidence,
+    AcceptedEditProofFunnel, LocalAcceptedProof, LocalHeroEvidence, LocalMcpRuleServe,
+    LocalRecallProof, MemoryInboxSummary, ProvenRuleDrilldown, ValueLoopEvidence,
 };
 use transform::{
     CandidatePreview, LaneStatusSummary, LocalValueLoopStatus, NextAction, NextActionInputs,
@@ -61,6 +61,13 @@ pub(crate) struct CompactValueSummary {
     pub(crate) saved_review_minutes: i64,
     pub(crate) recall_events: i64,
     pub(crate) agent_serves: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RedactedProofSummaryQueueCounts {
+    pub(crate) observations_skipped: usize,
+    pub(crate) memory_candidates_skipped: usize,
+    pub(crate) telemetry_skipped: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -109,21 +116,106 @@ pub(crate) async fn compact_value_summary_for_current_project(
     db: &difflore_core::SqlitePool,
 ) -> CompactValueSummary {
     let project = project_path();
-    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
-    let detected_repo_remotes = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
-        &project,
-        &configured_gitlab_hosts,
-    );
-    let repo_remotes =
-        difflore_core::skills::expand_repo_scopes_with_source_aliases(db, &detected_repo_remotes)
-            .await
-            .unwrap_or(detected_repo_remotes);
+    let repo_remotes = repo_scopes_for_path(db, &project).await;
 
     let local_proof = queries::local_accepted_proof(db, &repo_remotes).await;
     let local_recall_proof = queries::local_recall_proof(db, &repo_remotes).await;
     let local_mcp_serves = queries::local_mcp_rule_serves(db, &repo_remotes).await;
 
     CompactValueSummary::from_parts(&local_proof, &local_recall_proof, &local_mcp_serves)
+}
+
+pub(crate) async fn redacted_proof_summary_value(
+    db: &difflore_core::SqlitePool,
+    project: &str,
+    queues: RedactedProofSummaryQueueCounts,
+) -> Result<serde_json::Value, String> {
+    let stats = difflore_core::skills::stats(db)
+        .await
+        .map_err(|e| format!("failed to load local rule stats: {e}"))?;
+    let detection = crate::support::util::repo_scope_detection_for_path(db, project).await;
+    let local_proof = queries::local_accepted_proof(db, &detection.repo_scopes).await;
+    let local_mcp_serves = queries::local_mcp_rule_serves(db, &detection.repo_scopes).await;
+    let accepted_edit_funnel = queries::accepted_edit_proof_funnel(
+        db,
+        &detection.repo_scopes,
+        &local_proof,
+        &local_mcp_serves,
+    )
+    .await;
+    let digest = difflore_core::memory_autopilot::load_memory_digest(db, 50)
+        .await
+        .ok();
+    let blockers = accepted_edit_funnel
+        .blockers
+        .iter()
+        .take(20)
+        .map(|s| s.chars().take(240).collect::<String>())
+        .collect::<Vec<_>>();
+    let next_commands = accepted_edit_funnel
+        .next_commands
+        .iter()
+        .take(10)
+        .map(|s| s.chars().take(240).collect::<String>())
+        .collect::<Vec<_>>();
+    let repo_identity = detection.repo_scopes.first().cloned();
+    let repo_identity_source = repo_identity.as_deref().and_then(|repo| {
+        if detection
+            .manual_aliases
+            .iter()
+            .any(|alias| alias.repo_scope.eq_ignore_ascii_case(repo))
+        {
+            Some("repo_alias")
+        } else if detection
+            .detected_remotes
+            .iter()
+            .any(|remote| remote.eq_ignore_ascii_case(repo))
+        {
+            Some("git_remote")
+        } else {
+            Some("source_alias")
+        }
+    });
+
+    Ok(serde_json::json!({
+        "schemaVersion": 1,
+        "generatedAt": chrono::Utc::now().to_rfc3339(),
+        "windowDays": accepted_edit_funnel.window_days,
+        "repo": {
+            "identity": repo_identity,
+            "identitySource": repo_identity_source,
+            "aliasConfigured": !detection.manual_aliases.is_empty(),
+            "scopeCount": detection.repo_scopes.len(),
+        },
+        "localInventory": {
+            "activeRules": stats.total,
+            "recommendedGroups": digest.as_ref().map_or(0, |d| d.counts.recommended_groups),
+            "needsReviewGroups": digest.as_ref().map_or(0, |d| d.counts.needs_review_groups),
+        },
+        "queues": {
+            "observationsSkipped": queues.observations_skipped,
+            "memoryCandidatesSkipped": queues.memory_candidates_skipped,
+            "telemetrySkipped": queues.telemetry_skipped,
+            "acceptedEditUploadsPending": accepted_edit_funnel.accepted_edit_upload_pending,
+        },
+        "acceptedEditProofFunnel": {
+            "stage": accepted_edit_funnel.stage,
+            "readyForCloudValue": accepted_edit_funnel.ready_for_cloud_value,
+            "repoScopeReady": accepted_edit_funnel.repo_scope_ready,
+            "agentRecallReady": accepted_edit_funnel.agent_recall_ready,
+            "acceptedEditCaptured": accepted_edit_funnel.accepted_edit_captured,
+            "acceptedEditRowsLast30": accepted_edit_funnel.accepted_edit_rows_last30,
+            "acceptedEditRowsCurrentRepoLast30": accepted_edit_funnel.accepted_edit_rows_for_current_repo,
+            "acceptedEditRowsWithoutRepoLast30": accepted_edit_funnel.accepted_edit_rows_without_repo,
+            "pendingUploads": accepted_edit_funnel.accepted_edit_upload_pending,
+            "failedUploads": accepted_edit_funnel.accepted_edit_upload_failed,
+            "missingRuleIds": accepted_edit_funnel.accepted_edit_rows_missing_rule_ids,
+            "cloudUuidRuleIds": accepted_edit_funnel.accepted_edit_rows_with_cloud_rule_ids,
+            "localRuleIds": accepted_edit_funnel.accepted_edit_rows_with_local_rule_ids,
+            "blockers": blockers,
+            "nextCommands": next_commands,
+        },
+    }))
 }
 
 pub(crate) fn render_compact_value_summary(summary: &CompactValueSummary) -> Option<String> {
@@ -174,6 +266,7 @@ struct StatusPayload {
     local_proof: LocalAcceptedProof,
     local_recall_proof: LocalRecallProof,
     local_mcp_serves: LocalMcpRuleServe,
+    accepted_edit_funnel: AcceptedEditProofFunnel,
     cloud_proof: Option<CloudProofSummary>,
     recall_trace: RecallTraceSummary,
     proven_rule: Option<ProvenRuleDrilldown>,
@@ -206,6 +299,7 @@ impl StatusPayload {
             "localAcceptedProof": self.local_proof,
             "localRecallProof": self.local_recall_proof,
             "localMcpRuleServes": self.local_mcp_serves,
+            "acceptedEditProofFunnel": self.accepted_edit_funnel,
             "cloudProof": self.cloud_proof,
             "recallTrace": self.recall_trace,
             "provenRuleDrilldown": self.proven_rule,
@@ -241,6 +335,7 @@ impl StatusPayload {
             local_proof: &self.local_proof,
             local_recall_proof: &self.local_recall_proof,
             local_mcp_serves: &self.local_mcp_serves,
+            accepted_edit_funnel: &self.accepted_edit_funnel,
             cloud_proof: self.cloud_proof.as_ref(),
             recall_trace: &self.recall_trace,
             proven_rule: self.proven_rule.as_ref(),
@@ -427,15 +522,7 @@ async fn compute_status_payload(
         .await
         .unwrap_or_default();
 
-    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
-    let detected_repo_remotes = difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
-        project,
-        &configured_gitlab_hosts,
-    );
-    let repo_remotes =
-        difflore_core::skills::expand_repo_scopes_with_source_aliases(db, &detected_repo_remotes)
-            .await
-            .unwrap_or(detected_repo_remotes);
+    let repo_remotes = repo_scopes_for_path(db, project).await;
     let repo_full_name = repo_remotes.first().cloned();
     let review_source_repo_full_name = repo_remotes.get(1).cloned();
     let repo_candidates = if let Some(repo) = repo_full_name.as_deref() {
@@ -468,6 +555,9 @@ async fn compute_status_payload(
     let local_proof = queries::local_accepted_proof(db, &repo_remotes).await;
     let local_recall_proof = queries::local_recall_proof(db, &repo_remotes).await;
     let local_mcp_serves = queries::local_mcp_rule_serves(db, &repo_remotes).await;
+    let accepted_edit_funnel =
+        queries::accepted_edit_proof_funnel(db, &repo_remotes, &local_proof, &local_mcp_serves)
+            .await;
     let recall_trace = RecallTraceSummary::from_injection_log(
         difflore_core::observability::injection_log::summary_24h(),
     );
@@ -528,6 +618,7 @@ async fn compute_status_payload(
         local_proof,
         local_recall_proof,
         local_mcp_serves,
+        accepted_edit_funnel,
         cloud_proof,
         recall_trace,
         proven_rule,
@@ -611,8 +702,10 @@ mod tests {
         assert_eq!(
             keys,
             vec![
+                "acceptedEditProofFunnel",
                 "activeRules",
                 "autopilot",
+                "cloudProof",
                 "embeddingActiveProfile",
                 "embeddingDegraded",
                 "embeddingDegradedReason",

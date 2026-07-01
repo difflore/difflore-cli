@@ -11,7 +11,7 @@ use difflore_core::context::types::{PastVerdict, PastVerdictScope};
 use difflore_core::skills::SearchSkillMeta;
 
 use crate::style::{self, sym};
-use crate::support::util::project_path;
+use crate::support::util::{project_path, repo_scopes_for_path};
 
 use super::{
     CloudRecallResult, CommandContext, DiagnosticItem, DiagnosticStep, LocalRecallResult,
@@ -54,18 +54,7 @@ pub(super) async fn recall_local_rules(
     // Detect both origin and upstream so recall can use imported review
     // history from either remote. `repo_full_name` is the display label;
     // `repo_scopes` carries the full list into retrieval.
-    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
-    let detected_repo_full_names =
-        difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
-            &project_path(),
-            &configured_gitlab_hosts,
-        );
-    let repo_full_names = difflore_core::skills::expand_repo_scopes_with_source_aliases(
-        db,
-        &detected_repo_full_names,
-    )
-    .await
-    .unwrap_or(detected_repo_full_names);
+    let repo_full_names = repo_scopes_for_path(db, &project_path()).await;
     let repo_full_name = repo_full_names.first().cloned();
     if repo_full_name.is_none() {
         return LocalRecallResult {
@@ -891,18 +880,7 @@ pub(super) async fn recall_cloud_review_memory(
 ) -> CloudRecallResult {
     let client = ctx.cloud().await;
     let has_saved_token = client.is_logged_in();
-    let configured_gitlab_hosts = difflore_core::ingest::gitlab::auth::configured_hosts().await;
-    let detected_repo_full_names =
-        difflore_core::infra::git::detect_repo_full_names_with_gitlab_hosts(
-            &project_path(),
-            &configured_gitlab_hosts,
-        );
-    let repo_full_names = difflore_core::skills::expand_repo_scopes_with_source_aliases(
-        &ctx.db,
-        &detected_repo_full_names,
-    )
-    .await
-    .unwrap_or(detected_repo_full_names);
+    let repo_full_names = repo_scopes_for_path(&ctx.db, &project_path()).await;
     let repo_full_name = repo_full_names.first().cloned();
     if !has_saved_token {
         return CloudRecallResult {

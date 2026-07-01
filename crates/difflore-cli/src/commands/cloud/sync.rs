@@ -1,3 +1,4 @@
+use crate::commands::status::RedactedProofSummaryQueueCounts;
 use crate::runtime::CommandContext;
 use crate::style;
 use crate::support::util::{exit_code, exit_err};
@@ -131,6 +132,8 @@ struct SyncOutcome {
     telemetry_queued: usize,
     telemetry_skipped: usize,
     accepted_edit_attribution: AcceptedEditAttributionSummary,
+    proof_summary_uploaded: bool,
+    proof_summary_error: Option<String>,
 }
 
 #[derive(Default)]
@@ -279,6 +282,16 @@ pub(crate) async fn handle_sync(ctx: &CommandContext, args: SyncArgs) {
     let providers_added = run_providers_phase(client, db, direction).await;
     sync_spinner_tick(spinner.as_ref());
 
+    sync_spinner_set_message(&mut spinner, "Syncing redacted proof summary");
+    let proof_summary_queues = RedactedProofSummaryQueueCounts {
+        observations_skipped: observation_events_skipped + cloud_outbox.observations_skipped,
+        memory_candidates_skipped: cloud_outbox.memory_candidates_skipped,
+        telemetry_skipped: cloud_outbox.telemetry_skipped,
+    };
+    let (proof_summary_uploaded, proof_summary_error) =
+        run_redacted_proof_summary_phase(db, client, direction, proof_summary_queues).await;
+    sync_spinner_tick(spinner.as_ref());
+
     sync_spinner_finish_ok(spinner.take(), "Cloud sync completed.");
 
     let outcome = SyncOutcome {
@@ -302,6 +315,8 @@ pub(crate) async fn handle_sync(ctx: &CommandContext, args: SyncArgs) {
         telemetry_queued: cloud_outbox.telemetry_queued,
         telemetry_skipped: cloud_outbox.telemetry_skipped,
         accepted_edit_attribution: cloud_outbox.accepted_edit_attribution,
+        proof_summary_uploaded,
+        proof_summary_error,
     };
 
     if json {
@@ -403,6 +418,9 @@ async fn emit_dry_run(
         },
     );
     emit_skipped_raw_upload_lines(skipped);
+    if direction.do_push() {
+        println!("  proof summary      redacted aggregate would be uploaded");
+    }
     println!();
     println!(
         "next: {}  {}",
@@ -427,6 +445,10 @@ fn dry_run_payload(
             "includeTelemetry": raw_upload_policy.include_telemetry,
         },
         "skippedRawUploads": skipped_raw_upload_counts_value(skipped),
+        "proofSummary": {
+            "wouldUpload": direction.do_push(),
+            "redacted": true,
+        },
     })
 }
 
@@ -587,6 +609,34 @@ async fn run_providers_phase(
         }
     }
     providers_added
+}
+
+async fn run_redacted_proof_summary_phase(
+    db: &difflore_core::SqlitePool,
+    client: &difflore_core::cloud::client::CloudClient,
+    direction: SyncDirection,
+    queues: RedactedProofSummaryQueueCounts,
+) -> (bool, Option<String>) {
+    if !direction.do_push() {
+        return (false, None);
+    }
+    let project = crate::support::util::project_path();
+    let summary =
+        match crate::commands::status::redacted_proof_summary_value(db, &project, queues).await {
+            Ok(summary) => summary,
+            Err(e) => return (false, Some(e)),
+        };
+    match difflore_core::cloud::sync::sync_proof_summary(client, &summary).await {
+        Ok(()) => (true, None),
+        Err(e) => {
+            let message = e.to_string();
+            eprintln!(
+                "{} Redacted proof summary sync skipped: {message}",
+                style::amber(style::sym::WARN),
+            );
+            (false, Some(message))
+        }
+    }
 }
 
 async fn run_observations_phase(
@@ -977,6 +1027,11 @@ fn sync_summary_payload(outcome: &SyncOutcome) -> serde_json::Value {
             "unlinkedRuleObservations": outcome.accepted_edit_attribution.unlinked_rule_observations,
             "warningCount": outcome.accepted_edit_attribution.warning_count(),
         },
+        "proofSummary": {
+            "uploaded": outcome.proof_summary_uploaded,
+            "redacted": true,
+            "error": outcome.proof_summary_error,
+        },
     })
 }
 
@@ -1128,6 +1183,8 @@ async fn emit_summary_human(outcome: &SyncOutcome, db: &difflore_core::SqlitePoo
         telemetry_queued,
         telemetry_skipped,
         accepted_edit_attribution,
+        proof_summary_uploaded,
+        ref proof_summary_error,
     } = *outcome;
 
     // Output contract: lead with a single status headline, then one row per
@@ -1197,6 +1254,11 @@ async fn emit_summary_human(outcome: &SyncOutcome, db: &difflore_core::SqlitePoo
             accepted_edit_attribution.missing_rule_ids,
             accepted_edit_attribution.unlinked_rule_observations,
         );
+    }
+    if proof_summary_uploaded {
+        println!("  proof summary  synced (redacted)");
+    } else if let Some(error) = proof_summary_error.as_deref() {
+        println!("  proof summary  skipped ({error})");
     }
 
     let cold_start = created == 0 && updated == 0 && team_count == 0 && team_synced == 0;
@@ -1365,6 +1427,8 @@ mod tests {
                 missing_rule_ids: 1,
                 unlinked_rule_observations: 0,
             },
+            proof_summary_uploaded: true,
+            proof_summary_error: None,
         });
 
         assert_eq!(payload["observations"]["attempted"], 5);
@@ -1386,6 +1450,9 @@ mod tests {
         assert_eq!(payload["acceptedEditProof"]["missingTeamWorkspace"], 1);
         assert_eq!(payload["acceptedEditProof"]["missingRuleIds"], 1);
         assert_eq!(payload["acceptedEditProof"]["warningCount"], 2);
+        assert_eq!(payload["proofSummary"]["uploaded"], true);
+        assert_eq!(payload["proofSummary"]["redacted"], true);
+        assert_eq!(payload["proofSummary"]["error"], serde_json::Value::Null);
     }
 
     #[test]

@@ -7,7 +7,12 @@
 //! helpers are `pub(super)` so sibling cloud modules reuse the same state.
 
 use crate::style;
-use crate::support::util::{exit_code, exit_err};
+use crate::support::util::{confirm_destructive, exit_code, exit_err, json_compact_or};
+use serde::Serialize;
+use sqlx::Row;
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::runtime::CommandContext;
 
 pub(super) const TEAM_WORKSPACE_URL: &str = "https://difflore.dev/team";
 
@@ -140,7 +145,7 @@ pub(crate) async fn handle_team(json: bool) {
     let status = difflore_core::cloud::sync::fetch_cloud_status(&client).await;
     if json {
         let payload = team_workspace_value(status.logged_in, status.team_name.as_deref());
-        println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
+        println!("{}", json_compact_or(&payload, "{}"));
         return;
     }
 
@@ -199,7 +204,7 @@ pub(crate) async fn handle_publish(
                     "ruleId": published_rule_id,
                     "enforcement": enforcement,
                 });
-                println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
+                println!("{}", json_compact_or(&payload, "{}"));
                 return;
             }
 
@@ -224,6 +229,283 @@ pub(crate) async fn handle_publish(
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PublishUsedArgs {
+    pub(crate) team_id: Option<String>,
+    pub(crate) enforcement: String,
+    pub(crate) limit: Option<usize>,
+    pub(crate) dry_run: bool,
+    pub(crate) yes: bool,
+    pub(crate) json: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishUsedRule {
+    local_rule_id: String,
+    cloud_rule_id: Option<String>,
+    outbox_rows: Vec<i64>,
+    title: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishUsedReport {
+    dry_run: bool,
+    planned: usize,
+    published: usize,
+    rewritten_outbox_rows: usize,
+    failed: usize,
+    rules: Vec<PublishUsedRule>,
+}
+
+pub(crate) async fn handle_publish_used(ctx: &CommandContext, args: PublishUsedArgs) {
+    let mut plan = load_publish_used_plan(&ctx.db, args.limit)
+        .await
+        .unwrap_or_else(|err| exit_err(&format!("failed to inspect used local rules: {err}")));
+
+    if args.dry_run || plan.is_empty() {
+        print_publish_used_report(
+            &PublishUsedReport {
+                dry_run: true,
+                planned: plan.len(),
+                published: 0,
+                rewritten_outbox_rows: 0,
+                failed: 0,
+                rules: plan,
+            },
+            args.json,
+        );
+        return;
+    }
+
+    if let Err(err) = confirm_destructive(
+        args.yes,
+        &format!(
+            "publish {} used local rule(s) to the current team and rewrite accepted-edit proof rows?",
+            plan.len()
+        ),
+    ) {
+        exit_err(&err.to_string());
+    }
+
+    let mut published = 0usize;
+    let mut rewritten = 0usize;
+    let mut failed = 0usize;
+    for item in &mut plan {
+        let input = difflore_core::team::TeamRulePublishInput {
+            rule_id: item.local_rule_id.clone(),
+            enforcement: Some(args.enforcement.clone()),
+            team_id: args.team_id.clone(),
+            origin: None,
+        };
+        match difflore_core::team::publish_rule(input).await {
+            Ok(cloud_rule_id) => {
+                match rewrite_accepted_edit_outbox_rule_id(
+                    &ctx.db,
+                    &item.local_rule_id,
+                    &cloud_rule_id,
+                )
+                .await
+                {
+                    Ok(count) => {
+                        item.cloud_rule_id = Some(cloud_rule_id);
+                        rewritten += count;
+                        published += 1;
+                    }
+                    Err(err) => {
+                        item.error = Some(format!("published but failed to rewrite outbox: {err}"));
+                        failed += 1;
+                    }
+                }
+            }
+            Err(err) => {
+                item.error = Some(err.to_string());
+                failed += 1;
+            }
+        }
+    }
+
+    print_publish_used_report(
+        &PublishUsedReport {
+            dry_run: false,
+            planned: plan.len(),
+            published,
+            rewritten_outbox_rows: rewritten,
+            failed,
+            rules: plan,
+        },
+        args.json,
+    );
+    if failed > 0 {
+        exit_code(1);
+    }
+}
+
+async fn load_publish_used_plan(
+    db: &difflore_core::SqlitePool,
+    limit: Option<usize>,
+) -> difflore_core::Result<Vec<PublishUsedRule>> {
+    let rows = sqlx::query(
+        "SELECT id, payload_json \
+         FROM cloud_outbox \
+         WHERE kind = 'accepted_edit' \
+           AND status IN ('pending', 'failed', 'abandoned', 'parked') \
+         ORDER BY created_at DESC, id DESC",
+    )
+    .fetch_all(db)
+    .await?;
+
+    let mut outbox_by_rule: BTreeMap<String, BTreeSet<i64>> = BTreeMap::new();
+    for row in rows {
+        let id: i64 = row.try_get("id").unwrap_or_default();
+        let payload: String = row.try_get("payload_json").unwrap_or_default();
+        let Ok(request) =
+            serde_json::from_str::<difflore_core::contract::RecordAcceptedEditRequest>(&payload)
+        else {
+            continue;
+        };
+        for rule_id in request.rule_ids {
+            if looks_like_cloud_uuid(&rule_id) {
+                continue;
+            }
+            outbox_by_rule.entry(rule_id).or_default().insert(id);
+        }
+    }
+
+    let mut plan = Vec::new();
+    for (rule_id, rows) in outbox_by_rule {
+        if plan.len() >= limit.unwrap_or(usize::MAX) {
+            break;
+        }
+        let title: Option<String> = sqlx::query_scalar("SELECT name FROM skills WHERE id = ?1")
+            .bind(&rule_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
+        plan.push(PublishUsedRule {
+            local_rule_id: rule_id,
+            cloud_rule_id: None,
+            outbox_rows: rows.into_iter().collect(),
+            title,
+            error: None,
+        });
+    }
+    Ok(plan)
+}
+
+async fn rewrite_accepted_edit_outbox_rule_id(
+    db: &difflore_core::SqlitePool,
+    local_rule_id: &str,
+    cloud_rule_id: &str,
+) -> difflore_core::Result<usize> {
+    let rows = sqlx::query(
+        "SELECT id, payload_json \
+         FROM cloud_outbox \
+         WHERE kind = 'accepted_edit' \
+           AND status IN ('pending', 'failed', 'abandoned', 'parked')",
+    )
+    .fetch_all(db)
+    .await?;
+    let mut rewritten = 0usize;
+    for row in rows {
+        let id: i64 = row.try_get("id").unwrap_or_default();
+        let payload: String = row.try_get("payload_json").unwrap_or_default();
+        let Ok(mut request) =
+            serde_json::from_str::<difflore_core::contract::RecordAcceptedEditRequest>(&payload)
+        else {
+            continue;
+        };
+        let mut changed = false;
+        for rule_id in &mut request.rule_ids {
+            if rule_id == local_rule_id {
+                *rule_id = cloud_rule_id.to_owned();
+                changed = true;
+            }
+        }
+        if !changed {
+            continue;
+        }
+        let payload = serde_json::to_string(&request)?;
+        sqlx::query(
+            "UPDATE cloud_outbox \
+             SET payload_json = ?1, status = 'pending', retry_count = 0, claimed_at = NULL, last_error = NULL \
+             WHERE id = ?2",
+        )
+        .bind(payload)
+        .bind(id)
+        .execute(db)
+        .await?;
+        rewritten += 1;
+    }
+    Ok(rewritten)
+}
+
+fn looks_like_cloud_uuid(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    for (idx, byte) in bytes.iter().enumerate() {
+        if matches!(idx, 8 | 13 | 18 | 23) {
+            if *byte != b'-' {
+                return false;
+            }
+        } else if !byte.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
+}
+
+fn print_publish_used_report(report: &PublishUsedReport, json: bool) {
+    if json {
+        println!("{}", json_compact_or(report, "{}"));
+        return;
+    }
+
+    println!("{}", style::title("Publish Used Rules"));
+    if report.planned == 0 {
+        println!("  no accepted-edit proof rows contain local-only rule ids");
+        println!("  next: {}", style::cmd("difflore status --json"));
+        return;
+    }
+
+    if report.dry_run {
+        println!("  preview only; no cloud rules were published");
+    } else {
+        println!(
+            "  published {} rule(s), rewrote {} outbox row(s)",
+            report.published, report.rewritten_outbox_rows
+        );
+    }
+    for item in &report.rules {
+        let title = item.title.as_deref().unwrap_or("-");
+        let target = item.cloud_rule_id.as_deref().unwrap_or("pending");
+        println!(
+            "  - {} -> {}  {}",
+            style::ident(&item.local_rule_id),
+            style::ident(target),
+            title
+        );
+        if let Some(error) = &item.error {
+            println!("    {}", style::amber(error));
+        }
+    }
+    if report.dry_run {
+        println!();
+        println!(
+            "  apply: {}",
+            style::cmd("difflore cloud publish-used --yes")
+        );
+    } else if report.rewritten_outbox_rows > 0 {
+        println!();
+        println!("  sync: {}", style::cmd("difflore cloud sync"));
+    }
+}
+
 pub(crate) async fn handle_unpublish(rule_id: String, team_id: Option<String>, json: bool) {
     let input = difflore_core::team::TeamRuleUnpublishInput {
         rule_id: rule_id.clone(),
@@ -237,7 +519,7 @@ pub(crate) async fn handle_unpublish(rule_id: String, team_id: Option<String>, j
                     "success": true,
                     "ruleId": rule_id,
                 });
-                println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
+                println!("{}", json_compact_or(&payload, "{}"));
                 return;
             }
 
@@ -268,7 +550,7 @@ fn cloud_command_error_value(action: &str, message: &str) -> serde_json::Value {
 
 fn exit_json_err(action: &str, message: &str) -> ! {
     let payload = cloud_command_error_value(action, message);
-    println!("{}", crate::support::util::json_compact_or(&payload, "{}"));
+    println!("{}", json_compact_or(&payload, "{}"));
     exit_code(1);
 }
 

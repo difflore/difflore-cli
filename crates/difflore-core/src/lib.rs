@@ -25,6 +25,7 @@ pub mod memory_inbox;
 pub mod memory_overview;
 pub mod migration;
 pub mod observability;
+pub mod repo_aliases;
 pub mod review_engine;
 pub mod review_store;
 pub mod skills;
