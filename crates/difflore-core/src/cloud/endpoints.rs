@@ -2,8 +2,12 @@
 //! browser deep links route through this module; `DIFFLORE_CLOUD_URL`
 //! overrides the production API base.
 
-/// Production cloud API base, used when URL overrides are unset.
+/// Production cloud API base, used by release builds when URL overrides are
+/// unset.
 pub const DEFAULT_API_BASE: &str = "https://difflore.dev/api";
+
+/// Local cloud API base used by debug builds when URL overrides are unset.
+pub const DEBUG_API_BASE: &str = "http://127.0.0.1:3017/api";
 
 /// Canonical environment variable that overrides the default base.
 pub const ENV_CLOUD_URL: &str = crate::infra::env::DIFFLORE_CLOUD_URL;
@@ -11,12 +15,21 @@ pub const ENV_CLOUD_URL: &str = crate::infra::env::DIFFLORE_CLOUD_URL;
 /// Legacy spelling accepted as a compatibility fallback.
 pub const LEGACY_ENV_CLOUD_URL: &str = crate::infra::env::DIFF_LORE_CLOUD_URL;
 
-/// Read the configured API base, falling back to `DEFAULT_API_BASE`. Empty
-/// values are treated as unset so an empty env var doesn't break clients.
+/// Read the configured API base. Empty values are treated as unset so an empty
+/// env var doesn't break clients.
 pub fn api_base() -> String {
     env_api_base(ENV_CLOUD_URL)
         .or_else(|| env_api_base(LEGACY_ENV_CLOUD_URL))
-        .unwrap_or_else(|| DEFAULT_API_BASE.to_owned())
+        .unwrap_or_else(|| default_api_base().to_owned())
+}
+
+/// Runtime fallback when no cloud URL override is set.
+pub const fn default_api_base() -> &'static str {
+    if cfg!(debug_assertions) {
+        DEBUG_API_BASE
+    } else {
+        DEFAULT_API_BASE
+    }
 }
 
 fn env_api_base(name: &str) -> Option<String> {
@@ -47,7 +60,7 @@ pub fn api_origin() -> String {
 
 /// Default origin assumed for saved credentials without a stored host.
 pub fn default_api_origin() -> String {
-    origin_of(DEFAULT_API_BASE)
+    origin_of(default_api_base())
 }
 
 /// `scheme://host[:port]` from any URL, dropping the path. Keeps the scheme so
@@ -239,8 +252,30 @@ mod tests {
     }
 
     #[test]
-    fn default_api_origin_is_the_production_host() {
-        assert_eq!(default_api_origin(), "https://difflore.dev");
+    fn default_api_base_matches_build_profile() {
+        if cfg!(debug_assertions) {
+            assert_eq!(default_api_base(), "http://127.0.0.1:3017/api");
+        } else {
+            assert_eq!(default_api_base(), "https://difflore.dev/api");
+        }
+    }
+
+    #[test]
+    fn default_api_origin_matches_build_profile() {
+        assert_eq!(default_api_origin(), origin_of(default_api_base()));
+    }
+
+    #[test]
+    fn api_base_uses_debug_fallback_when_unset_in_debug_builds() {
+        temp_env::with_vars(
+            [
+                (ENV_CLOUD_URL, None::<&str>),
+                (LEGACY_ENV_CLOUD_URL, None::<&str>),
+            ],
+            || {
+                assert_eq!(api_base(), default_api_base());
+            },
+        );
     }
 
     #[test]

@@ -24,8 +24,8 @@ use super::embedding_degradation::{
 };
 use super::memory_snapshot;
 use super::probes::{
-    self, CloudProbe, DaemonProbe, DaemonProbeState, EmbedderProbe, Findings, GateCaptureProbe,
-    GitHookState, ProjectDbProbe, ProviderProbe,
+    self, CloudImpactProbe, CloudProbe, DaemonProbe, DaemonProbeState, EmbedderProbe, Findings,
+    GateCaptureProbe, GitHookState, ProjectDbProbe, ProviderProbe,
 };
 use super::util::age_label_ms;
 use crate::installer;
@@ -432,7 +432,7 @@ fn project_db_row(probe: &ProjectDbProbe) -> Row {
             status: Status::Ok,
             label: "project db",
             value: format!(
-                "{} · {} PR{} imported",
+                "{} · {} local PR{} imported",
                 value,
                 prs_imported,
                 if prs_imported == 1 { "" } else { "s" },
@@ -737,11 +737,21 @@ fn cloud_row(probe: &CloudProbe) -> Row {
     // dashboards) but its absence is Optional — local fix and recall
     // both work fully offline.
     match probe {
-        CloudProbe::LoggedIn { plan, team_name } => {
+        CloudProbe::LoggedIn {
+            plan,
+            team_name,
+            impact,
+        } => {
             let suffix = match team_name.as_deref() {
                 Some(team) => format!(" | team: {team}"),
                 None => String::new(),
             };
+            let corpus_suffix = impact
+                .coverage
+                .as_ref()
+                .filter(|coverage| coverage.prs > 0)
+                .map(|coverage| format!(" | {} cloud PRs indexed", coverage.prs))
+                .unwrap_or_default();
             // Free notes the managed-embedding cap but prints no exact number
             // (the default doctor row has no fresh cap/usage cache; cap hits
             // are surfaced by the embedder row from telemetry).
@@ -750,10 +760,21 @@ fn cloud_row(probe: &CloudProbe) -> Row {
             } else {
                 " | unlimited embedding"
             };
-            Row::ready_ok(
-                "cloud",
-                format!("logged in | plan: {plan}{suffix}{embedding_suffix}"),
-            )
+            let mut hints = cloud_impact_hints(impact);
+            if !hints.is_empty() {
+                hints.push(format!(
+                    "impact dashboard: {}",
+                    style::cmd("difflore cloud impact")
+                ));
+            }
+            Row {
+                severity: Severity::Ready,
+                status: Status::Ok,
+                label: "cloud",
+                value: format!("logged in | plan: {plan}{suffix}{corpus_suffix}{embedding_suffix}"),
+                hints,
+                repair: None,
+            }
         }
         CloudProbe::NotLoggedIn => Row {
             severity: Severity::Optional,
@@ -767,6 +788,100 @@ fn cloud_row(probe: &CloudProbe) -> Row {
             repair: None,
         },
     }
+}
+
+fn cloud_impact_hints(impact: &CloudImpactProbe) -> Vec<String> {
+    let mut hints = Vec::new();
+    if let Some(coverage) = &impact.coverage {
+        let mut parts = vec![
+            format_count("repo", coverage.repos),
+            format_count("PR", coverage.prs),
+            format_count("review comment", coverage.review_comments_indexed),
+            format_count("file", coverage.files),
+        ];
+        if coverage.human_review_comments_indexed > 0 {
+            parts.push(format_count(
+                "human reviewer comment",
+                coverage.human_review_comments_indexed,
+            ));
+        }
+        if coverage.ai_reviewer_comments_indexed > 0 {
+            parts.push(format_count(
+                "AI reviewer signal",
+                coverage.ai_reviewer_comments_indexed,
+            ));
+        }
+        hints.push(format!("cloud corpus: {}", parts.join(" · ")));
+    } else if let Some(error) = impact.coverage_error.as_deref() {
+        hints.push(format!("cloud corpus unavailable: {}", short_detail(error)));
+    }
+
+    if let Some(fix) = &impact.fix_scorecard {
+        let accepted_outcomes = fix
+            .roi
+            .as_ref()
+            .map_or(0, |roi| roi.accepted_fix_outcomes_last30);
+        if fix.last30.total > 0 {
+            let accepted = format!(
+                "{}/{} accepted edit proof{} in 30d",
+                fix.last30.accepted,
+                fix.last30.total,
+                if fix.last30.total == 1 { "" } else { "s" },
+            );
+            let mut proof_parts = vec![accepted];
+            if let Some(roi) = &fix.roi {
+                if roi.source_evidence_items > 0 {
+                    proof_parts.push(format_count(
+                        "source evidence item",
+                        roi.source_evidence_items,
+                    ));
+                }
+                if roi.saved_review_minutes > 0 {
+                    proof_parts.push(format!("{} saved review minutes", roi.saved_review_minutes));
+                }
+            }
+            hints.push(format!("accepted-fix proof: {}", proof_parts.join(" · ")));
+        } else if accepted_outcomes > 0 {
+            let mut proof_parts = vec![format_count("accepted outcome", accepted_outcomes)];
+            if let Some(roi) = &fix.roi {
+                if roi.source_evidence_items > 0 {
+                    proof_parts.push(format_count(
+                        "source evidence item",
+                        roi.source_evidence_items,
+                    ));
+                }
+                let saved_minutes = roi
+                    .saved_review_minutes_last30
+                    .max(roi.saved_review_minutes)
+                    .max(roi.modeled_review_minutes);
+                if saved_minutes > 0 {
+                    proof_parts.push(format!("{saved_minutes} saved review minutes"));
+                }
+            }
+            hints.push(format!(
+                "accepted outcome activity: {}",
+                proof_parts.join(" · ")
+            ));
+        } else if let Some(roi) = &fix.roi
+            && roi.source_evidence_items > 0
+        {
+            hints.push(format!(
+                "source evidence: {}",
+                format_count("item", roi.source_evidence_items)
+            ));
+        }
+    } else if let Some(error) = impact.fix_scorecard_error.as_deref() {
+        hints.push(format!(
+            "accepted-fix proof unavailable: {}",
+            short_detail(error)
+        ));
+    }
+
+    hints
+}
+
+fn format_count(noun: &str, count: i64) -> String {
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
 
 fn embedder_row(probe: &EmbedderProbe) -> Row {
@@ -1167,12 +1282,16 @@ fn render_row_into(out: &mut String, row: &Row) {
 #[cfg(test)]
 mod tests {
     use super::{
-        EmbedderProbe, GateCaptureProbe, Severity, Status, embedder_row,
-        embedder_row_from_diagnostics, embedder_row_from_kind, gate_capture_row, recall_trace_row,
-        recent_embedding_degradation, secrets_row,
+        CloudImpactProbe, CloudProbe, EmbedderProbe, GateCaptureProbe, ProjectDbProbe, Severity,
+        Status, cloud_row, embedder_row, embedder_row_from_diagnostics, embedder_row_from_kind,
+        gate_capture_row, project_db_row, recall_trace_row, recent_embedding_degradation,
+        secrets_row,
     };
     use difflore_core::context::EmbeddingDiagnostics;
     use difflore_core::context::embedding::ActiveEmbedderKind;
+    use difflore_core::contract::dto::{
+        ImpactCoverageDto, ImpactFixScorecardDto, ImpactFixWindowDto, ImpactRoiDto,
+    };
     use difflore_core::infra::crypto::{KeyseedStatus, MasterKeyStorageStatus};
     use difflore_core::observability::activity_stream::{ActivityEvent, ActivityPayload};
     use difflore_core::observability::injection_log::InjectionPathSummary;
@@ -1199,6 +1318,77 @@ mod tests {
                 - 1,
             payload,
         }
+    }
+
+    #[test]
+    fn project_db_row_labels_imported_prs_as_local() {
+        let row = project_db_row(&ProjectDbProbe {
+            db_available: true,
+            total_rules: 41,
+            prs_imported: 0,
+            repo_full_name: Some("warpengine-github/viggle-web".to_owned()),
+            review_source_repo_full_name: None,
+            scoped_active_rules: 31,
+            review_source_active_rules: 0,
+        });
+
+        assert_ready_ok(&row, "project db");
+        assert!(row.value.contains("0 local PRs imported"), "{}", row.value);
+        assert!(!row.value.contains("0 PRs imported"), "{}", row.value);
+    }
+
+    #[test]
+    fn cloud_row_surfaces_cloud_corpus_and_accepted_outcome_activity() {
+        let row = cloud_row(&CloudProbe::LoggedIn {
+            plan: "team".to_owned(),
+            team_name: Some("islizeqiang max-perm team".to_owned()),
+            impact: CloudImpactProbe {
+                coverage: Some(ImpactCoverageDto {
+                    repos: 7,
+                    prs: 237,
+                    files: 195,
+                    review_comments_indexed: 484,
+                    ai_reviewer_comments_indexed: 0,
+                    human_review_comments_indexed: 484,
+                }),
+                fix_scorecard: Some(ImpactFixScorecardDto {
+                    last30: ImpactFixWindowDto {
+                        accepted: 0,
+                        total: 0,
+                    },
+                    prior30: ImpactFixWindowDto {
+                        accepted: 0,
+                        total: 0,
+                    },
+                    trend_pct: None,
+                    roi: Some(ImpactRoiDto {
+                        accepted_fixes_last30: 0,
+                        accepted_fix_outcomes_last30: 58,
+                        repeat_comment_signals: 58,
+                        review_comments_avoided: 0,
+                        modeled_review_minutes: 232,
+                        saved_review_minutes: 232,
+                        saved_review_minutes_last30: 232,
+                        repeat_feedback_reduced: 0,
+                        source_evidence_items: 505,
+                        agent_rules_served_last30: 0,
+                        agent_rules_fired_last30: 61,
+                        agent_rules_cited_last30: 2,
+                    }),
+                }),
+                coverage_error: None,
+                fix_scorecard_error: None,
+            },
+        });
+
+        assert_ready_ok(&row, "cloud");
+        assert!(row.value.contains("237 cloud PRs indexed"), "{}", row.value);
+        let hints = row.hints.join("\n");
+        assert!(hints.contains("484 review comments"), "{hints}");
+        assert!(hints.contains("505 source evidence items"), "{hints}");
+        assert!(hints.contains("58 accepted outcomes"), "{hints}");
+        assert!(hints.contains("accepted outcome activity"), "{hints}");
+        assert!(hints.contains("difflore cloud impact"), "{hints}");
     }
 
     fn no_recent() -> super::RecentEmbeddingDegradation {

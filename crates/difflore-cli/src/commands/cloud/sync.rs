@@ -4,7 +4,8 @@ use crate::support::util::{exit_code, exit_err};
 
 const MAX_OBSERVATION_SYNC_FLUSHES: usize = 10;
 const MAX_CLOUD_OUTBOX_SYNC_ITEMS: usize = 512;
-const DEFAULT_OUTBOX_SYNC_PRIORITY_KINDS: &[(&str, Option<usize>)] = &[];
+const DEFAULT_OUTBOX_SYNC_PRIORITY_KINDS: &[(&str, Option<usize>)] =
+    &[(difflore_core::cloud::outbox::kind::ACCEPTED_EDIT, None)];
 const OBSERVATION_OUTBOX_SYNC_PRIORITY_KINDS: &[(&str, Option<usize>)] =
     &[(difflore_core::cloud::outbox::kind::OBSERVATION, None)];
 const CANDIDATE_OUTBOX_SYNC_PRIORITY_KINDS: &[(&str, Option<usize>)] = &[(
@@ -15,7 +16,6 @@ const OBSERVATION_OUTBOX_KINDS: &[&str] = &[difflore_core::cloud::outbox::kind::
 const CANDIDATE_OUTBOX_KINDS: &[&str] =
     &[difflore_core::cloud::outbox::kind::SESSION_MINED_CANDIDATE];
 const TELEMETRY_OUTBOX_KINDS: &[&str] = &[
-    difflore_core::cloud::outbox::kind::ACCEPTED_EDIT,
     difflore_core::cloud::outbox::kind::IMPORTED_REVIEWS,
     difflore_core::cloud::outbox::kind::REVIEW_METRICS,
     difflore_core::cloud::outbox::kind::TRAJECTORY,
@@ -765,7 +765,6 @@ fn outbox_sync_priority_kinds(
 ) -> Vec<(&'static str, Option<usize>)> {
     let mut kinds = DEFAULT_OUTBOX_SYNC_PRIORITY_KINDS.to_vec();
     if raw_upload_policy.include_telemetry {
-        kinds.push((difflore_core::cloud::outbox::kind::ACCEPTED_EDIT, None));
         kinds.push((difflore_core::cloud::outbox::kind::IMPORTED_REVIEWS, None));
     }
     if raw_upload_policy.include_candidates {
@@ -1470,10 +1469,23 @@ mod tests {
     }
 
     #[test]
-    fn default_outbox_priority_excludes_raw_outbox_queues() {
+    fn default_outbox_priority_uploads_accepted_edit_proof_only() {
         let kinds = outbox_sync_priority_kinds(RawUploadPolicy::default());
 
-        assert!(kinds.is_empty());
+        assert_eq!(
+            kinds,
+            vec![(difflore_core::cloud::outbox::kind::ACCEPTED_EDIT, None)]
+        );
+        assert!(
+            !kinds
+                .iter()
+                .any(|(kind, _)| *kind == difflore_core::cloud::outbox::kind::IMPORTED_REVIEWS)
+        );
+        assert!(
+            !kinds
+                .iter()
+                .any(|(kind, _)| *kind == difflore_core::cloud::outbox::kind::REVIEW_METRICS)
+        );
     }
 
     #[test]
@@ -1488,7 +1500,7 @@ mod tests {
 
         assert!(
             pos(difflore_core::cloud::outbox::kind::ACCEPTED_EDIT)
-                < pos(difflore_core::cloud::outbox::kind::OBSERVATION)
+                < pos(difflore_core::cloud::outbox::kind::IMPORTED_REVIEWS)
         );
         assert!(
             pos(difflore_core::cloud::outbox::kind::IMPORTED_REVIEWS)

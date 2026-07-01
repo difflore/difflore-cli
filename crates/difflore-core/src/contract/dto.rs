@@ -554,16 +554,28 @@ mod tests {
           "trendPct": 50,
           "roi": {
             "acceptedFixesLast30": 3,
+            "acceptedFixOutcomesLast30": 2,
+            "repeatCommentSignals": 5,
             "reviewCommentsAvoided": 3,
-            "savedReviewMinutes": 12,
+            "modeledReviewMinutes": 20,
+            "savedReviewMinutesLast30": 20,
             "repeatFeedbackReduced": 1,
-            "sourceEvidenceItems": 4
+            "sourceEvidenceItems": 4,
+            "agentRulesServedLast30": 7,
+            "agentRulesFiredLast30": 5,
+            "agentRulesCitedLast30": 3
           }
         }"#;
 
         let scorecard: ImpactFixScorecardDto = serde_json::from_str(payload).unwrap();
         let roi = scorecard.roi.unwrap();
-        assert_eq!(roi.saved_review_minutes, 12);
+        assert_eq!(roi.accepted_fix_outcomes_last30, 2);
+        assert_eq!(roi.repeat_comment_signals, 5);
+        assert_eq!(roi.modeled_review_minutes, 20);
+        assert_eq!(roi.saved_review_minutes_last30, 20);
+        assert_eq!(roi.agent_rules_served_last30, 7);
+        assert_eq!(roi.agent_rules_fired_last30, 5);
+        assert_eq!(roi.agent_rules_cited_last30, 3);
     }
 
     // ── Anti-double-tracking guards (blueprint section 5.3) ──────────────────
@@ -832,13 +844,27 @@ pub struct ImpactRoiDto {
     #[serde(default)]
     pub accepted_fixes_last30: i64,
     #[serde(default)]
+    pub accepted_fix_outcomes_last30: i64,
+    #[serde(default)]
+    pub repeat_comment_signals: i64,
+    #[serde(default)]
     pub review_comments_avoided: i64,
     #[serde(default)]
+    pub modeled_review_minutes: i64,
+    #[serde(default)]
     pub saved_review_minutes: i64,
+    #[serde(default)]
+    pub saved_review_minutes_last30: i64,
     #[serde(default)]
     pub repeat_feedback_reduced: i64,
     #[serde(default)]
     pub source_evidence_items: i64,
+    #[serde(default)]
+    pub agent_rules_served_last30: i64,
+    #[serde(default)]
+    pub agent_rules_fired_last30: i64,
+    #[serde(default)]
+    pub agent_rules_cited_last30: i64,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]

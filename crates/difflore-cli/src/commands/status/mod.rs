@@ -63,6 +63,32 @@ pub(crate) struct CompactValueSummary {
     pub(crate) agent_serves: i64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CloudProofSummary {
+    pub(super) repos: i64,
+    pub(super) prs: i64,
+    pub(super) files: i64,
+    pub(super) review_comments_indexed: i64,
+    pub(super) human_review_comments_indexed: i64,
+    pub(super) ai_reviewer_comments_indexed: i64,
+    pub(super) source_evidence_items: i64,
+    pub(super) accepted_fixes_last30: i64,
+    pub(super) accepted_fix_outcomes_last30: i64,
+    pub(super) total_fixes_last30: i64,
+    pub(super) saved_review_minutes: i64,
+}
+
+impl CloudProofSummary {
+    const fn has_signal(&self) -> bool {
+        self.prs > 0
+            || self.review_comments_indexed > 0
+            || self.source_evidence_items > 0
+            || self.accepted_fixes_last30 > 0
+            || self.accepted_fix_outcomes_last30 > 0
+    }
+}
+
 impl CompactValueSummary {
     const fn from_parts(
         accepted: &LocalAcceptedProof,
@@ -148,6 +174,7 @@ struct StatusPayload {
     local_proof: LocalAcceptedProof,
     local_recall_proof: LocalRecallProof,
     local_mcp_serves: LocalMcpRuleServe,
+    cloud_proof: Option<CloudProofSummary>,
     recall_trace: RecallTraceSummary,
     proven_rule: Option<ProvenRuleDrilldown>,
     value_loop_evidence: Option<ValueLoopEvidence>,
@@ -179,6 +206,7 @@ impl StatusPayload {
             "localAcceptedProof": self.local_proof,
             "localRecallProof": self.local_recall_proof,
             "localMcpRuleServes": self.local_mcp_serves,
+            "cloudProof": self.cloud_proof,
             "recallTrace": self.recall_trace,
             "provenRuleDrilldown": self.proven_rule,
             "valueLoopEvidence": self.value_loop_evidence,
@@ -213,6 +241,7 @@ impl StatusPayload {
             local_proof: &self.local_proof,
             local_recall_proof: &self.local_recall_proof,
             local_mcp_serves: &self.local_mcp_serves,
+            cloud_proof: self.cloud_proof.as_ref(),
             recall_trace: &self.recall_trace,
             proven_rule: self.proven_rule.as_ref(),
             local_hero_evidence: self.local_hero_evidence.as_ref(),
@@ -343,6 +372,42 @@ async fn memory_pulse_status(
     pulse
 }
 
+async fn fetch_cloud_proof_summary(
+    client: &difflore_core::cloud::client::CloudClient,
+) -> Option<CloudProofSummary> {
+    let (coverage, fix_scorecard) = tokio::join!(
+        client.get_impact_coverage(),
+        client.get_impact_fix_scorecard(),
+    );
+
+    let mut summary = CloudProofSummary::default();
+    if let Ok(coverage) = coverage {
+        summary.repos = coverage.repos;
+        summary.prs = coverage.prs;
+        summary.files = coverage.files;
+        summary.review_comments_indexed = coverage.review_comments_indexed;
+        summary.human_review_comments_indexed = coverage.human_review_comments_indexed;
+        summary.ai_reviewer_comments_indexed = coverage.ai_reviewer_comments_indexed;
+    }
+    if let Ok(fix) = fix_scorecard {
+        summary.accepted_fixes_last30 = fix.last30.accepted;
+        summary.accepted_fix_outcomes_last30 =
+            fix.roi.as_ref().map_or(fix.last30.accepted, |roi| {
+                roi.accepted_fix_outcomes_last30.max(0)
+            });
+        summary.total_fixes_last30 = fix.last30.total;
+        if let Some(roi) = fix.roi {
+            summary.source_evidence_items = roi.source_evidence_items;
+            summary.saved_review_minutes = roi
+                .saved_review_minutes_last30
+                .max(roi.saved_review_minutes)
+                .max(roi.modeled_review_minutes);
+        }
+    }
+
+    summary.has_signal().then_some(summary)
+}
+
 async fn compute_status_payload(
     db: &difflore_core::SqlitePool,
     project: &str,
@@ -409,9 +474,13 @@ async fn compute_status_payload(
     let proven_rule = queries::local_proven_rule_drilldown(db, &repo_remotes).await;
     let value_loop_evidence = queries::local_value_loop_evidence(db, &repo_remotes).await;
     let local_hero_evidence = queries::local_hero_evidence(db, &repo_remotes).await;
-    let cloud_logged_in = difflore_core::cloud::client::CloudClient::create()
-        .await
-        .is_logged_in();
+    let cloud_client = difflore_core::cloud::client::CloudClient::create().await;
+    let cloud_logged_in = cloud_client.is_logged_in();
+    let cloud_proof = if cloud_logged_in {
+        fetch_cloud_proof_summary(&cloud_client).await
+    } else {
+        None
+    };
     let memory_inbox =
         queries::memory_inbox_summary(db, stats.total, pending_candidates, cloud_logged_in).await;
     let autopilot = difflore_core::memory_autopilot_schedule::load_autopilot_schedule_status(db)
@@ -459,6 +528,7 @@ async fn compute_status_payload(
         local_proof,
         local_recall_proof,
         local_mcp_serves,
+        cloud_proof,
         recall_trace,
         proven_rule,
         value_loop_evidence,

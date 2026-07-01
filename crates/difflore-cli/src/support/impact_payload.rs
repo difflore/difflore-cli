@@ -258,10 +258,17 @@ fn fix_scorecard_value<E>(r: &Result<ImpactFixScorecardDto, E>) -> Value {
                 }),
                 |roi| json!({
                     "acceptedFixesLast30": roi.accepted_fixes_last30,
+                    "acceptedFixOutcomesLast30": roi.accepted_fix_outcomes_last30,
+                    "repeatCommentSignals": roi.repeat_comment_signals,
                     "reviewCommentsAvoided": roi.review_comments_avoided,
+                    "modeledReviewMinutes": roi.modeled_review_minutes,
                     "savedReviewMinutes": saved_review_minutes,
+                    "savedReviewMinutesLast30": saved_review_minutes,
                     "repeatFeedbackReduced": roi.repeat_feedback_reduced,
                     "sourceEvidenceItems": roi.source_evidence_items,
+                    "agentRulesServedLast30": roi.agent_rules_served_last30,
+                    "agentRulesFiredLast30": roi.agent_rules_fired_last30,
+                    "agentRulesCitedLast30": roi.agent_rules_cited_last30,
                 }),
             ),
         })
@@ -269,10 +276,11 @@ fn fix_scorecard_value<E>(r: &Result<ImpactFixScorecardDto, E>) -> Value {
 }
 
 pub(crate) fn saved_review_minutes_for_scorecard(scorecard: &ImpactFixScorecardDto) -> i64 {
-    let server_minutes = scorecard
-        .roi
-        .as_ref()
-        .map_or(0, |roi| roi.saved_review_minutes);
+    let server_minutes = scorecard.roi.as_ref().map_or(0, |roi| {
+        roi.saved_review_minutes_last30
+            .max(roi.saved_review_minutes)
+            .max(roi.modeled_review_minutes)
+    });
     if server_minutes > 0 {
         return server_minutes;
     }
@@ -339,10 +347,17 @@ mod tests {
             trend_pct: None,
             roi: Some(ImpactRoiDto {
                 accepted_fixes_last30: 2,
+                accepted_fix_outcomes_last30: 0,
+                repeat_comment_signals: 2,
                 review_comments_avoided: 2,
+                modeled_review_minutes: 8,
                 saved_review_minutes: 8,
+                saved_review_minutes_last30: 8,
                 repeat_feedback_reduced: 1,
                 source_evidence_items: 4,
+                agent_rules_served_last30: 0,
+                agent_rules_fired_last30: 0,
+                agent_rules_cited_last30: 0,
             }),
         });
 
@@ -511,10 +526,17 @@ mod tests {
             trend_pct: None,
             roi: Some(ImpactRoiDto {
                 accepted_fixes_last30: 46,
+                accepted_fix_outcomes_last30: 0,
+                repeat_comment_signals: 46,
                 review_comments_avoided: 46,
+                modeled_review_minutes: 0,
                 saved_review_minutes: 0,
+                saved_review_minutes_last30: 0,
                 repeat_feedback_reduced: 0,
                 source_evidence_items: 2040,
+                agent_rules_served_last30: 0,
+                agent_rules_fired_last30: 0,
+                agent_rules_cited_last30: 0,
             }),
         };
 
