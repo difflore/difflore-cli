@@ -122,10 +122,7 @@ pub(super) async fn refresh_repo_scopes(
     .await
     .unwrap_or_default();
     context.repo_scopes = difflore_core::repo_aliases::merge_repo_scopes(
-        manual_aliases
-            .into_iter()
-            .map(|alias| alias.repo_scope)
-            .collect::<Vec<_>>(),
+        manual_aliases.into_iter().map(|alias| alias.repo_scope),
         detected_scopes,
     );
 }

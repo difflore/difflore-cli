@@ -61,7 +61,7 @@ pub(crate) enum CloudProbe {
     LoggedIn {
         plan: String,
         team_name: Option<String>,
-        impact: CloudImpactProbe,
+        impact: Box<CloudImpactProbe>,
     },
 }
 
@@ -297,7 +297,7 @@ async fn probe_cloud(ctx: &crate::runtime::CommandContext) -> CloudProbe {
         CloudProbe::LoggedIn {
             plan: status.plan.as_deref().unwrap_or("free").to_owned(),
             team_name: status.team_name,
-            impact,
+            impact: Box::new(impact),
         }
     } else {
         CloudProbe::NotLoggedIn

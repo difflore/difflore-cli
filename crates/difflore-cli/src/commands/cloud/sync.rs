@@ -284,9 +284,9 @@ pub(crate) async fn handle_sync(ctx: &CommandContext, args: SyncArgs) {
 
     sync_spinner_set_message(&mut spinner, "Syncing redacted proof summary");
     let proof_summary_queues = RedactedProofSummaryQueueCounts {
-        observations_skipped: observation_events_skipped + cloud_outbox.observations_skipped,
-        memory_candidates_skipped: cloud_outbox.memory_candidates_skipped,
-        telemetry_skipped: cloud_outbox.telemetry_skipped,
+        observations: observation_events_skipped + cloud_outbox.observations_skipped,
+        memory_candidates: cloud_outbox.memory_candidates_skipped,
+        telemetry: cloud_outbox.telemetry_skipped,
     };
     let (proof_summary_uploaded, proof_summary_error) =
         run_redacted_proof_summary_phase(db, client, direction, proof_summary_queues).await;

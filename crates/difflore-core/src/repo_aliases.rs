@@ -81,7 +81,7 @@ pub async fn list_aliases(db: &SqlitePool) -> Result<Vec<RepoAliasRecord>> {
     )
     .fetch_all(db)
     .await?;
-    Ok(rows.into_iter().map(alias_from_row).collect())
+    Ok(rows.iter().map(alias_from_row).collect())
 }
 
 pub async fn aliases_for_path(db: &SqlitePool, path: &Path) -> Result<Vec<RepoAliasRecord>> {
@@ -174,10 +174,10 @@ async fn get_alias(
     .bind(repo_scope)
     .fetch_optional(db)
     .await?;
-    Ok(row.map(alias_from_row))
+    Ok(row.map(|row| alias_from_row(&row)))
 }
 
-fn alias_from_row(row: sqlx::sqlite::SqliteRow) -> RepoAliasRecord {
+fn alias_from_row(row: &sqlx::sqlite::SqliteRow) -> RepoAliasRecord {
     RepoAliasRecord {
         root_path: row.try_get("root_path").unwrap_or_default(),
         project_hash: row.try_get("project_hash").unwrap_or_default(),

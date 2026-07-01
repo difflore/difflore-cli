@@ -1342,7 +1342,7 @@ mod tests {
         let row = cloud_row(&CloudProbe::LoggedIn {
             plan: "team".to_owned(),
             team_name: Some("islizeqiang max-perm team".to_owned()),
-            impact: CloudImpactProbe {
+            impact: Box::new(CloudImpactProbe {
                 coverage: Some(ImpactCoverageDto {
                     repos: 7,
                     prs: 237,
@@ -1378,7 +1378,7 @@ mod tests {
                 }),
                 coverage_error: None,
                 fix_scorecard_error: None,
-            },
+            }),
         });
 
         assert_ready_ok(&row, "cloud");

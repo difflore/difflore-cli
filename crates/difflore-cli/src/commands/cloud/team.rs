@@ -421,7 +421,7 @@ async fn rewrite_accepted_edit_outbox_rule_id(
         let mut changed = false;
         for rule_id in &mut request.rule_ids {
             if rule_id == local_rule_id {
-                *rule_id = cloud_rule_id.to_owned();
+                cloud_rule_id.clone_into(rule_id);
                 changed = true;
             }
         }

@@ -65,9 +65,9 @@ pub(crate) struct CompactValueSummary {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct RedactedProofSummaryQueueCounts {
-    pub(crate) observations_skipped: usize,
-    pub(crate) memory_candidates_skipped: usize,
-    pub(crate) telemetry_skipped: usize,
+    pub(crate) observations: usize,
+    pub(crate) memory_candidates: usize,
+    pub(crate) telemetry: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -159,21 +159,21 @@ pub(crate) async fn redacted_proof_summary_value(
         .map(|s| s.chars().take(240).collect::<String>())
         .collect::<Vec<_>>();
     let repo_identity = detection.repo_scopes.first().cloned();
-    let repo_identity_source = repo_identity.as_deref().and_then(|repo| {
+    let repo_identity_source = repo_identity.as_deref().map(|repo| {
         if detection
             .manual_aliases
             .iter()
             .any(|alias| alias.repo_scope.eq_ignore_ascii_case(repo))
         {
-            Some("repo_alias")
+            "repo_alias"
         } else if detection
             .detected_remotes
             .iter()
             .any(|remote| remote.eq_ignore_ascii_case(repo))
         {
-            Some("git_remote")
+            "git_remote"
         } else {
-            Some("source_alias")
+            "source_alias"
         }
     });
 
@@ -193,9 +193,9 @@ pub(crate) async fn redacted_proof_summary_value(
             "needsReviewGroups": digest.as_ref().map_or(0, |d| d.counts.needs_review_groups),
         },
         "queues": {
-            "observationsSkipped": queues.observations_skipped,
-            "memoryCandidatesSkipped": queues.memory_candidates_skipped,
-            "telemetrySkipped": queues.telemetry_skipped,
+            "observationsSkipped": queues.observations,
+            "memoryCandidatesSkipped": queues.memory_candidates,
+            "telemetrySkipped": queues.telemetry,
             "acceptedEditUploadsPending": accepted_edit_funnel.accepted_edit_upload_pending,
         },
         "acceptedEditProofFunnel": {

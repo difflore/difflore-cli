@@ -331,7 +331,7 @@ pub(in crate::commands::status) async fn accepted_edit_proof_funnel(
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty())
         {
-            funnel.last_upload_error = row.last_error.clone();
+            funnel.last_upload_error.clone_from(&row.last_error);
         }
 
         let repo = row.request.repo_full_name.as_deref().map(normalize_repo);
@@ -360,13 +360,13 @@ pub(in crate::commands::status) async fn accepted_edit_proof_funnel(
     }
 
     if funnel.accepted_edit_upload_failed > 0 {
-        funnel.stage = "accepted_edit_upload_failed".to_owned();
+        "accepted_edit_upload_failed".clone_into(&mut funnel.stage);
     } else if funnel.accepted_edit_upload_pending > 0 {
-        funnel.stage = "accepted_edit_waiting_for_cloud_sync".to_owned();
+        "accepted_edit_waiting_for_cloud_sync".clone_into(&mut funnel.stage);
     } else if funnel.accepted_edit_rows_with_local_rule_ids > 0 {
-        funnel.stage = "accepted_edit_needs_cloud_rule_mapping".to_owned();
+        "accepted_edit_needs_cloud_rule_mapping".clone_into(&mut funnel.stage);
     } else if funnel.accepted_edit_rows_with_cloud_rule_ids > 0 || accepted_from_fix > 0 {
-        funnel.stage = "accepted_edit_cloud_attribution_ready".to_owned();
+        "accepted_edit_cloud_attribution_ready".clone_into(&mut funnel.stage);
         funnel.ready_for_cloud_value = true;
     }
     push_base_blockers(&mut funnel);
