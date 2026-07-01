@@ -13,7 +13,7 @@ jobs:
     name: Release checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Linux system deps
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config

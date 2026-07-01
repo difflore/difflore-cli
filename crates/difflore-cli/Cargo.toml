@@ -85,7 +85,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 tiny_http = "0.12"
 webbrowser = "1"
 rand = "0.10"
-sha1 = "0.10"
+sha1 = "0.11"
 tempfile = "3"
 toml = "0.8"
 # East-Asian-width-aware display-width for wrapping/spinner repaint so CJK
