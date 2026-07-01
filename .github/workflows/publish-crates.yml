@@ -73,13 +73,50 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          crate_index_path() {
+            local crate="$1"
+            local len="${#crate}"
+            if [ "${len}" -eq 1 ]; then
+              echo "1/${crate}"
+            elif [ "${len}" -eq 2 ]; then
+              echo "2/${crate}"
+            elif [ "${len}" -eq 3 ]; then
+              echo "3/${crate:0:1}/${crate}"
+            else
+              echo "${crate:0:2}/${crate:2:2}/${crate}"
+            fi
+          }
+
           check_version() {
             local crate="$1"
             local version="$2"
-            if curl --fail --silent --show-error "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null; then
-              echo "true"
-            else
+            local path
+            local status
+            local body
+            path="$(crate_index_path "${crate}")"
+            body="$(mktemp)"
+            if ! status="$(curl --silent --show-error --location --user-agent "difflore-cli-release" --write-out "%{http_code}" --output "${body}" "https://index.crates.io/${path}")"; then
+              cat "${body}" >&2 || true
+              rm -f "${body}"
+              echo "::error::Failed to query crates.io index for ${crate}" >&2
+              exit 1
+            fi
+            if [ "${status}" = "200" ]; then
+              if jq -e --arg version "${version}" 'select(.vers == $version)' "${body}" >/dev/null; then
+                rm -f "${body}"
+                echo "true"
+              else
+                rm -f "${body}"
+                echo "false"
+              fi
+            elif [ "${status}" = "404" ]; then
+              rm -f "${body}"
               echo "false"
+            else
+              cat "${body}" >&2 || true
+              rm -f "${body}"
+              echo "::error::Failed to query crates.io index for ${crate}; HTTP ${status}" >&2
+              exit 1
             fi
           }
 
@@ -92,7 +129,12 @@ jobs:
           echo "difflore-cli published: ${cli_published}"
 
       - name: Package difflore-core
+        if: ${{ env.DRY_RUN == 'true' || steps.crates-status.outputs.core != 'true' }}
         run: cargo package -p difflore-core
+
+      - name: Skip publish when all crates already exist
+        if: ${{ env.DRY_RUN != 'true' && steps.crates-status.outputs.core == 'true' && steps.crates-status.outputs.cli == 'true' }}
+        run: echo "difflore-core and difflore-cli are already published; nothing to do."
 
       - name: Package workspace dry run
         if: ${{ env.DRY_RUN == 'true' }}
@@ -121,7 +163,17 @@ jobs:
         if: ${{ env.DRY_RUN != 'true' && steps.crates-status.outputs.core != 'true' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.crates-auth.outputs.token }}
-        run: cargo publish -p difflore-core
+        shell: bash
+        run: |
+          set -euo pipefail
+          if cargo publish -p difflore-core 2>&1 | tee publish.log; then
+            exit 0
+          fi
+          if grep -qiE "already exists|already uploaded" publish.log; then
+            echo "::notice::difflore-core is already published; treating this publish as a no-op."
+            exit 0
+          fi
+          exit 1
 
       - name: Wait for crates.io to index difflore-core
         if: ${{ env.DRY_RUN != 'true' && steps.crates-status.outputs.core != 'true' && steps.crates-status.outputs.cli != 'true' }}
@@ -145,4 +197,14 @@ jobs:
         if: ${{ env.DRY_RUN != 'true' && steps.crates-status.outputs.cli != 'true' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.crates-auth.outputs.token }}
-        run: cargo publish -p difflore-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          if cargo publish -p difflore-cli 2>&1 | tee publish.log; then
+            exit 0
+          fi
+          if grep -qiE "already exists|already uploaded" publish.log; then
+            echo "::notice::difflore-cli is already published; treating this publish as a no-op."
+            exit 0
+          fi
+          exit 1
