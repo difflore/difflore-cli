@@ -5,6 +5,22 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-01
+
+### Added
+
+- Added the paid-value proof funnel across `status`, `doctor`, cloud sync, and
+  cloud team commands.
+- Added repo alias storage so local proof can be matched to GitHub repositories
+  more reliably.
+- Added accepted-edit proof aggregation and redacted proof summary sync for the
+  cloud dashboard.
+
+### Changed
+
+- Updated the vendored Cloud OpenAPI contract used by the CLI.
+- Improved memory autopilot and recall proof reporting for local dogfood data.
+
 ## [0.5.0] - 2026-06-30
 
 ### Added
