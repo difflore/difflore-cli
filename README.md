@@ -164,8 +164,8 @@ people need one shared memory and review workflow.
 I'm looking for a handful of teams to judge real output. The deal is simple:
 point the CLI at one of your repos (or I run it on a public one you pick), look
 at the extracted rules, and tell me which are real conventions and which are
-noise. Harsh verdicts are the useful ones. Open an issue or email
-**hello@difflore.dev**.
+noise. Harsh verdicts are the useful ones. Open an issue, or email me at
+hello@difflore.dev.
 
 ## Development
 
@@ -178,8 +178,8 @@ cargo test -p difflore-cli
 Issues and PRs are welcome. Do not include secrets, private PR text, or private
 code in examples.
 
-For suspected vulnerabilities, email **hello@difflore.dev** instead of opening
-a public issue. See [SECURITY.md](SECURITY.md).
+For suspected vulnerabilities, please follow [SECURITY.md](SECURITY.md) instead
+of opening a public issue.
 
 ## License
 
