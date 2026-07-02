@@ -74,6 +74,38 @@ fn normalize_capture_client(input: Option<&str>) -> Option<String> {
     (!normalized.is_empty()).then_some(normalized)
 }
 
+pub const DEFAULT_RULE_SOURCE_KIND: &str = "human";
+/// Fail-closed fallback for unrecognized non-empty `source_kind` values.
+/// "human" is a trust grant (human-sourced review rules may auto-activate),
+/// so a label this code cannot parse must degrade to the conservative bot
+/// bucket, never silently widen into "human".
+pub(crate) const UNKNOWN_RULE_SOURCE_KIND: &str = "bot:unknown";
+
+pub(crate) fn normalize_rule_source_kind(input: Option<&str>) -> String {
+    // Absent/blank means the caller made no source claim at all (manual and
+    // conversation captures) — that intentionally defaults to "human".
+    let Some(value) = input.map(str::trim).filter(|s| !s.is_empty()) else {
+        return DEFAULT_RULE_SOURCE_KIND.to_owned();
+    };
+    if value == DEFAULT_RULE_SOURCE_KIND || value == "human_override_bot" {
+        return value.to_owned();
+    }
+    let Some(bot_name) = value.strip_prefix("bot:") else {
+        return UNKNOWN_RULE_SOURCE_KIND.to_owned();
+    };
+    let normalized_bot: String = bot_name
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '[' | ']' | '.'))
+        .take(80)
+        .collect();
+    if normalized_bot.is_empty() {
+        UNKNOWN_RULE_SOURCE_KIND.to_owned()
+    } else {
+        format!("bot:{normalized_bot}")
+    }
+}
+
 fn canonical_file_patterns_csv(patterns: Option<&[String]>) -> String {
     let Some(patterns) = patterns else {
         return String::new();
@@ -329,6 +361,7 @@ async fn record_remember_provenance_event(
     db: &sqlx::SqlitePool,
     skill_id: &str,
     origin: &str,
+    source_kind: &str,
     captured_by_client: Option<&str>,
     content_hash: &str,
     status: RuleStatus,
@@ -337,6 +370,7 @@ async fn record_remember_provenance_event(
     let metadata = serde_json::json!({
         "source": "remember_rule",
         "origin": origin,
+        "sourceKind": source_kind,
         "capturedByClient": captured_by_client,
         "contentHash": content_hash,
         "trustState": status.as_str(),
@@ -418,7 +452,7 @@ pub async fn remember_as_candidate(
     db: &sqlx::SqlitePool,
     input: RememberRuleInput,
 ) -> crate::Result<RememberOutcome> {
-    remember_inner(db, input, None, RuleStatus::Pending, None).await
+    remember_inner(db, input, None, RuleStatus::Pending, None, None).await
 }
 
 /// Insert a `status='pending'` draft, seeding `confidence_score` from a
@@ -438,6 +472,7 @@ pub async fn remember_as_candidate_with_confidence(
         Some(f64::from(confidence)),
         RuleStatus::Pending,
         None,
+        None,
     )
     .await
 }
@@ -453,12 +488,34 @@ pub async fn remember_as_candidate_with_confidence_for_repo(
     confidence: f32,
     source_repo: &RepoScope,
 ) -> crate::Result<RememberOutcome> {
+    remember_as_candidate_with_confidence_for_repo_and_source_kind(
+        db,
+        input,
+        confidence,
+        source_repo,
+        None,
+    )
+    .await
+}
+
+/// Like [`remember_as_candidate_with_confidence_for_repo`], additionally
+/// persisting the originating review-comment bucket. Pure bot sources remain
+/// pending at the caller's routing layer, but the stored draft keeps the
+/// provenance so review UIs, MCP and exports can disclose it.
+pub async fn remember_as_candidate_with_confidence_for_repo_and_source_kind(
+    db: &sqlx::SqlitePool,
+    input: RememberRuleInput,
+    confidence: f32,
+    source_repo: &RepoScope,
+    source_kind: Option<&str>,
+) -> crate::Result<RememberOutcome> {
     remember_inner(
         db,
         input,
         Some(f64::from(confidence)),
         RuleStatus::Pending,
         Some(source_repo),
+        source_kind,
     )
     .await
 }
@@ -467,7 +524,7 @@ pub async fn remember(
     db: &sqlx::SqlitePool,
     input: RememberRuleInput,
 ) -> crate::Result<RememberOutcome> {
-    remember_inner(db, input, None, RuleStatus::Active, None).await
+    remember_inner(db, input, None, RuleStatus::Active, None, None).await
 }
 
 /// Insert or dedupe an approved active rule while atomically recording the
@@ -478,7 +535,7 @@ pub async fn remember_for_repo(
     input: RememberRuleInput,
     source_repo: &RepoScope,
 ) -> crate::Result<RememberOutcome> {
-    remember_inner(db, input, None, RuleStatus::Active, Some(source_repo)).await
+    remember_inner(db, input, None, RuleStatus::Active, Some(source_repo), None).await
 }
 
 /// Guard the size/shape invariants of a `RememberRuleInput` before any DB work.
@@ -580,6 +637,7 @@ async fn remember_inner(
     confidence_override: Option<f64>,
     status: RuleStatus,
     source_repo_scope: Option<&RepoScope>,
+    source_kind: Option<&str>,
 ) -> crate::Result<RememberOutcome> {
     validate_remember_input(&input)?;
     let title_trimmed = input.title.trim();
@@ -606,6 +664,7 @@ async fn remember_inner(
     let skill_type = remember_rule_type(normalized_kind);
     let captured_by_client = normalize_capture_client(input.captured_by_client.as_deref());
     let source_repo = source_repo_scope.map(RepoScope::as_str);
+    let source_kind = normalize_rule_source_kind(source_kind);
 
     enforce_remember_rate_limit(db, &origin).await?;
 
@@ -877,6 +936,7 @@ async fn remember_inner(
     let insert_origin = origin.as_str();
     let insert_captured_by_client = captured_by_client.as_deref();
     let insert_source_repo = source_repo;
+    let insert_source_kind = source_kind.as_str();
     let insert_content_hash = content_hash.as_str();
     let insert_status = status.as_str();
     let insert_result = sqlx::query(
@@ -884,9 +944,9 @@ async fn remember_inner(
          (id, name, source, directory, version, description, type, engines, tags,
           trigger, check_prompt, file_patterns, source_repo, enabled_for_claude, confidence_score,
           installed_at, updated_at, origin, captured_by_client, content_hash, hash_created_at,
-          status)
+          status, source_kind)
          VALUES (?1, ?2, 'local', ?3, '1.0.0', ?4, ?5, ?6, ?7,
-                 NULL, NULL, ?8, ?9, 1, ?10, ?11, ?11, ?12, ?13, ?14, ?15, ?16)",
+                 NULL, NULL, ?8, ?9, 1, ?10, ?11, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
     )
     .bind(insert_id)
     .bind(title_trimmed)
@@ -904,6 +964,7 @@ async fn remember_inner(
     .bind(insert_content_hash)
     .bind(now_ms)
     .bind(insert_status)
+    .bind(insert_source_kind)
     .execute(db)
     .await;
     if let Err(e) = insert_result {
@@ -913,6 +974,7 @@ async fn remember_inner(
         db,
         &id,
         insert_origin,
+        insert_source_kind,
         insert_captured_by_client,
         insert_content_hash,
         status,

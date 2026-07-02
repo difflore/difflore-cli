@@ -374,6 +374,10 @@ pub(crate) enum DraftsCommands {
         #[arg(long, value_name = "N")]
         limit: Option<usize>,
 
+        /// Filter drafts by source kind (human, bot:<name>, human_override_bot).
+        #[arg(long, value_name = "KIND")]
+        source_kind: Option<String>,
+
         /// Output as JSON.
         #[arg(long)]
         json: bool,
@@ -398,6 +402,10 @@ pub(crate) enum DraftsCommands {
         /// Maximum drafts to review.
         #[arg(long, value_name = "N")]
         limit: Option<usize>,
+
+        /// Filter drafts by source kind (human, bot:<name>, human_override_bot).
+        #[arg(long, value_name = "KIND")]
+        source_kind: Option<String>,
     },
 
     /// Approve a draft and activate it as local memory.
@@ -596,6 +604,21 @@ pub(crate) enum MemoryCommands {
         apply: bool,
 
         /// Maximum candidate groups to scan.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Reclassify old GitHub-imported PR-review rules from GitHub author metadata.
+    BackfillSourceKind {
+        /// Apply the updates. Without this flag, only print a preview.
+        #[arg(long, default_value_t = false)]
+        no_dry_run: bool,
+
+        /// Maximum human GitHub PR-review rules to inspect.
         #[arg(long, value_name = "N")]
         limit: Option<usize>,
 

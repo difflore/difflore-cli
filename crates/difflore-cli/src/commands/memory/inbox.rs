@@ -1033,8 +1033,9 @@ fn print_activity(activity: &MemoryActivity) {
 fn print_memory_item_summary(item: &MemoryListItem) {
     println!("  {} {}", style::ident(&item.item_id), item.title);
     println!(
-        "    state={}  source_repo={}  origin={}",
+        "    state={}  source_kind={}  source_repo={}  origin={}",
         item.state,
+        item.source_kind.as_deref().unwrap_or("-"),
         item.source_repo.as_deref().unwrap_or("-"),
         item.origin.as_deref().unwrap_or("-")
     );
@@ -1051,8 +1052,9 @@ fn print_rule_items(items: &[MemoryRuleItem]) {
     for item in items {
         println!("  {} {}", style::ident(&item.id), item.name);
         println!(
-            "    origin={}  source_repo={}  updated={}",
+            "    origin={}  source_kind={}  source_repo={}  updated={}",
             item.origin,
+            item.source_kind,
             item.source_repo.as_deref().unwrap_or("-"),
             item.updated_at
         );
@@ -1076,6 +1078,10 @@ fn print_memory_detail(detail: &difflore_core::memory_inbox::MemoryItemDetail) {
         detail.item.source_repo.as_deref().unwrap_or("-")
     );
     println!("  origin: {}", detail.item.origin.as_deref().unwrap_or("-"));
+    println!(
+        "  source_kind: {}",
+        detail.item.source_kind.as_deref().unwrap_or("-")
+    );
     if !detail.item.file_patterns.is_empty() {
         println!("  path hints: {}", detail.item.file_patterns.join(", "));
     }
@@ -1157,9 +1163,10 @@ fn print_draft_review_summary(draft: &CandidateRule) {
         draft.name
     );
     println!(
-        "    source: {}  origin: {}",
+        "    source: {}  origin: {}  source_kind: {}",
         draft.source_repo.as_deref().unwrap_or("-"),
-        draft.origin
+        draft.origin,
+        draft.source_kind
     );
     if !draft.file_patterns.is_empty() {
         println!("    path hints: {}", draft.file_patterns.join(", "));
@@ -1182,6 +1189,7 @@ fn print_draft(draft: &CandidateRule) {
         draft.source_repo.as_deref().unwrap_or("-")
     );
     println!("  origin: {}", draft.origin);
+    println!("  source_kind: {}", draft.source_kind);
     println!("  captured: {}", draft.installed_at);
     if !draft.file_patterns.is_empty() {
         println!("  path hints: {}", draft.file_patterns.join(", "));
@@ -1384,6 +1392,7 @@ mod tests {
             id: id.to_owned(),
             name: id.to_owned(),
             origin: "pr_review".to_owned(),
+            source_kind: "human".to_owned(),
             source_repo: source_repo.map(str::to_owned),
             file_patterns: Vec::new(),
             updated_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -1401,6 +1410,7 @@ mod tests {
             title: id.to_owned(),
             summary: None,
             origin: Some("agent_file:test".to_owned()),
+            source_kind: Some("human".to_owned()),
             source_repo: source_repo.map(str::to_owned),
             file_patterns: Vec::new(),
             updated_at: Some("2026-01-01 00:00:00".to_owned()),

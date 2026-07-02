@@ -113,6 +113,7 @@ pub struct RuleMatchEvidenceRecord {
     pub id: String,
     pub title: String,
     pub origin: String,
+    pub source_kind: String,
     pub confidence: f64,
     pub similarity: f64,
     #[serde(rename = "file_patterns")]

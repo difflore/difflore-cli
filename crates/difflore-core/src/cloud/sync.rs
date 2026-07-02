@@ -46,6 +46,10 @@ pub struct SyncedRule {
     /// this rule. Mirrors cloud's `rules_cloud.source_repo`.
     #[serde(default, rename = "sourceRepo")]
     pub source_repo: Option<String>,
+    /// Reviewer provenance. Unknown non-empty values are normalized fail-closed
+    /// before they reach the local trust gates.
+    #[serde(default, rename = "sourceKind")]
+    pub source_kind: Option<String>,
 }
 
 impl SyncResult {
@@ -234,6 +238,10 @@ fn map_synced_rule_value(val: &serde_json::Value) -> crate::Result<SyncedRule> {
         origin: val.get("origin").and_then(|v| v.as_str()).map(String::from),
         source_repo: val
             .get("sourceRepo")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        source_kind: val
+            .get("sourceKind")
             .and_then(|v| v.as_str())
             .map(String::from),
     })

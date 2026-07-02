@@ -21,6 +21,8 @@ pub use sweep::{
 
 #[cfg(test)]
 pub(crate) use remember::remember_content_hash;
+#[cfg(test)]
+pub(crate) use remember::{UNKNOWN_RULE_SOURCE_KIND, normalize_rule_source_kind};
 pub(crate) use types::{
     SkillRepoRow, SkillRow, fetch_skill_row_by_id, fetch_skill_row_by_id_optional,
 };

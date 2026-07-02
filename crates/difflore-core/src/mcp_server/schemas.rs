@@ -12,7 +12,7 @@ pub(super) fn tools_list() -> Value {
     json!([
         {
             "name": "search_rules",
-            "description": "Compact memory search. Returns rule ids/titles/origins plus match reasons before fetching details. Memory is scoped to the current git remotes; pass `repo_full_name` (repo namespace path such as GitHub owner/repo or GitLab group/project) when auto-detection is unavailable. Results are deterministically ordered by relative-score band, then path hint, then source priority manual > team > pr_review > extracted > conversation, and each carries a compact `why` ranking explanation (e.g. `path-hint; band 9/10; source manual`). When team review history is available, results include citedCount and trustRate so agents can prefer rules that led to accepted edits. Use with get_rules to expand only matched rules.",
+            "description": "Compact memory search. Returns rule ids/titles/origins/sourceKind plus match reasons before fetching details. Memory is scoped to the current git remotes; pass `repo_full_name` (repo namespace path such as GitHub owner/repo or GitLab group/project) when auto-detection is unavailable. Results are deterministically ordered by relative-score band, then path hint, then source priority manual > team > pr_review > extracted > conversation, and each carries a compact `why` ranking explanation (e.g. `path-hint; band 9/10; source manual`). When team review history is available, results include citedCount and trustRate so agents can prefer rules that led to accepted edits. Use with get_rules to expand only matched rules.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -52,7 +52,7 @@ pub(super) fn tools_list() -> Value {
         },
         {
             "name": "get_rules",
-            "description": "Fetch full rule text + examples by ID. Use after search_rules to expand only the matched rules you need. Batch multiple IDs in one call. Pass the current file path when editing so DiffLore can connect the rule to that file.",
+            "description": "Fetch full rule text + examples by ID, including origin, source_kind, source_repo, and source-kind provenance in the body. Use after search_rules to expand only the matched rules you need. Batch multiple IDs in one call. Pass the current file path when editing so DiffLore can connect the rule to that file.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

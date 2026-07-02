@@ -1,3 +1,4 @@
+pub mod accepted_edit_receipts;
 pub mod candidates;
 pub mod capture;
 pub mod client;

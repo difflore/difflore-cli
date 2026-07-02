@@ -211,6 +211,10 @@ pub struct RecordAcceptedEditResponse {
     pub team_id: Option<String>,
     pub attributed_rule_ids: Vec<String>,
     pub observations_inserted: u32,
+    #[serde(default)]
+    pub launch_grade_provenance_trusted: bool,
+    #[serde(default)]
+    pub launch_grade_paid_value_ready: bool,
     pub memory_reinforcement_recorded: bool,
     pub memory_reinforcement_deduped: bool,
     pub error: Option<String>,

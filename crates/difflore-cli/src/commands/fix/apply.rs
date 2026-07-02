@@ -374,13 +374,35 @@ async fn record_accepted_edit_proofs(
         };
 
         if client.is_logged_in() {
-            match client.record_accepted_edit_response(req).await {
+            match client.record_accepted_edit_response(req.clone()).await {
                 Ok(response) if response.acceptance_recorded => {
                     record_accepted_edit_upload_response(
                         &mut upload_summary,
                         expected_rule_ids,
                         &response,
                     );
+                    if let Some(receipt) =
+                        difflore_core::cloud::accepted_edit_receipts::receipt_from_accepted_edit_response(
+                            &req,
+                            &response,
+                        )
+                    {
+                        if let Err(e) =
+                            difflore_core::cloud::accepted_edit_receipts::record_confirmed(
+                                db, receipt,
+                            )
+                            .await
+                        {
+                            let _ = queue
+                                .mark_failed(row_id, &format!("accepted_edit receipt: {e}"))
+                                .await;
+                            eprintln!(
+                                "{} accepted edit uploaded but local receipt recording failed: {e}",
+                                style::warn(sym::WARN)
+                            );
+                            continue;
+                        }
+                    }
                     if let Err(e) = queue.confirm(row_id).await {
                         eprintln!(
                             "{} accepted edit uploaded but local outbox cleanup failed: {e}",
@@ -1642,6 +1664,8 @@ mod tests {
             team_id: team_id.map(str::to_owned),
             attributed_rule_ids: Vec::new(),
             observations_inserted,
+            launch_grade_provenance_trusted: true,
+            launch_grade_paid_value_ready: team_id.is_some() && observations_inserted > 0,
             memory_reinforcement_recorded: false,
             memory_reinforcement_deduped: false,
             error: None,

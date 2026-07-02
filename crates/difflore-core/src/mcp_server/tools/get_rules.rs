@@ -102,6 +102,7 @@ pub(crate) async fn tool_get_rules(state: &McpState, args: &Value) -> Result<Val
                     "id": row.id,
                     "title": row.name,
                     "origin": row.origin,
+                    "source_kind": row.source_kind,
                     "confidence": row.confidence_score,
                     "application_kind": application_kind,
                     "application_guidance": application_guidance,

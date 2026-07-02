@@ -76,6 +76,7 @@ pub fn render_export_body(rules: &[ExportRule]) -> String {
         .map(|rule| {
             render_rule_export(&RuleExportRenderInput {
                 name: &rule.name,
+                source_kind: &rule.source_kind,
                 repo_scope: rule.repo_scope.as_deref(),
                 description: &rule.description,
                 check_prompt: rule.check_prompt.as_deref(),

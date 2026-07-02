@@ -145,6 +145,7 @@ pub(super) async fn load_pending_memories(
             raw_description: None,
             content_hash: None,
             origin: "session_mined".to_owned(),
+            source_kind: "human".to_owned(),
             source_repo: Some(discovery.source_repo),
             file_patterns: normalize_patterns(discovery.file_patterns),
             verdict: Some(discovery.gate_verdict),
@@ -191,6 +192,7 @@ pub(super) fn pending_from_draft(
             .map(|hash| hash.trim().to_owned())
             .filter(|hash| !hash.is_empty()),
         origin: draft.origin,
+        source_kind: draft.source_kind,
         source_repo: draft.source_repo,
         file_patterns: normalize_patterns(draft.file_patterns),
         verdict: None,
@@ -206,7 +208,7 @@ pub(super) async fn load_active_rules(
     limit: usize,
 ) -> Result<Vec<ActiveMemory>> {
     let rows = sqlx::query(
-        "SELECT id, name, description, content_hash, origin, source_repo, file_patterns, \
+        "SELECT id, name, description, content_hash, origin, source_kind, source_repo, file_patterns, \
                 COALESCE(updated_at, installed_at) AS updated_at \
          FROM skills \
          WHERE status = 'active' \
@@ -228,6 +230,9 @@ pub(super) async fn load_active_rules(
                 body: row.try_get("description").unwrap_or_default(),
                 content_hash: row.try_get("content_hash").ok().flatten(),
                 origin: row.try_get("origin").unwrap_or_default(),
+                source_kind: row
+                    .try_get("source_kind")
+                    .unwrap_or_else(|_| "human".to_owned()),
                 source_repo: row.try_get("source_repo").ok(),
                 file_patterns: parse_string_list(file_patterns_raw.as_deref()),
                 updated_at: row.try_get("updated_at").unwrap_or_default(),
@@ -432,6 +437,8 @@ pub(super) fn group_input_hash(group: &PlannedGroup) -> String {
         input.push_str(candidate.content_hash.as_deref().unwrap_or_default());
         input.push('\0');
         input.push_str(&candidate.origin);
+        input.push('\0');
+        input.push_str(&candidate.source_kind);
         input.push('\0');
         input.push_str(candidate.source_repo.as_deref().unwrap_or_default());
         input.push('\0');

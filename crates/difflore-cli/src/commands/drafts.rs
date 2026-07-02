@@ -12,10 +12,17 @@ use crate::support::util::{
     confirm_destructive, exit_code, exit_err, init_db, json_compact_or, validate_owner_repo,
 };
 
-pub(crate) async fn handle_list(repo: Option<String>, limit: Option<usize>, json: bool) {
+pub(crate) async fn handle_list(
+    repo: Option<String>,
+    limit: Option<usize>,
+    source_kind: Option<String>,
+    json: bool,
+) {
     validate_repo_arg(repo.as_deref());
+    let source_kind = normalize_source_kind_filter(source_kind.as_deref(), json);
     let db = init_db().await;
-    let drafts = load_drafts(&db, repo.as_deref(), limit, json).await;
+    let drafts =
+        load_filtered_drafts(&db, repo.as_deref(), limit, source_kind.as_deref(), json).await;
 
     if json {
         println!(
@@ -24,6 +31,7 @@ pub(crate) async fn handle_list(repo: Option<String>, limit: Option<usize>, json
                 &json!({
                     "count": drafts.len(),
                     "repo": repo,
+                    "sourceKind": source_kind,
                     "drafts": drafts,
                 }),
                 "{}"
@@ -60,8 +68,13 @@ pub(crate) async fn handle_show(id: String, json: bool) {
     print_draft_full(&draft);
 }
 
-pub(crate) async fn handle_review(repo: Option<String>, limit: Option<usize>) {
+pub(crate) async fn handle_review(
+    repo: Option<String>,
+    limit: Option<usize>,
+    source_kind: Option<String>,
+) {
     validate_repo_arg(repo.as_deref());
+    let source_kind = normalize_source_kind_filter(source_kind.as_deref(), false);
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         exit_err(
             "interactive draft review requires a terminal. Prefer `difflore memory inbox`, \
@@ -71,7 +84,8 @@ pub(crate) async fn handle_review(repo: Option<String>, limit: Option<usize>) {
     }
 
     let db = init_db().await;
-    let drafts = load_drafts(&db, repo.as_deref(), limit, false).await;
+    let drafts =
+        load_filtered_drafts(&db, repo.as_deref(), limit, source_kind.as_deref(), false).await;
     if drafts.is_empty() {
         println!("No pending memory drafts.");
         return;
@@ -270,6 +284,24 @@ async fn load_drafts(
     })
 }
 
+async fn load_filtered_drafts(
+    db: &difflore_core::SqlitePool,
+    repo: Option<&str>,
+    limit: Option<usize>,
+    source_kind: Option<&str>,
+    json: bool,
+) -> Vec<CandidateRule> {
+    let initial_limit = if source_kind.is_some() { None } else { limit };
+    let mut drafts = load_drafts(db, repo, initial_limit, json).await;
+    if let Some(source_kind) = source_kind {
+        drafts.retain(|draft| source_kind_matches(&draft.source_kind, source_kind));
+        if let Some(limit) = limit {
+            drafts.truncate(limit);
+        }
+    }
+    drafts
+}
+
 async fn load_draft_by_id(db: &difflore_core::SqlitePool, id: &str, json: bool) -> CandidateRule {
     list_candidates(db, None, None)
         .await
@@ -279,6 +311,32 @@ async fn load_draft_by_id(db: &difflore_core::SqlitePool, id: &str, json: bool) 
         .into_iter()
         .find(|draft| draft.id == id)
         .unwrap_or_else(|| exit_structured_err(&format!("memory draft `{id}` not found"), json))
+}
+
+fn normalize_source_kind_filter(raw: Option<&str>, json: bool) -> Option<String> {
+    let raw = raw?.trim();
+    if raw.is_empty() {
+        exit_structured_err("--source-kind must not be empty", json);
+    }
+    if raw == "human" || raw == "human_override_bot" || raw == "bot" || raw == "bot:*" {
+        return Some(raw.to_owned());
+    }
+    if let Some(bot) = raw.strip_prefix("bot:")
+        && !bot.trim().is_empty()
+    {
+        return Some(raw.to_owned());
+    }
+    exit_structured_err(
+        "--source-kind must be human, human_override_bot, bot, bot:*, or bot:<name>",
+        json,
+    );
+}
+
+fn source_kind_matches(value: &str, filter: &str) -> bool {
+    match filter {
+        "bot" | "bot:*" => value.starts_with("bot:"),
+        _ => value == filter,
+    }
 }
 
 fn validate_repo_arg(repo: Option<&str>) {
@@ -342,8 +400,9 @@ fn print_action_result(action: &str, ids: &[String], json: bool) {
 fn print_draft_summary(draft: &CandidateRule) {
     println!("  {} {}", style::ident(&draft.id), draft.name);
     println!(
-        "    origin={}  source_repo={}  captured={}",
+        "    origin={}  source_kind={}  source_repo={}  captured={}",
         draft.origin,
+        draft.source_kind,
         draft.source_repo.as_deref().unwrap_or("-"),
         draft.installed_at
     );
@@ -365,6 +424,7 @@ fn print_draft_full(draft: &CandidateRule) {
     println!("\n{}", style::ident(&draft.name));
     println!("  id: {}", draft.id);
     println!("  origin: {}", draft.origin);
+    println!("  source_kind: {}", draft.source_kind);
     println!(
         "  source_repo: {}",
         draft.source_repo.as_deref().unwrap_or("-")
@@ -468,4 +528,29 @@ fn exit_structured_err(message: &str, json: bool) -> ! {
         exit_code(1);
     }
     exit_err(message);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_kind_matches;
+
+    #[test]
+    fn source_kind_filter_matches_exact_and_bot_wildcard() {
+        assert!(source_kind_matches("human", "human"));
+        assert!(source_kind_matches(
+            "human_override_bot",
+            "human_override_bot"
+        ));
+        assert!(source_kind_matches("bot:coderabbitai[bot]", "bot:*"));
+        assert!(source_kind_matches("bot:coderabbitai[bot]", "bot"));
+        assert!(source_kind_matches(
+            "bot:coderabbitai[bot]",
+            "bot:coderabbitai[bot]"
+        ));
+        assert!(!source_kind_matches("human", "bot:*"));
+        assert!(!source_kind_matches(
+            "bot:reviewdog[bot]",
+            "bot:coderabbitai[bot]"
+        ));
+    }
 }

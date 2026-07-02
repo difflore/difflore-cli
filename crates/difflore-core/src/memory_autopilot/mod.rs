@@ -54,7 +54,7 @@ pub(crate) use self::log::{
     AutopilotEventInput, ensure_autopilot_events_table, record_autopilot_event,
 };
 
-pub const MEMORY_AUTOPILOT_SCHEMA_VERSION: &str = "2026-06-16.memory.v1";
+pub const MEMORY_AUTOPILOT_SCHEMA_VERSION: &str = "2026-07-03.source-kind.v2";
 pub const DEFAULT_AUTOPILOT_LIMIT: usize = 3;
 const MAX_AUTOPILOT_LIMIT: usize = 25;
 const MAX_PENDING_SCAN: usize = 1_000;
@@ -266,6 +266,7 @@ struct PendingMemory {
     raw_description: Option<String>,
     content_hash: Option<String>,
     origin: String,
+    source_kind: String,
     source_repo: Option<String>,
     file_patterns: Vec<String>,
     verdict: Option<String>,
@@ -289,6 +290,7 @@ struct ActiveMemory {
     body: String,
     content_hash: Option<String>,
     origin: String,
+    source_kind: String,
     source_repo: Option<String>,
     file_patterns: Vec<String>,
     updated_at: String,
@@ -354,6 +356,7 @@ fn active_memory_key(rule: &ActiveMemory) -> String {
         raw_description: None,
         content_hash: rule.content_hash.clone(),
         origin: rule.origin.clone(),
+        source_kind: rule.source_kind.clone(),
         source_repo: rule.source_repo.clone(),
         file_patterns: rule.file_patterns.clone(),
         verdict: None,
@@ -1275,6 +1278,7 @@ mod tests {
                 raw_description: None,
                 content_hash: None,
                 origin: "session_mined".to_owned(),
+                source_kind: "human".to_owned(),
                 source_repo: Some("owner/repo".to_owned()),
                 file_patterns: vec![
                     "src/constants/routes.ts".to_owned(),
@@ -1315,6 +1319,7 @@ mod tests {
             raw_description: None,
             content_hash: None,
             origin: "session_mined".to_owned(),
+            source_kind: "human".to_owned(),
             source_repo: Some("owner/repo".to_owned()),
             file_patterns: vec!["src/**/*.rs".to_owned()],
             verdict: Some("KEEP".to_owned()),
@@ -1333,6 +1338,7 @@ mod tests {
             raw_description: None,
             content_hash: None,
             origin: "session_mined".to_owned(),
+            source_kind: "human".to_owned(),
             source_repo: Some("owner/repo".to_owned()),
             file_patterns: vec!["src/**/*.rs".to_owned()],
             verdict: Some("KEEP".to_owned()),
@@ -1395,6 +1401,7 @@ mod tests {
             raw_description: None,
             content_hash: None,
             origin: "session_mined".to_owned(),
+            source_kind: "human".to_owned(),
             source_repo: Some("owner/repo".to_owned()),
             file_patterns: vec!["src/modules/ExternalLink.tsx".to_owned()],
             verdict: Some("KEEP".to_owned()),
@@ -1468,6 +1475,7 @@ mod tests {
             raw_description: None,
             content_hash: None,
             origin: "session".to_owned(),
+            source_kind: "human".to_owned(),
             source_repo: Some(repo.to_owned()),
             file_patterns: patterns.into_iter().map(ToOwned::to_owned).collect(),
             verdict: None,
@@ -1486,6 +1494,7 @@ mod tests {
             body: body.to_owned(),
             content_hash: None,
             origin: "pr_review".to_owned(),
+            source_kind: "human".to_owned(),
             source_repo: Some(repo.to_owned()),
             file_patterns: patterns.into_iter().map(ToOwned::to_owned).collect(),
             updated_at: String::new(),
@@ -1694,6 +1703,7 @@ mod tests {
             ),
             content_hash: None,
             origin: "pr_review".to_owned(),
+            source_kind: "human".to_owned(),
             source_repo: Some("owner/repo".to_owned()),
             file_patterns: patterns.into_iter().map(ToOwned::to_owned).collect(),
             verdict: None,
@@ -1719,6 +1729,18 @@ mod tests {
             candidates: vec![candidate],
             conflict: None,
         }
+    }
+
+    #[test]
+    fn group_input_hash_changes_when_source_kind_changes() {
+        let mut human = planned_pr_review_group(vec!["**/*.tsx"]);
+        let mut bot = planned_pr_review_group(vec!["**/*.tsx"]);
+        bot.candidates[0].source_kind = "bot:review-assistant".to_owned();
+
+        assert_ne!(group_input_hash(&human), group_input_hash(&bot));
+
+        human.candidates[0].source_kind = "bot:review-assistant".to_owned();
+        assert_eq!(group_input_hash(&human), group_input_hash(&bot));
     }
 
     fn high_confidence_curator_decision(

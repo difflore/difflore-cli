@@ -51,7 +51,7 @@ query($q: String!, $first: Int!, $after: String) {
         number
         title
         mergedAt
-        author { login }
+        author { __typename login }
         files(first: 100) {
           nodes { path }
         }
@@ -59,7 +59,7 @@ query($q: String!, $first: Int!, $after: String) {
           nodes {
             databaseId
             body
-            author { login }
+            author { __typename login }
             url
             reactionGroups { content users { totalCount } }
           }
@@ -68,7 +68,7 @@ query($q: String!, $first: Int!, $after: String) {
           nodes {
             databaseId
             body
-            author { login }
+            author { __typename login }
             url
             reactionGroups { content users { totalCount } }
           }
@@ -80,7 +80,7 @@ query($q: String!, $first: Int!, $after: String) {
               nodes {
                 databaseId
                 body
-                author { login }
+                author { __typename login }
                 path
                 line
                 url
@@ -103,7 +103,7 @@ query($owner: String!, $name: String!, $number: Int!) {
       number
       title
       mergedAt
-      author { login }
+      author { __typename login }
       files(first: 100) {
         nodes { path }
       }
@@ -111,7 +111,7 @@ query($owner: String!, $name: String!, $number: Int!) {
         nodes {
           databaseId
           body
-          author { login }
+          author { __typename login }
           url
           reactionGroups { content users { totalCount } }
         }
@@ -120,7 +120,7 @@ query($owner: String!, $name: String!, $number: Int!) {
         nodes {
           databaseId
           body
-          author { login }
+          author { __typename login }
           url
           reactionGroups { content users { totalCount } }
         }
@@ -132,7 +132,7 @@ query($owner: String!, $name: String!, $number: Int!) {
             nodes {
               databaseId
               body
-              author { login }
+              author { __typename login }
               path
               line
               url

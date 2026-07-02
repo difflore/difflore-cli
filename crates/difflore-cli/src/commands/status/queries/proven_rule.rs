@@ -47,9 +47,10 @@ pub(in crate::commands::status) async fn local_proven_rule_drilldown(
     let hook_summaries =
         match difflore_core::cloud::observations::ObservationEmitter::open_default().await {
             Ok(emitter) => emitter
-                .accepted_fix_outcome_rule_summaries(
+                .accepted_fix_outcome_rule_summaries_for_repos(
                     LOCAL_PROOF_WINDOW_DAYS,
                     LOCAL_ACCEPTED_RECALL_LOOKBACK_DAYS,
+                    &normalized_aliases,
                 )
                 .await
                 .unwrap_or_default(),
@@ -96,7 +97,7 @@ pub(in crate::commands::status) async fn fetch_proven_rule_drilldown(
         .iter()
         .map(|summary| summary.rule_id.clone())
         .collect();
-    let metadata = fetch_rule_metadata_for_ids(db, &hook_ids, normalized_repos).await;
+    let metadata = fetch_rule_metadata_for_ids(db, &hook_ids, None).await;
     for summary in hook_summaries {
         let Some(rule) = metadata.get(&summary.rule_id) else {
             continue;
@@ -195,7 +196,7 @@ async fn fetch_signed_proven_rule_rows(
             let placeholders = std::iter::repeat_n("?", repos.len())
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("AND LOWER(COALESCE(s.source_repo, '')) IN ({placeholders})")
+            format!("AND LOWER(COALESCE(f.repo_full_name, '')) IN ({placeholders})")
         })
         .unwrap_or_default();
     let sql = format!(
@@ -346,6 +347,39 @@ mod tests {
         assert_eq!(drilldown.accepted_hook_outcomes_linked_to_prior_recall, 1);
         assert_eq!(drilldown.accepted_hook_outcomes_linked_to_mcp_rule_serve, 1);
         assert_eq!(drilldown.sample_file.as_deref(), Some("src/parser.rs"));
+    }
+
+    #[tokio::test]
+    async fn proven_rule_drilldown_treats_hook_summaries_as_target_repo_scoped() {
+        let pool = proven_rule_pool().await;
+        insert_skill_only(
+            &pool,
+            "agent-rule",
+            "Prefer structured API parsing",
+            "other/source-repo",
+        )
+        .await;
+        let hook_summaries = vec![
+            difflore_core::cloud::observations::AcceptedFixOutcomeRuleSummary {
+                rule_id: "agent-rule".to_owned(),
+                accepted_outcomes: 1,
+                linked_to_prior_recall: 0,
+                linked_to_rule_recall: 0,
+                linked_to_mcp_rule_serve: 1,
+                linked_to_edit_attribution: 0,
+                sample_file: Some("src/parser.rs".to_owned()),
+                latest_occurred_at_ms: 123,
+            },
+        ];
+
+        let drilldown =
+            fetch_proven_rule_drilldown(&pool, Some(&["acme/widgets".to_owned()]), &hook_summaries)
+                .await
+                .expect("hook proof drilldown");
+
+        assert_eq!(drilldown.rule_id, "agent-rule");
+        assert_eq!(drilldown.source_repo.as_deref(), Some("other/source-repo"));
+        assert_eq!(drilldown.accepted_hook_outcomes, 1);
     }
 
     #[tokio::test]

@@ -142,6 +142,25 @@ pub(super) fn representative_file_path(discussions: &[Discussion], diffs: &[Diff
 /// gate simply sees "no reaction evidence" — resolution and replies still
 /// carry the routing decision.
 pub(super) fn note_signal(discussion: &Discussion, note_index: usize) -> CommentDurabilitySignal {
+    let mut earlier_thread_authors: Vec<String> = Vec::new();
+    for note in discussion
+        .notes
+        .iter()
+        .take(note_index)
+        .filter(|note| is_importable_note(note))
+    {
+        let Some(username) = note
+            .author
+            .as_ref()
+            .map(|a| a.username.trim())
+            .filter(|username| !username.is_empty())
+        else {
+            continue;
+        };
+        if !earlier_thread_authors.iter().any(|seen| seen == username) {
+            earlier_thread_authors.push(username.to_owned());
+        }
+    }
     CommentDurabilitySignal {
         resolved: discussion_resolved(&discussion.notes),
         later_replies: discussion
@@ -151,6 +170,7 @@ pub(super) fn note_signal(discussion: &Discussion, note_index: usize) -> Comment
             .filter(|note| is_importable_note(note))
             .map(|note| note.body.clone())
             .collect(),
+        earlier_thread_authors,
         ..CommentDurabilitySignal::default()
     }
 }
@@ -372,6 +392,33 @@ mod tests {
         // The last note has no later replies.
         let tail = note_signal(&d, 2);
         assert!(tail.later_replies.is_empty());
+    }
+
+    #[test]
+    fn note_signal_captures_earlier_thread_authors_for_reply_linkage() {
+        let bot_note: Note = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "body": "Bot finding: validate the header first.",
+            "system": false,
+            "resolvable": true,
+            "resolved": true,
+            "author": { "id": 9, "username": "coderabbitai[bot]" },
+        }))
+        .expect("bot note fixture deserializes");
+        let d = discussion(
+            "abc",
+            vec![
+                bot_note,
+                note(2, "added 1 commit", true, false, false), // system: no linkage
+                note(3, "Agreed, apply this everywhere.", false, true, true),
+            ],
+        );
+
+        assert!(note_signal(&d, 0).earlier_thread_authors.is_empty());
+        assert_eq!(
+            note_signal(&d, 2).earlier_thread_authors,
+            vec!["coderabbitai[bot]".to_owned()]
+        );
     }
 
     #[test]

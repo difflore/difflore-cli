@@ -113,6 +113,8 @@ const fn empty_threads() -> ReviewThreadsConnection {
 
 #[derive(Debug, Deserialize)]
 pub(super) struct ActorNode {
+    #[serde(rename = "__typename")]
+    pub(super) type_name: Option<String>,
     pub(super) login: String,
 }
 

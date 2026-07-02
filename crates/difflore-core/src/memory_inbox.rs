@@ -114,6 +114,7 @@ pub struct MemoryListItem {
     pub title: String,
     pub summary: Option<String>,
     pub origin: Option<String>,
+    pub source_kind: Option<String>,
     pub source_repo: Option<String>,
     pub file_patterns: Vec<String>,
     pub updated_at: Option<String>,
@@ -193,6 +194,7 @@ pub struct MemoryRuleItem {
     pub id: String,
     pub name: String,
     pub origin: String,
+    pub source_kind: String,
     pub source_repo: Option<String>,
     pub file_patterns: Vec<String>,
     pub updated_at: String,
@@ -863,7 +865,7 @@ async fn load_rule_section(
         .fetch_one(pool)
         .await?;
     let rows = sqlx::query(
-        "SELECT id, name, origin, source_repo, file_patterns, \
+        "SELECT id, name, origin, source_kind, source_repo, file_patterns, \
                 COALESCE(updated_at, installed_at) AS updated_at \
          FROM skills \
          WHERE status = ?1 \
@@ -883,6 +885,9 @@ async fn load_rule_section(
                 id: row.try_get("id").unwrap_or_default(),
                 name: row.try_get("name").unwrap_or_default(),
                 origin: row.try_get("origin").unwrap_or_default(),
+                source_kind: row
+                    .try_get("source_kind")
+                    .unwrap_or_else(|_| "human".to_owned()),
                 source_repo: row.try_get("source_repo").ok(),
                 file_patterns: parse_string_list(file_patterns.as_deref()),
                 updated_at: row.try_get("updated_at").unwrap_or_default(),
@@ -1244,6 +1249,7 @@ fn active_rule_item(rule: &MemoryRuleItem) -> MemoryListItem {
         title: rule.name.clone(),
         summary: None,
         origin: Some(rule.origin.clone()),
+        source_kind: Some(rule.source_kind.clone()),
         source_repo: rule.source_repo.clone(),
         file_patterns: rule.file_patterns.clone(),
         updated_at: Some(rule.updated_at.clone()),
@@ -1267,6 +1273,7 @@ fn draft_rule_item(rule: &MemoryRuleItem) -> MemoryListItem {
         title: rule.name.clone(),
         summary: None,
         origin: Some(rule.origin.clone()),
+        source_kind: Some(rule.source_kind.clone()),
         source_repo: rule.source_repo.clone(),
         file_patterns: rule.file_patterns.clone(),
         updated_at: Some(rule.updated_at.clone()),
@@ -1290,6 +1297,7 @@ fn session_discovery_item(discovery: &SessionMinedDiscovery) -> MemoryListItem {
         title: discovery.title.clone(),
         summary: Some(truncate_summary(&discovery.body, 240)),
         origin: Some("session_mined".to_owned()),
+        source_kind: Some("human".to_owned()),
         source_repo: Some(discovery.source_repo.clone()),
         file_patterns: discovery.file_patterns.clone(),
         updated_at: Some(discovery.created_at_ms.to_string()),
@@ -1320,6 +1328,7 @@ async fn draft_detail(pool: &SqlitePool, draft_id: &str) -> Result<Option<Memory
         title: draft.name.clone(),
         summary: Some(truncate_summary(&draft.description, 240)),
         origin: Some(draft.origin.clone()),
+        source_kind: Some(draft.source_kind.clone()),
         source_repo: draft.source_repo.clone(),
         file_patterns: draft.file_patterns.clone(),
         updated_at: Some(draft.installed_at.clone()),
@@ -1367,7 +1376,7 @@ async fn session_detail(pool: &SqlitePool, content_hash: &str) -> Result<Option<
 
 async fn active_rule_detail(pool: &SqlitePool, rule_id: &str) -> Result<Option<MemoryItemDetail>> {
     let row = sqlx::query(
-        "SELECT id, name, description, origin, source_repo, file_patterns, \
+        "SELECT id, name, description, origin, source_kind, source_repo, file_patterns, \
                 COALESCE(updated_at, installed_at) AS updated_at \
          FROM skills \
          WHERE id = ?1 AND status = 'active'",
@@ -1391,6 +1400,7 @@ async fn active_rule_detail(pool: &SqlitePool, rule_id: &str) -> Result<Option<M
         title: row.try_get("name").unwrap_or_default(),
         summary: Some(truncate_summary(&description, 240)),
         origin: row.try_get("origin").ok(),
+        source_kind: row.try_get("source_kind").ok(),
         source_repo: row.try_get("source_repo").ok(),
         file_patterns: parse_string_list(file_patterns_raw.as_deref()),
         updated_at: row.try_get("updated_at").ok(),
@@ -1582,6 +1592,7 @@ mod tests {
                 id TEXT PRIMARY KEY NOT NULL,
                 name TEXT NOT NULL,
                 origin TEXT NOT NULL DEFAULT 'manual',
+                source_kind TEXT NOT NULL DEFAULT 'human',
                 source_repo TEXT,
                 file_patterns TEXT,
                 status TEXT NOT NULL,

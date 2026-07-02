@@ -677,6 +677,9 @@
               }
             ]
           },
+          "sourceKind": {
+            "type": "string"
+          },
           "sourceAttribution": {
             "anyOf": [
               {
@@ -755,6 +758,7 @@
           "visibility",
           "filePatterns",
           "sourceRepo",
+          "sourceKind",
           "updatedAt",
           "createdAt"
         ]
@@ -827,6 +831,9 @@
                 "type": "null"
               }
             ]
+          },
+          "sourceKind": {
+            "type": "string"
           },
           "sourceAttribution": {
             "anyOf": [
@@ -1064,6 +1071,7 @@
           "visibility",
           "filePatterns",
           "sourceRepo",
+          "sourceKind",
           "updatedAt",
           "createdAt",
           "content",
@@ -1184,6 +1192,9 @@
               }
             ]
           },
+          "sourceKind": {
+            "type": "string"
+          },
           "sourceAttribution": {
             "anyOf": [
               {
@@ -1283,6 +1294,7 @@
           "visibility",
           "filePatterns",
           "sourceRepo",
+          "sourceKind",
           "updatedAt",
           "createdAt",
           "content",
@@ -2351,6 +2363,61 @@
               ]
             }
           },
+          "foundingOffer": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "const": "founding_team"
+              },
+              "planId": {
+                "const": "team"
+              },
+              "interval": {
+                "const": "month"
+              },
+              "priceMonthlyCents": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "price": {
+                "type": "string"
+              },
+              "seatsTotal": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "seatsClaimed": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "seatsLeft": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "ctaHref": {
+                "type": "string"
+              },
+              "ctaExternal": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "planId",
+              "interval",
+              "priceMonthlyCents",
+              "price",
+              "seatsTotal",
+              "seatsClaimed",
+              "seatsLeft",
+              "ctaHref",
+              "ctaExternal"
+            ]
+          },
           "matrix": {
             "type": "array",
             "items": {
@@ -2435,6 +2502,7 @@
         "required": [
           "plans",
           "salesPlans",
+          "foundingOffer",
           "matrix"
         ]
       },
@@ -3331,6 +3399,9 @@
                           }
                         ]
                       },
+                      "sourceKind": {
+                        "type": "string"
+                      },
                       "sourceAttribution": {
                         "anyOf": [
                           {
@@ -3418,6 +3489,7 @@
                       "visibility",
                       "filePatterns",
                       "sourceRepo",
+                      "sourceKind",
                       "updatedAt",
                       "createdAt",
                       "origin",
@@ -3547,6 +3619,10 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "sourceKind": {
+                    "type": "string",
+                    "maxLength": 120
                   }
                 },
                 "required": [
@@ -3630,6 +3706,9 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "sourceKind": {
+                      "type": "string"
                     },
                     "sourceAttribution": {
                       "anyOf": [
@@ -3870,6 +3949,7 @@
                     "visibility",
                     "filePatterns",
                     "sourceRepo",
+                    "sourceKind",
                     "updatedAt",
                     "createdAt",
                     "content",
@@ -4164,6 +4244,9 @@
                           }
                         ]
                       },
+                      "sourceKind": {
+                        "type": "string"
+                      },
                       "sourceAttribution": {
                         "anyOf": [
                           {
@@ -4254,6 +4337,7 @@
                       "visibility",
                       "filePatterns",
                       "sourceRepo",
+                      "sourceKind",
                       "updatedAt",
                       "createdAt",
                       "origin",
@@ -4356,6 +4440,9 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "sourceKind": {
+                      "type": "string"
                     },
                     "sourceAttribution": {
                       "anyOf": [
@@ -4596,6 +4683,7 @@
                     "visibility",
                     "filePatterns",
                     "sourceRepo",
+                    "sourceKind",
                     "updatedAt",
                     "createdAt",
                     "content",
@@ -4813,6 +4901,9 @@
                         }
                       ]
                     },
+                    "sourceKind": {
+                      "type": "string"
+                    },
                     "sourceAttribution": {
                       "anyOf": [
                         {
@@ -5052,6 +5143,7 @@
                     "visibility",
                     "filePatterns",
                     "sourceRepo",
+                    "sourceKind",
                     "updatedAt",
                     "createdAt",
                     "content",
@@ -5341,6 +5433,9 @@
                               }
                             ]
                           },
+                          "sourceKind": {
+                            "type": "string"
+                          },
                           "sourceAttribution": {
                             "anyOf": [
                               {
@@ -5580,6 +5675,7 @@
                           "visibility",
                           "filePatterns",
                           "sourceRepo",
+                          "sourceKind",
                           "updatedAt",
                           "createdAt",
                           "content",
@@ -5662,6 +5758,9 @@
                               }
                             ]
                           },
+                          "sourceKind": {
+                            "type": "string"
+                          },
                           "sourceAttribution": {
                             "anyOf": [
                               {
@@ -5901,6 +6000,7 @@
                           "visibility",
                           "filePatterns",
                           "sourceRepo",
+                          "sourceKind",
                           "updatedAt",
                           "createdAt",
                           "content",
@@ -6056,6 +6156,9 @@
                           }
                         ]
                       },
+                      "sourceKind": {
+                        "type": "string"
+                      },
                       "sourceAttribution": {
                         "anyOf": [
                           {
@@ -6158,6 +6261,7 @@
                       "visibility",
                       "filePatterns",
                       "sourceRepo",
+                      "sourceKind",
                       "updatedAt",
                       "createdAt",
                       "content",
@@ -8485,8 +8589,30 @@
                         "type": "string",
                         "maxLength": 80
                       },
+                      "proofGrade": {
+                        "enum": [
+                          "none",
+                          "observed_value",
+                          "auditable_accepted_edit",
+                          "launch_grade_paid_value"
+                        ],
+                        "type": "string",
+                        "default": "none"
+                      },
                       "readyForCloudValue": {
                         "type": "boolean"
+                      },
+                      "observedValueReady": {
+                        "type": "boolean",
+                        "default": false
+                      },
+                      "auditableAcceptedEditReady": {
+                        "type": "boolean",
+                        "default": false
+                      },
+                      "launchGradePaidValueReady": {
+                        "type": "boolean",
+                        "default": false
                       },
                       "repoScopeReady": {
                         "type": "boolean"
@@ -8871,6 +8997,9 @@
                   "teamId": {
                     "type": "string",
                     "format": "uuid"
+                  },
+                  "offer": {
+                    "const": "founding_team"
                   }
                 },
                 "required": [
@@ -17376,6 +17505,14 @@
                       "minimum": 0,
                       "maximum": 9007199254740991
                     },
+                    "launchGradeProvenanceTrusted": {
+                      "type": "boolean",
+                      "default": false
+                    },
+                    "launchGradePaidValueReady": {
+                      "type": "boolean",
+                      "default": false
+                    },
                     "memoryReinforcementRecorded": {
                       "type": "boolean"
                     },
@@ -18098,8 +18235,30 @@
                                   "type": "string",
                                   "maxLength": 80
                                 },
+                                "proofGrade": {
+                                  "enum": [
+                                    "none",
+                                    "observed_value",
+                                    "auditable_accepted_edit",
+                                    "launch_grade_paid_value"
+                                  ],
+                                  "type": "string",
+                                  "default": "none"
+                                },
                                 "readyForCloudValue": {
                                   "type": "boolean"
+                                },
+                                "observedValueReady": {
+                                  "type": "boolean",
+                                  "default": false
+                                },
+                                "auditableAcceptedEditReady": {
+                                  "type": "boolean",
+                                  "default": false
+                                },
+                                "launchGradePaidValueReady": {
+                                  "type": "boolean",
+                                  "default": false
                                 },
                                 "repoScopeReady": {
                                   "type": "boolean"

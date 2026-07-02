@@ -38,6 +38,15 @@ pub(crate) struct CommentDurabilitySignal {
     /// to detect a later contradiction. Empty for review bodies and standalone
     /// issue comments.
     pub(crate) later_replies: Vec<String>,
+    /// Authors of the comments that came BEFORE this one in the same thread.
+    /// Thread-context provenance for the candidate gate's trust classifier: a
+    /// human comment replying in a thread a bot participated in earlier is
+    /// classified as `human_override_bot`. Empty for thread starters, review
+    /// bodies, and standalone comments.
+    pub(crate) earlier_thread_authors: Vec<String>,
+    /// Source-kind labels for those earlier comments, preserving provider actor
+    /// type even when the login does not look bot-shaped.
+    pub(crate) earlier_thread_source_kinds: Vec<String>,
 }
 
 impl CommentDurabilitySignal {
@@ -50,16 +59,37 @@ impl CommentDurabilitySignal {
             && self.thumbs_up == 0
             && self.thumbs_down == 0
             && self.later_replies.is_empty()
+            && self.earlier_thread_authors.is_empty()
+            && self.earlier_thread_source_kinds.is_empty()
         {
             return None;
         }
-        Some(serde_json::json!({
+        let mut value = serde_json::json!({
             "resolved": self.resolved,
             "reactionsTotal": self.reactions_total,
             "thumbsUp": self.thumbs_up,
             "thumbsDown": self.thumbs_down,
             "laterReplies": &self.later_replies,
-        }))
+        });
+        // Emitted only when present so pre-linkage metadata keeps its legacy
+        // byte shape.
+        if !self.earlier_thread_authors.is_empty()
+            && let Some(obj) = value.as_object_mut()
+        {
+            obj.insert(
+                "earlierThreadAuthors".to_owned(),
+                serde_json::json!(&self.earlier_thread_authors),
+            );
+        }
+        if !self.earlier_thread_source_kinds.is_empty()
+            && let Some(obj) = value.as_object_mut()
+        {
+            obj.insert(
+                "earlierThreadSourceKinds".to_owned(),
+                serde_json::json!(&self.earlier_thread_source_kinds),
+            );
+        }
+        Some(value)
     }
 }
 
@@ -136,6 +166,8 @@ mod tests {
             thumbs_up: 2,
             thumbs_down: 0,
             later_replies: vec!["Done, thanks!".to_owned()],
+            earlier_thread_authors: vec!["coderabbitai[bot]".to_owned()],
+            earlier_thread_source_kinds: vec!["bot:coderabbitai[bot]".to_owned()],
         };
         let json = comment_metadata_json(
             Some("src/lib.rs"),
@@ -150,5 +182,10 @@ mod tests {
         assert_eq!(value["reactionsTotal"], 2);
         assert_eq!(value["sourceKind"], "issue_comment");
         assert_eq!(value["laterReplies"][0], "Done, thanks!");
+        assert_eq!(value["earlierThreadAuthors"][0], "coderabbitai[bot]");
+        assert_eq!(
+            value["earlierThreadSourceKinds"][0],
+            "bot:coderabbitai[bot]"
+        );
     }
 }

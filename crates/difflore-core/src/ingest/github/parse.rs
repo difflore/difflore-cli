@@ -9,7 +9,7 @@
 
 use sqlx::SqlitePool;
 
-use super::schema::{PrNode, ReactionGroupNode};
+use super::schema::{ActorNode, PrNode, ReactionGroupNode};
 use super::{ImportOptions, non_empty_path, representative_file_path};
 use crate::ingest::ImportProgress;
 use crate::ingest::common::{CommentDurabilitySignal, comment_exists, comment_metadata_json};
@@ -76,6 +76,55 @@ pub(super) fn item_metadata_json(opts: &ImportOptions, pr: &PrNode) -> Option<St
     } else {
         Some(serde_json::Value::Object(metadata).to_string())
     }
+}
+
+fn actor_source_kind(actor: Option<&ActorNode>) -> Option<String> {
+    let actor = actor?;
+    let login = actor.login.trim();
+    if login.is_empty() {
+        return None;
+    }
+    match actor.type_name.as_deref() {
+        Some("Bot") => Some(format!("bot:{login}")),
+        // No __typename in the payload means the author type is unverified;
+        // omit the claim so downstream classification re-derives it instead
+        // of trusting a baked-in "human" label.
+        None => None,
+        Some(_) => Some("human".to_owned()),
+    }
+}
+
+fn github_comment_metadata_json(
+    file_path: Option<&str>,
+    source_repo: Option<&str>,
+    attached_repo: &str,
+    source_kind: Option<&str>,
+    signal: &CommentDurabilitySignal,
+    actor: Option<&ActorNode>,
+) -> String {
+    let mut value = serde_json::from_str::<serde_json::Value>(&comment_metadata_json(
+        file_path,
+        source_repo,
+        attached_repo,
+        source_kind,
+        signal,
+    ))
+    .unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(obj) = value.as_object_mut()
+        && let Some(actor) = actor
+    {
+        if let Some(type_name) = actor.type_name.as_deref() {
+            obj.insert(
+                "authorType".to_owned(),
+                serde_json::Value::String(type_name.to_owned()),
+            );
+            obj.insert(
+                "authorIsBot".to_owned(),
+                serde_json::Value::Bool(type_name == "Bot"),
+            );
+        }
+    }
+    value.to_string()
 }
 
 /// Drop any fetched PR whose `number` is in `exclude_prs`, in place. Runs
@@ -188,6 +237,9 @@ async fn persist_inline_comments(
                 .map(|reply| reply.body.clone())
                 .filter(|body| !body.trim().is_empty())
                 .collect();
+            signal.earlier_thread_authors = earlier_thread_authors(&thread.comments.nodes, idx);
+            signal.earlier_thread_source_kinds =
+                earlier_thread_source_kinds(&thread.comments.nodes, idx);
 
             crate::review_store::add_comment(
                 db,
@@ -199,12 +251,13 @@ async fn persist_inline_comments(
                     author: comment.author.as_ref().map(|a| a.login.clone()),
                     comment_url: comment.url.clone(),
                     thread_id,
-                    metadata: Some(comment_metadata_json(
+                    metadata: Some(github_comment_metadata_json(
                         comment.path.as_deref(),
                         Some(&opts.source_repo),
                         &opts.repo,
-                        None,
+                        actor_source_kind(comment.author.as_ref()).as_deref(),
                         &signal,
+                        comment.author.as_ref(),
                     )),
                 },
             )
@@ -213,6 +266,63 @@ async fn persist_inline_comments(
         }
     }
     Ok(())
+}
+
+/// Distinct authors of the content-carrying comments before index `idx` in
+/// the same review thread, oldest-first. Reply linkage for the candidate
+/// gate's trust classifier: a human comment whose thread was opened (or
+/// joined earlier) by a bot reviewer is classified as `human_override_bot`.
+fn earlier_thread_authors(
+    comments: &[super::schema::ReviewCommentNode],
+    idx: usize,
+) -> Vec<String> {
+    const EARLIER_AUTHOR_LIMIT: usize = 10;
+    let mut authors: Vec<String> = Vec::new();
+    for earlier in comments.iter().take(idx) {
+        if earlier.body.trim().is_empty() {
+            continue;
+        }
+        let Some(login) = earlier
+            .author
+            .as_ref()
+            .map(|a| a.login.trim())
+            .filter(|login| !login.is_empty())
+        else {
+            continue;
+        };
+        if authors.iter().any(|seen| seen == login) {
+            continue;
+        }
+        authors.push(login.to_owned());
+        if authors.len() >= EARLIER_AUTHOR_LIMIT {
+            break;
+        }
+    }
+    authors
+}
+
+fn earlier_thread_source_kinds(
+    comments: &[super::schema::ReviewCommentNode],
+    idx: usize,
+) -> Vec<String> {
+    const EARLIER_SOURCE_KIND_LIMIT: usize = 10;
+    let mut kinds: Vec<String> = Vec::new();
+    for earlier in comments.iter().take(idx) {
+        if earlier.body.trim().is_empty() {
+            continue;
+        }
+        let Some(kind) = actor_source_kind(earlier.author.as_ref()) else {
+            continue;
+        };
+        if kinds.iter().any(|seen| seen == &kind) {
+            continue;
+        }
+        kinds.push(kind);
+        if kinds.len() >= EARLIER_SOURCE_KIND_LIMIT {
+            break;
+        }
+    }
+    kinds
 }
 
 /// Top-level review bodies.
@@ -246,7 +356,6 @@ async fn persist_review_bodies(
         // ordered replies, so only the review's own reactions feed the
         // durability signal; everything else stays neutral.
         let signal = CommentDurabilitySignal::from_reaction_groups(&review.reaction_groups);
-        let metadata = signal.to_metadata_value().map(|v| v.to_string());
         crate::review_store::add_comment(
             db,
             AddCommentInput {
@@ -257,7 +366,14 @@ async fn persist_review_bodies(
                 author: review.author.as_ref().map(|a| a.login.clone()),
                 comment_url: review.url.clone(),
                 thread_id: Some(db_id.to_string()),
-                metadata,
+                metadata: Some(github_comment_metadata_json(
+                    None,
+                    Some(&opts.source_repo),
+                    &opts.repo,
+                    actor_source_kind(review.author.as_ref()).as_deref(),
+                    &signal,
+                    review.author.as_ref(),
+                )),
             },
         )
         .await?;
@@ -306,12 +422,13 @@ async fn persist_discussion_comments(
                 author: comment.author.as_ref().map(|a| a.login.clone()),
                 comment_url: comment.url.clone(),
                 thread_id: Some(format!("issue-comment-{db_id}")),
-                metadata: Some(comment_metadata_json(
+                metadata: Some(github_comment_metadata_json(
                     non_empty_path(Some(file_path)),
                     Some(&opts.source_repo),
                     &opts.repo,
                     Some("issue_comment"),
                     &signal,
+                    comment.author.as_ref(),
                 )),
             },
         )
@@ -360,6 +477,52 @@ mod tests {
         assert!(comment.reaction_groups.is_empty());
         let signal = CommentDurabilitySignal::from_reaction_groups(&comment.reaction_groups);
         assert_eq!(signal.reactions_total, 0);
+    }
+
+    #[test]
+    fn earlier_thread_authors_capture_reply_linkage_for_trust_classifier() {
+        let thread: ReviewThreadNode = serde_json::from_str(
+            r#"{
+                "comments": { "nodes": [
+                    { "databaseId": 1, "body": "Bot finding: validate first.",
+                      "author": { "login": "coderabbitai[bot]" } },
+                    { "databaseId": 2, "body": "   ",
+                      "author": { "login": "blank-body" } },
+                    { "databaseId": 3, "body": "Agreed, apply this everywhere.",
+                      "author": { "login": "alice" } }
+                ] }
+            }"#,
+        )
+        .expect("thread fixture deserializes");
+
+        // Thread starter has no earlier context.
+        assert!(earlier_thread_authors(&thread.comments.nodes, 0).is_empty());
+        // The human reply sees the bot author; the empty-body comment (never
+        // imported) contributes no linkage.
+        assert_eq!(
+            earlier_thread_authors(&thread.comments.nodes, 2),
+            vec!["coderabbitai[bot]".to_owned()]
+        );
+    }
+
+    #[test]
+    fn earlier_thread_source_kinds_preserve_graphql_bot_type_for_plain_login() {
+        let thread: ReviewThreadNode = serde_json::from_str(
+            r#"{
+                "comments": { "nodes": [
+                    { "databaseId": 1, "body": "Bot finding: validate first.",
+                      "author": { "__typename": "Bot", "login": "review-assistant" } },
+                    { "databaseId": 2, "body": "Agreed, apply this everywhere.",
+                      "author": { "__typename": "User", "login": "alice" } }
+                ] }
+            }"#,
+        )
+        .expect("thread fixture deserializes");
+
+        assert_eq!(
+            earlier_thread_source_kinds(&thread.comments.nodes, 1),
+            vec!["bot:review-assistant".to_owned()]
+        );
     }
 
     #[test]
@@ -443,5 +606,54 @@ mod tests {
             value.get("sourceRepoFullName").is_none(),
             "same-repo imports should not invent fork metadata"
         );
+    }
+
+    #[test]
+    fn github_comment_metadata_marks_graphql_bot_actor_even_without_bot_login_shape() {
+        let signal = CommentDurabilitySignal::default();
+        let actor = ActorNode {
+            type_name: Some("Bot".to_owned()),
+            login: "review-assistant".to_owned(),
+        };
+
+        let metadata: serde_json::Value = serde_json::from_str(&github_comment_metadata_json(
+            Some("src/http/request.rs"),
+            Some("owner/repo"),
+            "owner/repo",
+            actor_source_kind(Some(&actor)).as_deref(),
+            &signal,
+            Some(&actor),
+        ))
+        .expect("metadata parses");
+
+        assert_eq!(metadata["authorType"], "Bot");
+        assert_eq!(metadata["authorIsBot"], true);
+        assert_eq!(metadata["sourceKind"], "bot:review-assistant");
+    }
+
+    #[test]
+    fn github_comment_metadata_omits_source_kind_when_author_type_is_unverified() {
+        let signal = CommentDurabilitySignal::default();
+        let actor = ActorNode {
+            type_name: None,
+            login: "some-plain-login".to_owned(),
+        };
+
+        let metadata: serde_json::Value = serde_json::from_str(&github_comment_metadata_json(
+            Some("src/http/request.rs"),
+            Some("owner/repo"),
+            "owner/repo",
+            actor_source_kind(Some(&actor)).as_deref(),
+            &signal,
+            Some(&actor),
+        ))
+        .expect("metadata parses");
+
+        assert!(
+            metadata.get("sourceKind").is_none(),
+            "unverified author type must not bake a human claim into metadata"
+        );
+        assert!(metadata.get("authorType").is_none());
+        assert!(metadata.get("authorIsBot").is_none());
     }
 }

@@ -1,5 +1,6 @@
 mod agent_files;
 mod autopilot;
+mod backfill_source_kind;
 mod inbox;
 mod overview;
 mod package;
@@ -41,6 +42,7 @@ pub(crate) use autopilot::{
     handle_recommended, mark_memory_autopilot_dirty_best_effort,
     schedule_memory_autopilot_best_effort,
 };
+pub(crate) use backfill_source_kind::{BackfillSourceKindArgs, handle_backfill_source_kind};
 pub(crate) use inbox::{
     handle_active, handle_activity, handle_approve, handle_inbox, handle_reject, handle_remember,
     handle_review, handle_show,

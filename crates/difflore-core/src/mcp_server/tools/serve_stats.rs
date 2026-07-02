@@ -434,6 +434,7 @@ mod tests {
             confidence_score,
             file_patterns: file_patterns.map(str::to_owned),
             origin: "pr_review".to_owned(),
+            source_kind: "human".to_owned(),
             source_repo: source_repo.map(str::to_owned),
             trigger: None,
             check_prompt: None,

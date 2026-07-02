@@ -269,15 +269,16 @@ pub async fn apply_sync_result(
         // rules from locally-typed ones (the migration default of `manual`
         // would mislabel them).
         let origin = rule.origin.clone().unwrap_or_else(|| "cloud".to_owned());
+        let source_kind = crate::skills::normalize_rule_source_kind(rule.source_kind.as_deref());
         let directory_param = directory.as_str();
         sqlx::query(
             "INSERT INTO skills
              (id, name, source, directory, version, description, type, engines, tags,
               trigger, check_prompt, file_patterns,
               enabled_for_codex, enabled_for_claude, enabled_for_gemini, enabled_for_cursor,
-              installed_at, updated_at, origin)
+              installed_at, updated_at, origin, source_kind)
              VALUES (?1, ?2, 'cloud', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                     1, 1, 1, 1, ?12, ?12, ?13)
+                     1, 1, 1, 1, ?12, ?12, ?13, ?14)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 directory = excluded.directory,
@@ -291,6 +292,7 @@ pub async fn apply_sync_result(
                 file_patterns = excluded.file_patterns,
                 updated_at = excluded.updated_at,
                 origin = excluded.origin,
+                source_kind = excluded.source_kind,
                 status = 'active'
              WHERE skills.source = 'cloud' OR skills.cloud_id = excluded.id",
         )
@@ -307,6 +309,7 @@ pub async fn apply_sync_result(
         .bind(file_patterns_json.as_deref())
         .bind(&now)
         .bind(&origin)
+        .bind(&source_kind)
         .execute(&mut *tx)
         .await?;
         apply_cloud_source_repo(&mut tx, &rule.id, rule.source_repo.as_deref()).await?;
@@ -335,14 +338,19 @@ pub async fn apply_sync_result(
             Some(serde_json::to_string(&rule.file_patterns)?)
         };
         let description = effective_description(rule);
+        let source_kind = rule
+            .source_kind
+            .as_deref()
+            .map(|kind| crate::skills::normalize_rule_source_kind(Some(kind)));
         sqlx::query(
             "UPDATE skills SET name = ?1, description = ?2, type = ?3, version = ?4,
              engines = ?5, tags = ?6, trigger = ?7, check_prompt = ?8, file_patterns = ?9,
              directory = ?10,
              updated_at = ?11,
              origin = COALESCE(?12, origin),
+             source_kind = COALESCE(?13, source_kind),
              status = 'active'
-             WHERE id = ?13 AND (source = 'cloud' OR cloud_id = ?13)",
+             WHERE id = ?14 AND (source = 'cloud' OR cloud_id = ?14)",
         )
         .bind(&rule.name)
         .bind(&description)
@@ -356,6 +364,7 @@ pub async fn apply_sync_result(
         .bind(&directory)
         .bind(&now)
         .bind(rule.origin.as_deref())
+        .bind(source_kind.as_deref())
         .bind(&rule.id)
         .execute(&mut *tx)
         .await?;

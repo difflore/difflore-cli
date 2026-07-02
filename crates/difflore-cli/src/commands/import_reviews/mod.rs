@@ -646,10 +646,8 @@ async fn run_local_candidate_distillation(
         {
             Ok(progress) => return (progress, ImportDistillArg::LocalAgent),
             Err(e) => {
-                if difflore_core::infra::env::debug_telemetry() {
-                    eprintln!(
-                        "[difflore.import_reviews] local-agent distill failed; falling back to heuristic: {e}"
-                    );
+                for line in local_agent_fallback_warning_lines(v.distill, &e.to_string()) {
+                    eprintln!("{line}");
                 }
             }
         }
@@ -666,6 +664,22 @@ async fn run_local_candidate_distillation(
     )
     .await;
     (progress, ImportDistillArg::Heuristic)
+}
+
+fn local_agent_fallback_warning_lines(
+    requested_distill: ImportDistillArg,
+    reason: &str,
+) -> [String; 4] {
+    [
+        format!(
+            "{} local-agent distill unavailable; falling back to heuristic (requested distill={}).",
+            style::warn(style::sym::WARN),
+            distill_wire(requested_distill)
+        ),
+        format!("  reason: {}", reason.trim()),
+        "  heuristic distill only performs deterministic extraction; review suggested rules before agents use them.".to_owned(),
+        format!("  setup: {}", style::cmd("difflore providers setup")),
+    ]
 }
 
 /// The fields rendered into the `--json` import report. Built once at the call
@@ -839,7 +853,7 @@ async fn try_handle_github(
                 .await;
         actual_distill = distill;
         if !v.json {
-            print_local_candidate_next_steps(&progress, &local_repo);
+            print_local_candidate_next_steps(&progress, &local_repo, distill_wire(actual_distill));
         }
         if progress.candidates_pending > 0 {
             crate::commands::memory::mark_memory_autopilot_dirty_best_effort(db, "import_reviews")
@@ -950,7 +964,11 @@ async fn try_handle_gitlab(
                 .await;
         actual_distill = distill;
         if !v.json {
-            print_local_candidate_next_steps(&progress, &gitlab_project);
+            print_local_candidate_next_steps(
+                &progress,
+                &gitlab_project,
+                distill_wire(actual_distill),
+            );
         }
         if progress.candidates_pending > 0 {
             crate::commands::memory::mark_memory_autopilot_dirty_best_effort(db, "import_reviews")
@@ -1052,10 +1070,10 @@ mod tests {
     use super::github::{format_github_import_err, gh_repo_view_failure_detail};
     use super::gitlab::format_gitlab_import_err;
     use super::local_candidates::{
-        CAPTURE_CONFIDENCE_HIGH, CAPTURE_CONFIDENCE_LOW, CaptureRoute,
-        active_candidate_next_step_commands, candidate_title, clean_review_comment,
-        distilled_rule_statement, is_high_signal_review_comment_for_paths, local_candidate_budget,
-        local_candidate_budget_reached, local_candidate_input,
+        CAPTURE_CONFIDENCE_HIGH, CAPTURE_CONFIDENCE_LOW, CaptureRoute, LocalCandidateProgress,
+        ReviewSourceKind, active_candidate_next_step_commands, candidate_title,
+        clean_review_comment, distilled_rule_statement, is_high_signal_review_comment_for_paths,
+        local_candidate_budget, local_candidate_budget_reached, local_candidate_input,
         pending_candidate_next_step_commands, pending_drafts_review_hint, route_for_confidence,
         run_local_candidates,
     };
@@ -1065,7 +1083,10 @@ mod tests {
         comment_file_path_from_metadata, gitlab_host_from_metadata, imported_review_upload,
         matches_upload_target,
     };
-    use super::{ImportArgs, ImportReport, dry_run_payload, import_json_payload, validate_args};
+    use super::{
+        ImportArgs, ImportReport, dry_run_payload, import_json_payload,
+        local_agent_fallback_warning_lines, validate_args,
+    };
 
     fn github_scope(repo: &str) -> RepoScope {
         RepoScope::github(repo).expect("test GitHub repo scope")
@@ -2367,6 +2388,10 @@ We should validate the header before parsing because malformed requests panic.\n
         );
         assert!(candidate.confidence < CAPTURE_CONFIDENCE_HIGH);
         assert!(candidate.confidence >= CAPTURE_CONFIDENCE_LOW);
+        assert_eq!(
+            candidate.source_kind,
+            ReviewSourceKind::Bot("github-actions[bot]".to_owned())
+        );
     }
 
     #[test]
@@ -2397,6 +2422,10 @@ We should validate the header before parsing because malformed requests panic.\n
             candidate.confidence,
         );
         assert!(candidate.confidence >= CAPTURE_CONFIDENCE_HIGH);
+        assert_eq!(
+            candidate.source_kind,
+            ReviewSourceKind::Bot("coderabbitai[bot]".to_owned())
+        );
     }
 
     #[test]
@@ -2417,6 +2446,7 @@ We should validate the header before parsing because malformed requests panic.\n
                 .expect("resolved human directive should draft a candidate");
         assert_eq!(candidate.route, CaptureRoute::Candidate);
         assert!(candidate.confidence >= CAPTURE_CONFIDENCE_HIGH);
+        assert_eq!(candidate.source_kind, ReviewSourceKind::Human);
     }
 
     #[test]
@@ -2772,6 +2802,134 @@ We should validate the header before parsing because malformed requests panic.\n
             memories.iter().any(|c| c.name.contains("Prefer Mapping")),
             "memories: {memories:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn local_candidates_persist_bot_source_kind_on_pending_draft() {
+        let db = fresh_import_pool().await;
+        seed_imported_review_comments(
+            &db,
+            &[(
+                "Please validate the header before parsing because otherwise malformed requests panic.",
+                "src/http/request.rs",
+            )],
+        )
+        .await;
+        sqlx::query("UPDATE review_comments SET author = ?1")
+            .bind("coderabbitai[bot]")
+            .execute(&db)
+            .await
+            .expect("mark imported comment as bot-authored");
+
+        let source_scope = github_scope("acme/widgets");
+        let progress = run_local_candidates(
+            &db,
+            "github",
+            "acme/widgets",
+            &source_scope,
+            5,
+            &[],
+            &HashSet::new(),
+        )
+        .await;
+
+        assert_eq!(progress.candidates_created, 1);
+        assert_eq!(
+            progress.candidates_activated, 0,
+            "bot-authored directives must never auto-activate"
+        );
+        assert_eq!(progress.candidates_pending, 1);
+        let memories = difflore_core::skills::list_candidates(&db, None, None)
+            .await
+            .expect("list pending memories");
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].source_kind, "bot:coderabbitai[bot]");
+    }
+
+    /// Rewrite the seeded comment's metadata with the reply linkage ingest
+    /// writes (`earlierThreadAuthors`), keeping the provenance keys the local
+    /// candidate gate reads.
+    async fn attach_thread_linkage(db: &sqlx::SqlitePool, earlier_authors: &[&str]) {
+        let metadata = serde_json::json!({
+            "filePath": "src/http/request.rs",
+            "sourceRepoFullName": "acme/widgets",
+            "attachedRepoFullName": "acme/widgets",
+            "resolved": true,
+            "earlierThreadAuthors": earlier_authors,
+        })
+        .to_string();
+        sqlx::query("UPDATE review_comments SET metadata = ?1")
+            .bind(&metadata)
+            .execute(db)
+            .await
+            .expect("attach reply linkage metadata");
+    }
+
+    #[tokio::test]
+    async fn local_candidates_persist_human_override_bot_for_human_reply_in_bot_thread() {
+        let db = fresh_import_pool().await;
+        seed_imported_review_comments(
+            &db,
+            &[(
+                "Please validate the header before parsing because otherwise malformed requests panic.",
+                "src/http/request.rs",
+            )],
+        )
+        .await;
+        // The human comment sits in a thread a bot commented in first.
+        attach_thread_linkage(&db, &["coderabbitai[bot]"]).await;
+
+        let source_scope = github_scope("acme/widgets");
+        let progress = run_local_candidates(
+            &db,
+            "github",
+            "acme/widgets",
+            &source_scope,
+            5,
+            &[],
+            &HashSet::new(),
+        )
+        .await;
+
+        assert_eq!(progress.candidates_created, 1);
+        let memories = difflore_core::skills::list_candidates(&db, None, None)
+            .await
+            .expect("list pending memories");
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].source_kind, "human_override_bot");
+    }
+
+    #[tokio::test]
+    async fn local_candidates_keep_human_source_kind_for_human_reply_in_human_thread() {
+        let db = fresh_import_pool().await;
+        seed_imported_review_comments(
+            &db,
+            &[(
+                "Please validate the header before parsing because otherwise malformed requests panic.",
+                "src/http/request.rs",
+            )],
+        )
+        .await;
+        attach_thread_linkage(&db, &["bob"]).await;
+
+        let source_scope = github_scope("acme/widgets");
+        let progress = run_local_candidates(
+            &db,
+            "github",
+            "acme/widgets",
+            &source_scope,
+            5,
+            &[],
+            &HashSet::new(),
+        )
+        .await;
+
+        assert_eq!(progress.candidates_created, 1);
+        let memories = difflore_core::skills::list_candidates(&db, None, None)
+            .await
+            .expect("list pending memories");
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].source_kind, "human");
     }
 
     #[tokio::test]
@@ -3336,6 +3494,56 @@ We should validate the header before parsing because malformed requests panic.\n
         assert_eq!(payload["missingPrNumbers"], serde_json::json!([404, 405]));
         assert_eq!(payload["uploadedReviews"], 7);
         assert_eq!(payload["cloudUploadQueued"], true);
+    }
+
+    #[test]
+    fn import_json_payload_reports_actual_local_distill() {
+        let progress = ImportProgress {
+            prs_total: 2,
+            prs_fetched: 2,
+            comments_imported: 8,
+            comments_skipped: 0,
+            prs_missing: 0,
+            missing_pr_numbers: Vec::new(),
+        };
+        let local_progress = LocalCandidateProgress {
+            budget: 25,
+            comments_considered: 8,
+            candidates_created: 3,
+            candidates_pending: 3,
+            ..LocalCandidateProgress::default()
+        };
+        let payload = import_json_payload(&ImportReport {
+            provider: "github",
+            gitlab_host: None,
+            repo: "acme/fork",
+            source_repo: "acme/upstream",
+            max_prs: 2,
+            requested_max_prs: 2,
+            result: &progress,
+            distill: ImportDistillArg::Heuristic,
+            local_candidates: Some(&local_progress),
+            uploaded_reviews: 0,
+        });
+
+        assert_eq!(payload["localCandidates"]["distill"], "heuristic");
+        assert_eq!(payload["localCandidates"]["candidatesPending"], 3);
+    }
+
+    #[test]
+    fn local_agent_fallback_warning_explains_heuristic_limits_and_setup() {
+        let lines = local_agent_fallback_warning_lines(
+            ImportDistillArg::Auto,
+            "all local-agent distillers failed: codex not found",
+        );
+        let text = lines.join("\n");
+
+        assert!(text.contains("falling back to heuristic"), "{text}");
+        assert!(text.contains("requested distill=auto"), "{text}");
+        assert!(text.contains("reason:"), "{text}");
+        assert!(text.contains("deterministic extraction"), "{text}");
+        assert!(text.contains("review suggested rules"), "{text}");
+        assert!(text.contains("difflore providers setup"), "{text}");
     }
 
     #[test]

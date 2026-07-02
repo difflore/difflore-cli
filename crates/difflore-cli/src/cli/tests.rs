@@ -560,21 +560,32 @@ fn drafts_command_parses_review_and_batch_actions() {
             command: DraftsCommands::Review {
                 repo: Some(repo),
                 limit: None,
+                source_kind: None,
             }
         }) if repo == "Acme/App"
     ));
 
-    let list = Cli::try_parse_from(["difflore", "drafts", "list", "--limit", "5", "--json"])
-        .expect("drafts list should parse");
+    let list = Cli::try_parse_from([
+        "difflore",
+        "drafts",
+        "list",
+        "--limit",
+        "5",
+        "--source-kind",
+        "bot:*",
+        "--json",
+    ])
+    .expect("drafts list should parse");
     assert!(matches!(
         list.command,
         Some(Commands::Drafts {
             command: DraftsCommands::List {
                 repo: None,
                 limit: Some(5),
+                source_kind: Some(source_kind),
                 json: true,
             }
-        })
+        }) if source_kind == "bot:*"
     ));
 
     let approve_all = Cli::try_parse_from([

@@ -75,6 +75,7 @@ pub struct OverviewRule {
     pub rule_id: String,
     pub title: String,
     pub origin: String,
+    pub source_kind: String,
     pub source_repo: Option<String>,
     pub file_patterns: Vec<String>,
     pub updated_at: String,
@@ -87,6 +88,7 @@ pub struct OverviewReviewItem {
     pub kind: String,
     pub title: String,
     pub origin: Option<String>,
+    pub source_kind: Option<String>,
     pub source_repo: Option<String>,
     pub file_patterns: Vec<String>,
     pub updated_at: Option<String>,
@@ -232,6 +234,7 @@ impl OverviewRule {
             rule_id: rule.id.clone(),
             title: rule.name.clone(),
             origin: rule.origin.clone(),
+            source_kind: rule.source_kind.clone(),
             source_repo: rule.source_repo.clone(),
             file_patterns: rule.file_patterns.clone(),
             updated_at: rule.updated_at.clone(),
@@ -246,6 +249,7 @@ impl OverviewReviewItem {
             kind: item.kind,
             title: item.title,
             origin: item.origin,
+            source_kind: item.source_kind,
             source_repo: item.source_repo,
             file_patterns: item.file_patterns,
             updated_at: item.updated_at,
@@ -279,7 +283,7 @@ async fn load_paused_overview(pool: &SqlitePool, latest_limit: usize) -> Result<
             .fetch_one(pool)
             .await?;
     let rows = sqlx::query(
-        "SELECT id, name, origin, source_repo, file_patterns, \
+        "SELECT id, name, origin, source_kind, source_repo, file_patterns, \
                 COALESCE(updated_at, installed_at) AS updated_at \
          FROM skills \
          WHERE status = 'disabled' \
@@ -300,6 +304,9 @@ async fn load_paused_overview(pool: &SqlitePool, latest_limit: usize) -> Result<
                 rule_id: id,
                 title: row.try_get("name").unwrap_or_default(),
                 origin: row.try_get("origin").unwrap_or_default(),
+                source_kind: row
+                    .try_get("source_kind")
+                    .unwrap_or_else(|_| "human".to_owned()),
                 source_repo: row.try_get("source_repo").ok().flatten(),
                 file_patterns: parse_string_list(file_patterns.as_deref()),
                 updated_at: row.try_get("updated_at").unwrap_or_default(),

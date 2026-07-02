@@ -208,6 +208,7 @@ body text";
             file_patterns: vec!["**/*.rs".to_owned()],
             origin: Some("extracted".to_owned()),
             source_repo: Some("acme/widgets".to_owned()),
+            source_kind: Some("bot:review-assistant".to_owned()),
         }
     }
 
@@ -238,6 +239,30 @@ body text";
         assert_eq!(row.enabled_for_claude, 1);
         assert_eq!(row.enabled_for_gemini, 1);
         assert_eq!(row.enabled_for_cursor, 1);
+    }
+
+    #[tokio::test]
+    async fn apply_sync_result_persists_cloud_rule_source_kind() {
+        let db = DedupTestEnv::db().await;
+        apply_sync_result(
+            &db,
+            &crate::cloud::sync::SyncResult {
+                created: vec![synced_rule("cloud-bot-source")],
+                updated: vec![],
+                deleted: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+        let source_kind: String =
+            sqlx::query_scalar("SELECT source_kind FROM skills WHERE id = ?1")
+                .bind("cloud-bot-source")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        assert_eq!(source_kind, "bot:review-assistant");
     }
 
     #[tokio::test]
@@ -1725,6 +1750,109 @@ body text";
         assert_eq!(
             tombstoned, 1,
             "reject_candidate must tombstone the rejected content_hash"
+        );
+    }
+
+    #[test]
+    fn normalize_rule_source_kind_fails_closed_on_unrecognized_values() {
+        // Recognized labels pass through.
+        assert_eq!(normalize_rule_source_kind(Some("human")), "human");
+        assert_eq!(
+            normalize_rule_source_kind(Some("human_override_bot")),
+            "human_override_bot"
+        );
+        assert_eq!(
+            normalize_rule_source_kind(Some("bot:coderabbitai[bot]")),
+            "bot:coderabbitai[bot]"
+        );
+        // Absent/blank means the caller made no source claim: default human.
+        assert_eq!(normalize_rule_source_kind(None), "human");
+        assert_eq!(normalize_rule_source_kind(Some("   ")), "human");
+        // Unrecognized non-empty values are a trust field parse failure and
+        // must NOT be laundered into "human".
+        for garbage in [
+            "Human",
+            "robot",
+            "bot",
+            "bot:",
+            "bot: !!",
+            "human_override",
+            "trusted",
+        ] {
+            assert_eq!(
+                normalize_rule_source_kind(Some(garbage)),
+                UNKNOWN_RULE_SOURCE_KIND,
+                "unrecognized input must fail closed: {garbage:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn candidate_source_kind_defaults_and_explicit_bot_kind_are_persisted() {
+        let db = DedupTestEnv::db().await;
+        let repo = RepoScope::canonical("owner/repo").expect("canonical repo");
+
+        let defaulted = remember_as_candidate(
+            &db,
+            remember_input(
+                "Default source kind",
+                "Candidates without an explicit review source should remain human.",
+                Some(vec!["**/*.rs"]),
+            ),
+        )
+        .await
+        .unwrap();
+        let explicit = remember_as_candidate_with_confidence_for_repo_and_source_kind(
+            &db,
+            remember_input(
+                "Bot source kind",
+                "Candidates mined from bot-authored review text must keep bot provenance.",
+                Some(vec!["src/**/*.rs"]),
+            ),
+            0.72_f32,
+            &repo,
+            Some("bot:bito-code-review[bot]"),
+        )
+        .await
+        .unwrap();
+
+        let default_kind: String =
+            sqlx::query_scalar("SELECT source_kind FROM skills WHERE id = ?1")
+                .bind(&defaulted.skill.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(default_kind, "human");
+        let explicit_kind: String =
+            sqlx::query_scalar("SELECT source_kind FROM skills WHERE id = ?1")
+                .bind(&explicit.skill.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(explicit_kind, "bot:bito-code-review[bot]");
+
+        let candidates = list_candidates(&db, None, None).await.unwrap();
+        let explicit_candidate = candidates
+            .iter()
+            .find(|candidate| candidate.id == explicit.skill.id)
+            .expect("explicit candidate listed");
+        assert_eq!(explicit_candidate.source_kind, "bot:bito-code-review[bot]");
+
+        let metadata: String = sqlx::query_scalar(
+            "SELECT metadata FROM rule_events
+             WHERE skill_id = ?1 AND kind = 'capture_provenance'
+             ORDER BY created_at DESC, id DESC LIMIT 1",
+        )
+        .bind(&explicit.skill.id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(
+            metadata
+                .get("sourceKind")
+                .and_then(serde_json::Value::as_str),
+            Some("bot:bito-code-review[bot]")
         );
     }
 

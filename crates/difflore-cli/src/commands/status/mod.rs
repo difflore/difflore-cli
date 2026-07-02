@@ -200,7 +200,11 @@ pub(crate) async fn redacted_proof_summary_value(
         },
         "acceptedEditProofFunnel": {
             "stage": accepted_edit_funnel.stage,
+            "proofGrade": accepted_edit_funnel.proof_grade,
             "readyForCloudValue": accepted_edit_funnel.ready_for_cloud_value,
+            "observedValueReady": accepted_edit_funnel.observed_value_ready,
+            "auditableAcceptedEditReady": accepted_edit_funnel.auditable_accepted_edit_ready,
+            "launchGradePaidValueReady": accepted_edit_funnel.launch_grade_paid_value_ready,
             "repoScopeReady": accepted_edit_funnel.repo_scope_ready,
             "agentRecallReady": accepted_edit_funnel.agent_recall_ready,
             "acceptedEditCaptured": accepted_edit_funnel.accepted_edit_captured,
@@ -766,16 +770,21 @@ mod tests {
         );
         assert!(envelope["memoryInbox"]["cloud"]["teamReady"].is_null());
         assert_eq!(envelope["localAcceptedProof"]["acceptedProofSignatures"], 0);
+        assert_eq!(envelope["localAcceptedProof"]["proofGrade"], "none");
         let accepted_proof_signatures = envelope["localAcceptedProof"]["acceptedProofSignatures"]
             .as_i64()
             .expect("accepted proof signatures count");
-        let accepted_hook_outcomes = envelope["localAcceptedProof"]["acceptedHookOutcomes"]
+        let _accepted_hook_outcomes = envelope["localAcceptedProof"]["acceptedHookOutcomes"]
             .as_i64()
             .expect("accepted hook outcomes count");
         assert_eq!(
             envelope["localAcceptedProof"]["estimatedSavedReviewMinutes"],
-            (accepted_proof_signatures + accepted_hook_outcomes) * 4
+            accepted_proof_signatures * 4
         );
+        assert!(envelope["acceptedEditProofFunnel"]["proofGrade"].is_string());
+        assert!(envelope["acceptedEditProofFunnel"]["observedValueReady"].is_boolean());
+        assert!(envelope["acceptedEditProofFunnel"]["auditableAcceptedEditReady"].is_boolean());
+        assert!(envelope["acceptedEditProofFunnel"]["launchGradePaidValueReady"].is_boolean());
         assert_eq!(envelope["localRecallProof"]["recallEvents"], 0);
         assert_eq!(envelope["localMcpRuleServes"]["calls"], 0);
         assert_eq!(envelope["recallTrace"]["windowHours"], 24);

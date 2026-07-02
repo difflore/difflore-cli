@@ -1253,6 +1253,86 @@ fn is_bot_author(author: Option<&str>) -> bool {
         || lower.contains("renovate")
 }
 
+fn source_kind_requires_human_validation(kind: &str) -> bool {
+    let kind = kind.trim();
+    kind.starts_with("bot:") || kind.starts_with("ai_reviewer:") || kind == "human_override_bot"
+}
+
+/// Trust/source bucket for an imported review comment. This is intentionally
+/// narrower than `review_items.source_kind` (GitHub/GitLab import shape) and
+/// models who originated the candidate rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ReviewSourceKind {
+    Human,
+    Bot(String),
+    HumanOverrideBot,
+}
+
+impl ReviewSourceKind {
+    pub(super) fn from_comment_author_type(
+        author: Option<&str>,
+        author_is_bot: Option<bool>,
+    ) -> Self {
+        if author_is_bot == Some(true) {
+            let name = author
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("unknown-bot");
+            return Self::Bot(name.to_owned());
+        }
+        Self::from_comment_author(author)
+    }
+
+    pub(super) fn from_comment_author(author: Option<&str>) -> Self {
+        if is_bot_author(author) {
+            let name = author
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("unknown-bot");
+            return Self::Bot(name.to_owned());
+        }
+        Self::Human
+    }
+
+    /// Author classification with thread context. A human-authored comment in
+    /// a thread where a bot commented earlier (reply linkage captured at
+    /// ingest as `earlierThreadAuthors` / `earlierThreadSourceKinds`) is a
+    /// human weighing in on a bot
+    /// finding — `human_override_bot`, a distinct trust bucket from both a
+    /// bare bot rule and an independent human review.
+    pub(super) fn from_comment_context(
+        author: Option<&str>,
+        author_is_bot: Option<bool>,
+        earlier_thread_authors: &[String],
+        earlier_thread_source_kinds: &[String],
+    ) -> Self {
+        let own = Self::from_comment_author_type(author, author_is_bot);
+        if own == Self::Human
+            && (earlier_thread_authors
+                .iter()
+                .any(|earlier| is_bot_author(Some(earlier)))
+                || earlier_thread_source_kinds
+                    .iter()
+                    .any(|kind| source_kind_requires_human_validation(kind)))
+        {
+            return Self::HumanOverrideBot;
+        }
+        own
+    }
+
+    pub(super) const fn requires_human_validation(&self) -> bool {
+        matches!(self, Self::Bot(_) | Self::HumanOverrideBot)
+    }
+
+    pub(super) fn wire_label(&self) -> String {
+        match self {
+            Self::Human => "human".to_owned(),
+            Self::Bot(name) => format!("bot:{name}"),
+            Self::HumanOverrideBot => "human_override_bot".to_owned(),
+        }
+    }
+}
+
 /// Correctness/durability signal recovered from a comment's metadata JSON
 /// (written by `ingest::github`). Every field degrades to neutral when the
 /// key is absent so pre-signal imports (and older API shapes) score the
@@ -1264,6 +1344,15 @@ struct CaptureDurabilitySignal {
     thumbs_up: i64,
     thumbs_down: i64,
     later_replies: Vec<String>,
+    /// Authors of the earlier comments in the same review thread (reply
+    /// linkage written by ingest). Lets the trust classifier recognise a
+    /// human replying to a bot finding. Empty for thread starters and for
+    /// pre-linkage imports, which degrade to plain author classification.
+    earlier_thread_authors: Vec<String>,
+    /// Typed provenance for earlier comments in the same thread. This preserves
+    /// GraphQL `__typename=Bot` even when the bot login lacks a `[bot]` suffix.
+    earlier_thread_source_kinds: Vec<String>,
+    author_is_bot: Option<bool>,
 }
 
 fn parse_durability_signal(comment: &ReviewCommentRecord) -> CaptureDurabilitySignal {
@@ -1296,6 +1385,27 @@ fn parse_durability_signal(comment: &ReviewCommentRecord) -> CaptureDurabilitySi
                     .collect()
             })
             .unwrap_or_default(),
+        earlier_thread_authors: value
+            .get("earlierThreadAuthors")
+            .and_then(serde_json::Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        earlier_thread_source_kinds: value
+            .get("earlierThreadSourceKinds")
+            .and_then(serde_json::Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        author_is_bot: value
+            .get("authorIsBot")
+            .and_then(serde_json::Value::as_bool),
     }
 }
 
@@ -1395,6 +1505,7 @@ pub(super) struct LocalCandidate {
     pub(super) input: RememberRuleInput,
     pub(super) confidence: f32,
     pub(super) route: CaptureRoute,
+    pub(super) source_kind: ReviewSourceKind,
 }
 
 pub(super) fn local_candidate_input(
@@ -1430,7 +1541,13 @@ pub(super) fn local_candidate_input(
 
     // ── Correctness-aware confidence + routing ──────────────────────────────
     let signal = parse_durability_signal(comment);
-    let is_bot = is_bot_author(comment.author.as_deref());
+    let source_kind = ReviewSourceKind::from_comment_context(
+        comment.author.as_deref(),
+        signal.author_is_bot,
+        &signal.earlier_thread_authors,
+        &signal.earlier_thread_source_kinds,
+    );
+    let is_bot = source_kind.requires_human_validation();
     let confidence = capture_confidence(directive_score, is_bot, &signal);
     let route = route_for_comment_confidence(confidence, is_bot);
     if route == CaptureRoute::Drop {
@@ -1506,6 +1623,7 @@ pub(super) fn local_candidate_input(
         input,
         confidence,
         route,
+        source_kind,
     })
 }
 
@@ -1606,6 +1724,7 @@ pub(super) async fn run_local_candidates(
                 input,
                 confidence,
                 route,
+                source_kind,
             }) = local_candidate_input(item, comment, source_repo)
             else {
                 progress.comments_skipped += 1;
@@ -1638,11 +1757,12 @@ pub(super) async fn run_local_candidates(
             // Seed the draft with the gate's capture confidence instead of the
             // flat conversation default. Heuristic review import never promotes
             // directly; local-agent distillation owns the active route.
-            match difflore_core::skills::remember_as_candidate_with_confidence_for_repo(
+            match difflore_core::skills::remember_as_candidate_with_confidence_for_repo_and_source_kind(
                 db,
                 input,
                 confidence,
                 source_repo,
+                Some(&source_kind.wire_label()),
             )
             .await
             {
@@ -1705,8 +1825,17 @@ fn normalize_candidate_signature_part(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress, repo: &str) {
+pub(super) fn print_local_candidate_next_steps(
+    progress: &LocalCandidateProgress,
+    repo: &str,
+    actual_distill: &str,
+) {
     println!();
+    println!(
+        "  {} distill: {}",
+        style::pewter(style::sym::BULLET),
+        style::pewter(actual_distill),
+    );
     if progress.candidates_created == 0
         && progress.candidates_deduped == 0
         && progress.candidates_duplicate_in_run == 0
@@ -2085,6 +2214,123 @@ mod tests {
             route_for_comment_confidence(confidence, false),
             CaptureRoute::Candidate
         );
+    }
+
+    #[test]
+    fn human_reply_in_bot_thread_classifies_as_human_override_bot() {
+        let bot_thread = vec!["coderabbitai[bot]".to_owned()];
+        let human_thread = vec!["reviewer".to_owned()];
+
+        let override_kind =
+            ReviewSourceKind::from_comment_context(Some("alice"), None, &bot_thread, &[]);
+        assert_eq!(override_kind, ReviewSourceKind::HumanOverrideBot);
+        assert_eq!(override_kind.wire_label(), "human_override_bot");
+        assert!(
+            override_kind.requires_human_validation(),
+            "a human overriding a bot source must still require review"
+        );
+
+        // Human thread + human reply stays plain human.
+        assert_eq!(
+            ReviewSourceKind::from_comment_context(Some("alice"), None, &human_thread, &[]),
+            ReviewSourceKind::Human
+        );
+        // No thread context (thread starter / pre-linkage import) stays human.
+        assert_eq!(
+            ReviewSourceKind::from_comment_context(Some("alice"), None, &[], &[]),
+            ReviewSourceKind::Human
+        );
+        // A bot replying in a bot thread stays a pure bot rule.
+        assert_eq!(
+            ReviewSourceKind::from_comment_context(Some("dependabot[bot]"), None, &bot_thread, &[]),
+            ReviewSourceKind::Bot("dependabot[bot]".to_owned())
+        );
+    }
+
+    #[test]
+    fn human_reply_uses_typed_earlier_source_kind_when_login_is_plain() {
+        let earlier_authors = vec!["review-assistant".to_owned()];
+        let earlier_source_kinds = vec!["bot:review-assistant".to_owned()];
+
+        let override_kind = ReviewSourceKind::from_comment_context(
+            Some("alice"),
+            None,
+            &earlier_authors,
+            &earlier_source_kinds,
+        );
+
+        assert_eq!(override_kind, ReviewSourceKind::HumanOverrideBot);
+        assert!(override_kind.requires_human_validation());
+    }
+
+    #[test]
+    fn parse_durability_signal_reads_earlier_thread_authors_from_metadata() {
+        let comment = ReviewCommentRecord {
+            id: "comment-1".to_owned(),
+            review_item_id: "item-1".to_owned(),
+            external_comment_id: Some("comment-1".to_owned()),
+            line_number: Some(3),
+            content: "Agreed, validate the header everywhere.".to_owned(),
+            author: Some("alice".to_owned()),
+            comment_url: None,
+            thread_id: Some("thread-1".to_owned()),
+            metadata: Some(
+                serde_json::json!({
+                    "filePath": "src/http/request.rs",
+                    "resolved": true,
+                    "earlierThreadAuthors": ["coderabbitai[bot]"],
+                    "earlierThreadSourceKinds": ["bot:coderabbitai[bot]"],
+                })
+                .to_string(),
+            ),
+            created_at: "2026-05-01 00:00:00".to_owned(),
+        };
+
+        let signal = parse_durability_signal(&comment);
+        assert_eq!(
+            signal.earlier_thread_authors,
+            vec!["coderabbitai[bot]".to_owned()]
+        );
+        assert_eq!(
+            signal.earlier_thread_source_kinds,
+            vec!["bot:coderabbitai[bot]".to_owned()]
+        );
+    }
+
+    #[test]
+    fn author_is_bot_metadata_classifies_plain_login_as_bot_source_kind() {
+        let comment = ReviewCommentRecord {
+            id: "comment-1".to_owned(),
+            review_item_id: "item-1".to_owned(),
+            external_comment_id: Some("comment-1".to_owned()),
+            line_number: Some(3),
+            content: "Validate headers before parsing.".to_owned(),
+            author: Some("review-assistant".to_owned()),
+            comment_url: None,
+            thread_id: Some("thread-1".to_owned()),
+            metadata: Some(
+                serde_json::json!({
+                    "authorIsBot": true,
+                    "filePath": "src/http/request.rs",
+                })
+                .to_string(),
+            ),
+            created_at: "2026-05-01 00:00:00".to_owned(),
+        };
+
+        let signal = parse_durability_signal(&comment);
+        let source_kind = ReviewSourceKind::from_comment_context(
+            comment.author.as_deref(),
+            signal.author_is_bot,
+            &signal.earlier_thread_authors,
+            &signal.earlier_thread_source_kinds,
+        );
+
+        assert_eq!(
+            source_kind,
+            ReviewSourceKind::Bot("review-assistant".to_owned())
+        );
+        assert_eq!(source_kind.wire_label(), "bot:review-assistant");
     }
 
     #[test]

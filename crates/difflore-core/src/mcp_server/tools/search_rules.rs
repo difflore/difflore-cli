@@ -577,6 +577,7 @@ async fn build_results_response(
             id: meta.id.clone(),
             title: meta.name.clone(),
             origin: meta.origin.clone(),
+            source_kind: meta.source_kind.clone(),
             confidence: meta.confidence_score,
             similarity: public_relevance_score(s.score),
             file_patterns,
@@ -611,6 +612,7 @@ async fn build_results_response(
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned);
             let source_repo = object.get("sourceRepo").cloned().unwrap_or(Value::Null);
+            let source_kind = object.get("sourceKind").cloned().unwrap_or(Value::Null);
             let source_rank = id
                 .as_deref()
                 .and_then(|id| source_rank_by_id.get(id).copied())
@@ -620,6 +622,7 @@ async fn build_results_response(
                 "sourceProvenance".to_owned(),
                 json!({
                     "origin": origin,
+                    "sourceKind": source_kind,
                     "sourceRepo": source_repo,
                     "sourceRank": source_rank,
                 }),
@@ -702,8 +705,15 @@ async fn build_results_response(
             intent_summary: format!("{file} | {intent}"),
         },
     );
-    // Estimate savings against fetching each full rule body.
-    let tokens_if_full = Some(AVG_FULL_RULE_TOKENS * entries.len());
+    // Estimate savings against the full-detail alternative: the same index
+    // response, but with each rule's full body embedded in place of its
+    // compact preview. Computed as an additive delta so the comparison stays
+    // valid however large the per-entry index metadata grows.
+    let full_body_extra: usize = entries
+        .iter()
+        .map(|e| AVG_FULL_RULE_TOKENS.saturating_sub(estimate_tokens(&e.preview)))
+        .sum();
+    let tokens_if_full = Some(tokens_used + full_body_extra);
 
     emit_trajectory_step(&TrajectoryStep::McpResponseSize {
         tool: "search_rules".to_owned(),

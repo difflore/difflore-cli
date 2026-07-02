@@ -31,6 +31,7 @@ pub struct CandidateRule {
     pub name: String,
     pub description: String,
     pub origin: String,
+    pub source_kind: String,
     pub installed_at: String,
     pub content_hash: Option<String>,
     pub source_repo: Option<String>,
@@ -45,6 +46,7 @@ struct CandidateRuleRow {
     name: String,
     description: String,
     origin: String,
+    source_kind: String,
     installed_at: String,
     content_hash: Option<String>,
     source_repo: Option<String>,
@@ -76,6 +78,7 @@ impl From<CandidateRuleRow> for CandidateRule {
             name: row.name,
             description: row.description,
             origin: row.origin,
+            source_kind: row.source_kind,
             installed_at: row.installed_at,
             content_hash: row.content_hash,
             source_repo: row.source_repo,
@@ -120,7 +123,7 @@ pub async fn list_candidates(
     // the conditional repo filter is branched here.
     let mut rows: Vec<CandidateRuleRow> = if let Some(r) = repo {
         sqlx::query_as(
-            "SELECT id, name, description, origin, installed_at, content_hash, source_repo, file_patterns FROM skills \
+            "SELECT id, name, description, origin, source_kind, installed_at, content_hash, source_repo, file_patterns FROM skills \
              WHERE status = 'pending' \
              AND lower(source_repo) = lower(?1) \
              ORDER BY installed_at DESC",
@@ -130,7 +133,7 @@ pub async fn list_candidates(
         .await?
     } else {
         sqlx::query_as(
-            "SELECT id, name, description, origin, installed_at, content_hash, source_repo, file_patterns FROM skills \
+            "SELECT id, name, description, origin, source_kind, installed_at, content_hash, source_repo, file_patterns FROM skills \
              WHERE status = 'pending' ORDER BY installed_at DESC",
         )
         .fetch_all(db)
@@ -499,6 +502,7 @@ mod tests {
             name: "n".into(),
             description: "desc".into(),
             origin: "agent-memory".into(),
+            source_kind: "human".into(),
             installed_at: String::new(),
             content_hash: None,
             source_repo: None,
