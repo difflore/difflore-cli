@@ -408,7 +408,7 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
     if !signal_parts.is_empty() {
         let _ = writeln!(out, "  {bullet} signals: {}", signal_parts.join(" | "));
     }
-    if let Some(line) = format_accepted_edit_funnel(accepted_edit_funnel) {
+    for line in format_accepted_edit_funnel(local_proof, accepted_edit_funnel) {
         let _ = writeln!(out, "  {bullet} {line}");
     }
     if recall_trace.events > 0 {
@@ -585,22 +585,43 @@ fn format_cloud_proof(summary: &CloudProofSummary) -> Vec<String> {
     lines
 }
 
-fn format_accepted_edit_funnel(funnel: &AcceptedEditProofFunnel) -> Option<String> {
-    if funnel.ready_for_cloud_value {
-        return Some("accepted-edit proof: cloud attribution ready".to_owned());
+fn format_accepted_edit_funnel(
+    local_proof: &LocalAcceptedProof,
+    funnel: &AcceptedEditProofFunnel,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if local_proof.accepted_hook_outcomes > 0 {
+        lines.push(format!(
+            "Observed agent-retained value: {} accepted hook outcome{}",
+            local_proof.accepted_hook_outcomes,
+            plural(local_proof.accepted_hook_outcomes)
+        ));
     }
-    if funnel.blockers.is_empty() && funnel.accepted_edit_upload_pending == 0 {
-        return None;
+    if local_proof.accepted_proof_signatures > 0 {
+        lines.push(format!(
+            "Auditable accepted edits: {} local/cloud accepted-edit proof{}",
+            local_proof.accepted_proof_signatures,
+            plural(local_proof.accepted_proof_signatures)
+        ));
     }
 
-    let mut line = format!("accepted-edit proof: {}", funnel.stage);
-    if let Some(blocker) = funnel.blockers.first() {
-        let _ = write!(line, " | blocker: {blocker}");
+    if funnel.launch_grade_paid_value_ready {
+        lines.push("Launch-grade paid value: ready".to_owned());
+    } else if !funnel.blockers.is_empty() || funnel.accepted_edit_upload_pending > 0 {
+        let blocker = funnel
+            .blockers
+            .iter()
+            .find(|blocker| blocker.as_str() == "no_launch_grade_paid_attribution_yet")
+            .or_else(|| funnel.blockers.first())
+            .map(String::as_str)
+            .unwrap_or("cloud attribution");
+        let mut line = format!("Launch-grade paid value: needs {blocker}");
+        if let Some(command) = funnel.next_commands.first() {
+            let _ = write!(line, " | next: {command}");
+        }
+        lines.push(line);
     }
-    if let Some(command) = funnel.next_commands.first() {
-        let _ = write!(line, " | next: {command}");
-    }
-    Some(line)
+    lines
 }
 
 fn top_candidates_heading(
@@ -734,6 +755,7 @@ mod tests {
         let value = serde_json::to_value(LocalAcceptedProof {
             window_days: 30,
             recall_lookback_days: 7,
+            proof_grade: "observed_value".to_owned(),
             accepted_proof_signatures: 0,
             accepted_hook_outcomes: 2,
             accepted_outcomes_linked_to_prior_recall: 2,
@@ -916,6 +938,11 @@ mod tests {
         LocalAcceptedProof {
             window_days: 30,
             recall_lookback_days: 7,
+            proof_grade: if accepted_signatures > 0 {
+                "auditable_accepted_edit".to_owned()
+            } else {
+                "none".to_owned()
+            },
             accepted_proof_signatures: accepted_signatures,
             accepted_hook_outcomes: 0,
             accepted_outcomes_linked_to_prior_recall: linked,
@@ -937,7 +964,11 @@ mod tests {
         AcceptedEditProofFunnel {
             window_days: 30,
             stage: "no_accepted_edit_captured".to_owned(),
+            proof_grade: "none".to_owned(),
             ready_for_cloud_value: false,
+            observed_value_ready: false,
+            auditable_accepted_edit_ready: false,
+            launch_grade_paid_value_ready: false,
             blockers: Vec::new(),
             next_commands: Vec::new(),
             repo_scope_ready: false,

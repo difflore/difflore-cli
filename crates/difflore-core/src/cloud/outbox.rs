@@ -737,6 +737,7 @@ pub struct OutboxDrainReport {
 struct DispatchOutcome {
     ok: bool,
     accepted_edit_attribution: Option<AcceptedEditAttributionSummary>,
+    accepted_edit_receipt: Option<crate::cloud::accepted_edit_receipts::AcceptedEditReceiptInsert>,
     /// Greppable string persisted into `cloud_outbox.last_error` when
     /// `ok == false`; `None` on success. HTTP failures use
     /// `"{status} {reason}: {body_snippet}"`, transport failures
@@ -750,6 +751,7 @@ impl DispatchOutcome {
         Self {
             ok,
             accepted_edit_attribution: None,
+            accepted_edit_receipt: None,
             last_error: None,
         }
     }
@@ -759,6 +761,7 @@ impl DispatchOutcome {
         Self {
             ok: false,
             accepted_edit_attribution: None,
+            accepted_edit_receipt: None,
             last_error: Some(last_error),
         }
     }
@@ -774,7 +777,7 @@ fn accepted_edit_attribution_summary(
 ) -> AcceptedEditAttributionSummary {
     let mut summary = AcceptedEditAttributionSummary {
         uploaded: usize::from(response.acceptance_recorded),
-        launch_grade: 0,
+        launch_grade: usize::from(response.launch_grade_paid_value_ready),
         missing_team_workspace: 0,
         missing_rule_ids: 0,
         unlinked_rule_observations: 0,
@@ -788,9 +791,6 @@ fn accepted_edit_attribution_summary(
         }
         if expected_rule_ids > 0 && response.observations_inserted == 0 {
             summary.unlinked_rule_observations = 1;
-        }
-        if summary.warning_count() == 0 {
-            summary.launch_grade = 1;
         }
     }
     summary
@@ -886,6 +886,17 @@ async fn drain_rows(
             }
         };
         if outcome.ok {
+            if let Some(receipt) = outcome.accepted_edit_receipt {
+                if let Err(err) =
+                    crate::cloud::accepted_edit_receipts::record_confirmed(&queue.pool, receipt)
+                        .await
+                {
+                    let _ = queue
+                        .mark_failed(item.id, &format!("accepted_edit receipt: {err}"))
+                        .await;
+                    continue;
+                }
+            }
             queue.confirm(item.id).await?;
             confirmed += 1;
             if let Some(summary) = outcome.accepted_edit_attribution {
@@ -1076,8 +1087,11 @@ async fn dispatch(
                 .iter()
                 .filter(|rule_id| !rule_id.trim().is_empty())
                 .count();
-            let response = client.record_accepted_edit_response(req).await?;
+            let response = client.record_accepted_edit_response(req.clone()).await?;
             let summary = accepted_edit_attribution_summary(expected_rule_ids, &response);
+            let receipt = crate::cloud::accepted_edit_receipts::receipt_from_accepted_edit_response(
+                &req, &response,
+            );
             // Semantic-only failure: 2xx but acceptance not recorded (dedup,
             // payload rejection). Surface the cloud's `error`, not a `non-2xx`
             // literal that would be wrong for a 2xx response.
@@ -1092,6 +1106,7 @@ async fn dispatch(
             Ok(DispatchOutcome {
                 ok: response.acceptance_recorded,
                 accepted_edit_attribution: Some(summary),
+                accepted_edit_receipt: receipt,
                 last_error,
             })
         }
@@ -1255,6 +1270,10 @@ mod tests {
             team_id: team_id.map(str::to_owned),
             attributed_rule_ids: Vec::new(),
             observations_inserted,
+            launch_grade_provenance_trusted: acceptance_recorded,
+            launch_grade_paid_value_ready: acceptance_recorded
+                && team_id.is_some()
+                && observations_inserted > 0,
             memory_reinforcement_recorded: false,
             memory_reinforcement_deduped: false,
             error: None,
@@ -1268,6 +1287,17 @@ mod tests {
 
         assert_eq!(summary.uploaded, 1);
         assert_eq!(summary.launch_grade, 1);
+        assert_eq!(summary.warning_count(), 0);
+    }
+
+    #[test]
+    fn accepted_edit_attribution_summary_uses_cloud_launch_grade_flag() {
+        let mut response = accepted_edit_response(true, Some("team-1"), 2);
+        response.launch_grade_paid_value_ready = false;
+        let summary = accepted_edit_attribution_summary(2, &response);
+
+        assert_eq!(summary.uploaded, 1);
+        assert_eq!(summary.launch_grade, 0);
         assert_eq!(summary.warning_count(), 0);
     }
 

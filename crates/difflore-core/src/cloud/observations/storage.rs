@@ -477,6 +477,30 @@ impl ObservationEmitter {
         days: i64,
         lookback_days: i64,
     ) -> crate::Result<Vec<AcceptedFixOutcomeRuleSummary>> {
+        self.accepted_fix_outcome_rule_summaries_filtered(days, lookback_days, None)
+            .await
+    }
+
+    pub async fn accepted_fix_outcome_rule_summaries_for_repos(
+        &self,
+        days: i64,
+        lookback_days: i64,
+        normalized_repos: &[String],
+    ) -> crate::Result<Vec<AcceptedFixOutcomeRuleSummary>> {
+        let repos = normalized_repo_set(normalized_repos);
+        if repos.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.accepted_fix_outcome_rule_summaries_filtered(days, lookback_days, Some(&repos))
+            .await
+    }
+
+    async fn accepted_fix_outcome_rule_summaries_filtered(
+        &self,
+        days: i64,
+        lookback_days: i64,
+        normalized_repos: Option<&[String]>,
+    ) -> crate::Result<Vec<AcceptedFixOutcomeRuleSummary>> {
         let lookback_ms = chrono::Duration::days(lookback_days.max(1))
             .num_milliseconds()
             .max(1);
@@ -498,6 +522,19 @@ impl ObservationEmitter {
             }
 
             let occurred_at_ms = outcome.occurred_at_ms;
+            if let Some(repos) = normalized_repos
+                && !self
+                    .accepted_outcome_matches_target_repo(
+                        &outcome,
+                        rule_id,
+                        occurred_at_ms,
+                        lookback_ms,
+                        repos,
+                    )
+                    .await?
+            {
+                continue;
+            }
             let mut links = self
                 .prior_rule_use_links(
                     rule_id,
@@ -553,6 +590,98 @@ impl ObservationEmitter {
                 .then(a.rule_id.cmp(&b.rule_id))
         });
         Ok(out)
+    }
+
+    async fn accepted_outcome_matches_target_repo(
+        &self,
+        outcome: &AcceptedOutcome,
+        rule_id: &str,
+        accepted_at_ms: i64,
+        lookback_ms: i64,
+        normalized_repos: &[String],
+    ) -> crate::Result<bool> {
+        if normalized_repos.is_empty() {
+            return Ok(false);
+        }
+        if self
+            .mcp_serve_event_ids_match_target_repo(
+                rule_id,
+                &outcome.mcp_serve_event_ids,
+                normalized_repos,
+            )
+            .await?
+        {
+            return Ok(true);
+        }
+        self.prior_mcp_serve_matches_target_repo(
+            rule_id,
+            &outcome.session_id,
+            outcome.file_path.as_deref(),
+            accepted_at_ms,
+            lookback_ms,
+            normalized_repos,
+        )
+        .await
+    }
+
+    async fn mcp_serve_event_ids_match_target_repo(
+        &self,
+        rule_id: &str,
+        event_ids: &[i64],
+        normalized_repos: &[String],
+    ) -> crate::Result<bool> {
+        if event_ids.is_empty() {
+            return Ok(false);
+        }
+        let ids_json = serde_json::to_string(event_ids)
+            .map_err(|e| crate::CoreError::internal(format!("serialize mcp serve ids: {e}")))?;
+        let rows = sqlx::query(
+            "SELECT payload_json FROM observation_events \
+             WHERE event_type = 'mcp_rule_served' \
+               AND id IN (SELECT value FROM json_each(?1))",
+        )
+        .bind(ids_json)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| crate::CoreError::internal(format!("select linked mcp serve events: {e}")))?;
+
+        Ok(rows.into_iter().any(|row| {
+            let payload: String = row.try_get("payload_json").unwrap_or_default();
+            mcp_serve_payload_matches_target_repo(&payload, rule_id, normalized_repos)
+        }))
+    }
+
+    async fn prior_mcp_serve_matches_target_repo(
+        &self,
+        rule_id: &str,
+        session_id: &str,
+        file_path: Option<&str>,
+        accepted_at_ms: i64,
+        lookback_ms: i64,
+        normalized_repos: &[String],
+    ) -> crate::Result<bool> {
+        let start_ms = accepted_at_ms.saturating_sub(lookback_ms);
+        let file_path = file_path.unwrap_or("");
+        let rows = sqlx::query(
+            "SELECT payload_json FROM observation_events \
+             WHERE event_type = 'mcp_rule_served' \
+               AND occurred_at_ms BETWEEN ?1 AND ?2 \
+               AND (session_id = ?3 OR (?4 <> '' AND file_path = ?4))",
+        )
+        .bind(start_ms)
+        .bind(accepted_at_ms)
+        .bind(session_id)
+        .bind(file_path)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            crate::CoreError::internal(format!("select prior mcp serve repo links: {e}"))
+        })?;
+
+        Ok(rows.into_iter().any(|row| {
+            let payload: String = row.try_get("payload_json").unwrap_or_default();
+            mcp_serve_payload_matches_target_repo(&payload, rule_id, normalized_repos)
+        }))
     }
 
     async fn prior_rule_use_links(
@@ -861,6 +990,44 @@ fn accepted_proof_source_from_session_id(session_id: &str) -> &'static str {
     } else {
         "local_fix"
     }
+}
+
+fn normalized_repo_set(repos: &[String]) -> Vec<String> {
+    let mut out = Vec::<String>::new();
+    for repo in repos {
+        let normalized = normalize_repo_name(repo);
+        if normalized.is_empty() || out.iter().any(|existing| existing == &normalized) {
+            continue;
+        }
+        out.push(normalized);
+    }
+    out
+}
+
+fn normalize_repo_name(repo: &str) -> String {
+    repo.trim().to_ascii_lowercase()
+}
+
+fn mcp_serve_payload_matches_target_repo(
+    payload: &str,
+    rule_id: &str,
+    normalized_repos: &[String],
+) -> bool {
+    let Ok(ObservationEvent::McpRuleServed {
+        repo_full_name,
+        rule_ids,
+        ..
+    }) = serde_json::from_str::<ObservationEvent>(payload)
+    else {
+        return false;
+    };
+    if !rule_ids.iter().any(|id| id == rule_id) {
+        return false;
+    }
+    let Some(repo) = repo_full_name.as_deref().map(normalize_repo_name) else {
+        return false;
+    };
+    normalized_repos.iter().any(|candidate| candidate == &repo)
 }
 
 fn proof_source_rank(source: &str) -> u8 {
@@ -1666,6 +1833,107 @@ mod tests {
         assert_eq!(summary.accepted_outcomes, 1);
         assert_eq!(summary.linked_to_prior_recall, 1);
         assert_eq!(summary.linked_to_mcp_rule_serve, 1);
+    }
+
+    #[tokio::test]
+    async fn accepted_hook_outcome_summary_filters_by_target_repo_from_serve_link() {
+        let temp = tempfile::tempdir().unwrap();
+        let emitter = ObservationEmitter::open_at(&temp.path().join("obs.db"))
+            .await
+            .unwrap();
+        let served_at = Utc::now()
+            .checked_sub_signed(chrono::Duration::minutes(5))
+            .unwrap();
+        let serve_id = emitter
+            .enqueue(&ObservationEvent::McpRuleServed {
+                tool: "search_rules".to_owned(),
+                session_id: "hook".to_owned(),
+                repo_full_name: Some("Acme/Widgets".to_owned()),
+                file_path: Some("src/reader.rs".to_owned()),
+                query_hash: "fc2b18493e42be726bd550a895ec1cae48c9ca833f004b427077f1270432ff3b"
+                    .to_owned(),
+                rule_ids: vec!["r-accepted".to_owned()],
+                top_k: 5,
+                was_empty: false,
+                strict_match_count: 1,
+                estimated_tokens: 100,
+                served_at,
+            })
+            .await
+            .unwrap();
+        emitter
+            .enqueue(&ObservationEvent::FixOutcome {
+                rule_id: "r-accepted".to_owned(),
+                session_id: "agent-session-1".to_owned(),
+                file_path: Some("src/edited.rs".to_owned()),
+                accepted: true,
+                occurred_at: Utc::now(),
+                mcp_serve_event_ids: vec![serve_id],
+            })
+            .await
+            .unwrap();
+
+        let summaries = emitter
+            .accepted_fix_outcome_rule_summaries_for_repos(30, 7, &["acme/widgets".to_owned()])
+            .await
+            .unwrap();
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].rule_id, "r-accepted");
+        assert_eq!(summaries[0].accepted_outcomes, 1);
+        assert_eq!(summaries[0].linked_to_mcp_rule_serve, 1);
+    }
+
+    #[tokio::test]
+    async fn accepted_hook_outcome_summary_does_not_use_rule_source_repo_as_target_repo() {
+        let temp = tempfile::tempdir().unwrap();
+        let emitter = ObservationEmitter::open_at(&temp.path().join("obs.db"))
+            .await
+            .unwrap();
+        let served_at = Utc::now()
+            .checked_sub_signed(chrono::Duration::minutes(5))
+            .unwrap();
+        let serve_id = emitter
+            .enqueue(&ObservationEvent::McpRuleServed {
+                tool: "search_rules".to_owned(),
+                session_id: "hook".to_owned(),
+                repo_full_name: Some("other/repo".to_owned()),
+                file_path: Some("src/reader.rs".to_owned()),
+                query_hash: "fc2b18493e42be726bd550a895ec1cae48c9ca833f004b427077f1270432ff3b"
+                    .to_owned(),
+                rule_ids: vec!["r-from-owner".to_owned()],
+                top_k: 5,
+                was_empty: false,
+                strict_match_count: 1,
+                estimated_tokens: 100,
+                served_at,
+            })
+            .await
+            .unwrap();
+        emitter
+            .enqueue(&ObservationEvent::FixOutcome {
+                rule_id: "r-from-owner".to_owned(),
+                session_id: "agent-session-1".to_owned(),
+                file_path: Some("src/edited.rs".to_owned()),
+                accepted: true,
+                occurred_at: Utc::now(),
+                mcp_serve_event_ids: vec![serve_id],
+            })
+            .await
+            .unwrap();
+
+        let owner_summaries = emitter
+            .accepted_fix_outcome_rule_summaries_for_repos(30, 7, &["owner/repo".to_owned()])
+            .await
+            .unwrap();
+        let other_summaries = emitter
+            .accepted_fix_outcome_rule_summaries_for_repos(30, 7, &["other/repo".to_owned()])
+            .await
+            .unwrap();
+
+        assert!(owner_summaries.is_empty());
+        assert_eq!(other_summaries.len(), 1);
+        assert_eq!(other_summaries[0].rule_id, "r-from-owner");
     }
 
     #[tokio::test]

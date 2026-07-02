@@ -832,6 +832,7 @@ mod tests {
         LocalAcceptedProof {
             window_days: 30,
             recall_lookback_days: 7,
+            proof_grade: "none".to_owned(),
             accepted_proof_signatures: 0,
             accepted_hook_outcomes: 0,
             accepted_outcomes_linked_to_prior_recall: 0,
@@ -1240,6 +1241,7 @@ mod tests {
         let proof = LocalAcceptedProof {
             window_days: 30,
             recall_lookback_days: 7,
+            proof_grade: "auditable_accepted_edit".to_owned(),
             accepted_proof_signatures: 3,
             accepted_hook_outcomes: 0,
             accepted_outcomes_linked_to_prior_recall: 2,
@@ -1275,6 +1277,7 @@ mod tests {
         let proof = LocalAcceptedProof {
             window_days: 30,
             recall_lookback_days: 7,
+            proof_grade: "auditable_accepted_edit".to_owned(),
             accepted_proof_signatures: 3,
             accepted_hook_outcomes: 0,
             accepted_outcomes_linked_to_prior_recall: 2,
@@ -1391,6 +1394,7 @@ mod tests {
         let accepted = LocalAcceptedProof {
             window_days: 30,
             recall_lookback_days: 7,
+            proof_grade: "auditable_accepted_edit".to_owned(),
             accepted_proof_signatures: 2,
             accepted_hook_outcomes: 0,
             accepted_outcomes_linked_to_prior_recall: 2,
@@ -1472,6 +1476,7 @@ mod tests {
         let accepted = LocalAcceptedProof {
             window_days: 30,
             recall_lookback_days: 7,
+            proof_grade: "auditable_accepted_edit".to_owned(),
             accepted_proof_signatures: 2,
             accepted_hook_outcomes: 0,
             accepted_outcomes_linked_to_prior_recall: 0,

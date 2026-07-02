@@ -36,6 +36,7 @@ pub(super) async fn proven_rule_pool() -> difflore_core::SqlitePool {
             rule_id TEXT,
             rule_name TEXT NOT NULL,
             file_path TEXT,
+            repo_full_name TEXT,
             accepted INTEGER NOT NULL,
             applied_ok INTEGER NOT NULL,
             created_at TEXT NOT NULL
@@ -194,16 +195,17 @@ pub(super) async fn insert_proven_rule(pool: &difflore_core::SqlitePool, seed: P
     for index in 0..seed.accepted {
         let id = format!("{}-{index}", seed.id);
         let created_at = format!("2026-05-0{} 00:00:00", index + 1);
-        sqlx::query!(
+        sqlx::query(
             "INSERT INTO fix_outcomes
-                 (id, rule_id, rule_name, file_path, accepted, applied_ok, created_at)
-                 VALUES (?1, ?2, ?3, ?4, 1, 1, ?5)",
-            id,
-            seed.id,
-            seed.name,
-            seed.file,
-            created_at,
+                 (id, rule_id, rule_name, file_path, repo_full_name, accepted, applied_ok, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 1, 1, ?6)",
         )
+        .bind(id)
+        .bind(seed.id)
+        .bind(seed.name)
+        .bind(seed.file)
+        .bind(seed.repo)
+        .bind(created_at)
         .execute(pool)
         .await
         .expect("insert fix outcome");
