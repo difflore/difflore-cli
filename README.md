@@ -10,9 +10,9 @@ your local AI coding agents can recall before they write code.
 
 ![How DiffLore works: past PR reviews are mined into source-traced rules and served to your coding agent over MCP](.github/assets/difflore-concept.gif)
 
-DiffLore builds a local rule memory from two places — your team's **past PR/MR
-reviews** and your **live coding sessions** — and keeps you in control of what
-the agent sees:
+DiffLore builds a local rule memory from two places — your team's past PR/MR
+reviews and your live coding sessions — and keeps you in control of what the
+agent sees:
 
 1. **Mine** — import review history, capture rules mid-conversation, and observe
    edits as they happen. Every rule stays traceable to its source.
