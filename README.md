@@ -89,9 +89,9 @@ local agents.
 
 ## On a real repo
 
-Pointed at one dogfood workspace, DiffLore mined **237 PRs** and **484 human
-review comments** into **505 source-backed rule candidates** — each traceable to
-the exact review comment that set it. You approve the real conventions and drop
+Pointed at one dogfood workspace, DiffLore mined 237 PRs and 484 human review
+comments into 505 source-backed rule candidates — each traceable to the exact
+review comment that set it. You approve the real conventions and drop
 the rest; DiffLore doesn't decide for you.
 
 Want to see the extraction quality on your own code? See
