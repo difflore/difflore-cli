@@ -109,6 +109,29 @@ required.
 - Static exports to `AGENTS.md` / `CLAUDE.md` are optional snapshots. Live
   `agents install` is the preferred path because it is diff-aware.
 
+## Run the gate in CI
+
+DiffLore can fail a pull request or merge request with the same local review
+gate you run on your machine:
+
+```yaml
+- uses: difflore/difflore-cli@main
+  with:
+    engine: claude
+  env:
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+See [`examples/github-actions-review.yml`](examples/github-actions-review.yml)
+and [`examples/gitlab-ci-review.yml`](examples/gitlab-ci-review.yml) for
+copy-pasteable workflows. If you have shared team memory, pass
+`DIFFLORE_CLOUD_TOKEN` so CI can run `difflore cloud sync --pull`; otherwise
+commit static exports such as `CLAUDE.md`, `AGENTS.md`, or `.cursorrules`.
+
+No GitHub App, no hosted webhooks — the gate runs inside your CI, your code and
+LLM keys stay in your infrastructure, and the same model works on GitHub and
+GitLab.
+
 ## Agent support
 
 ```bash
