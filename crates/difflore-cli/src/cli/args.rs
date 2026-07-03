@@ -265,6 +265,10 @@ pub(crate) enum ExportFormatArg {
     AgentsMd,
     /// `CLAUDE.md` at the repo root (only rules enabled for the claude engine).
     ClaudeMd,
+    /// `.cursorrules` at the repo root (only rules enabled for the cursor engine).
+    CursorMd,
+    /// `.opencodereview/rule.json` for Alibaba Open Code Review (all active rules).
+    OpenCodeReview,
     /// Both emitters.
     All,
 }
@@ -281,7 +285,8 @@ pub(crate) enum MemoryPackageFormatArg {
 
 #[derive(Args)]
 pub(crate) struct ExportCliArgs {
-    /// Target format(s): `agents-md`, `claude-md`, or `all`. Repeatable.
+    /// Target format(s): `agents-md`, `claude-md`, `cursor-md`, `open-code-review`, or `all`.
+    /// Repeatable.
     #[arg(long, value_enum, value_name = "FORMAT", default_values_t = [ExportFormatArg::All])]
     pub(crate) format: Vec<ExportFormatArg>,
 

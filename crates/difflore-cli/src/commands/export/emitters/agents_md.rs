@@ -6,4 +6,5 @@ pub(crate) static AGENTS_MD: super::Emitter = super::Emitter {
     format: "agents-md",
     file_name: "AGENTS.md",
     engine: None,
+    kind: super::EmitterKind::MarkerBlock,
 };

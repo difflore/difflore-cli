@@ -10,9 +10,12 @@
 
 mod emitters;
 
+use std::path::Path;
+
 use difflore_core::export::{
     ExportBlockMeta, ExportCollectOptions, MarkerBlockWrite, WriteAction, build_export_block,
-    collect_rules_for_export, export_content_hash, has_marker_block, render_export_body,
+    WriteOutcome, collect_rules_for_export, export_content_hash, has_marker_block,
+    render_export_body,
     upsert_marker_block,
 };
 use serde::Serialize;
@@ -123,7 +126,7 @@ pub(crate) async fn handle_export(ctx: &CommandContext, args: ExportArgs) {
         let path = ctx.project.join(emitter.file_name);
         // An empty rule set refreshes an existing block (so a stale export
         // never lingers) but does not litter the repo with a new file.
-        if collection.rules.is_empty() && !has_marker_block(&path) {
+        if collection.rules.is_empty() && !has_existing_managed_export(emitter.kind, &path) {
             targets.push(TargetReport {
                 format: emitter.format,
                 file: emitter.file_name,
@@ -141,25 +144,36 @@ pub(crate) async fn handle_export(ctx: &CommandContext, args: ExportArgs) {
             continue;
         }
 
-        let body = render_export_body(&collection.rules);
+        let body = match emitter.kind {
+            emitters::EmitterKind::MarkerBlock => render_export_body(&collection.rules),
+            emitters::EmitterKind::OwnedJson => emitters::render_ocr_rules(&collection.rules),
+        };
         let content_hash = export_content_hash(&body);
-        let block = build_export_block(
-            &ExportBlockMeta {
-                tool_version: env!("CARGO_PKG_VERSION"),
-                generated_at_utc: &generated_at,
-                rule_count: collection.rules.len(),
-                repo_scopes: &collection.repo_scopes,
-                local_only: args.local_only,
-            },
-            &body,
-        );
+        let write_result = match emitter.kind {
+            emitters::EmitterKind::MarkerBlock => {
+                let block = build_export_block(
+                    &ExportBlockMeta {
+                        tool_version: env!("CARGO_PKG_VERSION"),
+                        generated_at_utc: &generated_at,
+                        rule_count: collection.rules.len(),
+                        repo_scopes: &collection.repo_scopes,
+                        local_only: args.local_only,
+                    },
+                    &body,
+                );
 
-        match upsert_marker_block(&MarkerBlockWrite {
-            path: &path,
-            block: &block,
-            content_hash: &content_hash,
-            dry_run: args.dry_run,
-        }) {
+                upsert_marker_block(&MarkerBlockWrite {
+                    path: &path,
+                    block: &block,
+                    content_hash: &content_hash,
+                    dry_run: args.dry_run,
+                })
+                .map_err(|e| e.to_string())
+            }
+            emitters::EmitterKind::OwnedJson => upsert_owned_json(&path, &body, args.dry_run),
+        };
+
+        match write_result {
             Ok(outcome) => {
                 if outcome.action == WriteAction::Skipped {
                     hard_failure = true;
@@ -187,7 +201,7 @@ pub(crate) async fn handle_export(ctx: &CommandContext, args: ExportArgs) {
                     total_rules: collection.total_in_scope,
                     truncated,
                     content_hash,
-                    reason: Some(e.to_string()),
+                    reason: Some(e),
                 });
             }
         }
@@ -210,6 +224,97 @@ pub(crate) async fn handle_export(ctx: &CommandContext, args: ExportArgs) {
     if hard_failure {
         exit_code(1);
     }
+}
+
+fn has_existing_managed_export(kind: emitters::EmitterKind, path: &Path) -> bool {
+    match kind {
+        emitters::EmitterKind::MarkerBlock => has_marker_block(path),
+        emitters::EmitterKind::OwnedJson => has_owned_json_marker(path),
+    }
+}
+
+fn has_owned_json_marker(path: &Path) -> bool {
+    let Ok(existing) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&existing).is_ok_and(|value| {
+        value
+            .get("_difflore")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|marker| {
+                marker
+                    .get("generator")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("difflore")
+            })
+    })
+}
+
+fn upsert_owned_json(path: &Path, body: &str, dry_run: bool) -> Result<WriteOutcome, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Ok(WriteOutcome {
+                action: WriteAction::Skipped,
+                reason: Some(format!(
+                    "{} is a symlink; refusing to write through it",
+                    path.display()
+                )),
+            });
+        }
+        Ok(meta) if meta.is_dir() => {
+            return Ok(WriteOutcome {
+                action: WriteAction::Skipped,
+                reason: Some(format!("{} is a directory, not a file", path.display())),
+            });
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if !dry_run {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("creating {} failed: {e}", parent.display()))?;
+                }
+                std::fs::write(path, format!("{body}\n"))
+                    .map_err(|e| format!("writing {} failed: {e}", path.display()))?;
+            }
+            return Ok(WriteOutcome {
+                action: WriteAction::Created,
+                reason: None,
+            });
+        }
+        Err(e) => {
+            return Err(format!("failed to stat {}: {e}", path.display()));
+        }
+    }
+
+    let existing = std::fs::read_to_string(path)
+        .map_err(|e| format!("reading {} failed: {e}", path.display()))?;
+    if !has_owned_json_marker(path) {
+        return Ok(WriteOutcome {
+            action: WriteAction::Skipped,
+            reason: Some(format!(
+                "{} already exists without DiffLore ownership marker `_difflore`; refusing to overwrite it",
+                path.display()
+            )),
+        });
+    }
+
+    let desired = format!("{body}\n");
+    if existing == desired {
+        return Ok(WriteOutcome {
+            action: WriteAction::Unchanged,
+            reason: None,
+        });
+    }
+
+    if !dry_run {
+        std::fs::write(path, desired)
+            .map_err(|e| format!("writing {} failed: {e}", path.display()))?;
+    }
+    Ok(WriteOutcome {
+        action: WriteAction::Updated,
+        reason: None,
+    })
 }
 
 fn print_human(report: &ExportReport) {
