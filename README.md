@@ -103,11 +103,27 @@ DiffLore works with private repos and local AI CLIs. A cloud account is not
 required.
 
 - Rules and activity live in local SQLite.
-- `difflore import-reviews` writes locally unless you explicitly pass `--upload`.
+- `difflore import-reviews` imports review history and drafts rule candidates
+  locally by default.
 - `difflore cloud login` / `difflore cloud sync` are opt-in; raw local queues
   are never uploaded by default.
 - Static exports to `AGENTS.md` / `CLAUDE.md` are optional snapshots. Live
   `agents install` is the preferred path because it is diff-aware.
+
+## Keys & privacy
+
+DiffLore does not need DiffLore-hosted AI keys for the local-first path.
+
+- Review and mining flows use your installed local agent CLI, such as Claude
+  Code or Codex, or an API key you provide in your own shell or CI.
+- Semantic search defaults to local keyword matching. Run
+  `difflore embeddings setup` only when you want BYOK semantic vectors with
+  your own OpenAI-compatible embedding key.
+- `difflore embeddings setup --no-key` supports keyless local embedding
+  providers, such as Ollama's OpenAI-compatible endpoint.
+- The normal `difflore cloud sync` path synchronizes approved rule text and
+  metadata. It does not upload source code, diffs, or API keys; raw local
+  queues require explicit include flags.
 
 ## Run the gate in CI
 
@@ -167,10 +183,11 @@ Run `difflore --help` for the full command list.
 
 ## Optional Cloud
 
-The cloud layer is for teams that want hosted GitHub App ingestion, shared team
-rules, dashboards, managed semantic recall, governance, and audit workflows.
-The local CLI has no hosted PR quota; cloud quotas apply only to managed
-GitHub App / team workflows.
+The cloud layer is for teams that want private sync, shared team rules,
+dashboards, managed semantic recall, governance, and audit workflows. Review
+import and first-pass distillation stay local; cloud sync is an explicit opt-in.
+The local CLI has no hosted PR quota. Cloud capacity applies only to managed
+team memory, semantic recall, and governance workflows.
 
 ```bash
 difflore cloud login

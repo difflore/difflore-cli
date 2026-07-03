@@ -467,15 +467,6 @@ pub struct Hint {
     pub body: String,
 }
 
-impl Hint {
-    pub(crate) fn try_(body: impl Into<String>) -> Self {
-        Self {
-            label: "try",
-            body: body.into(),
-        }
-    }
-}
-
 /// Print a uniform error block.
 ///
 /// Layout:
@@ -712,11 +703,6 @@ pub const DIVIDER: &str = "---------------------------------------------";
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn hint_helpers_use_locked_vocabulary() {
-        assert_eq!(Hint::try_("x").label, "try");
-    }
 
     #[test]
     fn symbols_match_contract() {

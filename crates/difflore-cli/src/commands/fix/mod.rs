@@ -1561,16 +1561,12 @@ async fn print_empty_state_hint(db: &difflore_core::SqlitePool) {
                 "  > inspect recalled rules: {}",
                 style::cmd("difflore recall --diff")
             );
-            // `--upload` and `sync` both need an active session, so keep the
-            // always-available CLI path first for OSS-only users.
+            // Cloud sync needs an active session, so keep the always-available
+            // local import path first for OSS-only users.
             let cloud_client = difflore_core::cloud::client::CloudClient::create().await;
             if cloud_client.is_logged_in() {
                 println!(
-                    "  > or upload PR history for Cloud to process: {}",
-                    style::cmd("difflore import-reviews --max-prs 50 --upload")
-                );
-                println!(
-                    "  > then pull team memory: {}",
+                    "  > or sync team rules: {}",
                     style::cmd("difflore cloud sync")
                 );
             } else {

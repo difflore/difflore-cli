@@ -1183,7 +1183,7 @@ fn import_reviews_help_promotes_cli_only_value_path() {
     assert!(help.contains("past GitHub PR or GitLab MR review comments"));
     assert!(help.contains("--dry-run"));
     assert!(help.contains("difflore recall --diff"));
-    assert!(help.contains("--upload"));
+    assert!(!help.contains("--upload"));
     // GitLab surface: provider flags exist and `--pr` explains its MR-IID
     // meaning so the flag reuse is discoverable from --help alone.
     assert!(help.contains("--provider"));
@@ -1208,7 +1208,7 @@ fn import_reviews_rejects_candidate_budget_flag() {
 }
 
 #[test]
-fn import_reviews_parses_local_agent_distill_and_rejects_upload_conflict() {
+fn import_reviews_parses_local_agent_distill_and_rejects_upload_flag() {
     let default_cli = Cli::try_parse_from(["difflore", "import-reviews"])
         .expect("import-reviews should parse with default distill");
     match default_cli.command.expect("subcommand") {
@@ -1218,15 +1218,10 @@ fn import_reviews_parses_local_agent_distill_and_rejects_upload_conflict() {
         _ => panic!("expected import-reviews command"),
     }
 
-    let upload_cli = Cli::try_parse_from(["difflore", "import-reviews", "--upload"])
-        .expect("--upload should remain explicit and valid with default auto distill");
-    match upload_cli.command.expect("subcommand") {
-        Commands::ImportReviews(args) => {
-            assert!(args.upload);
-            assert_eq!(args.distill, ImportDistillArg::Auto);
-        }
-        _ => panic!("expected import-reviews command"),
-    }
+    assert!(
+        Cli::try_parse_from(["difflore", "import-reviews", "--upload"]).is_err(),
+        "--upload should not parse after hosted extraction removal"
+    );
 
     let cli = Cli::try_parse_from(["difflore", "import-reviews", "--distill", "local-agent"])
         .expect("import-reviews should parse local-agent distill");
@@ -1237,18 +1232,6 @@ fn import_reviews_parses_local_agent_distill_and_rejects_upload_conflict() {
         }
         _ => panic!("expected import-reviews command"),
     }
-
-    assert!(
-        Cli::try_parse_from([
-            "difflore",
-            "import-reviews",
-            "--distill",
-            "local-agent",
-            "--upload"
-        ])
-        .is_err(),
-        "--distill local-agent should conflict with --upload"
-    );
 }
 
 #[test]

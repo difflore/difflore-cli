@@ -203,17 +203,8 @@ pub(crate) struct ImportReviewsCliArgs {
     #[arg(long)]
     pub(crate) include_open: bool,
 
-    /// Upload imported reviews for cloud extraction instead of local drafting.
-    #[arg(long)]
-    pub(crate) upload: bool,
-
-    /// Local distillation strategy when not uploading.
-    #[arg(
-        long,
-        value_enum,
-        default_value_t = ImportDistillArg::Auto,
-        conflicts_with = "upload"
-    )]
+    /// Local distillation strategy.
+    #[arg(long, value_enum, default_value_t = ImportDistillArg::Auto)]
     pub(crate) distill: ImportDistillArg,
 
     /// Preview what would be imported without writing or uploading.

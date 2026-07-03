@@ -381,11 +381,11 @@ printed that number.
 
 ## Upgrade Path
 
-Keep local private review backlog import first. Cloud login, upload, and team sync are upgrades:
+Keep local private review backlog import first. Cloud login and team sync are upgrades:
 
 - Use `difflore cloud login` only when the user asks for team sync, multi-device access, managed tokens, or managed embeddings.
-- Use `difflore import-reviews --upload` only after the user has opted into cloud processing.
-- Existing local conversation captures and imported candidates stay local unless explicitly synced."################;
+- Use `difflore cloud sync` only after the user wants approved rules or explicit include-flag queues synced to Cloud.
+- Existing local conversation captures, raw queues, and imported candidates stay local unless explicitly synced."################;
 
 #[cfg(test)]
 mod tests {
