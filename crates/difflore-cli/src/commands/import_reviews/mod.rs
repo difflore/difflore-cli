@@ -1089,7 +1089,7 @@ mod tests {
         let raw = "_⚠️ Potential issue_ | _🟡 Minor_ Wait for the async submit \
                    path before asserting state. The current code races.";
         let title = candidate_title(raw, "form-core/src/index.ts");
-        assert_eq!(title, "Review rule for form-core/src/index.ts");
+        assert_eq!(title, "Imported PR review rule for form-core/src/index.ts");
         assert!(!title.contains('⚠'));
         assert!(!title.contains('_'));
     }
@@ -1105,10 +1105,7 @@ mod tests {
             "src/http/headers.py",
         );
 
-        assert_eq!(
-            a,
-            "Review: Prefer Mapping[str, str] here instead of dict[str, str]"
-        );
+        assert_eq!(a, "Prefer Mapping[str, str] here instead of dict[str, str]");
         assert_eq!(a, b);
     }
 
@@ -1457,7 +1454,7 @@ mod tests {
         );
         assert_eq!(
             title,
-            "Review: Prefer Mapping[str, str] here instead of dict[str, str]"
+            "Prefer Mapping[str, str] here instead of dict[str, str]"
         );
         assert_eq!(
             file_pattern_from_path("src/http/headers.py").as_deref(),

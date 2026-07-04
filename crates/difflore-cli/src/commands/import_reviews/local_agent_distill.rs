@@ -173,6 +173,8 @@ fn build_distill_prompt(seeds: &[DistillSeed]) -> String {
          Use only the supplied review evidence. Keep reusable, non-obvious coding rules.\n\
          Improve wording and merge away duplicates, but do not invent facts.\n\
          A SOURCE_INDEX may contain a whole review thread; if it contains multiple independent findings, emit multiple candidates with the same source_index.\n\
+         Titles must be generalized imperative rules, not copied review comments.\n\
+         Never prefix titles with \"Review:\", \"Review rule for\", or \"Rule from review\".\n\
          Prefer tight file_patterns and set confidence from 0.40 to 0.90 based on how directly the thread supports the rule; use 0.82+ only for evidence you would safely activate as local memory.\n\
          Return STRICT JSON only, no markdown:\n\
          {\"candidates\":[{\"source_index\":1,\"title\":\"...\",\"body\":\"Rule:\\n...\\n\\nSource evidence:\\n...\",\"confidence\":0.72,\"file_patterns\":[\"src/**/*.ts\"]}]}\n\
@@ -429,7 +431,7 @@ fn input_from_agent_candidate_with_seed(
         .title
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty() && !is_raw_review_title(s))
         .unwrap_or_else(|| fallback_title_for_seed(seed));
     let body = candidate
         .body
@@ -459,11 +461,23 @@ fn input_from_agent_candidate_with_seed(
 
 fn fallback_title_for_seed(seed: &DistillSeed) -> &str {
     let title = seed.input.title.trim();
-    if !title.is_empty() && !title.starts_with("Review:") {
+    if !title.is_empty() && !is_raw_review_title(title) {
         title
     } else {
         "Imported PR review rule"
     }
+}
+
+fn is_raw_review_title(title: &str) -> bool {
+    let normalized = title.trim().to_ascii_lowercase();
+    normalized.starts_with("review:")
+        || normalized.starts_with("review rule for ")
+        || normalized.starts_with("review rule from ")
+        || normalized.starts_with("rule from review")
+        || normalized
+            .strip_prefix("source ")
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(|ch| ch.is_ascii_digit())
 }
 
 const fn candidate_confidence(candidate: &AgentDistillCandidate) -> f32 {
@@ -507,7 +521,7 @@ fn has_distilled_title(candidate: &AgentDistillCandidate) -> bool {
         .title
         .as_deref()
         .map(str::trim)
-        .is_some_and(|title| !title.is_empty())
+        .is_some_and(|title| !title.is_empty() && !is_raw_review_title(title))
 }
 
 fn sanitized_file_patterns(patterns: &[String]) -> Option<Vec<String>> {
@@ -793,6 +807,26 @@ mod tests {
         .expect("input");
 
         assert_eq!(input.title, "Imported PR review rule");
+    }
+
+    #[test]
+    fn raw_review_title_is_not_treated_as_distilled_rule() {
+        let seeds = vec![seed(1)];
+        let candidate = AgentDistillCandidate {
+            source_index: Some(1),
+            title: Some("Review: validate API responses".to_owned()),
+            body: Some("Rule:\nValidate API responses before deserializing.".to_owned()),
+            confidence: Some(LOCAL_AGENT_ACTIVE_CONFIDENCE),
+            file_patterns: vec!["src/**/*.ts".to_owned()],
+        };
+        let input = input_from_agent_candidate(&candidate, &seeds).expect("input");
+
+        assert_eq!(input.title, "Imported PR review rule");
+        assert_eq!(candidate_route(&candidate), CaptureRoute::Candidate);
+        assert!(is_raw_review_title("Review rule for src/api/client.ts"));
+        assert!(is_raw_review_title("Rule from review 7"));
+        assert!(is_raw_review_title("Source 3: Validate response payloads"));
+        assert!(!is_raw_review_title("Source maps should remain inline"));
     }
 
     #[test]
@@ -1106,6 +1140,7 @@ mod tests {
         assert!(prompt.contains("THREAD_SOURCE_EVIDENCE:"));
         assert!(prompt.contains("SOURCE_KIND: human"));
         assert!(prompt.contains("left no-content responses"));
+        assert!(prompt.contains("Never prefix titles with \"Review:\""));
     }
 
     #[test]

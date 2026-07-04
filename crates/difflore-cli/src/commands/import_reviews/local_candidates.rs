@@ -970,14 +970,14 @@ pub(super) fn candidate_title(content: &str, fallback_path: &str) -> String {
     if let Some(directive) = best_review_directive_sentence(content).filter(|directive| {
         directive.chars().count() >= 12 && directive != FALLBACK_REVIEW_DIRECTIVE
     }) {
-        format!(
-            "Review: {}",
-            truncate_chars(&upper_first_ascii(&directive), 76)
-        )
+        truncate_chars(&upper_first_ascii(&directive), 84)
     } else if fallback_path.trim().is_empty() {
-        "Review rule from imported PR comment".to_owned()
+        "Imported PR review rule".to_owned()
     } else {
-        format!("Review rule for {}", truncate_chars(fallback_path, 64))
+        format!(
+            "Imported PR review rule for {}",
+            truncate_chars(fallback_path, 64)
+        )
     }
 }
 
@@ -2407,11 +2407,11 @@ mod tests {
                 "This endpoint became easier to maintain after the refactor.",
                 "src/api/router.rs",
             ),
-            "Review rule for src/api/router.rs",
+            "Imported PR review rule for src/api/router.rs",
         );
         assert_eq!(
             candidate_title("This endpoint became easier to maintain.", ""),
-            "Review rule from imported PR comment",
+            "Imported PR review rule",
         );
     }
 }
