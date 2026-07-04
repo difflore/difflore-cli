@@ -16,16 +16,16 @@ use crate::clients::ClientId;
 use super::{
     Status, TargetOutcome, TargetStatus,
     common::{
-        claude_plugin_installed, cwd_path, error_outcome, home_path, probe_cli_mcp,
-        probe_json_install,
+        claude_plugin_installed, copilot_home_path, cwd_path, error_outcome, home_path,
+        probe_cli_mcp, probe_json_install,
     },
     goose_yaml::{merge_goose_yaml_config, probe_goose_install, remove_goose_yaml_config},
     hooks_install::{
         install_claude_code_hooks, install_codex_hooks, install_cursor_hooks,
-        install_gemini_cli_hooks, install_windsurf_hooks, probe_json_hooks_by_command,
-        probe_json_hooks_by_group, probe_json_hooks_by_name, probe_json_hooks_by_nested_command,
-        uninstall_claude_code_hooks, uninstall_codex_hooks, uninstall_cursor_hooks,
-        uninstall_gemini_cli_hooks, uninstall_windsurf_hooks,
+        install_gemini_cli_hooks, install_windsurf_hooks, probe_codex_hooks,
+        probe_json_hooks_by_command, probe_json_hooks_by_group, probe_json_hooks_by_name,
+        probe_json_hooks_by_nested_command, uninstall_claude_code_hooks, uninstall_codex_hooks,
+        uninstall_cursor_hooks, uninstall_gemini_cli_hooks, uninstall_windsurf_hooks,
     },
     json_config::{McpEntryShape, finish_json_install, finish_json_uninstall},
 };
@@ -35,8 +35,11 @@ use super::{
 // local manifest. Bump the relevant constant when a block's rendered shape
 // changes; [`BlockKind::current_version`] reads them.
 
-/// Version of the JSON MCP-server block (`{command, args:["mcp-server"]}`).
-pub(super) const MCP_JSON_BLOCK_VERSION: u32 = 1;
+/// Version of the JSON MCP-server block.
+/// v2: Copilot CLI moved to `~/.copilot/mcp-config.json` + `mcpServers`,
+/// Crush moved to `~/.config/crush/crush.json` + `mcp.{type:"stdio"}`, and
+/// Warp moved to `~/.warp/.mcp.json`.
+pub(super) const MCP_JSON_BLOCK_VERSION: u32 = 2;
 /// Version of the JSON lifecycle-hooks block (the per-client event matchers).
 /// v2: Claude Code dropped the retired PreToolUse(Read) registration and its
 /// PostToolUse matcher gained `Bash` (see `legacy_claude_code_hook_blocks`);
@@ -49,7 +52,9 @@ pub(super) const MCP_JSON_BLOCK_VERSION: u32 = 1;
 /// non-mutating PostToolUse and no-op in the runtime.
 /// v6: Windows hook commands invoke GUI-subsystem `difflore-hook.exe` directly,
 /// removing the launcher process from every hook fire.
-pub(super) const HOOKS_JSON_BLOCK_VERSION: u32 = 6;
+/// v7: Hook timeout values are seconds, not milliseconds; Codex also drops the
+/// unsupported SessionEnd event.
+pub(super) const HOOKS_JSON_BLOCK_VERSION: u32 = 7;
 /// Version of the Goose YAML `difflore:` block.
 pub(super) const GOOSE_YAML_BLOCK_VERSION: u32 = 1;
 /// Version of the externally-CLI-managed shape (the `mcp add … mcp-server`
@@ -132,6 +137,7 @@ pub(super) const fn servers_key_of(spec: &AgentSpec) -> Option<&'static str> {
 
 pub(super) const fn mcp_entry_shape_of(spec: &AgentSpec) -> McpEntryShape {
     match spec.client {
+        ClientId::Crush => McpEntryShape::StdioTyped,
         ClientId::OpenCode => McpEntryShape::Opencode,
         _ => McpEntryShape::Standard,
     }
@@ -151,6 +157,9 @@ pub(super) enum PathScope {
     /// Resolved under `$HOME` (or the `DIFFLORE_MCP_HOME` override; see
     /// [`super::common::home_path`]).
     Home,
+    /// GitHub Copilot CLI's config root (`~/.copilot`, or `COPILOT_HOME` when
+    /// set). `DIFFLORE_MCP_HOME` still wins in tests.
+    CopilotHome,
     /// Resolved under the current working directory (project-local, e.g. Roo
     /// Code, Cursor hooks).
     Cwd,
@@ -175,8 +184,7 @@ pub(super) enum HookSurface {
 
 /// How DiffLore is written into / read from this surface.
 pub(super) enum ConfigFormat {
-    /// JSON file, MCP server map under `servers_key` ("mcpServers" for most,
-    /// "servers" for Copilot CLI).
+    /// JSON file, MCP server map under `servers_key` ("mcpServers" for most).
     Json { servers_key: &'static str },
 
     /// Goose-style YAML, top-level `mcpServers:` block, line-edited (no YAML
@@ -395,15 +403,15 @@ pub(super) static AGENTS: &[AgentSpec] = &[
     AgentSpec {
         name: "Copilot CLI",
         client: ClientId::CopilotCli,
-        scope: PathScope::Home,
-        segments: &[".github", "copilot", "mcp.json"],
-        display: "~/.github/copilot/mcp.json",
+        scope: PathScope::CopilotHome,
+        segments: &["mcp-config.json"],
+        display: "~/.copilot/mcp-config.json",
         format: ConfigFormat::Json {
-            servers_key: "servers",
+            servers_key: "mcpServers",
         },
         detect: DetectSignal::ParentDirOrCli {
             cli: "copilot",
-            skip_reason: "~/.github/copilot/ not found and `copilot` CLI not on PATH",
+            skip_reason: "~/.copilot/ not found and `copilot` CLI not on PATH",
         },
         skip_if_plugin: false,
     },
@@ -439,11 +447,9 @@ pub(super) static AGENTS: &[AgentSpec] = &[
         name: "Crush",
         client: ClientId::Crush,
         scope: PathScope::Home,
-        segments: &[".config", "crush", "mcp.json"],
-        display: "~/.config/crush/mcp.json",
-        format: ConfigFormat::Json {
-            servers_key: "mcpServers",
-        },
+        segments: &[".config", "crush", "crush.json"],
+        display: "~/.config/crush/crush.json",
+        format: ConfigFormat::Json { servers_key: "mcp" },
         detect: DetectSignal::ParentDirOrCli {
             cli: "crush",
             skip_reason: "~/.config/crush/ not found and `crush` CLI not on PATH",
@@ -468,8 +474,8 @@ pub(super) static AGENTS: &[AgentSpec] = &[
         name: "Warp",
         client: ClientId::Warp,
         scope: PathScope::Home,
-        segments: &[".warp", "mcp.json"],
-        display: "~/.warp/mcp.json",
+        segments: &[".warp", ".mcp.json"],
+        display: "~/.warp/.mcp.json",
         format: ConfigFormat::Json {
             servers_key: "mcpServers",
         },
@@ -525,6 +531,7 @@ pub(super) fn find_spec(name: &str) -> Option<&'static AgentSpec> {
 pub(super) fn resolve_path(spec: &AgentSpec) -> Result<PathBuf, String> {
     match spec.scope {
         PathScope::Home => home_path(spec.segments),
+        PathScope::CopilotHome => copilot_home_path(spec.segments),
         PathScope::Cwd => cwd_path(spec.segments),
     }
 }
@@ -544,7 +551,7 @@ pub(super) fn detect(spec: &AgentSpec, bin: &str) -> TargetStatus {
             HookSurface::Claude => {
                 probe_json_hooks_by_nested_command(spec.name, path, "claude-code")
             }
-            HookSurface::Codex => probe_json_hooks_by_nested_command(spec.name, path, "codex"),
+            HookSurface::Codex => probe_codex_hooks(spec.name, path),
             HookSurface::Cursor => probe_json_hooks_by_name(spec.name, path),
             HookSurface::Gemini => probe_json_hooks_by_group(spec.name, path),
             HookSurface::Windsurf => probe_json_hooks_by_command(spec.name, path, "windsurf"),

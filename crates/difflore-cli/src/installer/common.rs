@@ -173,6 +173,33 @@ pub(super) fn home_path(suffix: &[&str]) -> Result<PathBuf, String> {
     Ok(p)
 }
 
+pub(super) fn copilot_home_path(suffix: &[&str]) -> Result<PathBuf, String> {
+    let mcp_home = difflore_core::infra::env::var_os(difflore_core::infra::env::DIFFLORE_MCP_HOME)
+        .map(PathBuf::from);
+    let copilot_home = difflore_core::infra::env::var_os("COPILOT_HOME").map(PathBuf::from);
+    let home = dirs::home_dir();
+    let mut p = copilot_root_from(mcp_home, copilot_home, home)?;
+    for seg in suffix {
+        p.push(seg);
+    }
+    Ok(p)
+}
+
+fn copilot_root_from(
+    mcp_home: Option<PathBuf>,
+    copilot_home: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    if let Some(root) = mcp_home {
+        return Ok(root.join(".copilot"));
+    }
+    if let Some(root) = copilot_home {
+        return Ok(root);
+    }
+    home.map(|root| root.join(".copilot"))
+        .ok_or_else(|| "could not resolve Copilot CLI configuration directory".to_owned())
+}
+
 pub(super) fn cwd_path(suffix: &[&str]) -> Result<PathBuf, String> {
     let mut p = std::env::current_dir().map_err(|e| format!("could not resolve cwd: {e}"))?;
     for seg in suffix {
@@ -475,6 +502,20 @@ fn mcp_json_entry_matches(
                 });
             command_ok && args_ok
         }
+        McpEntryShape::StdioTyped => {
+            let command_ok = entry_obj
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|cmd| cli_command_matches(cmd, expected_command));
+            let args_ok = entry_obj
+                .get("args")
+                .and_then(Value::as_array)
+                .is_some_and(|args| {
+                    args.len() == 1 && args.first().and_then(Value::as_str) == Some(MCP_SERVER_ARG)
+                });
+            let type_ok = entry_obj.get("type").and_then(Value::as_str) == Some("stdio");
+            command_ok && args_ok && type_ok
+        }
         McpEntryShape::Opencode => {
             let Some(command) = entry_obj.get("command").and_then(Value::as_array) else {
                 return false;
@@ -506,6 +547,19 @@ fn mcp_json_entry_detail(
                 .get("args")
                 .map_or_else(|| "(missing)".to_owned(), ToString::to_string);
             format!("command={command}, args={args}")
+        }
+        McpEntryShape::StdioTyped => {
+            let type_value = entry_obj
+                .get("type")
+                .map_or_else(|| "(missing)".to_owned(), ToString::to_string);
+            let command = entry_obj
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or("(missing)");
+            let args = entry_obj
+                .get("args")
+                .map_or_else(|| "(missing)".to_owned(), ToString::to_string);
+            format!("type={type_value}, command={command}, args={args}")
         }
         McpEntryShape::Opencode => {
             let type_value = entry_obj
@@ -1068,6 +1122,32 @@ mod atomic_write_tests {
                 .detail
                 .as_deref()
                 .is_some_and(|detail| detail.contains("entry drifted"))
+        );
+    }
+
+    #[test]
+    fn copilot_root_prefers_test_home_then_copilot_home_then_default_home() {
+        assert_eq!(
+            copilot_root_from(
+                Some(PathBuf::from("/tmp/difflore-test-home")),
+                Some(PathBuf::from("/tmp/copilot-home")),
+                Some(PathBuf::from("/tmp/home")),
+            )
+            .unwrap(),
+            PathBuf::from("/tmp/difflore-test-home/.copilot")
+        );
+        assert_eq!(
+            copilot_root_from(
+                None,
+                Some(PathBuf::from("/tmp/copilot-home")),
+                Some(PathBuf::from("/tmp/home")),
+            )
+            .unwrap(),
+            PathBuf::from("/tmp/copilot-home")
+        );
+        assert_eq!(
+            copilot_root_from(None, None, Some(PathBuf::from("/tmp/home"))).unwrap(),
+            PathBuf::from("/tmp/home/.copilot")
         );
     }
 }

@@ -60,7 +60,7 @@ mod tests {
             source: "local".into(),
             repo_scope: None,
             check_prompt: None,
-            file_patterns: patterns.iter().map(|s| s.to_string()).collect(),
+            file_patterns: patterns.iter().map(ToString::to_string).collect(),
             examples: Vec::new(),
         }
     }

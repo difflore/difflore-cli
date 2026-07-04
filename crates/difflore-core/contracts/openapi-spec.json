@@ -2449,8 +2449,6 @@
                           "repository_type",
                           "repository_count",
                           "collaborators",
-                          "pr_ingestion_included",
-                          "overage",
                           "local_import_cloud_sync",
                           "reviewer_context_api",
                           "shared_team_memory",
@@ -8973,7 +8971,6 @@
                     "enum": [
                       "starter",
                       "growth",
-                      "pro",
                       "team"
                     ],
                     "type": "string"
