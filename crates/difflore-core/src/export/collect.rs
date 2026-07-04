@@ -433,6 +433,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn collect_engine_gate_filters_cursor_disabled_rules() {
+        let pool = pool().await;
+        insert_rule(
+            &pool,
+            "r-cursor-on",
+            "Cursor on",
+            "cloud",
+            Some("acme/widgets"),
+            "active",
+            0,
+            None,
+        )
+        .await;
+        sqlx::query("UPDATE skills SET enabled_for_cursor = 1 WHERE id = 'r-cursor-on'")
+            .execute(&pool)
+            .await
+            .expect("enable cursor");
+        insert_rule(
+            &pool,
+            "r-cursor-off",
+            "Cursor off",
+            "cloud",
+            Some("acme/widgets"),
+            "active",
+            0,
+            None,
+        )
+        .await;
+
+        let cursor = collect_rules_for_export_with_scopes(
+            &pool,
+            &scopes(),
+            ExportCollectOptions {
+                engine: Some("cursor"),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("collect cursor");
+
+        let ids: Vec<&str> = cursor.rules.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["r-cursor-on"]);
+    }
+
+    #[tokio::test]
     async fn collect_empty_scopes_yields_only_explicit_local() {
         let pool = pool().await;
         insert_rule(

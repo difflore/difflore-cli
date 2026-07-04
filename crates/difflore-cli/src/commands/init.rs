@@ -207,11 +207,11 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) -> anyh
             style::pewter(sym::BULLET),
         );
         println!(
-            "  {} GitHub App imports without local tokens",
+            "  {} Explicit team memory sync without hosted ingestion",
             style::pewter(sym::BULLET),
         );
         println!(
-            "  {} Managed embeddings, tokens, and accepted-edit dashboards",
+            "  {} Team rule governance, accepted-edit dashboards, and sync",
             style::pewter(sym::BULLET),
         );
         println!("  {}", style::pewter(&pricing));
@@ -277,7 +277,7 @@ pub(crate) fn tier_badge_line(status: &difflore_core::cloud::sync::CloudStatus) 
     let tier = difflore_core::cloud::sync::cloud_tier_from_status(status);
     if tier.is_team() {
         format!(
-            "{} | multi-device sync + GitHub App team review history",
+            "{} | multi-device sync + governed team memory",
             tier.default_label()
         )
     } else if status.logged_in {
@@ -445,7 +445,7 @@ mod tests {
             let line = tier_badge_line(&s);
             assert!(line.starts_with("Cloud Team"), "unexpected: {line}");
             assert!(line.contains("multi-device sync"));
-            assert!(line.contains("GitHub App team review history"));
+            assert!(line.contains("governed team memory"));
         }
     }
 

@@ -11,7 +11,9 @@ mod transform;
 
 use crate::cli::StatusLane;
 use crate::commands::ai_contract::{CLI_SCHEMA_VERSION, NextActionContract};
-use crate::support::util::{init_db, project_path, repo_scopes_for_path};
+use crate::support::util::{
+    active_rule_repo_distribution, init_db, project_path, repo_scopes_for_path,
+};
 use sqlx::Row;
 use std::collections::BTreeMap;
 
@@ -525,6 +527,7 @@ async fn compute_status_payload(
     let source_repos = difflore_core::skills::list_source_repos(db)
         .await
         .unwrap_or_default();
+    let active_rule_repos = active_rule_repo_distribution(&active_rules, &source_repos, 3);
 
     let repo_remotes = repo_scopes_for_path(db, project).await;
     let repo_full_name = repo_remotes.first().cloned();
@@ -575,8 +578,14 @@ async fn compute_status_payload(
     } else {
         None
     };
-    let memory_inbox =
-        queries::memory_inbox_summary(db, stats.total, pending_candidates, cloud_logged_in).await;
+    let memory_inbox = queries::memory_inbox_summary(
+        db,
+        stats.total,
+        active_rule_repos,
+        pending_candidates,
+        cloud_logged_in,
+    )
+    .await;
     let autopilot = difflore_core::memory_autopilot_schedule::load_autopilot_schedule_status(db)
         .await
         .map_err(|e| format!("failed to load memory autopilot status: {e}"))?;

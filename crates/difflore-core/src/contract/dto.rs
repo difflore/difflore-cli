@@ -20,7 +20,6 @@
 //! | `POST /reviews/{prReviewId}/trajectory` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `SaveTrajectoryRequest` |
 //! | `GET /reviews/{prReviewId}/trajectory` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `GetTrajectoryResponse` |
 //! | `POST /accepted-edits` (in spec; kept hand-written for serde derives until the R4 contract pipeline migrates it to `generated`) | `RecordAcceptedEditRequest`, `RecordAcceptedEditResponse`, `accepted_edit_diff_signature` |
-//! | `POST /reviews/import` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `UploadImportedReviewsRequest`, `ImportedReviewUpload`, `ImportedCommentUpload`, `ImportedCommentEventType` |
 //! | `GET /impact/*` (in spec; hand-written for serde derives, migration is contract-pipeline debt) | `ImpactBannerDto`, `ImpactWeeklyDto`, `ImpactWeeklyPointDto`, `ImpactTopRuleDto`, `ImpactTopRulesDto`, `ImpactPromotionProgressDto`, `ImpactCoverageDto`, `ImpactFixWindowDto`, `ImpactRoiDto`, `ImpactFixScorecardDto` |
 //! | outbox `kind="observation"` wire payload (not an HTTP endpoint) | `Observation`, `ObservationScope` |
 
@@ -220,70 +219,6 @@ pub struct RecordAcceptedEditResponse {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UploadImportedReviewsRequest {
-    pub reviews: Vec<ImportedReviewUpload>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportedReviewUpload {
-    /// Source provider for the imported review. Omitted by older CLIs, in
-    /// which case the cloud treats the payload as GitHub for compatibility.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    /// Provider host for non-GitHub imports (for example self-managed GitLab).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_host: Option<String>,
-    /// Repository the imported memory should attach to. For fork workflows this
-    /// is the user's fork, even when review history was read from upstream.
-    pub repo_full_name: String,
-    /// Repository the review history was read from. Omitted when it matches
-    /// `repo_full_name`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_repo_full_name: Option<String>,
-    pub pr_number: i32,
-    pub pr_title: Option<String>,
-    pub comments: Vec<ImportedCommentUpload>,
-}
-
-/// Webhook-aligned source bucket for one imported comment, mirroring the
-/// cloud's `importedCommentEventTypes` zod enum
-/// (`src/domain/reviews/imported-comment-event-type.ts`). The serialized
-/// values match the webhook ingestion path's `pr_review_comments.event_type`
-/// values exactly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ImportedCommentEventType {
-    /// Inline file comment (carries a file path).
-    PullRequestReviewComment,
-    /// Top-level review body.
-    PullRequestReview,
-    /// PR/MR discussion comment.
-    IssueComment,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportedCommentUpload {
-    /// Explicit source bucket so the cloud labels
-    /// `pr_review_comments.event_type` from CLI provenance instead of
-    /// re-deriving it from `file_path`/`comment_url`. Omitted when the local
-    /// metadata cannot identify the bucket — the cloud then falls back to its
-    /// own derivation, so older payload shapes keep working unchanged.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_type: Option<ImportedCommentEventType>,
-    pub file_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub line_number: Option<i32>,
-    pub content: String,
-    pub author: Option<String>,
-    pub comment_url: String,
-    pub thread_id: Option<String>,
-    pub occurred_at: Option<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -430,6 +365,7 @@ mod tests {
         assert!(spec.contains("\"attributedRuleIds\""));
 
         for forbidden in [
+            "\"/reviews/import\"",
             "\"/fix-runs/acceptances\"",
             "\"/fix-runs\"",
             "\"/fix-runs/{id}\"",
@@ -673,7 +609,7 @@ mod tests {
 
         let cells = registry_endpoint_cells();
         assert!(
-            cells.len() >= 8,
+            cells.len() >= 7,
             "expected the DTO registry table to have several rows, found {}",
             cells.len()
         );

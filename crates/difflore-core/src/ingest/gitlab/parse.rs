@@ -1,7 +1,7 @@
 //! Conversion from GitLab wire shapes into the provider-neutral review
 //! store, where the GitLab and GitHub import paths converge: same
 //! `review_items` / `review_comments` rows, same durability-signal metadata,
-//! so the local-candidate gate and the upload path need zero provider
+//! so the local-candidate gate and the explicit sync/export path need zero provider
 //! branches.
 //!
 //! ID scheme (collision-proof against the GitHub importer):
@@ -32,7 +32,7 @@ pub(super) fn gitlab_external_comment_id(note_id: i64) -> String {
     format!("gl:{note_id}")
 }
 
-/// Per-item metadata carrying the instance host. The upload path reads
+/// Per-item metadata carrying the instance host. The explicit sync/export path reads
 /// `sourceRepoFullName` from item metadata and correctly finds none here
 /// (GitLab v1 has no fork-import flow).
 pub(super) fn item_metadata_json(host: &str, diffs: &[DiffNode]) -> String {
@@ -328,7 +328,7 @@ mod tests {
         assert_eq!(value["gitlabHost"], "gitlab.corp.example");
         assert!(
             value.get("sourceRepoFullName").is_none(),
-            "no fork flow in v1 — the upload path must not see a source repo"
+            "no fork flow in v1 — the explicit sync/export path must not see a source repo"
         );
     }
 

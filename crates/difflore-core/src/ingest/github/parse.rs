@@ -589,7 +589,6 @@ mod tests {
             pr_numbers: Vec::new(),
             exclude_prs: std::collections::HashSet::new(),
             since: None,
-            upload_to_cloud: false,
             include_open: false,
         };
 

@@ -40,6 +40,14 @@ fn format_top_rule(rule: &ProvenRuleDrilldown) -> String {
     line
 }
 
+fn format_repo_distribution(repos: &[crate::support::util::RepoRuleCount]) -> String {
+    repos
+        .iter()
+        .map(|entry| format!("{} ({})", entry.repo, entry.count))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn format_local_hero_evidence(hero: &LocalHeroEvidence) -> Vec<String> {
     let scope_note = if hero.scope == "currentRepo" {
         ""
@@ -281,6 +289,14 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
         "  {bullet} active on this machine: {active_rules} rule{}",
         plural(active_rules)
     );
+    if active_rules > 0 && !scope.scoped_recall_ready && !memory_inbox.active_rule_repos.is_empty()
+    {
+        let _ = writeln!(
+            out,
+            "    memory lives in: {}",
+            format_repo_distribution(&memory_inbox.active_rule_repos)
+        );
+    }
     if active_rules == 0 {
         let _ = writeln!(
             out,

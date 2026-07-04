@@ -7,6 +7,7 @@ use crate::domain::models::{
     ProviderUpdateInput,
 };
 use crate::error::CoreError;
+use crate::review_engine::AGENT_CLI_SCHEME;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CheckAuthInput {
@@ -36,6 +37,9 @@ struct ProviderRow {
 
 impl ProviderRow {
     fn decrypt_api_key(&self) -> String {
+        if self.base_url.starts_with(AGENT_CLI_SCHEME) {
+            return String::new();
+        }
         match crate::infra::crypto::decrypt_secret(&self.api_key) {
             Ok(plaintext) => plaintext,
             Err(e) => {
@@ -139,9 +143,10 @@ pub async fn add(db: &sqlx::SqlitePool, input: ProviderAddInput) -> crate::Resul
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let mapping_json = serde_json::to_string(&input.model_mapping)?;
     // BYOK has been removed from the local CLI. Provider rows now only
-    // describe an agent-cli sentinel (`agent-cli://<tool>`); the column
-    // stays for back-compat with older DBs but is always written empty.
-    let encrypted_key = crate::infra::crypto::encrypt_secret("")?;
+    // describe an agent-cli sentinel (`agent-cli://<tool>`); the legacy api_key
+    // column stays for older DBs but is written as a plain empty string so
+    // agent-cli setup never touches keyring/crypto.
+    let api_key = String::new();
 
     sqlx::query!(
         "INSERT INTO providers (id, name, base_url, api_key, model_mapping, is_active, created_at, updated_at)
@@ -149,7 +154,7 @@ pub async fn add(db: &sqlx::SqlitePool, input: ProviderAddInput) -> crate::Resul
         id,
         input.name,
         input.base_url,
-        encrypted_key,
+        api_key,
         mapping_json,
         now
     )
@@ -201,14 +206,15 @@ pub async fn update(
 
     let mapping_json = serde_json::to_string(&provider.model_mapping)?;
     // BYOK has been removed; the api_key column is left in place for
-    // older schemas but always overwritten with an encrypted empty string.
-    let encrypted_secret = crate::infra::crypto::encrypt_secret("")?;
+    // older schemas but always overwritten with a plain empty string for
+    // agent-cli providers.
+    let api_key = String::new();
 
     let result = sqlx::query!(
         "UPDATE providers SET name=?1, base_url=?2, api_key=?3, model_mapping=?4, updated_at=?5 WHERE id=?6",
         provider.name,
         provider.base_url,
-        encrypted_secret,
+        api_key,
         mapping_json,
         provider.updated_at,
         provider.id
@@ -357,6 +363,18 @@ pub async fn check_auth(input: CheckAuthInput) -> crate::Result<CheckAuthResult>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
+    use std::str::FromStr;
+
+    async fn migrated_pool() -> SqlitePool {
+        let opts = SqliteConnectOptions::from_str("sqlite::memory:").expect("sqlite opts");
+        let pool = SqlitePool::connect_with(opts).await.expect("connect");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
+        pool
+    }
 
     #[test]
     fn mask_api_key_table() {
@@ -370,6 +388,44 @@ mod tests {
         for (input, expected) in cases {
             assert_eq!(mask_api_key(input), *expected, "input: {input}");
         }
+    }
+
+    #[test]
+    fn agent_cli_rows_skip_legacy_api_key_decryption() {
+        let row = ProviderRow {
+            id: "provider-agent".to_owned(),
+            name: "codex-cli".to_owned(),
+            base_url: "agent-cli://codex".to_owned(),
+            api_key: "not-encrypted-and-should-not-be-read".to_owned(),
+            model_mapping: "{}".to_owned(),
+            is_active: 1,
+            created_at: "2026-07-04 00:00:00".to_owned(),
+            updated_at: "2026-07-04 00:00:00".to_owned(),
+        };
+
+        assert_eq!(row.decrypt_api_key(), "");
+    }
+
+    #[tokio::test]
+    async fn add_agent_cli_provider_stores_plain_empty_api_key() {
+        let db = migrated_pool().await;
+        let provider = add(
+            &db,
+            ProviderAddInput {
+                name: "codex-cli".to_owned(),
+                base_url: "agent-cli://codex".to_owned(),
+                model_mapping: std::collections::HashMap::new(),
+            },
+        )
+        .await
+        .expect("add provider");
+
+        let stored: String = sqlx::query_scalar("SELECT api_key FROM providers WHERE id = ?1")
+            .bind(provider.id)
+            .fetch_one(&db)
+            .await
+            .expect("stored api key");
+        assert_eq!(stored, "");
     }
 
     #[tokio::test]

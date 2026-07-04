@@ -234,6 +234,14 @@ fn format_count_map(map: &std::collections::BTreeMap<String, usize>) -> String {
         .join(", ")
 }
 
+fn format_repo_distribution(repos: &[crate::support::util::RepoRuleCount]) -> String {
+    repos
+        .iter()
+        .map(|entry| format!("{} ({})", entry.repo, entry.count))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn binary_row(version: &str) -> Row {
     // Always Ready: if the binary couldn't run, we wouldn't be here.
     Row::ready_ok("binary", format!("v{version}"))
@@ -457,6 +465,12 @@ fn project_db_row(probe: &ProjectDbProbe) -> Row {
             .to_owned(),
         "difflore status   (shows the repo-scoped value path)".to_owned(),
     ];
+    if !probe.active_rule_repos.is_empty() {
+        hints.push(format!(
+            "memory currently lives in: {}",
+            format_repo_distribution(&probe.active_rule_repos)
+        ));
+    }
     if let Some(repo) = repo_full_name {
         if let Some(source) = review_source_repo_full_name {
             hints.push(format!(
@@ -782,8 +796,7 @@ fn cloud_row(probe: &CloudProbe) -> Row {
             label: "cloud",
             value: "local runtime".to_owned(),
             hints: vec![
-                "team sync, dashboard, and uploaded review analysis: difflore cloud login"
-                    .to_owned(),
+                "team sync, dashboard, and accepted-edit proof: difflore cloud login".to_owned(),
             ],
             repair: None,
         },
@@ -1325,6 +1338,7 @@ mod tests {
         let row = project_db_row(&ProjectDbProbe {
             db_available: true,
             total_rules: 41,
+            active_rule_repos: Vec::new(),
             prs_imported: 0,
             repo_full_name: Some("warpengine-github/viggle-web".to_owned()),
             review_source_repo_full_name: None,
@@ -1335,6 +1349,37 @@ mod tests {
         assert_ready_ok(&row, "project db");
         assert!(row.value.contains("0 local PRs imported"), "{}", row.value);
         assert!(!row.value.contains("0 PRs imported"), "{}", row.value);
+    }
+
+    #[test]
+    fn project_db_row_shows_where_machine_memory_lives_when_current_repo_is_empty() {
+        let row = project_db_row(&ProjectDbProbe {
+            db_available: true,
+            total_rules: 43,
+            active_rule_repos: vec![
+                crate::support::util::RepoRuleCount {
+                    repo: "warpengine-github/viggle-web".to_owned(),
+                    count: 31,
+                },
+                crate::support::util::RepoRuleCount {
+                    repo: "warpengine-github/viggle-backend".to_owned(),
+                    count: 4,
+                },
+            ],
+            prs_imported: 0,
+            repo_full_name: Some("difflore/difflore-cli".to_owned()),
+            review_source_repo_full_name: None,
+            scoped_active_rules: 0,
+            review_source_active_rules: 0,
+        });
+
+        assert!(matches!(row.severity, Severity::Blocker));
+        assert!(
+            row.hints.iter().any(|hint| hint
+                .contains("memory currently lives in: warpengine-github/viggle-web (31)")),
+            "{:?}",
+            row.hints
+        );
     }
 
     #[test]

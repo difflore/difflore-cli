@@ -942,11 +942,12 @@ async fn remember_inner(
     let insert_result = sqlx::query(
         "INSERT INTO skills
          (id, name, source, directory, version, description, type, engines, tags,
-          trigger, check_prompt, file_patterns, source_repo, enabled_for_claude, confidence_score,
+          trigger, check_prompt, file_patterns, source_repo, enabled_for_codex, enabled_for_claude,
+          enabled_for_gemini, enabled_for_cursor, confidence_score,
           installed_at, updated_at, origin, captured_by_client, content_hash, hash_created_at,
           status, source_kind)
          VALUES (?1, ?2, 'local', ?3, '1.0.0', ?4, ?5, ?6, ?7,
-                 NULL, NULL, ?8, ?9, 1, ?10, ?11, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                 NULL, NULL, ?8, ?9, 1, 1, 1, 1, ?10, ?11, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
     )
     .bind(insert_id)
     .bind(title_trimmed)

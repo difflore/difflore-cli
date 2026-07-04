@@ -12,7 +12,7 @@ use schema::{DirectGraphResponse, GraphResponse, GraphqlResponse, PrNode};
 // Public types
 
 pub struct ImportOptions {
-    /// Repo that imported review memory should attach to locally/cloud-side.
+    /// Repo that imported review memory should attach to locally.
     pub repo: String,
     /// Repo to read PR review history from. Usually the same as `repo`, but
     /// fork workflows can import upstream review history while attaching the
@@ -26,7 +26,6 @@ pub struct ImportOptions {
     /// leak-free recall evaluation. Empty in the common case.
     pub exclude_prs: std::collections::HashSet<i32>,
     pub since: Option<String>,
-    pub upload_to_cloud: bool,
     /// When true, also pull open PRs (still gated by `-review:none`).
     /// Default false → only merged PRs are imported.
     pub include_open: bool,

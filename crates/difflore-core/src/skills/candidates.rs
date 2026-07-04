@@ -230,10 +230,28 @@ pub async fn promote_candidate(db: &sqlx::SqlitePool, id: &str) -> crate::Result
 
     let source_proof = parse_candidate_source_proof(&candidate_description);
     let mut tx = db.begin().await?;
-    let updated = sqlx::query!(
-        "UPDATE skills SET status = 'active' WHERE id = ?1 AND status = 'pending'",
-        id
+    let updated = sqlx::query(
+        "UPDATE skills
+         SET status = 'active',
+             enabled_for_codex = CASE
+                 WHEN source = 'local' AND origin = 'pr_review'
+                  AND captured_by_client IN ('import-reviews', 'import-reviews:local-agent')
+                 THEN 1 ELSE enabled_for_codex END,
+             enabled_for_claude = CASE
+                 WHEN source = 'local' AND origin = 'pr_review'
+                  AND captured_by_client IN ('import-reviews', 'import-reviews:local-agent')
+                 THEN 1 ELSE enabled_for_claude END,
+             enabled_for_gemini = CASE
+                 WHEN source = 'local' AND origin = 'pr_review'
+                  AND captured_by_client IN ('import-reviews', 'import-reviews:local-agent')
+                 THEN 1 ELSE enabled_for_gemini END,
+             enabled_for_cursor = CASE
+                 WHEN source = 'local' AND origin = 'pr_review'
+                  AND captured_by_client IN ('import-reviews', 'import-reviews:local-agent')
+                 THEN 1 ELSE enabled_for_cursor END
+         WHERE id = ?1 AND status = 'pending'",
     )
+    .bind(id)
     .execute(&mut *tx)
     .await?;
     if updated.rows_affected() == 0 {

@@ -371,13 +371,15 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
             "    {} {}",
             style::pewter(style::sym::BULLET),
             style::pewter(
-                "Sync more reviews via `difflore cloud sync` so this report can show real signal."
+                "Sync approved memory and accepted-edit proof via `difflore cloud sync` so this report can show real signal."
             )
         );
         println!(
             "    {} {}",
             style::pewter(style::sym::BULLET),
-            style::pewter("Connect the GitHub App on Cloud Team for auto-review on PR push.")
+            style::pewter(
+                "Run another local import, then sync approved memory when the team is ready."
+            )
         );
         return;
     }
@@ -397,8 +399,8 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
     println!("  {}", "Why Cloud Team".bold());
     if prs > 0 {
         println!(
-            "    You've reviewed {} PR{} locally. Cloud Team's GitHub App learns \
-             from review history and shares governed rules with every agent.",
+            "    You've reviewed {} PR{} locally. Cloud plans sync that memory \
+             into governed rules every teammate's agent can use.",
             style::emerald(&prs.to_string()),
             if prs == 1 { "" } else { "s" }
         );
@@ -406,7 +408,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
     if fixes_total >= 5 {
         println!(
             "    {} local fix outcome{} were recorded in 30d. Cloud plans add \
-             shared team rules, GitHub App ingest, Reviewer Context, team controls, \
+             shared team rules, Reviewer Context, team controls, \
              and impact analytics.",
             style::emerald(&fixes_total.to_string()),
             if fixes_total == 1 { "" } else { "s" }

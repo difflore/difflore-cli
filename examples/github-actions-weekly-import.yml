@@ -14,6 +14,8 @@ jobs:
   import-review-memory:
     runs-on: ubuntu-latest
     env:
+      # Recommended for headless runners: stable 64-char hex secret.
+      DIFFLORE_MASTER_KEY_SECRET: ${{ secrets.DIFFLORE_MASTER_KEY }}
       IMPORT_DAYS: "7"
       MAX_PRS: "75"
       GH_TOKEN: ${{ github.token }}
@@ -39,6 +41,9 @@ jobs:
       - name: Import recent review memory
         shell: bash
         run: |
+          if [ -n "${DIFFLORE_MASTER_KEY_SECRET:-}" ]; then
+            export DIFFLORE_MASTER_KEY="$DIFFLORE_MASTER_KEY_SECRET"
+          fi
           SINCE="$(date -u -d "${IMPORT_DAYS} days ago" +%F)"
           difflore import-reviews \
             --provider github \
@@ -51,6 +56,9 @@ jobs:
       - name: Push approved local rule changes
         shell: bash
         run: |
+          if [ -n "${DIFFLORE_MASTER_KEY_SECRET:-}" ]; then
+            export DIFFLORE_MASTER_KEY="$DIFFLORE_MASTER_KEY_SECRET"
+          fi
           if [ -n "${DIFFLORE_CLOUD_TOKEN:-}" ]; then
             difflore cloud sync --push
           else

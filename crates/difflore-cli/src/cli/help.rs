@@ -54,7 +54,7 @@ USAGE
 
 {connect_agents}
   agents              Connect DiffLore to local coding agents
-  export              Write a static snapshot to AGENTS.md or CLAUDE.md
+  export              Write snapshots to AGENTS.md, CLAUDE.md, Cursor .mdc, or OCR
 
 {use_rules}
   recall              Preview the rules an agent would see for a diff

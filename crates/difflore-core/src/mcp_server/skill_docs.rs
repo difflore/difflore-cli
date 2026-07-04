@@ -383,7 +383,7 @@ printed that number.
 
 Keep local private review backlog import first. Cloud login and team sync are upgrades:
 
-- Use `difflore cloud login` only when the user asks for team sync, multi-device access, managed tokens, or managed embeddings.
+- Use `difflore cloud login` only when the user asks for team sync, multi-device access, team rule governance, or accepted-edit dashboards.
 - Use `difflore cloud sync` only after the user wants approved rules or explicit include-flag queues synced to Cloud.
 - Existing local conversation captures, raw queues, and imported candidates stay local unless explicitly synced."################;
 

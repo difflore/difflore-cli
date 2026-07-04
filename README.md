@@ -5,8 +5,10 @@
 [![Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-stdio-green.svg)](https://modelcontextprotocol.io)
 
-DiffLore turns your team's past PR/MR review comments into source-backed rules
-your local AI coding agents can recall before they write code.
+DiffLore is the local-first orchestration layer for Claude Code, Codex, Cursor,
+OpenCodeReview, and other free review engines: it turns your team's past PR/MR
+review decisions into source-backed rules those agents can recall before they
+write code.
 
 ![How DiffLore works: past PR reviews are mined into source-traced rules and served to your coding agent over MCP](.github/assets/difflore-concept.gif)
 
@@ -142,7 +144,7 @@ See [`examples/github-actions-review.yml`](examples/github-actions-review.yml)
 and [`examples/gitlab-ci-review.yml`](examples/gitlab-ci-review.yml) for
 copy-pasteable workflows. If you have shared team memory, pass
 `DIFFLORE_CLOUD_TOKEN` so CI can run `difflore cloud sync --pull`; otherwise
-commit static exports such as `CLAUDE.md`, `AGENTS.md`, or `.cursorrules`.
+commit static exports such as `CLAUDE.md`, `AGENTS.md`, or `.cursor/rules/*.mdc`.
 
 No GitHub App, no hosted webhooks — the gate runs inside your CI, your code and
 LLM keys stay in your infrastructure, and the same model works on GitHub and
@@ -176,7 +178,7 @@ Code, Warp, and Antigravity.
 | `difflore review --diff all` | Review the current diff without modifying files |
 | `difflore fix` | Apply rule-aware local fixes |
 | `difflore ask "..."` | Ask the team's source-backed rules a question |
-| `difflore export` | Write a static snapshot to `AGENTS.md` or `CLAUDE.md` |
+| `difflore export` | Write static snapshots to `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`, or `.opencodereview/rule.json` |
 | `difflore capabilities --json` | Print the machine-readable CLI/MCP contract |
 
 Run `difflore --help` for the full command list.

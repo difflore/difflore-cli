@@ -138,7 +138,7 @@ pub(crate) struct SyncCliArgs {
     #[arg(long)]
     pub(crate) include_candidates: bool,
 
-    /// Also upload raw imported-review, review-metric, and trajectory telemetry. Skipped by default.
+    /// Also sync optional raw review-metric and trajectory telemetry. Skipped by default.
     #[arg(long)]
     pub(crate) include_telemetry: bool,
 
@@ -256,11 +256,11 @@ pub(crate) enum ExportFormatArg {
     AgentsMd,
     /// `CLAUDE.md` at the repo root (only rules enabled for the claude engine).
     ClaudeMd,
-    /// `.cursorrules` at the repo root (only rules enabled for the cursor engine).
+    /// `.cursor/rules/difflore-*.mdc` Cursor rules (all active rules, scoped by globs).
     CursorMd,
     /// `.opencodereview/rule.json` for Alibaba Open Code Review (all active rules).
     OpenCodeReview,
-    /// Both emitters.
+    /// All static export targets: AGENTS.md, CLAUDE.md, Cursor .mdc, and Open Code Review JSON.
     All,
 }
 

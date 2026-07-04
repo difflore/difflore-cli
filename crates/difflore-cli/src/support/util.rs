@@ -1,5 +1,6 @@
 #![allow(clippy::exit)]
 
+use std::collections::{BTreeMap, HashMap};
 use std::process;
 
 use colored::Colorize;
@@ -135,12 +136,52 @@ pub(crate) fn normalize_repo(repo: &str) -> String {
     repo.trim().trim_end_matches(".git").to_ascii_lowercase()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RepoRuleCount {
+    pub(crate) repo: String,
+    pub(crate) count: i64,
+}
+
+pub(crate) const GLOBAL_UNSCOPED_REPO_LABEL: &str = "global/unscoped";
+
+/// Summarize where active rules live when the current repo has none. This is
+/// display-only: recall/MCP still stay scoped to the current repository.
+pub(crate) fn active_rule_repo_distribution(
+    rules: &[difflore_core::domain::models::SkillRecord],
+    source_repos: &HashMap<String, Option<String>>,
+    limit: usize,
+) -> Vec<RepoRuleCount> {
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let mut counts = BTreeMap::<String, i64>::new();
+    for rule in rules {
+        let repo = source_repos
+            .get(&rule.id)
+            .and_then(|repo| repo.as_deref())
+            .map(str::trim)
+            .filter(|repo| !repo.is_empty())
+            .map_or_else(|| GLOBAL_UNSCOPED_REPO_LABEL.to_owned(), normalize_repo);
+        *counts.entry(repo).or_insert(0) += 1;
+    }
+
+    let mut distribution = counts
+        .into_iter()
+        .map(|(repo, count)| RepoRuleCount { repo, count })
+        .collect::<Vec<_>>();
+    distribution.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.repo.cmp(&b.repo)));
+    distribution.truncate(limit);
+    distribution
+}
+
 /// Count active rules whose canonical `source_repo` matches `repo`. `rules`
 /// carry their id; `source_repos` maps rule id -> canonical source repo.
 /// Returns 0 for an absent or empty `repo`. Shared by `status` and `doctor`.
 pub(crate) fn count_rules_for_repo(
     rules: &[difflore_core::domain::models::SkillRecord],
-    source_repos: &std::collections::HashMap<String, Option<String>>,
+    source_repos: &HashMap<String, Option<String>>,
     repo: Option<&str>,
 ) -> i64 {
     let Some(repo) = repo.map(normalize_repo).filter(|repo| !repo.is_empty()) else {

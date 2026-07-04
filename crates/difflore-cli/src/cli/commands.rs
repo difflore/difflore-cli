@@ -134,11 +134,11 @@ pub(crate) enum Commands {
     #[command(
         next_line_help = false,
         long_about = concat!(
-            "Write recalled rules into AGENTS.md, CLAUDE.md, or both.\n\n",
+            "Write recalled rules into AGENTS.md, CLAUDE.md, .cursor/rules/*.mdc, and .opencodereview/rule.json.\n\n",
             "Export is a static snapshot: it goes stale and cannot match the file being edited.\n",
             "Prefer `difflore agents install` for live, diff-aware injection.\n\n",
-            "Side effects: writes only selected files and only inside DiffLore markers.\n",
-            "Only the BEGIN/END DIFFLORE RULES block is managed.\n",
+            "Side effects: writes only selected files/directories. Marker targets only manage\n",
+            "the BEGIN/END DIFFLORE RULES block; Cursor only manages difflore-*.mdc files.\n",
             "DiffLore never commits, pushes, or edits .gitignore."
         )
     )]

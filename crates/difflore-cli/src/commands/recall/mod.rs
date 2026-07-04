@@ -313,7 +313,7 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
     println!();
     // Bridge to the next useful action. If 0 rules came back, "review"
     // is a misleading bounce (it would just rerun the same empty retrieval);
-    // route the user toward the local candidate path first. Cloud extraction
+    // route the user toward the local candidate path first. Cloud sync
     // is an upgrade path, not the first gate for CLI-only value.
     if zero_match_diagnostics.is_none() {
         println!(

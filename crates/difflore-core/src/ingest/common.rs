@@ -1,7 +1,7 @@
 //! Provider-neutral pieces of the review-import pipeline.
 //!
 //! The durability signal and the comment-metadata JSON shape are consumed by
-//! the local-candidate gate and the cloud upload path, neither of which cares
+//! the local-candidate gate and the explicit sync/export path, neither of which cares
 //! which VCS provider produced the comment. Provider modules
 //! ([`super::github`], [`super::gitlab`]) construct these from their own wire
 //! shapes and persist the serialized form.

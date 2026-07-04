@@ -1,6 +1,4 @@
-//! Export emitters: one per static context-file convention. v1 ships
-//! `agents-md` and `claude-md`; cursor/copilot emitters wait for design
-//! partner pull.
+//! Export emitters: one per static context-file convention.
 
 mod agents_md;
 mod claude_md;
@@ -9,7 +7,10 @@ mod open_code_review;
 
 pub(crate) use agents_md::AGENTS_MD;
 pub(crate) use claude_md::CLAUDE_MD;
-pub(crate) use cursor_rules::CURSOR_RULES;
+pub(crate) use cursor_rules::{
+    CURSOR_RULES, is_difflore_cursor_rule_file_name, render_cursor_rule_files,
+    render_cursor_rules_manifest,
+};
 pub(crate) use open_code_review::{OPEN_CODE_REVIEW, render_ocr_rules};
 
 use crate::cli::ExportFormatArg;
@@ -19,7 +20,7 @@ use crate::cli::ExportFormatArg;
 pub(crate) struct Emitter {
     /// CLI/JSON label, matches the `--format` value.
     pub(crate) format: &'static str,
-    /// Repo-root file name the marker block lives in.
+    /// Repo-root file or directory name this emitter manages.
     pub(crate) file_name: &'static str,
     /// `skills.enabled_for_*` gate passed to the core collector.
     pub(crate) engine: Option<&'static str>,
@@ -31,6 +32,8 @@ pub(crate) struct Emitter {
 pub(crate) enum EmitterKind {
     /// Markdown/text file containing a BEGIN/END DIFFLORE RULES block.
     MarkerBlock,
+    /// Directory of one generated Cursor `.mdc` file per rule.
+    CursorRulesDir,
     /// Whole-file JSON owned by DiffLore.
     OwnedJson,
 }
@@ -53,6 +56,8 @@ pub(crate) fn resolve(formats: &[ExportFormatArg]) -> Vec<&'static Emitter> {
             ExportFormatArg::All => {
                 push(&AGENTS_MD);
                 push(&CLAUDE_MD);
+                push(&CURSOR_RULES);
+                push(&OPEN_CODE_REVIEW);
             }
         }
     }
@@ -66,9 +71,11 @@ mod tests {
     #[test]
     fn resolve_expands_all_and_dedupes_repeats() {
         let all = resolve(&[ExportFormatArg::All]);
-        assert_eq!(all.len(), 2);
+        assert_eq!(all.len(), 4);
         assert_eq!(all[0].format, "agents-md");
         assert_eq!(all[1].format, "claude-md");
+        assert_eq!(all[2].format, "cursor-md");
+        assert_eq!(all[3].format, "open-code-review");
 
         let repeated = resolve(&[
             ExportFormatArg::ClaudeMd,
@@ -76,7 +83,10 @@ mod tests {
             ExportFormatArg::ClaudeMd,
         ]);
         let labels: Vec<&str> = repeated.iter().map(|e| e.format).collect();
-        assert_eq!(labels, vec!["claude-md", "agents-md"]);
+        assert_eq!(
+            labels,
+            vec!["claude-md", "agents-md", "cursor-md", "open-code-review",]
+        );
     }
 
     #[test]
@@ -90,9 +100,10 @@ mod tests {
     }
 
     #[test]
-    fn cursor_emitter_pins_file_name_and_engine_gate() {
-        assert_eq!(CURSOR_RULES.file_name, ".cursorrules");
-        assert_eq!(CURSOR_RULES.engine, Some("cursor"));
+    fn cursor_emitter_pins_directory_and_uses_all_rules() {
+        assert_eq!(CURSOR_RULES.file_name, ".cursor/rules");
+        assert_eq!(CURSOR_RULES.engine, None);
+        assert_eq!(CURSOR_RULES.kind, EmitterKind::CursorRulesDir);
         let resolved = resolve(&[ExportFormatArg::CursorMd]);
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].format, "cursor-md");
@@ -109,9 +120,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_all_stays_backwards_compatible() {
+    fn resolve_all_covers_current_orchestration_targets() {
         let all = resolve(&[ExportFormatArg::All]);
         let labels: Vec<&str> = all.iter().map(|e| e.format).collect();
-        assert_eq!(labels, vec!["agents-md", "claude-md"]);
+        assert_eq!(
+            labels,
+            vec!["agents-md", "claude-md", "cursor-md", "open-code-review",]
+        );
     }
 }

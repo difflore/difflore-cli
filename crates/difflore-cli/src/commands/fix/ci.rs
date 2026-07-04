@@ -9,6 +9,7 @@ use super::{CONFIDENCE_THRESHOLD, file_loc, issue_rule_label};
 
 pub(super) fn ci_blocking_suggestions<'a>(
     suggestions: &[&'a ReviewIssueRecord],
+    matched_rule_ids: &[String],
     strict: bool,
 ) -> Vec<&'a ReviewIssueRecord> {
     if strict {
@@ -17,9 +18,26 @@ pub(super) fn ci_blocking_suggestions<'a>(
         suggestions
             .iter()
             .copied()
-            .filter(|s| s.confidence >= CONFIDENCE_THRESHOLD)
+            .filter(|s| {
+                s.confidence >= CONFIDENCE_THRESHOLD
+                    || issue_cites_matched_rule(s, matched_rule_ids)
+            })
             .collect()
     }
+}
+
+fn issue_cites_matched_rule(issue: &ReviewIssueRecord, matched_rule_ids: &[String]) -> bool {
+    let Some(rule_id) = issue
+        .rule_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|rule_id| !rule_id.is_empty())
+    else {
+        return false;
+    };
+    matched_rule_ids
+        .iter()
+        .any(|matched_id| matched_id.trim() == rule_id)
 }
 
 pub(super) fn exit_after_output(code: i32) -> ! {
@@ -28,15 +46,20 @@ pub(super) fn exit_after_output(code: i32) -> ! {
     exit_code(code);
 }
 
-// Only fails on confident patches unless `strict`; structured outputs share
-// this exit-code contract.
-pub(super) fn finish_ci_mode(suggestions: &[&ReviewIssueRecord], strict: bool, scope_label: &str) {
-    let blocking = ci_blocking_suggestions(suggestions, strict);
+// Only fails on confident or rule-backed patches unless `strict`; structured
+// outputs share this exit-code contract.
+pub(super) fn finish_ci_mode(
+    suggestions: &[&ReviewIssueRecord],
+    matched_rule_ids: &[String],
+    strict: bool,
+    scope_label: &str,
+) {
+    let blocking = ci_blocking_suggestions(suggestions, matched_rule_ids, strict);
     if blocking.is_empty() {
         let low = suggestions.len();
         if low > 0 && !strict {
             eprintln!(
-                "{} no confident patches; {low} low-confidence suggestion(s) held back. \
+                "{} no confident/rule-backed patches; {low} low-confidence suggestion(s) held back. \
                  Use --strict to fail on those too.",
                 style::ok(sym::OK),
             );
@@ -53,7 +76,7 @@ pub(super) fn finish_ci_mode(suggestions: &[&ReviewIssueRecord], strict: bool, s
     let patch_label = if strict {
         "patch(es)"
     } else {
-        "confident patch(es)"
+        "confident/rule-backed patch(es)"
     };
     eprintln!(
         "{} {} {patch_label} suggested in {scope_label} — run {} to review.",
@@ -98,7 +121,7 @@ mod tests {
         low.confidence = 0.5;
         let suggestions = vec![&high, &low];
 
-        let blocking = ci_blocking_suggestions(&suggestions, false);
+        let blocking = ci_blocking_suggestions(&suggestions, &[], false);
 
         assert_eq!(blocking.len(), 1);
         assert_eq!(blocking[0].message, "confident");
@@ -110,9 +133,36 @@ mod tests {
         low.confidence = 0.5;
         let suggestions = vec![&low];
 
-        let blocking = ci_blocking_suggestions(&suggestions, true);
+        let blocking = ci_blocking_suggestions(&suggestions, &[], true);
 
         assert_eq!(blocking.len(), 1);
         assert_eq!(blocking[0].message, "low");
+    }
+
+    #[test]
+    fn ci_mode_blocks_low_confidence_suggestions_citing_matched_rules() {
+        let mut rule_backed = issue_at(Some("src/rule.ts"), Some(30), "rule backed");
+        rule_backed.confidence = 0.75;
+        rule_backed.rule_id = Some("active-rule".to_owned());
+        let suggestions = vec![&rule_backed];
+        let matched_rule_ids = vec!["active-rule".to_owned()];
+
+        let blocking = ci_blocking_suggestions(&suggestions, &matched_rule_ids, false);
+
+        assert_eq!(blocking.len(), 1);
+        assert_eq!(blocking[0].message, "rule backed");
+    }
+
+    #[test]
+    fn ci_mode_does_not_block_hallucinated_rule_ids() {
+        let mut hallucinated = issue_at(Some("src/rule.ts"), Some(30), "hallucinated");
+        hallucinated.confidence = 0.75;
+        hallucinated.rule_id = Some("hallucinated-rule".to_owned());
+        let suggestions = vec![&hallucinated];
+        let matched_rule_ids = vec!["active-rule".to_owned()];
+
+        let blocking = ci_blocking_suggestions(&suggestions, &matched_rule_ids, false);
+
+        assert!(blocking.is_empty());
     }
 }

@@ -878,6 +878,64 @@ body text";
     }
 
     #[tokio::test]
+    async fn remember_import_candidates_enable_all_agent_exports() {
+        let db = DedupTestEnv::db().await;
+        let repo = RepoScope::canonical("owner/repo").expect("canonical repo");
+        let mut input = remember_input(
+            "Imported rule exports everywhere",
+            "Rules mined from review memory should be available to every local agent.",
+            Some(vec!["src/**/*.rs"]),
+        );
+        input.origin = Some("pr_review".to_owned());
+        input.captured_by_client = Some("import-reviews:local-agent".to_owned());
+
+        let remembered =
+            remember_as_candidate_with_confidence_for_repo(&db, input, 0.82_f32, &repo)
+                .await
+                .unwrap();
+
+        let row: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT enabled_for_codex, enabled_for_claude, enabled_for_gemini, enabled_for_cursor \
+             FROM skills WHERE id = ?1",
+        )
+        .bind(&remembered.skill.id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(row, (1, 1, 1, 1));
+    }
+
+    #[tokio::test]
+    async fn promote_imported_review_candidate_backfills_all_agent_flags() {
+        let db = DedupTestEnv::db().await;
+        sqlx::query(
+            "INSERT INTO skills \
+             (id, name, source, directory, version, description, type, origin, captured_by_client, \
+              enabled_for_codex, enabled_for_claude, enabled_for_gemini, enabled_for_cursor, status) \
+             VALUES \
+             ('legacy-import-candidate', 'Legacy import candidate', 'local', 'legacy-import-candidate', \
+              '1.0.0', 'Older review import candidate.', 'review_standard', 'pr_review', \
+              'import-reviews:local-agent', 0, 0, 0, 0, 'pending')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        promote_candidate(&db, "legacy-import-candidate")
+            .await
+            .unwrap();
+
+        let row: (String, i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT status, enabled_for_codex, enabled_for_claude, enabled_for_gemini, enabled_for_cursor \
+             FROM skills WHERE id = 'legacy-import-candidate'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(row, ("active".to_owned(), 1, 1, 1, 1));
+    }
+
+    #[tokio::test]
     async fn remember_soft_preference_uses_separate_rule_type_and_loader() {
         let db = DedupTestEnv::db().await;
         let mut input = remember_input(

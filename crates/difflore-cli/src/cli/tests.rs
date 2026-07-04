@@ -1220,7 +1220,7 @@ fn import_reviews_parses_local_agent_distill_and_rejects_upload_flag() {
 
     assert!(
         Cli::try_parse_from(["difflore", "import-reviews", "--upload"]).is_err(),
-        "--upload should not parse after hosted extraction removal"
+        "--upload should not parse after retired upload removal"
     );
 
     let cli = Cli::try_parse_from(["difflore", "import-reviews", "--distill", "local-agent"])

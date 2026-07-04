@@ -13,7 +13,7 @@ pub struct PastVerdict {
     pub extraction_id: String,
     pub code_snippet: String,
     pub issue_text: String,
-    /// "approved" | "rejected" (mirrors the cloud extraction status).
+    /// "approved" | "rejected" (mirrors the cloud rule approval status).
     pub status: String,
     pub reason: Option<String>,
     pub similarity: f32,

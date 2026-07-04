@@ -796,7 +796,6 @@ async fn try_handle_github(
         pr_numbers: v.pr_numbers.clone(),
         exclude_prs: v.exclude_prs.clone(),
         since: v.since.clone(),
-        upload_to_cloud: false,
         include_open: v.include_open,
     };
 

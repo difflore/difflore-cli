@@ -473,7 +473,12 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
             }
             if args.ci {
                 flush_fix_outbox_before_exit(&ctx.db).await;
-                finish_ci_mode(&suggestions, args.strict, scope_label);
+                finish_ci_mode(
+                    &suggestions,
+                    &result.matched_rule_ids,
+                    args.strict,
+                    scope_label,
+                );
             }
         }
         FixOutputMode::Preview => {
@@ -489,7 +494,12 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
         }
         FixOutputMode::Ci => {
             flush_fix_outbox_before_exit(&ctx.db).await;
-            finish_ci_mode(&suggestions, args.strict, scope_label);
+            finish_ci_mode(
+                &suggestions,
+                &result.matched_rule_ids,
+                args.strict,
+                scope_label,
+            );
         }
         FixOutputMode::Yes => {
             if suggestions.is_empty() {
@@ -1143,7 +1153,7 @@ async fn handle_empty_diff(
         }
         if args.ci {
             flush_fix_outbox_before_exit(&ctx.db).await;
-            finish_ci_mode(&empty_suggestions, args.strict, scope_label);
+            finish_ci_mode(&empty_suggestions, &[], args.strict, scope_label);
         }
         return;
     }

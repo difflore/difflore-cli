@@ -1,6 +1,6 @@
 use super::super::parse::parse_issues;
 use super::super::prompts::{SegmentedPrompt, build_segmented_prompt};
-use super::super::providers::call_ai_provider_segmented;
+use super::super::providers::{AGENT_CLI_SCHEME, call_ai_provider_segmented};
 use super::super::{
     AgentCliReviewLlm, HttpReviewLlm, ReviewIssueRecord, ReviewLlm, ReviewPerspective,
 };
@@ -136,7 +136,8 @@ pub(super) async fn call_review_engine(
     }
 }
 
-/// Get the active provider with decrypted API key.
+/// Get the active provider with decrypted API key. Agent-CLI sentinels do not
+/// use API keys, so they intentionally skip the legacy api_key column.
 pub(super) async fn get_active_provider(
     db: &sqlx::SqlitePool,
 ) -> crate::Result<(String, String, String, String)> {
@@ -148,8 +149,12 @@ pub(super) async fn get_active_provider(
     .await?
     .ok_or_else(|| CoreError::Validation("No active AI provider configured. Run `difflore providers setup` to add one.".into()))?;
 
-    let api_key = crate::infra::crypto::decrypt_secret(&row.api_key)
-        .map_err(|e| CoreError::Internal(format!("Failed to decrypt API key: {e}")))?;
+    let api_key = if row.base_url.starts_with(AGENT_CLI_SCHEME) {
+        String::new()
+    } else {
+        crate::infra::crypto::decrypt_secret(&row.api_key)
+            .map_err(|e| CoreError::Internal(format!("Failed to decrypt API key: {e}")))?
+    };
 
     let mapping: std::collections::HashMap<String, String> =
         serde_json::from_str(&row.model_mapping).unwrap_or_default();

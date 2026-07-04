@@ -1253,7 +1253,7 @@ fn cloud_outbox_label(kind: &str) -> &'static str {
         difflore_core::cloud::outbox::kind::SESSION_MINED_CANDIDATE => "memory candidate rows",
         difflore_core::cloud::outbox::kind::OBSERVATION => "activity rows",
         difflore_core::cloud::outbox::kind::MCP_QUERY => "MCP query rows",
-        difflore_core::cloud::outbox::kind::IMPORTED_REVIEWS => "imported review rows",
+        difflore_core::cloud::outbox::kind::IMPORTED_REVIEWS => "retired imported review rows",
         difflore_core::cloud::outbox::kind::ACCEPTED_EDIT => "accepted edit rows",
         difflore_core::cloud::outbox::kind::REVIEW_METRICS => "review metric rows",
         difflore_core::cloud::outbox::kind::TRAJECTORY => "trajectory rows",

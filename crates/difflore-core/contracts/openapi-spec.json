@@ -2219,7 +2219,8 @@
                 "tier": {
                   "enum": [
                     "free",
-                    "pro",
+                    "starter",
+                    "growth",
                     "team",
                     "enterprise"
                   ],
@@ -2450,13 +2451,12 @@
                           "collaborators",
                           "pr_ingestion_included",
                           "overage",
-                          "github_app_ingest",
+                          "local_import_cloud_sync",
                           "reviewer_context_api",
                           "shared_team_memory",
                           "local_cli_mcp_server",
                           "rule_candidates_admin_workflow",
                           "governance_audit_log",
-                          "reciprocity_readme_badge_required",
                           "support",
                           "audit_log_export",
                           "sso_saml_dpa_soc2_vpc_self_hosted"
@@ -2469,7 +2469,10 @@
                       "free": {
                         "type": "string"
                       },
-                      "pro": {
+                      "starter": {
+                        "type": "string"
+                      },
+                      "growth": {
                         "type": "string"
                       },
                       "team": {
@@ -2486,6 +2489,8 @@
                       "featureId",
                       "label",
                       "free",
+                      "starter",
+                      "growth",
                       "team"
                     ]
                   }
@@ -2563,9 +2568,6 @@
               "hasLlmKey": {
                 "type": "boolean"
               },
-              "githubInstallations": {
-                "type": "number"
-              },
               "recentReviewAt": {
                 "anyOf": [
                   {
@@ -2582,19 +2584,8 @@
             },
             "required": [
               "hasLlmKey",
-              "githubInstallations",
               "recentReviewAt",
               "hasDraftExtractions"
-            ]
-          },
-          "githubAppSlug": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
             ]
           }
         },
@@ -2602,8 +2593,7 @@
           "plan",
           "ruleCount",
           "deviceCount",
-          "readiness",
-          "githubAppSlug"
+          "readiness"
         ]
       },
       "DashboardPlan": {
@@ -8981,6 +8971,8 @@
                 "properties": {
                   "planId": {
                     "enum": [
+                      "starter",
+                      "growth",
                       "pro",
                       "team"
                     ],
@@ -15036,249 +15028,6 @@
         }
       }
     },
-    "/reviews/import": {
-      "post": {
-        "operationId": "reviews.importFromClient",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "reviews": {
-                    "type": "array",
-                    "maxItems": 50,
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "provider": {
-                          "enum": [
-                            "github",
-                            "gitlab"
-                          ],
-                          "type": "string",
-                          "default": "github"
-                        },
-                        "providerHost": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 255,
-                              "pattern": "^[a-z0-9.-]+(?::\\d{1,5})?$"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "repoFullName": {
-                          "type": "string",
-                          "maxLength": 500
-                        },
-                        "sourceRepoFullName": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "maxLength": 500
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "prNumber": {
-                          "type": "integer",
-                          "minimum": -9007199254740991,
-                          "maximum": 9007199254740991
-                        },
-                        "prTitle": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "maxLength": 1000
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "comments": {
-                          "type": "array",
-                          "maxItems": 200,
-                          "items": {
-                            "type": "object",
-                            "properties": {
-                              "eventType": {
-                                "anyOf": [
-                                  {
-                                    "enum": [
-                                      "pull_request_review_comment",
-                                      "pull_request_review",
-                                      "issue_comment"
-                                    ],
-                                    "type": "string"
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "filePath": {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "maxLength": 1000
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "lineNumber": {
-                                "anyOf": [
-                                  {
-                                    "type": "integer",
-                                    "minimum": -9007199254740991,
-                                    "maximum": 9007199254740991
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "content": {
-                                "type": "string",
-                                "maxLength": 100000
-                              },
-                              "author": {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "maxLength": 200
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "commentUrl": {
-                                "type": "string",
-                                "maxLength": 2048
-                              },
-                              "threadId": {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "maxLength": 200
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "occurredAt": {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "maxLength": 50
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              }
-                            },
-                            "required": [
-                              "filePath",
-                              "content",
-                              "author",
-                              "commentUrl",
-                              "threadId",
-                              "occurredAt"
-                            ]
-                          }
-                        }
-                      },
-                      "required": [
-                        "repoFullName",
-                        "prNumber",
-                        "prTitle",
-                        "comments"
-                      ]
-                    }
-                  }
-                },
-                "required": [
-                  "reviews"
-                ]
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "imported": {
-                      "type": "number"
-                    },
-                    "skipped": {
-                      "type": "number"
-                    },
-                    "extractionQueued": {
-                      "type": "number"
-                    }
-                  },
-                  "required": [
-                    "imported",
-                    "skipped",
-                    "extractionQueued"
-                  ]
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "403",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "defined": {
-                      "const": true
-                    },
-                    "code": {
-                      "const": "PLAN_LIMIT_EXCEEDED"
-                    },
-                    "status": {
-                      "const": 403
-                    },
-                    "message": {
-                      "type": "string",
-                      "default": "PLAN_LIMIT_EXCEEDED"
-                    },
-                    "data": {}
-                  },
-                  "required": [
-                    "defined",
-                    "code",
-                    "status",
-                    "message"
-                  ]
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/reviews/extractions/quality-summary": {
       "get": {
         "operationId": "reviews.extractionQualitySummary",
@@ -17541,152 +17290,6 @@
                     "memoryReinforcementRecorded",
                     "memoryReinforcementDeduped",
                     "error"
-                  ]
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/backfill/installations": {
-      "get": {
-        "operationId": "backfill.myInstallations",
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "installations": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "repoFullName": {
-                            "type": "string"
-                          },
-                          "alreadySeeded": {
-                            "type": "boolean"
-                          },
-                          "reviewCount": {
-                            "type": "number"
-                          }
-                        },
-                        "required": [
-                          "repoFullName",
-                          "alreadySeeded",
-                          "reviewCount"
-                        ]
-                      }
-                    }
-                  },
-                  "required": [
-                    "installations"
-                  ]
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/backfill/{repoFullName}/status": {
-      "get": {
-        "operationId": "backfill.status",
-        "parameters": [
-          {
-            "name": "repoFullName",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "maxLength": 200
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "installed": {
-                      "type": "boolean"
-                    },
-                    "existingReviewCount": {
-                      "type": "number"
-                    }
-                  },
-                  "required": [
-                    "installed",
-                    "existingReviewCount"
-                  ]
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/backfill/start": {
-      "post": {
-        "operationId": "backfill.start",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "repoFullName": {
-                    "type": "string",
-                    "maxLength": 200
-                  },
-                  "maxPrs": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 500,
-                    "default": 100
-                  },
-                  "since": {
-                    "type": "string",
-                    "format": "date-time"
-                  }
-                },
-                "required": [
-                  "repoFullName"
-                ]
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "message": {
-                      "type": "string"
-                    },
-                    "appliedMaxPrs": {
-                      "type": "number"
-                    },
-                    "capped": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "message",
-                    "appliedMaxPrs",
-                    "capped"
                   ]
                 }
               }

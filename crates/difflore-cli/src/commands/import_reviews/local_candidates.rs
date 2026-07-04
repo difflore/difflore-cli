@@ -1493,7 +1493,7 @@ pub(super) fn route_for_confidence(confidence: f32) -> CaptureRoute {
     }
 }
 
-fn route_for_comment_confidence(confidence: f32, _is_bot: bool) -> CaptureRoute {
+fn route_for_comment_confidence(confidence: f32) -> CaptureRoute {
     match route_for_confidence(confidence) {
         CaptureRoute::Active => CaptureRoute::Candidate,
         route => route,
@@ -1549,7 +1549,7 @@ pub(super) fn local_candidate_input(
     );
     let is_bot = source_kind.requires_human_validation();
     let confidence = capture_confidence(directive_score, is_bot, &signal);
-    let route = route_for_comment_confidence(confidence, is_bot);
+    let route = route_for_comment_confidence(confidence);
     if route == CaptureRoute::Drop {
         return None;
     }
@@ -2121,7 +2121,7 @@ mod tests {
         assert_confidence(confidence, 0.70);
         assert_eq!(route_for_confidence(confidence), CaptureRoute::Active);
         assert_eq!(
-            route_for_comment_confidence(confidence, false),
+            route_for_comment_confidence(confidence),
             CaptureRoute::Candidate
         );
     }
@@ -2129,11 +2129,11 @@ mod tests {
     #[test]
     fn heuristic_comment_route_vetoes_auto_activation_for_all_authors() {
         assert_eq!(
-            route_for_comment_confidence(CAPTURE_CONFIDENCE_HIGH + 0.10, true),
+            route_for_comment_confidence(CAPTURE_CONFIDENCE_HIGH + 0.10),
             CaptureRoute::Candidate
         );
         assert_eq!(
-            route_for_comment_confidence(CAPTURE_CONFIDENCE_HIGH + 0.10, false),
+            route_for_comment_confidence(CAPTURE_CONFIDENCE_HIGH + 0.10),
             CaptureRoute::Candidate
         );
     }
@@ -2211,7 +2211,7 @@ mod tests {
         assert_confidence(confidence, 0.65);
         assert_eq!(route_for_confidence(confidence), CaptureRoute::Active);
         assert_eq!(
-            route_for_comment_confidence(confidence, false),
+            route_for_comment_confidence(confidence),
             CaptureRoute::Candidate
         );
     }
