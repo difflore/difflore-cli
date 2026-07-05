@@ -1,0 +1,199 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 960px; height: 540px; overflow: hidden; }
+  body {
+    background: #0d1117;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #c9d1d9;
+    position: relative;
+  }
+  .fade { opacity: 0; transition: none; }
+  .fade.on { opacity: 1; }
+
+  .header { position: absolute; top: 22px; left: 34px; display: flex; align-items: baseline; gap: 12px; }
+  .logo { font-size: 21px; font-weight: 700; color: #e6edf3; letter-spacing: .5px; }
+  .logo em { font-style: normal; color: #3fb950; }
+  .howit { font-size: 12.5px; color: #8b949e; font-family: -apple-system, 'Segoe UI', sans-serif; }
+
+  .coltitle {
+    position: absolute; top: 72px; font-size: 13.5px; font-weight: 700; color: #b6c0ca;
+    font-family: -apple-system, 'Segoe UI', sans-serif;
+  }
+  .panel {
+    position: absolute; top: 96px; height: 362px; width: 260px;
+    background: #10151d; border: 1px solid #262d37; border-radius: 10px;
+  }
+  #p1 { left: 34px; } #t1 { left: 34px; }
+  #p2 { left: 350px; } #t2 { left: 350px; }
+  #p3 { left: 666px; } #t3 { left: 666px; }
+
+  .card {
+    position: relative; margin: 12px 12px 0 12px; padding: 10px 12px;
+    background: #161c25; border: 1px solid #2a323d; border-radius: 8px;
+    font-size: 12px; line-height: 1.45;
+  }
+  .who { display: flex; align-items: center; gap: 7px; color: #8b949e; font-size: 11px; margin-bottom: 5px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .blue { background: #58a6ff; } .yellow { background: #d29922; } .purple { background: #bc8cff; }
+  .subhead { margin: 14px 12px 0 12px; font-size: 11px; color: #8b949e;
+    font-family: -apple-system, 'Segoe UI', sans-serif; font-weight: 600; }
+  .sess { background: #0d1117; border-color: #2a323d; }
+  .sess .you { color: #3fb950; }
+  .caret { display: inline-block; width: 7px; height: 13px; background: #3fb950; vertical-align: -2px; }
+
+  .midlogo { text-align: center; margin-top: 18px; font-size: 17px; font-weight: 700; color: #e6edf3; }
+  .midlogo em { font-style: normal; color: #3fb950; }
+  .midstate { text-align: center; margin-top: 8px; font-size: 11.5px; color: #8b949e; height: 16px; }
+  .midstate.approved { color: #3fb950; }
+  .rule { padding-left: 30px; }
+  .mark { position: absolute; left: 10px; top: 11px; font-size: 13px; width: 16px; text-align: center; }
+  .mark.ok { color: #3fb950; } .mark.no { color: #f85149; }
+  .rule .src { display: block; text-align: right; color: #8b949e; font-size: 10.5px; margin-top: 5px; }
+  .rule.approved { border-color: #2ea04366; background: #12211a; }
+  .rule.rejected { opacity: .45; }
+  .rule.rejected .body { text-decoration: line-through; text-decoration-color: #f8514988; }
+
+  .arrow { position: absolute; top: 268px; font-size: 13px; color: #57606a; letter-spacing: 1px; }
+  #a1 { left: 305px; } #a2 { left: 618px; }
+  .arrow .lbl { position: absolute; top: -16px; left: 2px; font-size: 10px; color: #3fb950; }
+  .arrow.live { color: #3fb950; }
+
+  .agents { margin: 12px 12px 0 12px; font-size: 11px; color: #8b949e; }
+  .term {
+    margin: 10px 12px 0 12px; padding: 11px 12px; height: 148px;
+    background: #0d1117; border: 1px solid #2a323d; border-radius: 8px;
+    font-size: 11.5px; line-height: 1.75; color: #c9d1d9;
+  }
+  .term .cmd { color: #3fb950; }
+  .term .dim { color: #8b949e; }
+  .gateline { margin: 12px 12px 0 12px; font-size: 11.5px; color: #3fb950; line-height: 1.5; }
+
+  .tagline {
+    position: absolute; bottom: 26px; width: 100%; text-align: center;
+    font-size: 16.5px; font-weight: 700; color: #e6edf3;
+    font-family: -apple-system, 'Segoe UI', sans-serif;
+  }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">diff<em>lore</em></div>
+    <div class="howit">· how it works</div>
+  </div>
+
+  <div class="coltitle fade" id="t1">where your team already decided</div>
+  <div class="panel fade" id="p1">
+    <div class="subhead fade" id="s1a">PR review history</div>
+    <div class="card fade" id="c1">
+      <div class="who"><span class="dot blue"></span>alice · PR #241</div>
+      <div>raise_for_ownership()<br>before returning a dashboard</div>
+    </div>
+    <div class="card fade" id="c2">
+      <div class="who"><span class="dot yellow"></span>bo · PR #312</div>
+      <div>nit: typo in `retrys`</div>
+    </div>
+    <div class="subhead fade" id="s1b">your live session</div>
+    <div class="card sess fade" id="c3">
+      <div class="who"><span class="dot purple"></span>you · to your agent</div>
+      <div><span class="you">▸ </span><span id="typed"></span><span class="caret fade" id="caret"></span></div>
+    </div>
+  </div>
+
+  <div class="arrow fade" id="a1">--▶</div>
+
+  <div class="coltitle fade" id="t2">difflore drafts rules</div>
+  <div class="panel fade" id="p2">
+    <div class="midlogo">diff<em>lore</em></div>
+    <div class="midstate" id="midstate"></div>
+    <div class="card rule fade" id="r1">
+      <span class="mark fade" id="m1">✓</span>
+      <span class="body">validate ownership before returning dashboards</span>
+      <span class="src">← PR #241</span>
+    </div>
+    <div class="card rule fade" id="r2">
+      <span class="mark fade" id="m2">✗</span>
+      <span class="body">fix typo in `retrys`</span>
+      <span class="src">← PR #312</span>
+    </div>
+    <div class="card rule fade" id="r3">
+      <span class="mark fade" id="m3">✓</span>
+      <span class="body">use the retry helper — never a second retry loop</span>
+      <span class="src">← your session</span>
+    </div>
+  </div>
+
+  <div class="arrow fade" id="a2">--▶<span class="lbl fade" id="a2l">MCP</span></div>
+
+  <div class="coltitle fade" id="t3">your coding agent</div>
+  <div class="panel fade" id="p3">
+    <div class="agents fade" id="ag">Claude Code · Cursor · Codex</div>
+    <div class="term fade" id="term">
+      <div class="fade" id="l1"><span class="cmd">$ agent edits</span> retry.rs</div>
+      <div class="fade" id="l2"><span class="dim">▸</span> recalls 2 team rules</div>
+      <div class="fade" id="l3"><span class="dim">▸</span> each traced to the review<br>&nbsp;&nbsp;or session that set it</div>
+      <div class="fade" id="l4"><span class="cmd">▍</span></div>
+    </div>
+    <div class="gateline fade" id="gate">review gate: no repeat comments ✓</div>
+  </div>
+
+  <div class="tagline fade" id="tag">never write the same review comment twice</div>
+
+<script>
+  const SESSION_TEXT = 'use the retry helper — don’t add a second loop';
+  function setOn(id, on) { document.getElementById(id).classList.toggle('on', on); }
+
+  // Deterministic: render state for time t (seconds).
+  function seek(t) {
+    // -- left panel --
+    setOn('t1', t >= 0.3); setOn('p1', t >= 0.3); setOn('s1a', t >= 0.4);
+    setOn('c1', t >= 0.7);
+    setOn('c2', t >= 1.2);
+    setOn('s1b', t >= 1.8); setOn('c3', t >= 1.9);
+    const typeStart = 2.0, typeEnd = 3.4;
+    const k = Math.max(0, Math.min(1, (t - typeStart) / (typeEnd - typeStart)));
+    document.getElementById('typed').textContent = SESSION_TEXT.slice(0, Math.round(k * SESSION_TEXT.length));
+    setOn('caret', t >= 1.9 && (t < typeEnd + 0.4) && (Math.floor(t * 3) % 2 === 0));
+
+    // -- mine --
+    setOn('a1', t >= 3.7);
+    document.getElementById('a1').classList.toggle('live', t >= 3.7);
+    setOn('t2', t >= 3.9); setOn('p2', t >= 3.9);
+    const mid = document.getElementById('midstate');
+    if (t >= 3.9 && t < 5.6) { mid.textContent = 'mining review history + session…'; mid.classList.remove('approved'); }
+    setOn('r1', t >= 4.5);
+    setOn('r2', t >= 4.9);
+    setOn('r3', t >= 5.3);
+
+    // -- approve --
+    if (t >= 5.9) { mid.textContent = 'you approve — few and precise'; }
+    setOn('m1', t >= 6.3);
+    document.getElementById('r1').classList.toggle('approved', t >= 6.3);
+    setOn('m2', t >= 6.8);
+    document.getElementById('r2').classList.toggle('rejected', t >= 6.8);
+    setOn('m3', t >= 7.3);
+    document.getElementById('r3').classList.toggle('approved', t >= 7.3);
+    if (t >= 7.6) { mid.textContent = '2 rules approved · source-backed'; mid.classList.add('approved'); }
+
+    // -- serve --
+    setOn('a2', t >= 8.0); setOn('a2l', t >= 8.0);
+    document.getElementById('a2').classList.toggle('live', t >= 8.0);
+    setOn('t3', t >= 8.2); setOn('p3', t >= 8.2);
+    setOn('ag', t >= 8.3); setOn('term', t >= 8.5);
+    setOn('l1', t >= 8.7);
+    setOn('l2', t >= 9.3);
+    setOn('l3', t >= 9.9);
+    setOn('l4', t >= 10.4 && (Math.floor(t * 3) % 2 === 0));
+    setOn('gate', t >= 10.6);
+
+    // -- tagline --
+    setOn('tag', t >= 11.2);
+  }
+  window.seek = seek;
+  seek(0);
+</script>
+</body>
+</html>

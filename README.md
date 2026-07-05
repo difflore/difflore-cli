@@ -11,7 +11,7 @@ live coding sessions, and hands the approved, source-traceable result to Claude
 Code, Codex, Cursor, and other local AI CLIs before they write or review code.
 Review engines are free now; your team's judgment isn't.
 
-![How DiffLore works: past PR reviews are mined into source-traced rules and served to your coding agent over MCP](.github/assets/difflore-concept.gif)
+![How DiffLore works: PR review comments and live session corrections are mined into source-traced rules, you approve the real ones, and your coding agent recalls them over MCP before it edits](.github/assets/difflore-concept.gif)
 
 DiffLore builds a local system of record for your team's rules from two places —
 your team's past PR/MR reviews and your live coding sessions — and keeps you in
