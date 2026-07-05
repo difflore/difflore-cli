@@ -121,15 +121,10 @@ fn rules_command_parses_summary_inbox_active_activity_show_review_actions_sync_a
         })
     ));
 
-    let hidden_alias =
-        Cli::try_parse_from(["difflore", "memory"]).expect("hidden memory alias should parse");
-    assert!(matches!(
-        hidden_alias.command,
-        Some(Commands::Memory {
-            json: false,
-            command: None,
-        })
-    ));
+    assert!(
+        Cli::try_parse_from(["difflore", "memory"]).is_err(),
+        "removed memory alias must not parse"
+    );
 
     let summary_json =
         Cli::try_parse_from(["difflore", "rules", "--json"]).expect("rules --json should parse");

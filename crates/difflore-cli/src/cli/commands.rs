@@ -85,7 +85,7 @@ pub(crate) enum Commands {
     ImportReviews(ImportReviewsCliArgs),
 
     /// Review and approve the rules DiffLore has learned.
-    #[command(name = "rules", alias = "memory")]
+    #[command(name = "rules")]
     Memory {
         /// Output the compact rules summary as JSON.
         #[arg(long)]
@@ -160,7 +160,7 @@ pub(crate) enum Commands {
         json: bool,
     },
 
-    /// Compatibility alias for local rule draft review.
+    /// Scriptable list/approve interface for pending rule drafts.
     #[command(hide = true)]
     Drafts {
         #[command(subcommand)]

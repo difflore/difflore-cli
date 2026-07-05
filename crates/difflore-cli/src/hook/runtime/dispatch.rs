@@ -779,10 +779,9 @@ fn rule_numbers_from_citation_text(text: &str) -> std::collections::BTreeSet<usi
     let bytes = lower.as_bytes();
     let mut out = std::collections::BTreeSet::new();
 
-    // Scan for both "rule N" (legacy) and "memory N" (current product language).
-    // Hook output instructs agents to cite as "applying Memory N", but older
-    // transcripts and external skills still use "Rule N"; accept both so the
-    // citation telemetry doesn't lose ground.
+    // Scan for both "rule N" (current product language) and "memory N"
+    // (pre-rename transcripts and external skills); accept both so the
+    // citation telemetry doesn't lose ground on mixed transcripts.
     for needle in ["rule", "memory"] {
         let mut search_from = 0usize;
         while let Some(relative) = lower[search_from..].find(needle) {

@@ -82,7 +82,7 @@ impl<'a> CommandTokens<'a> {
     }
 
     fn is_rules_root(&self) -> bool {
-        self.is_exact(&["difflore", "rules"]) || self.is_exact(&["difflore", "memory"])
+        self.is_exact(&["difflore", "rules"])
     }
 
     fn starts_with_rules(&self, suffix: &[&str]) -> bool {
@@ -92,7 +92,7 @@ impl<'a> CommandTokens<'a> {
         let Some((command, tail)) = rest.split_first() else {
             return false;
         };
-        *program == "difflore" && matches!(*command, "rules" | "memory") && tail.starts_with(suffix)
+        *program == "difflore" && *command == "rules" && tail.starts_with(suffix)
     }
 }
 
