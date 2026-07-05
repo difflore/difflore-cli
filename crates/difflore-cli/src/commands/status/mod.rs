@@ -770,6 +770,11 @@ mod tests {
         assert!(envelope["rulesInbox"]["cloud"]["teamReady"].is_null());
         assert_eq!(envelope["localAcceptedProof"]["acceptedProofSignatures"], 0);
         assert_eq!(envelope["localAcceptedProof"]["proofGrade"], "none");
+        assert_eq!(envelope["localAcceptedProof"]["reviewCommentsAvoided"], 0);
+        assert_eq!(
+            envelope["localAcceptedProof"]["reviewCommentsAvoidedTotal"],
+            0
+        );
         let accepted_proof_signatures = envelope["localAcceptedProof"]["acceptedProofSignatures"]
             .as_i64()
             .expect("accepted proof signatures count");
@@ -844,6 +849,53 @@ mod tests {
         assert!(
             envelope["embeddingDegradedReason"].is_string()
                 || envelope["embeddingDegradedReason"].is_null()
+        );
+    }
+
+    #[tokio::test]
+    async fn status_json_surfaces_local_review_comments_avoided() {
+        use difflore_core::observability::review_gate_events::{
+            ReviewGateEventInput, ReviewGateSource, finding_hash, record_many,
+        };
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        pin_test_home();
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open pool");
+        difflore_core::infra::db::run_migrations(&pool)
+            .await
+            .expect("apply migrations");
+        let finding_hash = finding_hash(
+            "rule-1",
+            "src/auth.ts",
+            Some(12),
+            "Use a constant-time token check.",
+        );
+        record_many(
+            &pool,
+            &[ReviewGateEventInput {
+                rule_id: "rule-1".to_owned(),
+                file_path: "src/auth.ts".to_owned(),
+                finding_hash,
+                source: ReviewGateSource::Review,
+            }],
+        )
+        .await
+        .expect("record review gate event");
+
+        let payload = compute_status_payload(&pool, "/tmp/status-test", StatusLane::All)
+            .await
+            .expect("compute payload");
+        let envelope = payload.to_json_envelope();
+
+        assert_eq!(envelope["localAcceptedProof"]["reviewCommentsAvoided"], 1);
+        assert_eq!(
+            envelope["localAcceptedProof"]["reviewCommentsAvoidedTotal"],
+            1
         );
     }
 

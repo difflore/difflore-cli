@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use difflore_core::domain::models::DiffContentRecord;
+use difflore_core::observability::review_gate_events::{ReviewGateEventInput, ReviewGateSource};
 use difflore_core::review_engine::{
     DiffContextFile, DiffContextMode, DiffContextOptions, PackedDiffContext, ReviewCheckResult,
     ReviewIssueRecord, pack_diff_context,
@@ -34,7 +35,7 @@ use apply::{
     yes_mode_should_fail,
 };
 use attribution::fetch_rule_source_repos;
-use ci::{exit_after_output, finish_ci_mode};
+use ci::{ci_blocking_suggestions, exit_after_output, finish_ci_mode};
 use context::{
     FixContext, changed_files_for_retrieval, prepare_fix_context, primary_file_for_retrieval,
 };
@@ -430,6 +431,23 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
         .collect();
 
     let attributions = fetch_rule_source_repos(&ctx.db, &result.matched_rule_ids).await;
+    let ci_blocking_for_record = args
+        .ci
+        .then(|| ci_blocking_suggestions(&suggestions, &result.matched_rule_ids, args.strict));
+    if args.read_only {
+        let (source, findings) = if let Some(blocking) = ci_blocking_for_record.as_ref() {
+            (ReviewGateSource::Ci, blocking.as_slice())
+        } else {
+            (ReviewGateSource::Review, suggestions.as_slice())
+        };
+        record_rule_backed_review_gate_findings(
+            &ctx.db,
+            source,
+            findings,
+            &result.matched_rule_ids,
+        )
+        .await;
+    }
 
     match mode {
         FixOutputMode::Handoff => {
@@ -591,6 +609,65 @@ async fn print_compact_value_summary(db: &difflore_core::SqlitePool) {
     if let Some(line) = crate::commands::status::render_compact_value_summary(&summary) {
         println!("{}", style::pewter(&line));
     }
+}
+
+async fn record_rule_backed_review_gate_findings(
+    db: &difflore_core::SqlitePool,
+    source: ReviewGateSource,
+    findings: &[&ReviewIssueRecord],
+    matched_rule_ids: &[String],
+) {
+    let events: Vec<ReviewGateEventInput> = findings
+        .iter()
+        .filter_map(|issue| review_gate_event_for_issue(issue, source, matched_rule_ids))
+        .collect();
+    let _ = difflore_core::observability::review_gate_events::record_many(db, &events).await;
+}
+
+fn review_gate_event_for_issue(
+    issue: &ReviewIssueRecord,
+    source: ReviewGateSource,
+    matched_rule_ids: &[String],
+) -> Option<ReviewGateEventInput> {
+    let rule_id = issue_rule_backed_id(issue, matched_rule_ids)?.to_owned();
+    let file_path = issue
+        .file
+        .as_deref()
+        .map(str::trim)
+        .filter(|file| !file.is_empty())?
+        .to_owned();
+    let finding_text = format!(
+        "{}\n{}\n{}",
+        issue.rule,
+        issue.message,
+        issue.suggestion.as_deref().unwrap_or_default(),
+    );
+    let finding_hash = difflore_core::observability::review_gate_events::finding_hash(
+        &rule_id,
+        &file_path,
+        issue.line,
+        &finding_text,
+    );
+    Some(ReviewGateEventInput {
+        rule_id,
+        file_path,
+        finding_hash,
+        source,
+    })
+}
+
+fn issue_rule_backed_id<'a>(
+    issue: &'a ReviewIssueRecord,
+    matched_rule_ids: &[String],
+) -> Option<&'a str> {
+    let rule_id = issue.rule_id.as_deref()?.trim();
+    if rule_id.is_empty() {
+        return None;
+    }
+    matched_rule_ids
+        .iter()
+        .any(|matched| matched.trim() == rule_id)
+        .then_some(rule_id)
 }
 
 fn review_diff_context_for_fix(ctx: &FixContext) -> ReviewDiffContext {

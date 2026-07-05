@@ -18,6 +18,8 @@ pub(in crate::commands::status) struct LocalAcceptedProof {
     pub(in crate::commands::status) window_days: i64,
     pub(in crate::commands::status) recall_lookback_days: i64,
     pub(in crate::commands::status) proof_grade: String,
+    pub(in crate::commands::status) review_comments_avoided: i64,
+    pub(in crate::commands::status) review_comments_avoided_total: i64,
     pub(in crate::commands::status) accepted_proof_signatures: i64,
     pub(in crate::commands::status) accepted_hook_outcomes: i64,
     pub(in crate::commands::status) accepted_outcomes_linked_to_prior_recall: i64,
@@ -84,6 +86,8 @@ impl LocalAcceptedProof {
             window_days: LOCAL_PROOF_WINDOW_DAYS,
             recall_lookback_days: LOCAL_ACCEPTED_RECALL_LOOKBACK_DAYS,
             proof_grade: "none".to_owned(),
+            review_comments_avoided: 0,
+            review_comments_avoided_total: 0,
             accepted_proof_signatures: 0,
             accepted_hook_outcomes: 0,
             accepted_outcomes_linked_to_prior_recall: 0,
@@ -161,9 +165,20 @@ pub(in crate::commands::status) async fn local_accepted_proof(
     db: &difflore_core::SqlitePool,
     repo_aliases: &[String],
 ) -> LocalAcceptedProof {
+    let review_gate_summary =
+        difflore_core::observability::review_gate_events::review_comments_avoided_summary(
+            db,
+            LOCAL_PROOF_WINDOW_DAYS,
+        )
+        .await
+        .unwrap_or_default();
     let normalized_aliases = normalized_repo_aliases(repo_aliases);
     if normalized_aliases.is_empty() {
-        return LocalAcceptedProof::empty();
+        return LocalAcceptedProof {
+            review_comments_avoided: review_gate_summary.last30,
+            review_comments_avoided_total: review_gate_summary.total,
+            ..LocalAcceptedProof::empty()
+        };
     }
 
     let accepted_proof_signatures =
@@ -193,6 +208,8 @@ pub(in crate::commands::status) async fn local_accepted_proof(
         window_days: LOCAL_PROOF_WINDOW_DAYS,
         recall_lookback_days: LOCAL_ACCEPTED_RECALL_LOOKBACK_DAYS,
         proof_grade,
+        review_comments_avoided: review_gate_summary.last30,
+        review_comments_avoided_total: review_gate_summary.total,
         accepted_proof_signatures,
         accepted_hook_outcomes,
         accepted_outcomes_linked_to_prior_recall,

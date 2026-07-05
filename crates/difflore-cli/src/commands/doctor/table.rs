@@ -1405,7 +1405,6 @@ mod tests {
                         accepted_fixes_last30: 0,
                         accepted_fix_outcomes_last30: 58,
                         repeat_comment_signals: 58,
-                        review_comments_avoided: 0,
                         modeled_review_minutes: 232,
                         saved_review_minutes: 232,
                         saved_review_minutes_last30: 232,

@@ -63,6 +63,12 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                 usize::MAX,
             )
             .await;
+        let review_gate_summary =
+            difflore_core::observability::review_gate_events::review_comments_avoided_summary(
+                &ctx.db, 30,
+            )
+            .await
+            .unwrap_or_default();
         let mut payload =
             crate::support::impact_payload::shared_sections_with_accepted_proof_sources(
                 &crate::support::impact_payload::ImpactPayloadInputs {
@@ -73,6 +79,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                     fix_scorecard: &fix,
                 },
                 &accepted_proof_sources,
+                review_gate_summary.last30,
             );
         payload.insert("loggedIn".to_owned(), serde_json::Value::Bool(true));
         payload.insert(

@@ -23,6 +23,7 @@ pub(crate) struct ImpactPayloadInputs<'a, E> {
 pub(crate) fn shared_sections_with_accepted_proof_sources<E>(
     input: &ImpactPayloadInputs<'_, E>,
     accepted_proof_sources: &HashMap<String, String>,
+    review_comments_avoided_last30: i64,
 ) -> Map<String, Value> {
     let mut out = Map::with_capacity(5);
     out.insert("banner".to_owned(), banner_value(input.banner));
@@ -34,7 +35,7 @@ pub(crate) fn shared_sections_with_accepted_proof_sources<E>(
     out.insert("coverage".to_owned(), coverage_value(input.coverage));
     out.insert(
         "fixScorecard".to_owned(),
-        fix_scorecard_value(input.fix_scorecard),
+        fix_scorecard_value(input.fix_scorecard, review_comments_avoided_last30),
     );
     out
 }
@@ -241,9 +242,13 @@ fn coverage_value<E>(r: &Result<ImpactCoverageDto, E>) -> Value {
     })
 }
 
-fn fix_scorecard_value<E>(r: &Result<ImpactFixScorecardDto, E>) -> Value {
+fn fix_scorecard_value<E>(
+    r: &Result<ImpactFixScorecardDto, E>,
+    review_comments_avoided: i64,
+) -> Value {
     r.as_ref().ok().map_or(Value::Null, |f| {
         let saved_review_minutes = saved_review_minutes_for_scorecard(f);
+        let review_comments_avoided = review_comments_avoided.max(0);
         json!({
             "last30": { "accepted": f.last30.accepted, "total": f.last30.total },
             "prior30": { "accepted": f.prior30.accepted, "total": f.prior30.total },
@@ -251,7 +256,7 @@ fn fix_scorecard_value<E>(r: &Result<ImpactFixScorecardDto, E>) -> Value {
             "roi": f.roi.as_ref().map_or_else(
                 || json!({
                     "acceptedFixesLast30": f.last30.accepted,
-                    "reviewCommentsAvoided": f.last30.accepted,
+                    "reviewCommentsAvoided": review_comments_avoided,
                     "savedReviewMinutes": saved_review_minutes,
                     "repeatFeedbackReduced": 0,
                     "sourceEvidenceItems": 0,
@@ -260,7 +265,7 @@ fn fix_scorecard_value<E>(r: &Result<ImpactFixScorecardDto, E>) -> Value {
                     "acceptedFixesLast30": roi.accepted_fixes_last30,
                     "acceptedFixOutcomesLast30": roi.accepted_fix_outcomes_last30,
                     "repeatCommentSignals": roi.repeat_comment_signals,
-                    "reviewCommentsAvoided": roi.review_comments_avoided,
+                    "reviewCommentsAvoided": review_comments_avoided,
                     "modeledReviewMinutes": roi.modeled_review_minutes,
                     "savedReviewMinutes": saved_review_minutes,
                     "savedReviewMinutesLast30": saved_review_minutes,
@@ -339,7 +344,6 @@ mod tests {
                 accepted_fixes_last30: 2,
                 accepted_fix_outcomes_last30: 0,
                 repeat_comment_signals: 2,
-                review_comments_avoided: 2,
                 modeled_review_minutes: 8,
                 saved_review_minutes: 8,
                 saved_review_minutes_last30: 8,
@@ -360,6 +364,7 @@ mod tests {
                 fix_scorecard: &fix_scorecard,
             },
             &HashMap::new(),
+            5,
         );
 
         assert_eq!(
@@ -389,6 +394,7 @@ mod tests {
             Some("Local Fix activity")
         );
         assert_eq!(payload["fixScorecard"]["roi"]["savedReviewMinutes"], 8);
+        assert_eq!(payload["fixScorecard"]["roi"]["reviewCommentsAvoided"], 5);
     }
 
     #[test]
@@ -427,6 +433,7 @@ mod tests {
                 fix_scorecard: &fix_scorecard,
             },
             &proof_sources,
+            0,
         );
 
         assert_eq!(
@@ -494,6 +501,7 @@ mod tests {
                 fix_scorecard: &fix_scorecard,
             },
             &HashMap::new(),
+            0,
         );
 
         assert_eq!(payload["coverage"]["reviewCommentsIndexed"], 118);
@@ -517,7 +525,6 @@ mod tests {
                 accepted_fixes_last30: 46,
                 accepted_fix_outcomes_last30: 0,
                 repeat_comment_signals: 46,
-                review_comments_avoided: 46,
                 modeled_review_minutes: 0,
                 saved_review_minutes: 0,
                 saved_review_minutes_last30: 0,
@@ -548,9 +555,12 @@ mod tests {
                 fix_scorecard: &scorecard_result,
             },
             &HashMap::new(),
+            7,
         );
 
         assert_eq!(payload["fixScorecard"]["roi"]["savedReviewMinutes"], 184);
+        assert_eq!(payload["fixScorecard"]["roi"]["reviewCommentsAvoided"], 7);
+        assert_ne!(payload["fixScorecard"]["roi"]["reviewCommentsAvoided"], 46);
     }
 
     #[tokio::test]

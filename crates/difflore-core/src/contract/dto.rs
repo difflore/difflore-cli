@@ -496,7 +496,6 @@ mod tests {
             "acceptedFixesLast30": 3,
             "acceptedFixOutcomesLast30": 2,
             "repeatCommentSignals": 5,
-            "reviewCommentsAvoided": 3,
             "modeledReviewMinutes": 20,
             "savedReviewMinutesLast30": 20,
             "repeatFeedbackReduced": 1,
@@ -787,8 +786,6 @@ pub struct ImpactRoiDto {
     pub accepted_fix_outcomes_last30: i64,
     #[serde(default)]
     pub repeat_comment_signals: i64,
-    #[serde(default)]
-    pub review_comments_avoided: i64,
     #[serde(default)]
     pub modeled_review_minutes: i64,
     #[serde(default)]

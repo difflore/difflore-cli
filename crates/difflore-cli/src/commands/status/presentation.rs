@@ -683,6 +683,8 @@ mod tests {
             window_days: 30,
             recall_lookback_days: 7,
             proof_grade: "observed_value".to_owned(),
+            review_comments_avoided: 0,
+            review_comments_avoided_total: 0,
             accepted_proof_signatures: 0,
             accepted_hook_outcomes: 2,
             accepted_outcomes_linked_to_prior_recall: 2,
@@ -870,6 +872,8 @@ mod tests {
             } else {
                 "none".to_owned()
             },
+            review_comments_avoided: 0,
+            review_comments_avoided_total: 0,
             accepted_proof_signatures: accepted_signatures,
             accepted_hook_outcomes: 0,
             accepted_outcomes_linked_to_prior_recall: linked,
