@@ -16,9 +16,9 @@ mod tools;
 mod trust_proof;
 
 pub use hook::{
-    HookRuleContext, fetch_relevant_rules_for_bash_error,
-    fetch_relevant_rules_for_bash_error_with_repo_scopes, fetch_relevant_rules_for_hook,
-    fetch_relevant_rules_for_hook_with_repo_scopes, run,
+    HookRuleContext, fetch_compact_relevant_rules_for_pre_submit_with_repo_scopes,
+    fetch_relevant_rules_for_bash_error, fetch_relevant_rules_for_bash_error_with_repo_scopes,
+    fetch_relevant_rules_for_hook, fetch_relevant_rules_for_hook_with_repo_scopes, run,
 };
 #[cfg(test)]
 pub(crate) use hook::{

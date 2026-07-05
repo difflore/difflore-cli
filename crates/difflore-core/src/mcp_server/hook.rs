@@ -1,12 +1,12 @@
 use serde_json::Value;
 use sqlx::SqlitePool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt as _, AsyncWriteExt, BufReader};
 
 use crate::cloud::client::CloudClient;
-use crate::context::retrieval::RuleRankingWhy;
+use crate::context::retrieval::{RuleRankingWhy, ScoredRuleChunk, TargetScope};
 use crate::context::{EmbeddingDiagnostics, gather_embedding_diagnostics_with_activity};
 use crate::error::CoreError;
 use crate::observability::injection_log::InjectionDropReason;
@@ -144,6 +144,12 @@ fn hook_embedding_health_header(diag: &EmbeddingDiagnostics) -> String {
 /// repo's own ratified judgment.
 const CROSS_REPO_STARTER_HOOK_TOP_K: usize = 3;
 
+#[derive(Clone, Copy)]
+enum HookRenderMode<'a> {
+    Full,
+    CompactPreSubmit { diff_files: &'a [String] },
+}
+
 /// Hook-path rule fetch. Returns rendered text + injection count without the
 /// JSON-RPC envelope so an in-process consumer can pull rules in one call.
 /// Keep retrieval, formatting, telemetry, and token accounting aligned with
@@ -158,7 +164,16 @@ pub async fn fetch_relevant_rules_for_hook(
     intent: &str,
     session_id: Option<&str>,
 ) -> Result<HookRuleContext, CoreError> {
-    fetch_relevant_rules_for_hook_inner(db, index_pool, file, intent, session_id, None).await
+    fetch_relevant_rules_for_hook_inner(
+        db,
+        index_pool,
+        file,
+        intent,
+        session_id,
+        None,
+        HookRenderMode::Full,
+    )
+    .await
 }
 
 pub async fn fetch_relevant_rules_for_hook_with_repo_scopes(
@@ -169,8 +184,37 @@ pub async fn fetch_relevant_rules_for_hook_with_repo_scopes(
     session_id: Option<&str>,
     repo_scopes: &[String],
 ) -> Result<HookRuleContext, CoreError> {
-    fetch_relevant_rules_for_hook_inner(db, index_pool, file, intent, session_id, Some(repo_scopes))
-        .await
+    fetch_relevant_rules_for_hook_inner(
+        db,
+        index_pool,
+        file,
+        intent,
+        session_id,
+        Some(repo_scopes),
+        HookRenderMode::Full,
+    )
+    .await
+}
+
+pub async fn fetch_compact_relevant_rules_for_pre_submit_with_repo_scopes(
+    db: &SqlitePool,
+    index_pool: &SqlitePool,
+    primary_file: &str,
+    diff_files: &[String],
+    intent: &str,
+    session_id: Option<&str>,
+    repo_scopes: &[String],
+) -> Result<HookRuleContext, CoreError> {
+    fetch_relevant_rules_for_hook_inner(
+        db,
+        index_pool,
+        primary_file,
+        intent,
+        session_id,
+        Some(repo_scopes),
+        HookRenderMode::CompactPreSubmit { diff_files },
+    )
+    .await
 }
 
 /// Bash-error recall uses the same retrieval/ranking path as hook rule recall,
@@ -183,7 +227,16 @@ pub async fn fetch_relevant_rules_for_bash_error(
     intent: &str,
     session_id: Option<&str>,
 ) -> Result<HookRuleContext, CoreError> {
-    fetch_relevant_rules_for_hook_inner(db, index_pool, file, intent, session_id, None).await
+    fetch_relevant_rules_for_hook_inner(
+        db,
+        index_pool,
+        file,
+        intent,
+        session_id,
+        None,
+        HookRenderMode::Full,
+    )
+    .await
 }
 
 pub async fn fetch_relevant_rules_for_bash_error_with_repo_scopes(
@@ -194,8 +247,16 @@ pub async fn fetch_relevant_rules_for_bash_error_with_repo_scopes(
     session_id: Option<&str>,
     repo_scopes: &[String],
 ) -> Result<HookRuleContext, CoreError> {
-    fetch_relevant_rules_for_hook_inner(db, index_pool, file, intent, session_id, Some(repo_scopes))
-        .await
+    fetch_relevant_rules_for_hook_inner(
+        db,
+        index_pool,
+        file,
+        intent,
+        session_id,
+        Some(repo_scopes),
+        HookRenderMode::Full,
+    )
+    .await
 }
 
 async fn fetch_relevant_rules_for_hook_inner(
@@ -205,6 +266,7 @@ async fn fetch_relevant_rules_for_hook_inner(
     intent: &str,
     session_id: Option<&str>,
     repo_scopes_override: Option<&[String]>,
+    render_mode: HookRenderMode<'_>,
 ) -> Result<HookRuleContext, CoreError> {
     let trace = crate::infra::env::trace_hook();
     let started = std::time::Instant::now();
@@ -231,7 +293,9 @@ async fn fetch_relevant_rules_for_hook_inner(
     let short_circuit_mode = crate::infra::env::hook_short_circuit_mode();
     let short_circuit_cache = super::hook_short_circuit::global_cache();
     let is_bash_error_path = intent == "bash-error" || intent.starts_with("bash-error ");
-    let is_post_edit_path = !is_bash_error_path;
+    let is_compact_pre_submit_path = matches!(render_mode, HookRenderMode::CompactPreSubmit { .. });
+    let is_post_edit_path = !is_bash_error_path && !is_compact_pre_submit_path;
+    let is_code_change_recall_path = !is_bash_error_path;
     let short_circuit_now = is_post_edit_path
         && !ext_key.is_empty()
         && match short_circuit_mode {
@@ -286,16 +350,26 @@ async fn fetch_relevant_rules_for_hook_inner(
     mark("embedding_diagnostics");
 
     let target_file = if file == "unknown" { None } else { Some(file) };
+    let target_scope = match render_mode {
+        HookRenderMode::CompactPreSubmit { diff_files } if !diff_files.is_empty() => {
+            Some(TargetScope::Changeset(diff_files))
+        }
+        _ => target_file.map(TargetScope::File),
+    };
     // Ranking inputs are best-effort; SQL failures fall back to defaults.
     let ranking_inputs = crate::context::rule_source::load_rule_ranking_inputs(db).await;
     mark("load_rule_ranking_inputs");
     // Hooks render at most 5 rules to keep unsolicited context small. A
     // low-rate sampler occasionally widens the candidate window so deeper
     // ranks get measured without changing normal hook behavior.
-    let hook_top_k = super::recall_sampler::maybe_bump_top_k(
-        5usize,
-        crate::infra::env::deep_recall_sample_rate(),
-    );
+    let hook_top_k = if is_compact_pre_submit_path {
+        5usize
+    } else {
+        super::recall_sampler::maybe_bump_top_k(
+            5usize,
+            crate::infra::env::deep_recall_sample_rate(),
+        )
+    };
     let candidate_limit = hook_top_k.saturating_mul(5).clamp(hook_top_k, 50);
     let mut scored = tools::serve_stats::retrieve_rules_with_repo_scopes(
         index_pool,
@@ -304,10 +378,11 @@ async fn fetch_relevant_rules_for_hook_inner(
             lexical_query: None,
             top_k: candidate_limit,
             target_file,
+            target_scope,
             repo_scopes: &repo_scopes,
             confidence_map: ranking_inputs.confidence_map.as_ref(),
             age_days_map: ranking_inputs.age_days_map.as_ref(),
-            ann_enabled: true,
+            ann_enabled: !is_compact_pre_submit_path,
             local_query_embedding: true,
             embedding_timeout: None,
             strict_file_scope: true,
@@ -326,8 +401,8 @@ async fn fetch_relevant_rules_for_hook_inner(
     let meta_map = tools::evidence::fetch_skills_by_ids(db, &candidate_ids)
         .await
         .unwrap_or_default();
-    let strict_skill_ids = tools::evidence::strict_file_match_ids_for_meta(&meta_map, target_file);
-    if is_post_edit_path {
+    let strict_skill_ids = strict_file_match_ids_for_target_scope(&meta_map, target_scope);
+    if is_code_change_recall_path {
         scored.retain(|rule| {
             meta_map
                 .get(&rule.skill_id)
@@ -353,7 +428,7 @@ async fn fetch_relevant_rules_for_hook_inner(
     // surface ("intent alignment on explicit recall; hook injection guarded
     // by file patterns + score floors only"). Keep README/cli-spec wording in
     // sync with the shipped default.
-    if is_post_edit_path && crate::infra::env::hook_intent_gate_enabled() {
+    if is_code_change_recall_path && crate::infra::env::hook_intent_gate_enabled() {
         crate::context::retrieval::apply_intent_alignment_gate(&mut scored, intent);
     }
 
@@ -378,6 +453,7 @@ async fn fetch_relevant_rules_for_hook_inner(
     let mut cross_repo_starter = false;
     if scored.is_empty()
         && scoped_count == 0
+        && !is_compact_pre_submit_path
         && crate::infra::env::hook_cross_repo_starter_enabled()
         && let Some(tf) = target_file
     {
@@ -399,6 +475,8 @@ async fn fetch_relevant_rules_for_hook_inner(
 
     let (hook_label, hook_tool) = if is_bash_error_path {
         ("bash-error", "hook_bash_error")
+    } else if is_compact_pre_submit_path {
+        ("pre-submit", "hook_pre_submit")
     } else {
         ("post-edit", "hook_post_edit")
     };
@@ -431,6 +509,66 @@ async fn fetch_relevant_rules_for_hook_inner(
             rules_injected: 0,
             rule_ids: Vec::new(),
             drop_reason: Some(InjectionDropReason::RetrievalEmpty),
+        });
+    }
+
+    if is_compact_pre_submit_path {
+        let (text, skill_ids) = render_compact_rule_lines(&scored, &meta_map, target_scope);
+        let n = skill_ids.len();
+        if n == 0 {
+            return Ok(HookRuleContext {
+                rendered: String::new(),
+                rules_injected: 0,
+                rule_ids: Vec::new(),
+                drop_reason: Some(InjectionDropReason::RetrievalEmpty),
+            });
+        }
+
+        emit_trajectory_step(&TrajectoryStep::McpResponseSize {
+            tool: hook_tool.to_owned(),
+            total_tokens: estimate_tokens(&text),
+            rules_injected: n,
+        });
+        let origin_step = rule_hits_by_origin(db, &skill_ids).await;
+        emit_trajectory_step(&origin_step);
+        let strict_match_count =
+            strict_file_match_count_for_target_scope(&meta_map, &skill_ids, target_scope);
+        let served_event = serve_and_record(
+            db,
+            RuleServe {
+                tool: hook_tool,
+                session_id,
+                event_session_id: session_id.unwrap_or("hook"),
+                repo_full_name: repo_scopes.first().map(String::as_str),
+                target_file,
+                query: &query,
+                rule_ids: &skill_ids,
+                top_k: i64::try_from(hook_top_k).unwrap_or(i64::MAX),
+                strict_match_count,
+                estimated_tokens: estimate_tokens(&text) as i64,
+            },
+            hook_serve_record_err_prefix(),
+        )
+        .await;
+        let _ = crate::cloud::observations::enqueue_default(served_event).await;
+        mark("emit_telemetry");
+
+        let _ = crate::cloud::observations::enqueue_default(
+            crate::cloud::observations::ObservationEvent::RuleFired {
+                rule_ids: skill_ids.clone(),
+                file_path: target_file.map(ToOwned::to_owned),
+                intent: Some(intent.to_owned()),
+                session_id: session_id.unwrap_or("hook").to_owned(),
+                fired_at: chrono::Utc::now(),
+            },
+        )
+        .await;
+
+        return Ok(HookRuleContext {
+            rendered: text,
+            rules_injected: n,
+            rule_ids: skill_ids,
+            drop_reason: None,
         });
     }
 
@@ -524,7 +662,7 @@ async fn fetch_relevant_rules_for_hook_inner(
     let origin_step = rule_hits_by_origin(db, &skill_ids).await;
     emit_trajectory_step(&origin_step);
     let strict_match_count =
-        tools::evidence::strict_file_match_count_for_ids(&meta_map, &skill_ids, target_file);
+        strict_file_match_count_for_target_scope(&meta_map, &skill_ids, target_scope);
     // Record the non-empty serve and enqueue the matching event.
     let served_event = serve_and_record(
         db,
@@ -589,13 +727,195 @@ fn hook_serve_record_err_prefix() -> Option<&'static str> {
 
 fn hook_auto_injection_allowed(
     row: &tools::evidence::SkillDetailRow,
-    strict_skill_ids: &std::collections::HashSet<String>,
+    strict_skill_ids: &HashSet<String>,
 ) -> bool {
     // A mined PR-review rule without a file-pattern hit is often a workflow or
     // meta-review note. Keep it discoverable through explicit search/get_rules,
     // but do not silently steer code generation with it on post-edit hooks.
     (row.origin != "pr_review" || strict_skill_ids.contains(&row.id))
         && tools::evidence::kind_gate_allows_silent_injection(row, strict_skill_ids)
+}
+
+fn strict_file_match_ids_for_target_scope(
+    meta_map: &HashMap<String, tools::evidence::SkillDetailRow>,
+    target_scope: Option<TargetScope<'_>>,
+) -> HashSet<String> {
+    let Some(target_scope) = target_scope else {
+        return HashSet::new();
+    };
+    meta_map
+        .iter()
+        .filter(|(_, row)| row_matches_target_scope(row, target_scope))
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+fn strict_file_match_count_for_target_scope(
+    meta_map: &HashMap<String, tools::evidence::SkillDetailRow>,
+    ids: &[String],
+    target_scope: Option<TargetScope<'_>>,
+) -> i64 {
+    let Some(target_scope) = target_scope else {
+        return 0;
+    };
+    let count = ids
+        .iter()
+        .filter(|id| {
+            meta_map
+                .get(id.as_str())
+                .is_some_and(|row| row_matches_target_scope(row, target_scope))
+        })
+        .count();
+    i64::try_from(count).unwrap_or(i64::MAX)
+}
+
+fn row_matches_target_scope(
+    row: &tools::evidence::SkillDetailRow,
+    target_scope: TargetScope<'_>,
+) -> bool {
+    match target_scope {
+        TargetScope::File(file) => {
+            tools::evidence::has_strict_file_scope_match(row.file_patterns.as_deref(), file)
+        }
+        TargetScope::Changeset(files) => files.iter().any(|file| {
+            tools::evidence::has_strict_file_scope_match(row.file_patterns.as_deref(), file)
+        }),
+    }
+}
+
+fn render_compact_rule_lines(
+    scored: &[ScoredRuleChunk],
+    meta_map: &HashMap<String, tools::evidence::SkillDetailRow>,
+    target_scope: Option<TargetScope<'_>>,
+) -> (String, Vec<String>) {
+    let mut lines = Vec::new();
+    let mut skill_ids = Vec::new();
+    for rule in scored.iter().take(5) {
+        let row = meta_map.get(&rule.skill_id);
+        lines.push(compact_rule_line(rule, row, target_scope));
+        skill_ids.push(rule.skill_id.clone());
+    }
+    (lines.join("\n"), skill_ids)
+}
+
+fn compact_rule_line(
+    rule: &ScoredRuleChunk,
+    row: Option<&tools::evidence::SkillDetailRow>,
+    target_scope: Option<TargetScope<'_>>,
+) -> String {
+    let title = row
+        .map(|row| row.name.as_str())
+        .unwrap_or(rule.skill_id.as_str());
+    let title = truncate_compact(&one_line(title), 120);
+    let tail = row
+        .map(|row| compact_provenance_tail(row, target_scope))
+        .unwrap_or_else(|| "local rule".to_owned());
+    format!("- {title} ← {tail}")
+}
+
+fn compact_provenance_tail(
+    row: &tools::evidence::SkillDetailRow,
+    target_scope: Option<TargetScope<'_>>,
+) -> String {
+    let proof = crate::skills::parse_candidate_source_proof(&row.description);
+    let mut parts = Vec::new();
+    if let Some(source) = proof
+        .as_ref()
+        .and_then(|proof| proof.source.as_deref())
+        .or(row.source_repo.as_deref())
+        .map(str::trim)
+        .filter(|source| !source.is_empty())
+    {
+        parts.push(compact_source_label(source));
+    }
+    if let Some(path) = proof
+        .as_ref()
+        .and_then(|proof| proof.file.as_deref())
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| compact_pattern_label(row, target_scope))
+    {
+        parts.push(truncate_compact(&one_line(&path), 80));
+    }
+    if parts.is_empty() {
+        parts.push(row.origin.clone());
+    }
+    parts.join(" · ")
+}
+
+fn compact_source_label(source: &str) -> String {
+    pr_number_from_source_label(source)
+        .map(|n| format!("PR #{n}"))
+        .unwrap_or_else(|| truncate_compact(&one_line(source), 80))
+}
+
+fn pr_number_from_source_label(source: &str) -> Option<&str> {
+    if let Some((_, number)) = source.rsplit_once('#')
+        && number.chars().all(|ch| ch.is_ascii_digit())
+        && !number.is_empty()
+    {
+        return Some(number);
+    }
+    if let Some((_, number)) = source.rsplit_once('!')
+        && number.chars().all(|ch| ch.is_ascii_digit())
+        && !number.is_empty()
+    {
+        return Some(number);
+    }
+    for marker in ["/pull/", "/pulls/", "/merge_requests/"] {
+        if let Some((_, rest)) = source.split_once(marker) {
+            let digits = rest
+                .split(|ch: char| !ch.is_ascii_digit())
+                .next()
+                .unwrap_or("");
+            if !digits.is_empty() {
+                return Some(digits);
+            }
+        }
+    }
+    None
+}
+
+fn compact_pattern_label(
+    row: &tools::evidence::SkillDetailRow,
+    target_scope: Option<TargetScope<'_>>,
+) -> Option<String> {
+    let patterns = tools::evidence::parse_file_patterns(row.file_patterns.as_deref());
+    if patterns.is_empty() {
+        return None;
+    }
+    if let Some(target_scope) = target_scope {
+        for pattern in &patterns {
+            let pattern_slice = std::slice::from_ref(pattern);
+            let matches = match target_scope {
+                TargetScope::File(file) => {
+                    tools::evidence::has_strict_file_patterns_match(pattern_slice, file)
+                }
+                TargetScope::Changeset(files) => files.iter().any(|file| {
+                    tools::evidence::has_strict_file_patterns_match(pattern_slice, file)
+                }),
+            };
+            if matches {
+                return Some(pattern.clone());
+            }
+        }
+    }
+    patterns.into_iter().next()
+}
+
+fn one_line(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_compact(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_owned();
+    }
+    let keep = max_chars.saturating_sub(1);
+    let mut out = value.chars().take(keep).collect::<String>();
+    out.push('…');
+    out
 }
 use super::{
     McpState, emit_trajectory_step, estimate_tokens, handle_message, jsonrpc_error,

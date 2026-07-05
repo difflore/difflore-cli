@@ -2364,61 +2364,6 @@
               ]
             }
           },
-          "foundingOffer": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "const": "founding_team"
-              },
-              "planId": {
-                "const": "team"
-              },
-              "interval": {
-                "const": "month"
-              },
-              "priceMonthlyCents": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              "price": {
-                "type": "string"
-              },
-              "seatsTotal": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              "seatsClaimed": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              "seatsLeft": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              "ctaHref": {
-                "type": "string"
-              },
-              "ctaExternal": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "id",
-              "planId",
-              "interval",
-              "priceMonthlyCents",
-              "price",
-              "seatsTotal",
-              "seatsClaimed",
-              "seatsLeft",
-              "ctaHref",
-              "ctaExternal"
-            ]
-          },
           "matrix": {
             "type": "array",
             "items": {
@@ -2456,8 +2401,7 @@
                           "rule_candidates_admin_workflow",
                           "governance_audit_log",
                           "support",
-                          "audit_log_export",
-                          "sso_saml_dpa_soc2_vpc_self_hosted"
+                          "audit_log_export"
                         ],
                         "type": "string"
                       },
@@ -2505,7 +2449,6 @@
         "required": [
           "plans",
           "salesPlans",
-          "foundingOffer",
           "matrix"
         ]
       },
@@ -8986,9 +8929,6 @@
                   "teamId": {
                     "type": "string",
                     "format": "uuid"
-                  },
-                  "offer": {
-                    "const": "founding_team"
                   }
                 },
                 "required": [

@@ -205,15 +205,22 @@ async fn dispatch_hook_event_with_state(
                 crate::session_mine::run_targeted_pairs_detached(
                     client_name.to_owned(),
                     vec![pair],
-                    session_id,
-                    cwd,
+                    session_id.clone(),
+                    cwd.clone(),
                     crate::session_mine::GateMode::Correction,
                 );
             }
             if let Some(nudge) = super::remember_nudge::nudge_for_prompt(&prompt) {
                 return Ok(nudge);
             }
-            if let Some(nudge) = super::pre_submit_nudge::nudge_for_prompt(&prompt) {
+            if let Some(nudge) = super::pre_submit_nudge::nudge_for_prompt_with_diff_rules(
+                hot_state,
+                &prompt,
+                session_id.as_deref(),
+                cwd.as_deref(),
+            )
+            .await
+            {
                 return Ok(nudge);
             }
             Ok(HookResult::noop_with_reason(

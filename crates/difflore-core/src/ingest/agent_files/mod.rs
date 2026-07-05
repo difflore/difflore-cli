@@ -11,7 +11,7 @@ mod import;
 mod simple_files;
 mod splitter;
 
-pub use claude_code_memory::ClaudeCodeMemorySource;
+pub use claude_code_memory::{CLAUDE_CODE_MEMORY_SOURCE_ID, ClaudeCodeMemorySource};
 pub use import::{
     AgentFileImportOptions, AgentFileImportReport, DEFAULT_AGENT_FILE_REVIEW_RULE_CONFIDENCE,
     import_agent_files_for_repo, import_agent_files_for_repo_with_options,

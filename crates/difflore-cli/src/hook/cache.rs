@@ -34,11 +34,57 @@ pub(crate) fn should_skip_recent_with_signal(
     should_skip_recent_for_project_hash_with_signal(file_path, purpose, &project_hash, signal)
 }
 
+pub(crate) fn should_skip_recent_lookup_with_signal(
+    file_path: &str,
+    purpose: &str,
+    signal: Option<&str>,
+) -> bool {
+    let project_root = difflore_core::infra::db::current_project_root();
+    let project_hash = difflore_core::infra::db::project_hash_from_root(&project_root);
+    should_skip_recent_lookup_for_project_hash_with_signal(
+        file_path,
+        purpose,
+        &project_hash,
+        signal,
+    )
+}
+
 pub(crate) fn should_skip_recent_for_project_hash_with_signal(
     file_path: &str,
     purpose: &str,
     project_hash: &str,
     signal: Option<&str>,
+) -> bool {
+    should_skip_recent_for_project_hash_with_signal_inner(
+        file_path,
+        purpose,
+        project_hash,
+        signal,
+        false,
+    )
+}
+
+pub(crate) fn should_skip_recent_lookup_for_project_hash_with_signal(
+    file_path: &str,
+    purpose: &str,
+    project_hash: &str,
+    signal: Option<&str>,
+) -> bool {
+    should_skip_recent_for_project_hash_with_signal_inner(
+        file_path,
+        purpose,
+        project_hash,
+        signal,
+        true,
+    )
+}
+
+fn should_skip_recent_for_project_hash_with_signal_inner(
+    file_path: &str,
+    purpose: &str,
+    project_hash: &str,
+    signal: Option<&str>,
+    skip_empty_hits: bool,
 ) -> bool {
     let ttl = ttl_ms();
     if ttl <= 0 {
@@ -57,7 +103,7 @@ pub(crate) fn should_skip_recent_for_project_hash_with_signal(
     let Some(entry) = cache.entries.get(&key) else {
         return false;
     };
-    cache_entry_should_skip(entry, ttl, now_ms(), signal_hash(signal))
+    cache_entry_should_skip(entry, ttl, now_ms(), signal_hash(signal), skip_empty_hits)
 }
 
 pub(crate) fn remember_injection(
@@ -124,8 +170,12 @@ fn cache_entry_should_skip(
     ttl: i64,
     now: i64,
     current_signal_hash: Option<String>,
+    skip_empty_hits: bool,
 ) -> bool {
-    if now.saturating_sub(entry.ts_ms) >= ttl || entry.rules_injected == 0 {
+    if now.saturating_sub(entry.ts_ms) >= ttl {
+        return false;
+    }
+    if entry.rules_injected == 0 && !skip_empty_hits {
         return false;
     }
     match current_signal_hash {
@@ -180,6 +230,7 @@ mod tests {
             120_000,
             2_000,
             signal_hash(Some("post-edit\n+same")),
+            false,
         ));
         assert!(
             !cache_entry_should_skip(
@@ -187,6 +238,7 @@ mod tests {
                 120_000,
                 2_000,
                 signal_hash(Some("post-edit\n+changed")),
+                false,
             ),
             "a changed diff/query must reopen the retrieval gate"
         );
@@ -200,10 +252,40 @@ mod tests {
             signal_hash: None,
         };
 
-        assert!(cache_entry_should_skip(&entry, 120_000, 2_000, None));
+        assert!(cache_entry_should_skip(&entry, 120_000, 2_000, None, false));
         assert!(
-            !cache_entry_should_skip(&entry, 120_000, 2_000, signal_hash(Some("new signal")),),
+            !cache_entry_should_skip(
+                &entry,
+                120_000,
+                2_000,
+                signal_hash(Some("new signal")),
+                false,
+            ),
             "once callers provide a signal, old file-only cache entries must not suppress changed content"
         );
+    }
+
+    #[test]
+    fn lookup_cache_can_suppress_empty_hits_without_changing_injection_cache() {
+        let entry = CacheEntry {
+            ts_ms: 1_000,
+            rules_injected: 0,
+            signal_hash: signal_hash(Some("pre-submit\n+same")),
+        };
+
+        assert!(!cache_entry_should_skip(
+            &entry,
+            120_000,
+            2_000,
+            signal_hash(Some("pre-submit\n+same")),
+            false,
+        ));
+        assert!(cache_entry_should_skip(
+            &entry,
+            120_000,
+            2_000,
+            signal_hash(Some("pre-submit\n+same")),
+            true,
+        ));
     }
 }

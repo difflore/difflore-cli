@@ -47,6 +47,7 @@ pub(crate) async fn handle_import_agent_files(ctx: &CommandContext, json: bool) 
                     "softPreferencesActive": report.soft_preferences_active,
                     "referenceEntriesSkipped": report.reference_entries_skipped,
                     "deduped": report.deduped,
+                    "claudeCodeAutoMemoryCandidates": report.claude_code_auto_memory_candidates,
                     "sourcesDetected": report.sources_detected,
                 }),
                 "{}"
@@ -82,6 +83,10 @@ pub(crate) async fn handle_import_agent_files(ctx: &CommandContext, json: bool) 
             style::ident(&report.deduped.to_string())
         );
     }
+    println!(
+        "  mined {} candidates from Claude Code auto-memory",
+        style::ident(&report.claude_code_auto_memory_candidates.to_string())
+    );
     if report.review_rules_pending > 0 {
         println!(
             "  review             {}",

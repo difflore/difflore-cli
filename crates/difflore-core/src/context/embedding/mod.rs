@@ -901,9 +901,19 @@ mod tests {
         Box::leak(response.into_boxed_str())
     }
 
+    macro_rules! local_mock_or_skip {
+        ($server:expr) => {
+            match $server {
+                Some(server) => server,
+                None => return,
+            }
+        };
+    }
+
     #[tokio::test]
     async fn openai_embedder_accepts_matching_dimension_without_sending_dimensions() {
-        let (url, handle) = spawn_mock(openai_embedding_response(&[0.1, 0.2, 0.3]));
+        let (url, handle) =
+            local_mock_or_skip!(spawn_mock(openai_embedding_response(&[0.1, 0.2, 0.3])));
         let embedder =
             OpenAICompatEmbedder::new(url, "k".into(), "text-embedding-3-small".into(), 3);
         let v = embedder
@@ -924,7 +934,7 @@ mod tests {
     async fn openai_embedder_rejects_dimension_mismatch() {
         // Provider returns 2 dims while 3 are configured — must error rather than
         // store mismatched-length vectors under the configured profile.
-        let (url, handle) = spawn_mock(openai_embedding_response(&[0.1, 0.2]));
+        let (url, handle) = local_mock_or_skip!(spawn_mock(openai_embedding_response(&[0.1, 0.2])));
         let embedder =
             OpenAICompatEmbedder::new(url, "k".into(), "text-embedding-3-small".into(), 3);
         let err = embedder
@@ -964,7 +974,7 @@ mod tests {
         // spawn_mock accepts exactly one TCP connection, so this also proves the
         // batch is sent as ONE request rather than one-per-text.
         let resp = openai_batch_response(&[(0, &[0.1, 0.2, 0.3]), (1, &[0.4, 0.5, 0.6])]);
-        let (url, handle) = spawn_mock(resp);
+        let (url, handle) = local_mock_or_skip!(spawn_mock(resp));
         let embedder = OpenAICompatEmbedder::new(url, "k".into(), "m".into(), 3);
         let texts = vec!["a".to_owned(), "b".to_owned()];
         let vectors = embedder
@@ -985,7 +995,7 @@ mod tests {
     async fn openai_embedder_batch_orders_by_response_index() {
         // Items returned out of order must be sorted back to input order.
         let resp = openai_batch_response(&[(1, &[0.4, 0.5]), (0, &[0.1, 0.2])]);
-        let (url, handle) = spawn_mock(resp);
+        let (url, handle) = local_mock_or_skip!(spawn_mock(resp));
         let embedder = OpenAICompatEmbedder::new(url, "k".into(), "m".into(), 2);
         let texts = vec!["first".to_owned(), "second".to_owned()];
         let vectors = embedder
@@ -1003,7 +1013,7 @@ mod tests {
             serde_json::json!({ "index": 1, "embedding": [0.4, 0.5] }),
             serde_json::json!({ "embedding": [0.1, 0.2] }),
         ]);
-        let (url, handle) = spawn_mock(resp);
+        let (url, handle) = local_mock_or_skip!(spawn_mock(resp));
         let embedder = OpenAICompatEmbedder::new(url, "k".into(), "m".into(), 2);
         let texts = vec!["first".to_owned(), "second".to_owned()];
         let err = embedder
@@ -1030,7 +1040,8 @@ mod tests {
 
     #[tokio::test]
     async fn openai_embedder_omits_auth_header_when_keyless() {
-        let (url, handle) = spawn_mock(openai_batch_response(&[(0, &[0.1, 0.2])]));
+        let (url, handle) =
+            local_mock_or_skip!(spawn_mock(openai_batch_response(&[(0, &[0.1, 0.2])])));
         // Empty key = keyless local provider (`--no-key`).
         let embedder = OpenAICompatEmbedder::new(url, String::new(), "m".into(), 2);
         embedder
@@ -1048,7 +1059,8 @@ mod tests {
 
     #[tokio::test]
     async fn openai_embedder_sends_auth_header_when_keyed() {
-        let (url, handle) = spawn_mock(openai_batch_response(&[(0, &[0.1, 0.2])]));
+        let (url, handle) =
+            local_mock_or_skip!(spawn_mock(openai_batch_response(&[(0, &[0.1, 0.2])])));
         let embedder = OpenAICompatEmbedder::new(url, "sk-x".into(), "m".into(), 2);
         embedder
             .embed_batch(&["x".to_owned()], None)
@@ -1070,8 +1082,8 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
-    fn spawn_mock(response: &'static str) -> (String, thread::JoinHandle<Vec<u8>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    fn spawn_mock(response: &'static str) -> Option<(String, thread::JoinHandle<Vec<u8>>)> {
+        let listener = bind_loopback_for_test()?;
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{addr}");
         let handle = thread::spawn(move || {
@@ -1084,13 +1096,13 @@ mod tests {
             sock.flush().ok();
             buf[..n].to_vec()
         });
-        (url, handle)
+        Some((url, handle))
     }
 
     fn spawn_mock_sequence(
         responses: Vec<&'static str>,
-    ) -> (String, thread::JoinHandle<Vec<Vec<u8>>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    ) -> Option<(String, thread::JoinHandle<Vec<Vec<u8>>>)> {
+        let listener = bind_loopback_for_test()?;
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{addr}");
         let handle = thread::spawn(move || {
@@ -1105,7 +1117,15 @@ mod tests {
             }
             requests
         });
-        (url, handle)
+        Some((url, handle))
+    }
+
+    fn bind_loopback_for_test() -> Option<TcpListener> {
+        match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => Some(listener),
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => None,
+            Err(err) => panic!("bind: {err}"),
+        }
     }
 
     #[tokio::test]
@@ -1123,7 +1143,7 @@ mod tests {
         );
         // Leak so the closure's 'static bound is satisfied.
         let response_static: &'static str = Box::leak(response.into_boxed_str());
-        let (url, handle) = spawn_mock(response_static);
+        let (url, handle) = local_mock_or_skip!(spawn_mock(response_static));
         let embedder = CloudEmbedder::new(url, "tok".into());
         let v = embedder.embed("hello").await.expect("embed");
         assert_eq!(v.len(), 3);
@@ -1150,7 +1170,9 @@ mod tests {
     async fn cloud_embedder_maps_5xx_to_core_error() {
         let response =
             "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 4\r\nConnection: close\r\n\r\nfail";
-        let (url, handle) = spawn_mock_sequence(vec![response, response, response, response]);
+        let (url, handle) = local_mock_or_skip!(spawn_mock_sequence(vec![
+            response, response, response, response
+        ]));
         let embedder = CloudEmbedder::new(url, "t".into());
         let err = embedder.embed("x").await.expect_err("should fail");
         match err {
@@ -1175,7 +1197,7 @@ mod tests {
             ok_body
         );
         let ok_static: &'static str = Box::leak(ok.into_boxed_str());
-        let (url, handle) = spawn_mock_sequence(vec![fail, ok_static]);
+        let (url, handle) = local_mock_or_skip!(spawn_mock_sequence(vec![fail, ok_static]));
         let embedder = CloudEmbedder::new(url, "tok".into());
         let v = embedder.embed("hello").await.expect("embed after retry");
         assert_eq!(v, vec![0.4, 0.5]);
