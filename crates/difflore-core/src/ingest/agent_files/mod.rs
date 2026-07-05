@@ -37,6 +37,15 @@ pub trait Source: Send + Sync {
     fn read(&self, repo_root: &Path) -> Result<Vec<MemoryDoc>, CoreError>;
 }
 
+/// True when any registered agent-file source detects importable material at
+/// `repo_root` — the exact same detection `import-agent-files` runs, so CLI
+/// onboarding hints cannot drift from what the importer actually reads.
+pub fn any_source_detects(repo_root: &Path) -> bool {
+    registered_sources()
+        .iter()
+        .any(|source| source.detect(repo_root))
+}
+
 pub fn registered_sources() -> &'static [&'static dyn Source] {
     static SOURCES: &[&dyn Source] = &[
         &AgentsMdSource,

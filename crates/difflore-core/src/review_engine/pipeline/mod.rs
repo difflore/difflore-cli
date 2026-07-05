@@ -48,11 +48,19 @@ pub(super) fn repo_scopes_for_input(input: &ReviewCheckInput) -> Vec<String> {
     scopes
 }
 
-/// Candidate rule pool size requested at review time when the applicability
-/// judge is enabled. Deeper than [`crate::context::DEFAULT_TOP_K_RULES`] since
-/// review is latency-tolerant; the judge then filters it down. The assembler's
-/// `rule_token_budget` still bounds what reaches the prompt.
-const JUDGE_CANDIDATE_POOL_TOP_K: usize = 18;
+/// Candidate rule pool requested at review time when the applicability judge
+/// is enabled. Deeper than [`crate::context::DEFAULT_TOP_K_RULES`] since
+/// review is latency-tolerant; the judge then filters it down. Large
+/// changesets touch more rule territories than a single edit, so the pool
+/// scales with the changed-file count. The assembler's `rule_token_budget`
+/// still bounds what reaches the prompt.
+const JUDGE_CANDIDATE_POOL_BASE_TOP_K: usize = 18;
+const JUDGE_CANDIDATE_POOL_MAX_TOP_K: usize = 40;
+
+fn judge_candidate_pool_top_k(changed_files: usize) -> usize {
+    let extra = changed_files.saturating_sub(8) / 4;
+    (JUDGE_CANDIDATE_POOL_BASE_TOP_K + extra).min(JUDGE_CANDIDATE_POOL_MAX_TOP_K)
+}
 
 /// Prepared matched-rule context: rendered rules text plus the parallel
 /// id/title/count bookkeeping the rest of the pipeline consumes.
@@ -111,8 +119,6 @@ async fn prepare_review_rules(
     }
 
     let judge_enabled = review_engine.rule_applicability_judge;
-    // Deepen the candidate pool only when the judge will filter it back down.
-    let top_k_override = judge_enabled.then_some(JUDGE_CANDIDATE_POOL_TOP_K);
 
     // Send the WHOLE changeset as path hints so rules tagged for any changed
     // file can get a boost (a multi-file diff no longer collapses onto the
@@ -134,6 +140,8 @@ async fn prepare_review_rules(
             &changeset,
         ))
     };
+    // Deepen the candidate pool only when the judge will filter it back down.
+    let top_k_override = judge_enabled.then(|| judge_candidate_pool_top_k(changeset.len()));
 
     let pack = match crate::context::orchestrator::prepare_with_scope_and_repo_scopes_with_top_k(
         db,
@@ -1641,4 +1649,18 @@ pub async fn run_review_with_trajectory(
         trajectory,
     )
     .await)
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::judge_candidate_pool_top_k;
+
+    #[test]
+    fn judge_pool_scales_with_changeset_and_caps() {
+        assert_eq!(judge_candidate_pool_top_k(0), 18);
+        assert_eq!(judge_candidate_pool_top_k(8), 18);
+        assert_eq!(judge_candidate_pool_top_k(12), 19);
+        assert_eq!(judge_candidate_pool_top_k(48), 28);
+        assert_eq!(judge_candidate_pool_top_k(500), 40);
+    }
 }

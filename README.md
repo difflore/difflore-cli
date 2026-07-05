@@ -110,8 +110,11 @@ required.
   locally by default.
 - `difflore cloud login` / `difflore cloud sync` are opt-in; raw local queues
   are never uploaded by default.
-- Static exports to `AGENTS.md` / `CLAUDE.md` are optional snapshots. Live
-  `agents install` is the preferred path because it is diff-aware.
+- Static exports to `AGENTS.md` / `CLAUDE.md` are optional snapshots. Treat
+  them as soft context: agents apply rules from a large static file
+  unreliably (no strict compliance). Live `agents install` is diff-aware,
+  and `difflore review` is the only path where matched rules are enforced
+  deterministically.
 
 ## Keys & privacy
 
@@ -150,6 +153,11 @@ commit static exports such as `CLAUDE.md`, `AGENTS.md`, or `.cursor/rules/*.mdc`
 No GitHub App, no hosted webhooks — the gate runs inside your CI, your code and
 LLM keys stay in your infrastructure, and the same model works on GitHub and
 GitLab.
+
+The gate complements your engine's own review rather than replacing it: run
+both. Generic findings come from the engine; the gate reports only violations
+of your approved team rules, with provenance, so every catch is a review
+comment nobody had to write.
 
 ## Agent support
 

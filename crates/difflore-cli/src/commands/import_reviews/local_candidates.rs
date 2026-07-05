@@ -1862,6 +1862,15 @@ pub(super) fn print_local_candidate_next_steps(
             "  {} No local rules created from the imported comments.",
             style::pewter(style::sym::BULLET),
         );
+        let agent_files_here = std::env::current_dir()
+            .is_ok_and(|cwd| crate::support::util::dir_has_agent_rule_files(&cwd));
+        if agent_files_here {
+            style::println_wrapped(&format!(
+                "  {} Fast-merge teams often keep their judgment in agent rule files instead of review threads — mine those:",
+                style::pewter(style::sym::BULLET),
+            ));
+            println!("    {}", style::cmd("difflore rules import-agent-files"));
+        }
         style::println_wrapped(&format!(
             "  {} Try a larger import window, then review pending local rules before enabling agents.",
             style::pewter(style::sym::BULLET),

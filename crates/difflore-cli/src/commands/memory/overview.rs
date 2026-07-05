@@ -88,6 +88,7 @@ fn print_needs_review(overview: &MemoryOverview) {
     } else {
         style::ident("0 items").to_string()
     };
+    let backlog_needs_triage = total >= 10;
     println!(
         "  needs review   {} ({}, {}, {})",
         rendered,
@@ -107,6 +108,13 @@ fn print_needs_review(overview: &MemoryOverview) {
             "suggestions"
         )
     );
+    if backlog_needs_triage {
+        println!(
+            "  triage         {} auto-enables high-confidence items; {} for the rest",
+            style::cmd("difflore rules autopilot"),
+            style::cmd("difflore rules review"),
+        );
+    }
 }
 
 fn print_paused(overview: &MemoryOverview) {

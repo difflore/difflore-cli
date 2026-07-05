@@ -378,3 +378,11 @@ mod owner_repo_tests {
         assert!(validate_owner_repo("owner/repo$").is_err());
     }
 }
+
+/// True when the repo root carries agent rule files or native agent memory
+/// that `difflore rules import-agent-files` can mine. Delegates to the
+/// importer's own source registry so this hint can never drift from what the
+/// importer actually reads.
+pub(crate) fn dir_has_agent_rule_files(root: &std::path::Path) -> bool {
+    difflore_core::ingest::agent_files::any_source_detects(root)
+}
