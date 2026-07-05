@@ -771,7 +771,7 @@ fn handoff_rule_recall_failed(stage: &str, error: impl std::fmt::Display) -> Han
         ids: Vec::new(),
         titles: Vec::new(),
         note: Some(format!(
-            "Rule memory retrieval could not complete while trying to {stage}: {error}. Treat this as unavailable recall, not a sign that no memory matched."
+            "Rule retrieval could not complete while trying to {stage}: {error}. Treat this as unavailable recall, not a sign that no rule matched."
         )),
     }
 }
@@ -980,7 +980,7 @@ async fn recall_rules_for_preview_diagnostic(
             ids: Vec::new(),
             titles: Vec::new(),
             note: Some(format!(
-                "Rule memory retrieval did not finish within {}ms; this review could not confirm whether memory matched.",
+                "Rule retrieval did not finish within {}ms; this review could not confirm whether any rule matched.",
                 duration_ms(PREVIEW_RECALL_DIAGNOSTIC_TIMEOUT)
             )),
         },
@@ -1077,7 +1077,7 @@ fn print_preview_diagnostic(
         println!();
         println!(
             "  {}",
-            style::pewter("Recalled memories available before patching:")
+            style::pewter("Recalled rules available before patching:")
         );
         for (i, title) in recalled.titles.iter().take(3).enumerate() {
             let attribution_suffix = recalled
@@ -1098,7 +1098,7 @@ fn print_preview_diagnostic(
     println!(
         "next: {}  {}",
         style::cmd("difflore recall --diff"),
-        style::pewter("inspect memory without calling the review provider"),
+        style::pewter("inspect rules without calling the review provider"),
     );
 }
 
@@ -1622,7 +1622,7 @@ fn run_preview_mode(
     );
     if !matched_rule_titles.is_empty() {
         println!();
-        println!("  {}", style::pewter("Recalled memories (top 3):"));
+        println!("  {}", style::pewter("Recalled rules (top 3):"));
         for (i, title) in matched_rule_titles.iter().take(3).enumerate() {
             let attribution_suffix = matched_rule_ids
                 .get(i)
@@ -1641,10 +1641,10 @@ fn run_preview_mode(
         // users don't assume the system is broken.
         if matched_rules > 0 {
             println!(
-                "{} {scope_label} looks clean against {} recalled memor{}. No patches suggested.",
+                "{} {scope_label} looks clean against {} recalled rule{}. No patches suggested.",
                 style::ok(sym::OK),
                 matched_rules,
-                if matched_rules == 1 { "y" } else { "ies" },
+                if matched_rules == 1 { "" } else { "s" },
             );
             println!();
             // A clean scope is the good outcome, so route to evidence of
@@ -1665,7 +1665,7 @@ fn run_preview_mode(
             println!(
                 "next: {}  {}",
                 style::cmd("difflore recall --diff"),
-                style::pewter("# see what memory agents would receive"),
+                style::pewter("# see what rules an agent would receive"),
             );
         }
         return;
@@ -2148,7 +2148,7 @@ mod tests {
             issues: vec![
                 review_issue(
                     "Correct index for headChar",
-                    "The provider finding title no longer shares words with the recalled memory.",
+                    "The provider finding title no longer shares words with the recalled rule.",
                     Some("Use the already validated byte index."),
                 ),
                 review_issue(

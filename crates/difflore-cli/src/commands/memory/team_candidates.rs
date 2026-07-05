@@ -104,7 +104,7 @@ async fn handle_team_candidates_list(
     .await
     .unwrap_or_else(|err| {
         exit_structured_err(
-            &format!("failed to load team memory suggestions: {err}"),
+            &format!("failed to load team rule suggestions: {err}"),
             json,
         )
     });
@@ -114,7 +114,7 @@ async fn handle_team_candidates_list(
             "{}",
             json_compact_or(
                 &json!({
-                    "schemaVersion": "team-memory-candidates.v1",
+                    "schemaVersion": "team-rule-candidates.v1",
                     "teamId": team_id,
                     "status": status.as_wire_value(),
                     "count": candidates.len(),
@@ -146,7 +146,7 @@ async fn handle_team_candidates_count(
     .await
     .unwrap_or_else(|err| {
         exit_structured_err(
-            &format!("failed to count team memory suggestions: {err}"),
+            &format!("failed to count team rule suggestions: {err}"),
             json,
         )
     });
@@ -156,7 +156,7 @@ async fn handle_team_candidates_count(
             "{}",
             json_compact_or(
                 &json!({
-                    "schemaVersion": "team-memory-candidates.v1",
+                    "schemaVersion": "team-rule-candidates.v1",
                     "teamId": team_id,
                     "status": status.as_wire_value(),
                     "total": count.total,
@@ -167,7 +167,7 @@ async fn handle_team_candidates_count(
         return;
     }
 
-    println!("{}", style::title("Team Memory Suggestions"));
+    println!("{}", style::title("Team Rule Suggestions"));
     println!(
         "  {} {} for team {}",
         style::ident(&format_count(count.total)),
@@ -181,10 +181,7 @@ async fn handle_team_candidate_show(ctx: &CommandContext, candidate_id: String, 
     let detail = get_candidate(ctx.cloud().await, candidate_id.trim())
         .await
         .unwrap_or_else(|err| {
-            exit_structured_err(
-                &format!("failed to load team memory suggestion: {err}"),
-                json,
-            )
+            exit_structured_err(&format!("failed to load team rule suggestion: {err}"), json)
         });
 
     if json {
@@ -226,7 +223,7 @@ async fn handle_team_candidate_approve(
         .await
         .unwrap_or_else(|err| {
             exit_structured_err(
-                &format!("failed to approve team memory suggestion: {err}"),
+                &format!("failed to approve team rule suggestion: {err}"),
                 json,
             )
         });
@@ -247,12 +244,12 @@ async fn handle_team_candidate_approve(
     }
 
     println!(
-        "{} Approved team memory suggestion {} into rule {}.",
+        "{} Approved team rule suggestion {} into rule {}.",
         style::ok(style::sym::OK),
         style::ident(&response.candidate_id),
         style::ident(&response.rule_id)
     );
-    println!("  next: {}", style::cmd("difflore memory sync"));
+    println!("  next: {}", style::cmd("difflore rules sync"));
 }
 
 async fn handle_team_candidate_reject(
@@ -266,7 +263,7 @@ async fn handle_team_candidate_reject(
         .await
         .unwrap_or_else(|err| {
             exit_structured_err(
-                &format!("failed to reject team memory suggestion: {err}"),
+                &format!("failed to reject team rule suggestion: {err}"),
                 json,
             )
         });
@@ -286,7 +283,7 @@ async fn handle_team_candidate_reject(
     }
 
     println!(
-        "{} Rejected team memory suggestion {}.",
+        "{} Rejected team rule suggestion {}.",
         style::ok(style::sym::OK),
         style::ident(&candidate_id)
     );
@@ -353,7 +350,7 @@ fn print_candidate_list(
     status: TeamCandidateStatusArg,
     candidates: &[RuleCandidate],
 ) {
-    println!("{}", style::title("Team Memory Suggestions"));
+    println!("{}", style::title("Team Rule Suggestions"));
     println!(
         "  team   {}",
         style::ident(if team_id.is_empty() { "-" } else { team_id })
@@ -361,7 +358,7 @@ fn print_candidate_list(
     println!("  view   {}", status_label(status));
     if candidates.is_empty() {
         println!("  result no suggestions need attention");
-        println!("  next:  {}", style::cmd("difflore memory"));
+        println!("  next:  {}", style::cmd("difflore rules"));
         return;
     }
 
@@ -383,7 +380,7 @@ fn print_candidate_list(
         println!(
             "    review: {}",
             style::cmd(&format!(
-                "difflore memory team-candidates show {}",
+                "difflore rules team-candidates show {}",
                 candidate.id
             ))
         );
@@ -391,7 +388,7 @@ fn print_candidate_list(
 }
 
 fn print_candidate_detail(candidate: &RuleCandidate) {
-    println!("{}", style::title("Team Memory Suggestion"));
+    println!("{}", style::title("Team Rule Suggestion"));
     println!("  id       {}", style::ident(&candidate.id));
     println!("  title    {}", candidate.generated_name);
     println!("  status   {}", candidate.status);
@@ -411,14 +408,14 @@ fn print_candidate_detail(candidate: &RuleCandidate) {
     println!(
         "approve: {}",
         style::cmd(&format!(
-            "difflore memory team-candidates approve {}",
+            "difflore rules team-candidates approve {}",
             candidate.id
         ))
     );
     println!(
         "reject:  {}",
         style::cmd(&format!(
-            "difflore memory team-candidates reject {}",
+            "difflore rules team-candidates reject {}",
             candidate.id
         ))
     );

@@ -109,14 +109,14 @@ fn print_accepted_edit_upload_warnings(summary: &AcceptedEditUploadSummary) {
     let pending_attribution = summary.queued.saturating_sub(summary.uploaded);
     if pending_attribution > 0 {
         eprintln!(
-            "{} {count} accepted edit(s) queued for later cloud upload; run cloud sync to confirm team workspace and linked memory activity.",
+            "{} {count} accepted edit(s) queued for later cloud upload; run cloud sync to confirm team workspace and linked rule activity.",
             style::warn(sym::WARN),
             count = pending_attribution
         );
     }
     if summary.missing_rule_ids > 0 {
         eprintln!(
-            "{} {count} accepted edit(s) have no recalled memory id; review recalled memories before applying fixes.",
+            "{} {count} accepted edit(s) have no recalled rule id; review recalled rules before applying fixes.",
             style::warn(sym::WARN),
             count = summary.missing_rule_ids
         );
@@ -137,7 +137,7 @@ fn print_accepted_edit_upload_warnings(summary: &AcceptedEditUploadSummary) {
     }
     if summary.missing_rule_observation > 0 {
         eprintln!(
-            "{} {count} accepted edit(s) uploaded without linked memory activity; review recalled memories before applying fixes.",
+            "{} {count} accepted edit(s) uploaded without linked rule activity; review recalled rules before applying fixes.",
             style::warn(sym::WARN),
             count = summary.missing_rule_observation
         );

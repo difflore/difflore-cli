@@ -48,18 +48,18 @@ pub async fn disable_memory_rule(
     let id = normalize_rule_id(rule_id);
     if id.is_empty() {
         return Err(CoreError::Validation(
-            "memory rule id is required; use rule:<id> or <id>".to_owned(),
+            "rule id is required; use rule:<id> or <id>".to_owned(),
         ));
     }
     let row = sqlx::query("SELECT id, name, status FROM skills WHERE id = ?1")
         .bind(&id)
         .fetch_optional(pool)
         .await?
-        .ok_or_else(|| CoreError::NotFound(format!("memory rule `{id}` not found")))?;
+        .ok_or_else(|| CoreError::NotFound(format!("rule `{id}` not found")))?;
     let status: String = row.try_get("status").unwrap_or_default();
     if status != "active" {
         return Err(CoreError::Validation(format!(
-            "memory rule `{id}` is not active; current state is `{status}`"
+            "rule `{id}` is not active; current state is `{status}`"
         )));
     }
     let title: String = row.try_get("name").unwrap_or_else(|_| id.clone());

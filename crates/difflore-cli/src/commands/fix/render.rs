@@ -12,7 +12,7 @@ use crate::support::util::exit_err;
 use super::pr::PreparedPrFix;
 use super::{CONFIDENCE_THRESHOLD, file_loc, percent, review_status_for_outcome};
 
-// Markdown report: Scope → Recalled memories → Findings/patches → Outcome.
+// Markdown report: Scope → Recalled rules → Findings/patches → Outcome.
 pub(super) fn render_fix_report_markdown(
     scope_label: &str,
     matched_rule_ids: &[String],
@@ -27,9 +27,9 @@ pub(super) fn render_fix_report_markdown(
     writeln!(out, "- {scope_label}").ok();
     out.push('\n');
 
-    out.push_str("## Recalled memories\n\n");
+    out.push_str("## Recalled rules\n\n");
     if matched_rule_titles.is_empty() {
-        out.push_str("_No memories recalled for this diff._\n\n");
+        out.push_str("_No rules recalled for this diff._\n\n");
     } else {
         for (i, title) in matched_rule_titles.iter().enumerate() {
             let id = matched_rule_ids.get(i).map_or("(unknown)", String::as_str);
@@ -105,7 +105,7 @@ pub(super) fn render_fix_report_markdown(
         out.push_str(
             "- No changed files were found in this scope.\n\
              - No provider call was made and no patches were applied.\n\
-             - Make or stage a change, then run `difflore review --diff all` to see recalled memories before applying patches.\n",
+             - Make or stage a change, then run `difflore review --diff all` to see recalled rules before applying patches.\n",
         );
     } else {
         out.push_str(
@@ -525,7 +525,7 @@ mod tests {
             Path::new("C:/repo"),
             &[],
             None,
-            Some("Rule memory retrieval could not complete while trying to open rule index."),
+            Some("Rule retrieval could not complete while trying to open rule index."),
             &[],
             &[],
             &suggestions,

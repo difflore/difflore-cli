@@ -200,10 +200,10 @@ pub async fn promote_candidate(db: &sqlx::SqlitePool, id: &str) -> crate::Result
         let existing = rule_status(db, id).await?;
         return match existing.as_deref() {
             Some("active") => Err(CoreError::Validation(format!(
-                "rule '{id}' is already active; nothing to promote. Inspect local memory with `difflore status --json`."
+                "rule '{id}' is already active; nothing to promote. Inspect local rules with `difflore status --json`."
             ))),
             _ => Err(CoreError::NotFound(format!(
-                "memory draft '{id}' not found. Run `difflore status` for the next action."
+                "rule draft '{id}' not found. Run `difflore status` for the next action."
             ))),
         };
     };
@@ -223,7 +223,7 @@ pub async fn promote_candidate(db: &sqlx::SqlitePool, id: &str) -> crate::Result
         .await?;
         if let Some(active_id) = active_duplicate {
             return Err(CoreError::Validation(format!(
-                "memory draft '{id}' duplicates active rule '{active_id}'. Inspect both with `difflore memory show` before approving."
+                "rule draft '{id}' duplicates active rule '{active_id}'. Inspect both with `difflore rules show` before approving."
             )));
         }
     }
@@ -261,10 +261,10 @@ pub async fn promote_candidate(db: &sqlx::SqlitePool, id: &str) -> crate::Result
         let existing = rule_status(db, id).await?;
         return match existing.as_deref() {
             Some("active") => Err(CoreError::Validation(format!(
-                "rule '{id}' is already active; nothing to promote. Inspect local memory with `difflore status --json`."
+                "rule '{id}' is already active; nothing to promote. Inspect local rules with `difflore status --json`."
             ))),
             _ => Err(CoreError::NotFound(format!(
-                "memory draft '{id}' not found. Run `difflore status` for the next action."
+                "rule draft '{id}' not found. Run `difflore status` for the next action."
             ))),
         };
     }
@@ -296,10 +296,10 @@ pub async fn reject_candidate(db: &sqlx::SqlitePool, id: &str) -> crate::Result<
         let existing = rule_status(db, id).await?;
         return match existing.as_deref() {
             Some("active") => Err(CoreError::Validation(format!(
-                "rule '{id}' is already an active rule, not a pending memory draft."
+                "rule '{id}' is already an active rule, not a pending rule draft."
             ))),
             _ => Err(CoreError::NotFound(format!(
-                "memory draft '{id}' not found. Run `difflore status` for the next action."
+                "rule draft '{id}' not found. Run `difflore status` for the next action."
             ))),
         };
     };
@@ -461,21 +461,21 @@ fn source_proof_reason(proof: &CandidateSourceProof) -> String {
         proof.file.as_deref(),
     ) {
         (Some(source), _, Some(file)) => {
-            format!("Promoted review-memory candidate from {source} on {file}")
+            format!("Promoted review-rule candidate from {source} on {file}")
         }
         (Some(source), _, None) => {
-            format!("Promoted review-memory candidate from {source}")
+            format!("Promoted review-rule candidate from {source}")
         }
         (None, Some(comment_url), Some(file)) => {
-            format!("Promoted review-memory candidate from {comment_url} on {file}")
+            format!("Promoted review-rule candidate from {comment_url} on {file}")
         }
         (None, Some(comment_url), None) => {
-            format!("Promoted review-memory candidate from {comment_url}")
+            format!("Promoted review-rule candidate from {comment_url}")
         }
         (None, None, Some(file)) => {
-            format!("Promoted review-memory candidate for {file}")
+            format!("Promoted review-rule candidate for {file}")
         }
-        (None, None, None) => "Promoted review-memory candidate with source proof".to_owned(),
+        (None, None, None) => "Promoted review-rule candidate with source proof".to_owned(),
     }
 }
 

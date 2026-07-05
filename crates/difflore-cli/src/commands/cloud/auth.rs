@@ -474,12 +474,12 @@ async fn try_handle_login_with_refresh(
     println!(
         "    {}                {}",
         style::cmd("difflore cloud sync"),
-        style::pewter("joining a team - pull existing memories"),
+        style::pewter("joining a team - pull existing rules"),
     );
     println!(
         "    {}      {}",
         style::cmd("difflore import-reviews --max-prs 50"),
-        style::pewter("first device - build local memories from PR reviews"),
+        style::pewter("first device - build local rules from PR reviews"),
     );
     println!(
         "    {}                {}",

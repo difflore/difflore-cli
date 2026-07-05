@@ -396,9 +396,9 @@ fn project_db_row(probe: &ProjectDbProbe) -> Row {
             severity: Severity::Blocker,
             status: Status::Warn,
             label: "project db",
-            value: "no memory indexed".to_owned(),
+            value: "no rules indexed".to_owned(),
             hints: vec![
-                "recall returns nothing without memory: import review history first".to_owned(),
+                "recall returns nothing without rules: import review history first".to_owned(),
                 "difflore status   (shows the shortest local path for this repo)".to_owned(),
                 "difflore import-reviews --max-prs 50".to_owned(),
             ],
@@ -452,22 +452,22 @@ fn project_db_row(probe: &ProjectDbProbe) -> Row {
 
     let (value, import_cmd) = match repo_full_name {
         Some(repo) => (
-            format!("0 memories for {repo} | {total_rules} on this machine"),
+            format!("0 rules for {repo} | {total_rules} on this machine"),
             format!("difflore import-reviews --repo {repo}"),
         ),
         None => (
-            format!("{total_rules} memories on this machine | no supported repo remote detected"),
+            format!("{total_rules} rules on this machine | no supported repo remote detected"),
             "difflore status".to_owned(),
         ),
     };
     let mut hints = vec![
-        "no current-repo memory is ready; doctor will not show unrelated repo activity here"
+        "no current-repo rules are ready; doctor will not show unrelated repo activity here"
             .to_owned(),
         "difflore status   (shows the repo-scoped value path)".to_owned(),
     ];
     if !probe.active_rule_repos.is_empty() {
         hints.push(format!(
-            "memory currently lives in: {}",
+            "rules currently live in: {}",
             format_repo_distribution(&probe.active_rule_repos)
         ));
     }
@@ -581,7 +581,7 @@ fn mcp_row(snapshot: &installer::McpStatusSnapshot) -> Row {
             repair: Some("difflore agents status".to_owned()),
         }
     } else if installed.is_empty() {
-        // No agent wired up. CLI recall and memory browsing still work,
+        // No agent wired up. CLI recall and rules browsing still work,
         // so this is Optional rather than a hard blocker — wiring an
         // agent unlocks the agent-side experience but is not on the
         // path to local value.
@@ -718,7 +718,7 @@ fn provider_row(probe: &ProviderProbe) -> Row {
             label: "provider",
             value: "none configured".to_owned(),
             hints: vec![
-                "needed for `difflore fix` only; recall and memory work without it".to_owned(),
+                "needed for `difflore fix` only; recall and rules work without it".to_owned(),
                 "difflore providers setup".to_owned(),
             ],
             repair: None,
@@ -983,7 +983,7 @@ fn embedder_row_from_kind(
                         .to_owned(),
                     hints: vec![
                         format!("recent embedding degradation: {}", recent.summary()),
-                        "run `difflore doctor --report` for the Memory pipeline breakdown"
+                        "run `difflore doctor --report` for the Rules pipeline breakdown"
                             .to_owned(),
                         "run `difflore cloud login` if credentials or scope may be stale"
                             .to_owned(),
@@ -1006,7 +1006,7 @@ fn embedder_row_from_kind(
                     ),
                     hints: vec![
                         format!("recent embedding degradation: {}", recent.summary()),
-                        "run `difflore doctor --report` for the Memory pipeline breakdown"
+                        "run `difflore doctor --report` for the Rules pipeline breakdown"
                             .to_owned(),
                         "check provider reachability and key limits".to_owned(),
                         "difflore embeddings setup".to_owned(),
@@ -1104,7 +1104,7 @@ fn git_hooks_row(state: &GitHookState) -> Row {
             label: "git hooks",
             value: "pre-commit not installed".to_owned(),
             hints: vec![
-                "optional; run `difflore init` if you want pre-commit memory checks".to_owned(),
+                "optional; run `difflore init` if you want pre-commit rules checks".to_owned(),
             ],
             repair: None,
         },
@@ -1368,8 +1368,10 @@ mod tests {
 
         assert!(matches!(row.severity, Severity::Blocker));
         assert!(
-            row.hints.iter().any(|hint| hint
-                .contains("memory currently lives in: warpengine-github/viggle-web (31)")),
+            row.hints
+                .iter()
+                .any(|hint| hint
+                    .contains("rules currently live in: warpengine-github/viggle-web (31)")),
             "{:?}",
             row.hints
         );

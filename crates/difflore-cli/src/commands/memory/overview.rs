@@ -24,7 +24,7 @@ pub(crate) async fn handle_summary(ctx: &CommandContext, json: bool) {
     )
     .await
     .unwrap_or_else(|err| {
-        exit_structured_err(&format!("failed to load memory overview: {err}"), json)
+        exit_structured_err(&format!("failed to load rules overview: {err}"), json)
     });
     overview.sync.logged_in = ctx.cloud().await.is_logged_in();
 
@@ -49,7 +49,7 @@ async fn current_repo_full_name(ctx: &CommandContext) -> Option<String> {
 }
 
 fn print_overview(overview: &MemoryOverview) {
-    println!("{}", style::title("Memory"));
+    println!("{}", style::title("Rules"));
     print_remembered(overview);
     print_needs_review(overview);
     print_paused(overview);

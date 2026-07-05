@@ -123,7 +123,7 @@ pub(crate) async fn dispatch(command: Commands) {
             let ctx = runtime::CommandContext::new(runtime::OutputMode::Json).await;
             maybe_host_hook_forwarder_in_mcp_server(&ctx.db);
             if let Err(e) = difflore_core::mcp_server::run(ctx.db).await {
-                eprintln!("DiffLore memory server failed: {e}");
+                eprintln!("DiffLore MCP server failed: {e}");
             }
         }
         Commands::HookDaemon { project_hash } => {

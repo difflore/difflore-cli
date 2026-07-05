@@ -61,7 +61,7 @@ pub(crate) async fn handle_backfill_source_kind(
     match run(&ctx.db, args).await {
         Ok(summary) if args.json => println!("{}", json_compact_or(&summary, "{}")),
         Ok(summary) => print_summary(&summary),
-        Err(err) => exit_err(&format!("memory backfill-source-kind failed: {err}")),
+        Err(err) => exit_err(&format!("rules backfill-source-kind failed: {err}")),
     }
 }
 

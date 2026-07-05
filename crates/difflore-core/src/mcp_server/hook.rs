@@ -134,7 +134,7 @@ fn hook_embedding_health_header(diag: &EmbeddingDiagnostics) -> String {
         .unwrap_or("unknown_embedding_state");
     format!(
         "> DiffLore retrieval health: embeddingDegraded={} vectorLaneAvailable={} reason={reason}. \
-         Treat injected memories as lower-confidence unless strict file/source evidence applies.\n\n",
+         Treat injected rules as lower-confidence unless strict file/source evidence applies.\n\n",
         diag.degraded, diag.vector_lane_available
     )
 }
@@ -448,9 +448,9 @@ async fn fetch_relevant_rules_for_hook_inner(
     let mut text = hook_embedding_health_header(&embedding_diag);
     if cross_repo_starter {
         text.push_str(
-            "> No memory is scoped to THIS repo yet. The memories below are transferable rules \
+            "> No rules are scoped to THIS repo yet. The rules below are transferable \
              from your OTHER repos, matched to this file — starter suggestions, not this repo's \
-             own judgment. Run `difflore import-reviews` to capture this repo's memory.\n\n",
+             own judgment. Run `difflore import-reviews` to capture this repo's rules.\n\n",
         );
     }
     let mut injected = 0usize;
@@ -466,7 +466,7 @@ async fn fetch_relevant_rules_for_hook_inner(
             0.0
         };
         // Shared rule rendering; the hook only changes example labels
-        // and the memory number. The why segment (when arbitration metadata
+        // and the rule number. The why segment (when arbitration metadata
         // exists — cross-repo starter rules carry none) is part of the block
         // text, so the budget gate below accounts for its ~5–10 tokens.
         let why = why_map.get(&rule.skill_id).map(RuleRankingWhy::compact);
@@ -505,13 +505,13 @@ async fn fetch_relevant_rules_for_hook_inner(
     // Standing wrap-up nudge: the per-edit citation above is silent unless the
     // assistant chooses to cite. This guarantees the *instruction* to surface
     // DiffLore's value rides the same (already-non-noisy) injection channel, so
-    // the user reliably learns a memory helped at task end without us emitting a
+    // the user reliably learns a rule helped at task end without us emitting a
     // lifecycle `systemMessage`. Fires only when rules actually applied.
     text.push_str(
         "\n> When you finish this task, add one quiet difflore recap line only when \
          `difflore status` shows accepted edits captured for this task. \
          Do not prefix it with `session-recap:`; if you use a label, \
-         write lowercase `difflore:`. Do not mention top memory, recall counts, \
+         write lowercase `difflore:`. Do not mention top rule, recall counts, \
          ready-for-agent counts, or zero/negative metrics. Skip it if nothing here applied.",
     );
 
@@ -571,13 +571,13 @@ async fn fetch_relevant_rules_for_hook_inner(
 
 fn counterfactual_citation_instruction(n: usize, hook_label: &str, applies_to: &str) -> String {
     format!(
-        "\n> DiffLore surfaced {} team memor{} via {hook_label} hook as silent context. \
-         Cite a memory only if your {applies_to} would be materially different without it; \
+        "\n> DiffLore surfaced {} team rule{} via {hook_label} hook as silent context. \
+         Cite a rule only if your {applies_to} would be materially different without it; \
          include its number AND the `learned from <repo>` source if the header shows one — \
-         e.g. \"applying Memory 2: Don't strip null from coalesce (learned from acme/widgets)\". \
-         Otherwise ignore — do not narrate or list memories that do not apply.",
+         e.g. \"applying Rule 2: Don't strip null from coalesce (learned from acme/widgets)\". \
+         Otherwise ignore — do not narrate or list rules that do not apply.",
         n,
-        if n == 1 { "y" } else { "ies" },
+        if n == 1 { "" } else { "s" },
     )
 }
 

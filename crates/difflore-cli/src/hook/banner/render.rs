@@ -7,7 +7,7 @@
 //! DiffLore: 2 new rules learned for this repo since 2026-05-20T14:30:00Z
 //!   - Return 413 for body size limit errors <- from a PR review
 //!   - Wrap context cancellation in errgroup <- from cross-repo pattern mining
-//! Run `difflore status` to inspect local memory.
+//! Run `difflore status` to inspect local rules.
 //! ```
 //!
 //! Each bullet is ~80 chars (60-char title cap + provenance suffix).
@@ -54,7 +54,7 @@ pub fn format_banner_with_capture_paused(
         out.push_str(provenance);
     }
 
-    out.push_str("\nRun `difflore status` to inspect local memory.");
+    out.push_str("\nRun `difflore status` to inspect local rules.");
     append_capture_paused_line(&mut out, capture_paused_reason);
     append_windows_forwarder_cold_line(&mut out, windows_forwarder_cold);
 
@@ -84,7 +84,7 @@ pub fn format_banner_with_memory_pulse(
     if pulse.to_confirm > 0 {
         parts.push(format!("{} to confirm", pulse.to_confirm));
     }
-    let mut out = format!("DiffLore memory: {} since {prev_label}", parts.join(" · "));
+    let mut out = format!("DiffLore rules: {} since {prev_label}", parts.join(" · "));
 
     if !rules.is_empty() {
         out.push('\n');
@@ -92,7 +92,7 @@ pub fn format_banner_with_memory_pulse(
         out.push_str(&ready_titles_line(rules));
     }
 
-    out.push_str("\nRun `difflore status` to inspect local memory.");
+    out.push_str("\nRun `difflore status` to inspect local rules.");
     append_capture_paused_line(&mut out, capture_paused_reason);
     append_windows_forwarder_cold_line(&mut out, windows_forwarder_cold);
 
@@ -255,7 +255,7 @@ mod tests {
             false,
         );
 
-        assert!(out.contains("DiffLore memory: +1 ready · 4 folded away · 1 to confirm"));
+        assert!(out.contains("DiffLore rules: +1 ready · 4 folded away · 1 to confirm"));
         assert!(out.contains("Ready: Use npm run tauri dev"));
         assert!(out.lines().count() <= 3, "got: {out}");
     }

@@ -27,7 +27,7 @@ fn public_help_keeps_curated_command_surface() {
         "  try",
         "  init",
         "  import-reviews",
-        "  memory",
+        "  rules",
         "  learn",
         "  recall",
         "  review",
@@ -66,7 +66,6 @@ fn public_help_keeps_curated_command_surface() {
         "  tui",
         "  dist",
         "  daemon",
-        "  rules",
         "  sync",
         "  value-check",
         "  status",
@@ -112,8 +111,8 @@ fn learn_command_parses_note_transcript_session_and_json() {
 }
 
 #[test]
-fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_and_drafts_alias() {
-    let summary = Cli::try_parse_from(["difflore", "memory"]).expect("memory should parse");
+fn rules_command_parses_summary_inbox_active_activity_show_review_actions_sync_and_aliases() {
+    let summary = Cli::try_parse_from(["difflore", "rules"]).expect("rules should parse");
     assert!(matches!(
         summary.command,
         Some(Commands::Memory {
@@ -122,8 +121,18 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
         })
     ));
 
+    let hidden_alias =
+        Cli::try_parse_from(["difflore", "memory"]).expect("hidden memory alias should parse");
+    assert!(matches!(
+        hidden_alias.command,
+        Some(Commands::Memory {
+            json: false,
+            command: None,
+        })
+    ));
+
     let summary_json =
-        Cli::try_parse_from(["difflore", "memory", "--json"]).expect("memory --json should parse");
+        Cli::try_parse_from(["difflore", "rules", "--json"]).expect("rules --json should parse");
     assert!(matches!(
         summary_json.command,
         Some(Commands::Memory {
@@ -133,7 +142,7 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
     ));
 
     let inbox =
-        Cli::try_parse_from(["difflore", "memory", "inbox", "--json"]).expect("inbox parses");
+        Cli::try_parse_from(["difflore", "rules", "inbox", "--json"]).expect("inbox parses");
     assert!(matches!(
         inbox.command,
         Some(Commands::Memory {
@@ -146,7 +155,7 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
         })
     ));
 
-    let inbox_all = Cli::try_parse_from(["difflore", "memory", "inbox", "--all", "--json"])
+    let inbox_all = Cli::try_parse_from(["difflore", "rules", "inbox", "--all", "--json"])
         .expect("inbox --all parses");
     assert!(matches!(
         inbox_all.command,
@@ -160,7 +169,7 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
         })
     ));
 
-    let inbox_limited = Cli::try_parse_from(["difflore", "memory", "inbox", "--limit", "20"])
+    let inbox_limited = Cli::try_parse_from(["difflore", "rules", "inbox", "--limit", "20"])
         .expect("inbox --limit parses");
     assert!(matches!(
         inbox_limited.command,
@@ -174,8 +183,8 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
         })
     ));
 
-    let active = Cli::try_parse_from(["difflore", "memory", "active", "--limit", "25", "--json"])
-        .expect("memory active parses");
+    let active = Cli::try_parse_from(["difflore", "rules", "active", "--limit", "25", "--json"])
+        .expect("rules active parses");
     assert!(matches!(
         active.command,
         Some(Commands::Memory {
@@ -188,9 +197,8 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
         })
     ));
 
-    let active_all =
-        Cli::try_parse_from(["difflore", "memory", "active", "--all", "--limit", "25"])
-            .expect("memory active --all parses");
+    let active_all = Cli::try_parse_from(["difflore", "rules", "active", "--all", "--limit", "25"])
+        .expect("rules active --all parses");
     assert!(matches!(
         active_all.command,
         Some(Commands::Memory {
@@ -204,9 +212,9 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
     ));
 
     let activity = Cli::try_parse_from([
-        "difflore", "memory", "activity", "--days", "7", "--limit", "10", "--json",
+        "difflore", "rules", "activity", "--days", "7", "--limit", "10", "--json",
     ])
-    .expect("memory activity parses");
+    .expect("rules activity parses");
     assert!(matches!(
         activity.command,
         Some(Commands::Memory {
@@ -221,12 +229,12 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
 
     let show = Cli::try_parse_from([
         "difflore",
-        "memory",
+        "rules",
         "show",
         "session:abc123def4567890",
         "--json",
     ])
-    .expect("memory show parses");
+    .expect("rules show parses");
     assert!(matches!(
         show.command,
         Some(Commands::Memory {
@@ -235,8 +243,8 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
         }) if item_id == "session:abc123def4567890"
     ));
 
-    let show_rule = Cli::try_parse_from(["difflore", "memory", "show", "rule:conv-abc12345"])
-        .expect("memory show rule parses");
+    let show_rule = Cli::try_parse_from(["difflore", "rules", "show", "rule:conv-abc12345"])
+        .expect("rules show rule parses");
     assert!(matches!(
         show_rule.command,
         Some(Commands::Memory {
@@ -245,8 +253,8 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
         }) if item_id == "rule:conv-abc12345"
     ));
 
-    let show_draft = Cli::try_parse_from(["difflore", "memory", "show", "draft:conv-abc12345"])
-        .expect("memory show draft parses");
+    let show_draft = Cli::try_parse_from(["difflore", "rules", "show", "draft:conv-abc12345"])
+        .expect("rules show draft parses");
     assert!(matches!(
         show_draft.command,
         Some(Commands::Memory {
@@ -257,7 +265,7 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
 
     let remember = Cli::try_parse_from([
         "difflore",
-        "memory",
+        "rules",
         "remember",
         "--title",
         "Flatten single-component directories",
@@ -269,7 +277,7 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
         "**/*.module.css",
         "--json",
     ])
-    .expect("memory remember parses");
+    .expect("rules remember parses");
     assert!(matches!(
         remember.command,
         Some(Commands::Memory {
@@ -287,8 +295,8 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
     ));
 
     let import_agent_files =
-        Cli::try_parse_from(["difflore", "memory", "import-agent-files", "--json"])
-            .expect("memory import-agent-files parses");
+        Cli::try_parse_from(["difflore", "rules", "import-agent-files", "--json"])
+            .expect("rules import-agent-files parses");
     assert!(matches!(
         import_agent_files.command,
         Some(Commands::Memory {
@@ -297,7 +305,7 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
         })
     ));
 
-    let review = Cli::try_parse_from(["difflore", "memory", "review", "--limit", "10"])
+    let review = Cli::try_parse_from(["difflore", "rules", "review", "--limit", "10"])
         .expect("review parses");
     assert!(matches!(
         review.command,
@@ -309,14 +317,14 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
 
     let autopilot = Cli::try_parse_from([
         "difflore",
-        "memory",
+        "rules",
         "autopilot",
         "--dry-run",
         "--max-auto-enable",
         "4",
         "--json",
     ])
-    .expect("memory autopilot parses");
+    .expect("rules autopilot parses");
     assert!(matches!(
         autopilot.command,
         Some(Commands::Memory {
@@ -331,8 +339,8 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
         })
     ));
 
-    let digest = Cli::try_parse_from(["difflore", "memory", "digest", "--limit", "12", "--json"])
-        .expect("memory digest parses");
+    let digest = Cli::try_parse_from(["difflore", "rules", "digest", "--limit", "12", "--json"])
+        .expect("rules digest parses");
     assert!(matches!(
         digest.command,
         Some(Commands::Memory {
@@ -344,15 +352,9 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
         })
     ));
 
-    let recommended = Cli::try_parse_from([
-        "difflore",
-        "memory",
-        "recommended",
-        "--limit",
-        "7",
-        "--json",
-    ])
-    .expect("memory recommended parses");
+    let recommended =
+        Cli::try_parse_from(["difflore", "rules", "recommended", "--limit", "7", "--json"])
+            .expect("rules recommended parses");
     assert!(matches!(
         recommended.command,
         Some(Commands::Memory {
@@ -367,8 +369,8 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
         })
     ));
 
-    let log = Cli::try_parse_from(["difflore", "memory", "log", "--limit", "8", "--json"])
-        .expect("memory log parses");
+    let log = Cli::try_parse_from(["difflore", "rules", "log", "--limit", "8", "--json"])
+        .expect("rules log parses");
     assert!(matches!(
         log.command,
         Some(Commands::Memory {
@@ -382,14 +384,14 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
 
     let disable = Cli::try_parse_from([
         "difflore",
-        "memory",
+        "rules",
         "disable",
         "rule:conv-abc12345",
         "--reason",
         "too noisy",
         "--json",
     ])
-    .expect("memory disable parses");
+    .expect("rules disable parses");
     assert!(matches!(
         disable.command,
         Some(Commands::Memory {
@@ -404,7 +406,7 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
 
     let approve = Cli::try_parse_from([
         "difflore",
-        "memory",
+        "rules",
         "approve",
         "session:abc123def4567890",
         "--json",
@@ -420,7 +422,7 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
 
     let reject = Cli::try_parse_from([
         "difflore",
-        "memory",
+        "rules",
         "reject",
         "session:abc123def4567890",
         "--json",
@@ -435,8 +437,8 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
     ));
 
     let approve_draft =
-        Cli::try_parse_from(["difflore", "memory", "approve", "draft:cand-1", "--json"])
-            .expect("draft approve parses through memory");
+        Cli::try_parse_from(["difflore", "rules", "approve", "draft:cand-1", "--json"])
+            .expect("draft approve parses through rules");
     assert!(matches!(
         approve_draft.command,
         Some(Commands::Memory {
@@ -446,8 +448,8 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
     ));
 
     let reject_draft =
-        Cli::try_parse_from(["difflore", "memory", "reject", "draft:cand-1", "--json"])
-            .expect("draft reject parses through memory");
+        Cli::try_parse_from(["difflore", "rules", "reject", "draft:cand-1", "--json"])
+            .expect("draft reject parses through rules");
     assert!(matches!(
         reject_draft.command,
         Some(Commands::Memory {
@@ -456,7 +458,7 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
         }) if item_id == "draft:cand-1"
     ));
 
-    let sync = Cli::try_parse_from(["difflore", "memory", "sync", "--json"]).expect("sync parses");
+    let sync = Cli::try_parse_from(["difflore", "rules", "sync", "--json"]).expect("sync parses");
     assert!(matches!(
         sync.command,
         Some(Commands::Memory {
@@ -470,13 +472,13 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
 
     let sync_with_raw = Cli::try_parse_from([
         "difflore",
-        "memory",
+        "rules",
         "sync",
         "--include-observations",
         "--include-candidates",
         "--include-telemetry",
     ])
-    .expect("memory sync raw include flags parse");
+    .expect("rules sync raw include flags parse");
     assert!(matches!(
         sync_with_raw.command,
         Some(Commands::Memory {
@@ -487,7 +489,7 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
 
     let export_package = Cli::try_parse_from([
         "difflore",
-        "memory",
+        "rules",
         "export-package",
         "--output",
         "memory-package",
@@ -499,7 +501,7 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
         "--max-rules",
         "10",
     ])
-    .expect("memory export-package parses");
+    .expect("rules export-package parses");
     assert!(matches!(
         export_package.command,
         Some(Commands::Memory {
@@ -517,14 +519,14 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
 
     let import_package = Cli::try_parse_from([
         "difflore",
-        "memory",
+        "rules",
         "import-package",
         "--source",
         "memory-package",
         "--dry-run",
         "--json",
     ])
-    .expect("memory import-package parses");
+    .expect("rules import-package parses");
     assert!(matches!(
         import_package.command,
         Some(Commands::Memory {
@@ -537,8 +539,8 @@ fn memory_command_parses_summary_inbox_active_activity_show_review_actions_sync_
         }) if source == *"memory-package"
     ));
 
-    let drafts = Cli::try_parse_from(["difflore", "memory", "drafts", "list", "--json"])
-        .expect("memory drafts list parses");
+    let drafts = Cli::try_parse_from(["difflore", "rules", "drafts", "list", "--json"])
+        .expect("rules drafts list parses");
     assert!(matches!(
         drafts.command,
         Some(Commands::Memory {
@@ -1040,7 +1042,6 @@ fn removed_top_level_commands_do_not_parse() {
         "tui",
         "dist",
         "daemon",
-        "rules",
         "sync",
     ] {
         assert!(

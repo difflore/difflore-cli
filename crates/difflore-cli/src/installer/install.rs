@@ -326,15 +326,15 @@ static MCP_TOOLS_HELP: &[(&str, &str)] = &[
         "        - propose \"remember this rule\" drafts",
     ),
     (
-        "list_memory",
-        "           - inspect active rules and pending memory",
+        "list_rules",
+        "           - inspect active and pending rules",
     ),
     (
-        "get_memory_item",
+        "get_rule_item",
         "      - fetch one rule, draft, or candidate",
     ),
     (
-        "get_memory_activity",
+        "get_rule_activity",
         "  - show retrieved/surfaced rule evidence",
     ),
 ];
@@ -375,7 +375,7 @@ fn print_post_install_help(dry_run: bool, outcomes: &[TargetOutcome]) {
     );
     println!();
     println!(
-        "{} memory tools your local agent can now call:",
+        "{} rule tools your local agent can now call:",
         style::emerald(sym::TIP)
     );
     for (name, desc) in MCP_TOOLS_HELP {

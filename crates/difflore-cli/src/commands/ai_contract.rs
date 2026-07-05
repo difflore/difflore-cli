@@ -80,6 +80,20 @@ impl<'a> CommandTokens<'a> {
     fn has_flag(&self, flag: &str) -> bool {
         self.words.contains(&flag)
     }
+
+    fn is_rules_root(&self) -> bool {
+        self.is_exact(&["difflore", "rules"]) || self.is_exact(&["difflore", "memory"])
+    }
+
+    fn starts_with_rules(&self, suffix: &[&str]) -> bool {
+        let Some((program, rest)) = self.words.split_first() else {
+            return false;
+        };
+        let Some((command, tail)) = rest.split_first() else {
+            return false;
+        };
+        *program == "difflore" && matches!(*command, "rules" | "memory") && tail.starts_with(suffix)
+    }
 }
 
 fn safety_profile(command: &CommandTokens<'_>) -> (u8, Vec<&'static str>, bool) {
@@ -96,14 +110,14 @@ fn safety_profile(command: &CommandTokens<'_>) -> (u8, Vec<&'static str>, bool) 
     if command.starts_with(&["difflore", "status"])
         || command.starts_with(&["difflore", "recall"])
         || command.starts_with(&["difflore", "ask"])
-        || command.is_exact(&["difflore", "memory"])
-        || (command.starts_with(&["difflore", "memory"]) && command.has_flag("--json"))
-        || command.starts_with(&["difflore", "memory", "inbox"])
-        || command.starts_with(&["difflore", "memory", "active"])
-        || command.starts_with(&["difflore", "memory", "activity"])
-        || command.starts_with(&["difflore", "memory", "show"])
-        || command.starts_with(&["difflore", "memory", "digest"])
-        || command.starts_with(&["difflore", "memory", "log"])
+        || command.is_rules_root()
+        || (command.starts_with_rules(&[]) && command.has_flag("--json"))
+        || command.starts_with_rules(&["inbox"])
+        || command.starts_with_rules(&["active"])
+        || command.starts_with_rules(&["activity"])
+        || command.starts_with_rules(&["show"])
+        || command.starts_with_rules(&["digest"])
+        || command.starts_with_rules(&["log"])
         || command.starts_with(&["difflore", "agents", "status"])
         || command.starts_with(&["difflore", "providers", "list"])
         || command.starts_with(&["difflore", "embeddings", "status"])
@@ -161,12 +175,12 @@ fn safety_profile(command: &CommandTokens<'_>) -> (u8, Vec<&'static str>, bool) 
 
     if command.starts_with(&["difflore", "import-reviews"])
         || command.starts_with(&["difflore", "init"])
-        || command.starts_with(&["difflore", "memory", "review"])
-        || command.starts_with(&["difflore", "memory", "approve"])
-        || command.starts_with(&["difflore", "memory", "reject"])
-        || command.starts_with(&["difflore", "memory", "disable"])
-        || command.starts_with(&["difflore", "memory", "remember"])
-        || command.starts_with(&["difflore", "memory", "autopilot"])
+        || command.starts_with_rules(&["review"])
+        || command.starts_with_rules(&["approve"])
+        || command.starts_with_rules(&["reject"])
+        || command.starts_with_rules(&["disable"])
+        || command.starts_with_rules(&["remember"])
+        || command.starts_with_rules(&["autopilot"])
         || command.starts_with(&["difflore", "export"])
         || command.starts_with(&["difflore", "agents", "install"])
         || command.starts_with(&["difflore", "agents", "uninstall"])
@@ -193,8 +207,8 @@ fn dry_run_command(command: &CommandTokens<'_>) -> Option<String> {
     if command.starts_with(&["difflore", "cloud", "sync"]) {
         return Some(append_flags(command.raw, &["--dry-run", "--json"]));
     }
-    if command.starts_with(&["difflore", "memory", "autopilot"]) {
-        return Some("difflore memory autopilot --dry-run --json".to_owned());
+    if command.starts_with_rules(&["autopilot"]) {
+        return Some("difflore rules autopilot --dry-run --json".to_owned());
     }
     if command.starts_with(&["difflore", "export"]) {
         return Some(append_flags(command.raw, &["--dry-run", "--json"]));
@@ -216,18 +230,18 @@ fn json_command(command: &CommandTokens<'_>) -> Option<String> {
     if command.starts_with(&["difflore", "status"])
         || command.starts_with(&["difflore", "recall"])
         || command.starts_with(&["difflore", "ask"])
-        || command.is_exact(&["difflore", "memory"])
-        || command.starts_with(&["difflore", "memory", "inbox"])
-        || command.starts_with(&["difflore", "memory", "active"])
-        || command.starts_with(&["difflore", "memory", "activity"])
-        || command.starts_with(&["difflore", "memory", "show"])
-        || command.starts_with(&["difflore", "memory", "digest"])
-        || command.starts_with(&["difflore", "memory", "log"])
-        || command.starts_with(&["difflore", "memory", "approve"])
-        || command.starts_with(&["difflore", "memory", "reject"])
-        || command.starts_with(&["difflore", "memory", "disable"])
-        || command.starts_with(&["difflore", "memory", "remember"])
-        || command.starts_with(&["difflore", "memory", "autopilot"])
+        || command.is_rules_root()
+        || command.starts_with_rules(&["inbox"])
+        || command.starts_with_rules(&["active"])
+        || command.starts_with_rules(&["activity"])
+        || command.starts_with_rules(&["show"])
+        || command.starts_with_rules(&["digest"])
+        || command.starts_with_rules(&["log"])
+        || command.starts_with_rules(&["approve"])
+        || command.starts_with_rules(&["reject"])
+        || command.starts_with_rules(&["disable"])
+        || command.starts_with_rules(&["remember"])
+        || command.starts_with_rules(&["autopilot"])
         || command.starts_with(&["difflore", "import-reviews"])
         || command.starts_with(&["difflore", "review"])
         || (command.starts_with(&["difflore", "fix"]) && command.has_flag("--yes"))

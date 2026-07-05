@@ -810,7 +810,7 @@ pub(super) fn print_pr_review_instructions(prepared: &PreparedPrFix) {
     println!("  git diff");
     println!("  cargo test");
     println!("  git add -p");
-    println!("  git commit -m \"Apply Difflore review-memory fixes\"");
+    println!("  git commit -m \"Apply Difflore review-rule fixes\"");
     println!("  git push origin HEAD");
     println!();
     println!("Nothing was pushed or commented by Difflore.");

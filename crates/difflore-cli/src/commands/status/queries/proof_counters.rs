@@ -1,5 +1,5 @@
 //! Repo-scoped proof counters: accepted-edit signatures, recall events, and
-//! MCP rule serves. These are the headline "memory is being used" numbers the
+//! MCP rule serves. These are the headline "rules are being used" numbers the
 //! `status` envelope reports, plus the shared window constants and repo-alias
 //! normaliser the other query domains build on.
 

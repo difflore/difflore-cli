@@ -116,7 +116,7 @@ pub fn spawn_memory_autopilot_at(main_bin: &Path, lease_owner: &str) -> Result<(
         spawn_detached_no_inherit(
             main_bin,
             &[
-                "memory",
+                "rules",
                 "autopilot",
                 "--background",
                 "--lease-owner",
@@ -129,7 +129,7 @@ pub fn spawn_memory_autopilot_at(main_bin: &Path, lease_owner: &str) -> Result<(
     {
         let mut cmd = Command::new(main_bin);
         cmd.args([
-            "memory",
+            "rules",
             "autopilot",
             "--background",
             "--lease-owner",

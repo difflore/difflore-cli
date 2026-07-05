@@ -5,7 +5,7 @@ description: Full trigger guide for when to call the remember_rule MCP tool, wit
 
 # `remember_rule` - Full Trigger Guide
 
-**Save and activate a local DiffLore memory rule from a coding rule the user explicitly asked to remember.** A direct user "remember this" request counts as approval, so fresh captures are active and served to agents immediately. This tool is the durable capture path; saying "got it, I'll remember" without calling it means the rule is lost the moment the conversation ends.
+**Save and activate a local DiffLore rule from a coding rule the user explicitly asked to remember.** A direct user "remember this" request counts as approval, so fresh captures are active and served to agents immediately. This tool is the durable capture path; saying "got it, I'll remember" without calling it means the rule is lost the moment the conversation ends.
 
 ## MUST CALL when the user expresses intent like (in any language):
 
@@ -51,21 +51,21 @@ Capture the user's reasoning in `body` - the WHY, not just the what; the reasoni
 Echo the returned `item_id`, explain that it is active because the user explicitly asked to remember it, and show the CLI command to inspect it:
 
 ```bash
-difflore memory show rule:<id>
+difflore rules show rule:<id>
 ```
 
 If the `remember_rule` MCP tool is not available after tool discovery, use the CLI fallback instead:
 
 ```bash
-difflore memory remember --title "<short actionable rule>" --body "<full context>" --file-pattern "src/**/*.rs" --json
+difflore rules remember --title "<short actionable rule>" --body "<full context>" --file-pattern "src/**/*.rs" --json
 ```
 
 The CLI fallback also treats the explicit user request as approval and saves an active rule. Tell the user you saved and enabled it.
 
 If the tool says it strengthened an existing active rule, say that rule remains available to agents.
 
-Do not reject, sync, archive, delete, or edit other memory through MCP. To undo an active remembered rule, tell the user they can run:
+Do not reject, sync, archive, delete, or edit other rules through MCP. To undo an active remembered rule, tell the user they can run:
 
 ```bash
-difflore memory disable rule:<id>
+difflore rules disable rule:<id>
 ```

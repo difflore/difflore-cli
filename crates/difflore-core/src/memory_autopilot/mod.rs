@@ -460,7 +460,7 @@ fn strongest_title(candidates: &[PendingMemory]) -> String {
         .iter()
         .max_by_key(|candidate| candidate.title.len())
         .map_or_else(
-            || "Untitled memory".to_owned(),
+            || "Untitled rule".to_owned(),
             |candidate| candidate.title.clone(),
         )
 }
@@ -758,13 +758,13 @@ fn count_pending_kind(groups: &[PlannedGroup], kind: &str) -> i64 {
 fn next_actions(counts: &MemoryDigestCounts) -> Vec<String> {
     let mut actions = Vec::new();
     if counts.recommended_groups > 0 {
-        actions.push("difflore memory recommended".to_owned());
+        actions.push("difflore rules recommended".to_owned());
     }
     if counts.needs_review_groups > 0 {
-        actions.push("difflore memory review".to_owned());
+        actions.push("difflore rules review".to_owned());
     }
     if counts.auto_enable_groups > 0 {
-        actions.push("difflore memory log".to_owned());
+        actions.push("difflore rules log".to_owned());
     }
     if actions.is_empty() {
         actions.push("difflore recall <question-or-file>".to_owned());
@@ -1811,7 +1811,7 @@ mod tests {
             group
                 .digest
                 .reason
-                .contains("local memory curator recommends")
+                .contains("local rule curator recommends")
         );
         assert_eq!(group.digest.confidence.as_deref(), Some("0.74"));
     }

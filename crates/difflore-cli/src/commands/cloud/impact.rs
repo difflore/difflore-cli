@@ -141,7 +141,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
             "    {} {} {}{}",
             style::ok(&super::agent_usage_text_label(agent_usage)),
             style::pewter(style::sym::BULLET),
-            style::pewter(&format!("{} memory fires observed", agent_usage.rule_fires)),
+            style::pewter(&format!("{} rule fires observed", agent_usage.rule_fires)),
             style::pewter(&pending),
         );
         if let Some(recovery) = super::agent_usage_pending_upload_recovery(agent_usage) {

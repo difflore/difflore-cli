@@ -482,7 +482,7 @@ async fn fetch_agent_citation_proof() -> Option<AgentCitationProof> {
 
 fn agent_citation_line(proof: &AgentCitationProof) -> String {
     let mut line = format!(
-        "{} actual citation{} · {} memory fire{} in 7d",
+        "{} actual citation{} · {} rule fire{} in 7d",
         proof.actual_citations,
         if proof.actual_citations == 1 { "" } else { "s" },
         proof.rule_fires,
@@ -539,7 +539,7 @@ pub(crate) fn render(snapshot: &MemorySnapshot) -> String {
     const LABEL_W: usize = 10;
     let mut out = String::new();
     out.push('\n');
-    out.push_str(&format!("  {}\n", style::pewter("Memory snapshot")));
+    out.push_str(&format!("  {}\n", style::pewter("Rules snapshot")));
 
     // Up to 3 repos inline; collapse the rest into `+N more`.
     let repos_line = if snapshot.top_repos.is_empty() {
@@ -658,7 +658,7 @@ fn accepted_proof_label(rule: &ProvenRule) -> String {
     ));
     if rule.accepted_hook_outcomes_linked_to_prior_recall > 0 {
         detail.push(format!(
-            "{} linked to prior memory recall{}",
+            "{} linked to prior rule recall{}",
             rule.accepted_hook_outcomes_linked_to_prior_recall,
             format_recall_edit_proof_breakdown(
                 rule.accepted_hook_outcomes_linked_to_rule_recall,
@@ -826,7 +826,7 @@ mod tests {
         assert_eq!(snap.recent[0].source_repo.as_deref(), Some("gin-gonic/gin"));
 
         let rendered = render(&snap);
-        assert!(rendered.contains("Memory snapshot"));
+        assert!(rendered.contains("Rules snapshot"));
         assert!(rendered.contains("gin-gonic/gin (3)"));
         assert!(rendered.contains("vitejs/vite (2)"));
         assert!(rendered.contains("Return 413 for body size limit errors"));
@@ -983,7 +983,7 @@ mod tests {
         });
         assert!(rendered.contains("2 accepted outcomes"));
         assert!(rendered.contains("2 agent/hook outcomes"));
-        assert!(rendered.contains("1 linked to prior memory recall (1 agent recall)"));
+        assert!(rendered.contains("1 linked to prior rule recall (1 agent recall)"));
         assert!(!rendered.contains("difflore rules explain"));
     }
 
@@ -1004,7 +1004,7 @@ mod tests {
 
         assert!(rendered.contains("agent"));
         assert!(rendered.contains("1 actual citation"));
-        assert!(rendered.contains("3 memory fires in 7d"));
+        assert!(rendered.contains("3 rule fires in 7d"));
         assert!(rendered.contains("1 pending upload"));
         assert!(rendered.contains("activity queued safely"));
         assert!(rendered.contains("refresh login once"));

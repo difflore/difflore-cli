@@ -135,7 +135,7 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) -> anyh
         ))
         .to_string()
     };
-    println!("  {:<10} {}", style::pewter("memory"), memory_value);
+    println!("  {:<10} {}", style::pewter("rules"), memory_value);
 
     // Print a top-3 sample so the user sees concrete review judgments. Each
     // line ends with `<- from <repo>` (same framing as review and the

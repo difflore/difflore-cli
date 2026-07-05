@@ -74,7 +74,7 @@ pub(crate) fn capabilities_payload() -> CapabilitiesOutput {
             ),
             command(
                 "difflore status --json",
-                "Read local readiness, memory counts, autopilot status, and the next recommended action.",
+                "Read local readiness, rule counts, triage status, and the next recommended action.",
                 &[],
             ),
             command(
@@ -94,62 +94,62 @@ pub(crate) fn capabilities_payload() -> CapabilitiesOutput {
             ),
             command(
                 "difflore ask <question> --json",
-                "Ask local memory a natural-language question.",
+                "Ask local rules a natural-language question.",
                 &["search_rules", "get_rules"],
             ),
             command(
-                "difflore memory --json",
-                "Read the compact memory summary, queues, background autopilot state, and next action.",
-                &["list_memory", "get_memory_digest"],
+                "difflore rules --json",
+                "Read the compact rules summary, queues, background triage state, and next action.",
+                &["list_rules", "get_rule_digest"],
             ),
             command(
-                "difflore memory inbox --json",
-                "Read active rules, local drafts, candidate memories, queues, warnings, and next action.",
-                &["list_memory"],
+                "difflore rules inbox --json",
+                "Read active rules, local drafts, candidate rules, queues, warnings, and next action.",
+                &["list_rules"],
             ),
             command(
-                "difflore memory digest --json",
-                "Read the autopilot digest, candidate grouping, schedule status, and review guidance.",
-                &["get_memory_digest"],
+                "difflore rules digest --json",
+                "Read the triage digest, candidate grouping, schedule status, and review guidance.",
+                &["get_rule_digest"],
             ),
             command(
-                "difflore memory log --json",
-                "Read the background autopilot audit log.",
-                &["get_memory_autopilot_log"],
+                "difflore rules log --json",
+                "Read the background rules triage audit log.",
+                &["get_rule_triage_log"],
             ),
             command(
-                "difflore memory remember --title <title> --body <body> --json",
-                "CLI fallback for user-requested rule memory; saves and enables an active local rule.",
+                "difflore rules remember --title <title> --body <body> --json",
+                "CLI fallback for a user-requested rule; saves and enables an active local rule.",
                 &["remember_rule"],
             ),
             command(
-                "difflore memory review",
-                "Human review loop for pending local memory.",
+                "difflore rules review",
+                "Human review loop for pending local rules.",
                 &[],
             ),
             command(
-                "difflore memory approve <item-id> --json",
-                "Approve a local memory item into active local rules.",
+                "difflore rules approve <item-id> --json",
+                "Approve a local rule item into active local rules.",
                 &[],
             ),
             command(
-                "difflore memory reject <item-id> --json",
-                "Reject a local memory item from the local queue.",
+                "difflore rules reject <item-id> --json",
+                "Reject a local rule item from the local queue.",
                 &[],
             ),
             command(
-                "difflore memory disable <rule-id> --json",
+                "difflore rules disable <rule-id> --json",
                 "Disable an active local rule so agents no longer receive it.",
                 &[],
             ),
             command(
                 "difflore import-reviews --dry-run --json",
-                "Preview PR/MR review import without writing local memory.",
+                "Preview PR/MR review import without writing local rules.",
                 &[],
             ),
             command(
                 "difflore import-reviews --json",
-                "Import PR/MR review history into local source-backed memory.",
+                "Import PR/MR review history into local source-backed rules.",
                 &[],
             ),
             command(
@@ -261,7 +261,7 @@ mod tests {
             payload
                 .mcp
                 .denied_control_plane_tools
-                .contains(&"approve_memory")
+                .contains(&"approve_rule")
         );
         assert_eq!(payload.mcp.cloud_reads.default, "local_only");
     }

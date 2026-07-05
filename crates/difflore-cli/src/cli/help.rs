@@ -49,7 +49,7 @@ USAGE
 
 {build_rules}
   import-reviews      Turn past GitHub/GitLab review comments into rules
-  memory              Review and approve drafted rules; triage clears the obvious ones
+  rules               Review and approve drafted rules; triage clears the obvious ones
   learn               Force DiffLore to learn from the latest session now
 
 {connect_agents}

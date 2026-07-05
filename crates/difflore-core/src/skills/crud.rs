@@ -170,7 +170,7 @@ pub async fn remove(db: &sqlx::SqlitePool, input: RemoveSkillInput) -> crate::Re
     // "Removed rule: X" that's impossible to debug.
     let Some(skill) = skill else {
         return Err(CoreError::NotFound(format!(
-            "rule '{}' not found. Inspect local memory with `difflore status --json`.",
+            "rule '{}' not found. Inspect local rules with `difflore status --json`.",
             input.id
         )));
     };

@@ -29,7 +29,7 @@ impl MemoryCuratorSource {
         match self {
             Self::PrReview => "PR review comments",
             Self::SessionMined => "coding-agent sessions",
-            Self::Conversation => "explicit user memory captures",
+            Self::Conversation => "explicit user rule captures",
         }
     }
 }
@@ -226,7 +226,7 @@ pub async fn curate_memory_candidates_with_local_ai(
                     title: None,
                     rule: None,
                     reason: Some(
-                        "local-cli behavior evidence shows this rule is already followed without memory"
+                        "local-cli behavior evidence shows this rule is already followed without rule injection"
                             .to_owned(),
                     ),
                     scope: None,
@@ -248,25 +248,25 @@ pub async fn curate_memory_candidates_with_local_ai(
 
     let prompt_json = serde_json::to_string_pretty(&candidates_for_ai)?;
     let source_summary = summarize_sources(&candidates_for_ai);
-    let system_prompt = "You are DiffLore's local memory curator. You turn raw coding evidence \
+    let system_prompt = "You are DiffLore's local rule curator. You turn raw coding evidence \
         into durable coding-agent rules only when the evidence contains a clear, reusable team \
         preference. Return JSON only. Never approve vague comments, one-off questions, jokes, \
         broad taste, or evidence that needs missing context.";
     let user_prompt = format!(
-        "Review these candidate memories from {source_summary} and decide whether each should \
+        "Review these candidate rules from {source_summary} and decide whether each should \
          become an active local coding-agent rule.\n\n\
          For each candidate return one decision:\n\
          - action: \"enable\" only if the rule is durable, actionable, repo-specific, and safe \
            for an agent to apply without more context.\n\
          - action: \"review\" for vague, low-context, one-off, subjective, question-shaped, \
            behavior-redundant, already-covered, or conflict-prone evidence. Also choose \
-           \"review\" when a capable general coding model or existing active memory would \
+           \"review\" when a capable general coding model or existing active rule would \
            probably do the same thing by default (validate input, add tests, handle errors, \
            improve readability, remove dead code) and the evidence adds no non-obvious project \
            API/helper, generated artifact, schema/contract coupling, module boundary, version \
            constraint, or named team convention.\n\
          - behaviorObservations, when present, are local-cli before/after evidence: baseRate is \
-           how often the model already followed the rule without memory, liftOracle/liftE2E are \
+           how often the model already followed the rule without rule injection, liftOracle/liftE2E are \
            improvements from injecting it, and corrected marks rescued failures. Treat >=3 \
            observations with baseRate=1.0 and no positive lift as behavior-redundant. Treat any \
            positive lift or corrected observation as evidence that the rule is not merely \
@@ -951,7 +951,7 @@ mod tests {
                 .reason
                 .as_deref()
                 .unwrap_or_default()
-                .contains("already followed without memory")
+                .contains("already followed without rule injection")
         );
     }
 

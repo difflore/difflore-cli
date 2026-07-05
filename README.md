@@ -81,7 +81,7 @@ cd your-repo
 difflore init
 difflore import-reviews --dry-run   # see what it would mine, change nothing
 difflore import-reviews
-difflore memory review              # approve or reject each rule
+difflore rules review              # approve or reject each rule
 difflore agents install             # wire into Claude Code / Cursor / Codex / ...
 difflore recall --diff              # rules that match your current diff
 ```
@@ -170,8 +170,8 @@ Code, Warp, and Antigravity.
 | `difflore try` | Run the demo |
 | `difflore init` | Set up the current repo |
 | `difflore import-reviews` | Import private GitHub PR or GitLab MR review backlog locally |
-| `difflore memory` | Show remembered rules, review queue, paused rules, sync state, and next action |
-| `difflore memory review` | Review pending local memory |
+| `difflore rules` | Show active rules, review queue, paused rules, sync state, and next action |
+| `difflore rules review` | Review pending local rules |
 | `difflore agents install` | Wire DiffLore into local AI CLIs and agents |
 | `difflore agents status` | Show which agents are connected |
 | `difflore status` | Show readiness and the next command |
@@ -196,7 +196,7 @@ sync is an explicit opt-in.
 difflore cloud login
 difflore cloud status
 difflore cloud sync
-difflore memory team-candidates
+difflore rules team-candidates
 ```
 
 Use the local CLI first when you want a no-account path. Use cloud when multiple

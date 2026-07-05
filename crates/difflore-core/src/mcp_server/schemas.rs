@@ -12,7 +12,7 @@ pub(super) fn tools_list() -> Value {
     json!([
         {
             "name": "search_rules",
-            "description": "Compact memory search. Returns rule ids/titles/origins/sourceKind plus match reasons before fetching details. Memory is scoped to the current git remotes; pass `repo_full_name` (repo namespace path such as GitHub owner/repo or GitLab group/project) when auto-detection is unavailable. Results are deterministically ordered by relative-score band, then path hint, then source priority manual > team > pr_review > extracted > conversation, and each carries a compact `why` ranking explanation (e.g. `path-hint; band 9/10; source manual`). When team review history is available, results include citedCount and trustRate so agents can prefer rules that led to accepted edits. Use with get_rules to expand only matched rules.",
+            "description": "Compact rule search. Returns rule ids/titles/origins/sourceKind plus match reasons before fetching details. Rules are scoped to the current git remotes; pass `repo_full_name` (repo namespace path such as GitHub owner/repo or GitLab group/project) when auto-detection is unavailable. Results are deterministically ordered by relative-score band, then path hint, then source priority manual > team > pr_review > extracted > conversation, and each carries a compact `why` ranking explanation (e.g. `path-hint; band 9/10; source manual`). When team review history is available, results include citedCount and trustRate so agents can prefer rules that led to accepted edits. Use with get_rules to expand only matched rules.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -46,7 +46,7 @@ pub(super) fn tools_list() -> Value {
                 "readOnlyHint": true
             },
             "_meta": {
-                "governance": "read_only_for_ai; retrieve and cite approved active rules only; use CLI commands for memory mutations",
+                "governance": "read_only_for_ai; retrieve and cite approved active rules only; use CLI commands for rule mutations",
                 "deniedMutations": CONTROL_PLANE_DENIED_TOOL_NAMES
             }
         },
@@ -77,12 +77,12 @@ pub(super) fn tools_list() -> Value {
                 "readOnlyHint": true
             },
             "_meta": {
-                "governance": "read_only_for_ai; fetch approved active rule details only; use CLI commands for memory mutations"
+                "governance": "read_only_for_ai; fetch approved active rule details only; use CLI commands for rule mutations"
             }
         },
         {
             "name": "get_past_verdicts",
-            "description": "Search team review history (WHAT the team decided on similar code before). Cloud-backed reads are disabled by default for MCP and require explicit local opt-in (`DIFFLORE_MCP_ALLOW_CLOUD_READS=1`). Memory is scoped to the current repo/project only; pass `repo_full_name` (repo namespace path such as GitHub owner/repo or GitLab group/project) when auto-detection is unavailable. Pass `file` (the path you're editing) so DiffLore can prioritize matching file patterns and show useful gaps for that file. Use this to cite concrete prior decisions; use `rule_timeline` when you need the *why this rule exists* narrative for a specific rule.",
+            "description": "Search team review history (WHAT the team decided on similar code before). Cloud-backed reads are disabled by default for MCP and require explicit local opt-in (`DIFFLORE_MCP_ALLOW_CLOUD_READS=1`). Rules are scoped to the current repo/project only; pass `repo_full_name` (repo namespace path such as GitHub owner/repo or GitLab group/project) when auto-detection is unavailable. Pass `file` (the path you're editing) so DiffLore can prioritize matching file patterns and show useful gaps for that file. Use this to cite concrete prior decisions; use `rule_timeline` when you need the *why this rule exists* narrative for a specific rule.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -96,7 +96,7 @@ pub(super) fn tools_list() -> Value {
                     },
                     "file": {
                         "type": "string",
-                        "description": "Repo-relative path of the file you're editing (e.g. `src/auth/session.ts`). When supplied, DiffLore prioritizes rules whose `file_patterns` match this path first; without it, ordering falls back to overall relevance. Also helps the dashboard show where memory is missing."
+                        "description": "Repo-relative path of the file you're editing (e.g. `src/auth/session.ts`). When supplied, DiffLore prioritizes rules whose `file_patterns` match this path first; without it, ordering falls back to overall relevance. Also helps the dashboard show where rule coverage is missing."
                     },
                     "top_k": {
                         "type": "number",
@@ -116,8 +116,8 @@ pub(super) fn tools_list() -> Value {
             }
         },
         {
-            "name": "list_memory",
-            "description": "Read DiffLore memory across lifecycle states: active rules, pending local drafts, and session-mined candidates. Use when the user asks what DiffLore learned, which candidates exist, or which memories are active. This is AI-readable inventory only; do not approve, reject, sync, archive, or delete memory through MCP.",
+            "name": "list_rules",
+            "description": "Read DiffLore rules across lifecycle states: active rules, pending local drafts, and session-mined candidates. Use when the user asks what DiffLore learned, which candidates exist, or which rules are active. This is AI-readable inventory only; do not approve, reject, sync, archive, or delete rules through MCP.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -144,7 +144,7 @@ pub(super) fn tools_list() -> Value {
                         "default": 50,
                         "minimum": 1,
                         "maximum": 1000,
-                        "description": "Maximum number of memory items to return."
+                        "description": "Maximum number of rule items to return."
                     }
                 }
             },
@@ -152,18 +152,18 @@ pub(super) fn tools_list() -> Value {
                 "readOnlyHint": true
             },
             "_meta": {
-                "governance": "read_only_for_ai; inventory only; use CLI commands for approve, reject, disable, sync, archive, or delete memory"
+                "governance": "read_only_for_ai; inventory only; use CLI commands for approve, reject, disable, sync, archive, or delete rules"
             }
         },
         {
-            "name": "get_memory_item",
-            "description": "Read one DiffLore memory item by id, including full body and provenance where available. Accepts `rule:<id>`, `draft:<id>`, or `session:<content_hash>`. Use this before advising a user to approve or reject a candidate. This tool does not mutate memory.",
+            "name": "get_rule_item",
+            "description": "Read one DiffLore rule item by id, including full body and provenance where available. Accepts `rule:<id>`, `draft:<id>`, or `session:<content_hash>`. Use this before advising a user to approve or reject a candidate. This tool does not mutate rules.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "id": {
                         "type": "string",
-                        "description": "Memory item id, such as `rule:conv-x`, `draft:conv-x`, or `session:abc123...`."
+                        "description": "Rule item id, such as `rule:conv-x`, `draft:conv-x`, or `session:abc123...`."
                     }
                 },
                 "required": ["id"]
@@ -172,11 +172,11 @@ pub(super) fn tools_list() -> Value {
                 "readOnlyHint": true
             },
             "_meta": {
-                "governance": "read_only_for_ai; inspect only; use CLI commands for approve, reject, disable, sync, archive, or delete memory"
+                "governance": "read_only_for_ai; inspect only; use CLI commands for approve, reject, disable, sync, archive, or delete rules"
             }
         },
         {
-            "name": "get_memory_activity",
+            "name": "get_rule_activity",
             "description": "Read local evidence that active rules were retrieved or surfaced to agents. Activity is not proof that a rule changed the final code; describe it as surfaced/retrieved unless stronger outcome proof exists elsewhere.",
             "inputSchema": {
                 "type": "object",
@@ -211,8 +211,8 @@ pub(super) fn tools_list() -> Value {
             }
         },
         {
-            "name": "get_memory_digest",
-            "description": "Read the Memory Autopilot digest plus background schedule/status: enabled memories, items needing review, muted duplicates, conservative reasons, dirty/run counters, and the last background result. This MCP tool is read-only for AI; explain the digest and ask the user to run `difflore memory review`, `difflore memory inbox`, `difflore memory log`, or `difflore status` for normal follow-up. Background Memory Autopilot runs automatically; explicit `difflore memory autopilot` is for manual catch-up and debugging only.",
+            "name": "get_rule_digest",
+            "description": "Read the rules triage digest plus background schedule/status: enabled rules, items needing review, muted duplicates, conservative reasons, dirty/run counters, and the last background result. This MCP tool is read-only for AI; explain the digest and ask the user to run `difflore rules review`, `difflore rules inbox`, `difflore rules log`, or `difflore status` for normal follow-up. Background rules triage runs automatically; explicit `difflore rules autopilot` is for manual catch-up and debugging only.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -229,12 +229,12 @@ pub(super) fn tools_list() -> Value {
                 "readOnlyHint": true
             },
             "_meta": {
-                "governance": "read_only_for_ai; use CLI commands for review, inbox, status, disable, approve, reject, sync, archive, or delete memory"
+                "governance": "read_only_for_ai; use CLI commands for review, inbox, status, disable, approve, reject, sync, archive, or delete rules"
             }
         },
         {
-            "name": "get_memory_autopilot_log",
-            "description": "Read the local Memory Autopilot audit log. Use this to explain what Autopilot did and why; do not approve, disable, reject, sync, archive, or delete memory through MCP. Ask the user to run the DiffLore CLI for any mutation.",
+            "name": "get_rule_triage_log",
+            "description": "Read the local rules triage audit log. Use this to explain what triage did and why; do not approve, disable, reject, sync, archive, or delete rules through MCP. Ask the user to run the DiffLore CLI for any mutation.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -251,7 +251,7 @@ pub(super) fn tools_list() -> Value {
                 "readOnlyHint": true
             },
             "_meta": {
-                "governance": "read_only_for_ai; use CLI commands for review, disable, approve, reject, sync, archive, delete, or manual catch-up/debug memory actions"
+                "governance": "read_only_for_ai; use CLI commands for review, disable, approve, reject, sync, archive, delete, or manual catch-up/debug rule actions"
             }
         },
         {
@@ -285,12 +285,12 @@ pub(super) fn tools_list() -> Value {
                 "readOnlyHint": true
             },
             "_meta": {
-                "governance": "read_only_for_ai; timeline evidence only; use CLI commands for memory mutations"
+                "governance": "read_only_for_ai; timeline evidence only; use CLI commands for rule mutations"
             }
         },
         {
             "name": "remember_rule",
-            "description": "Save and activate a local DiffLore memory rule from a coding rule the user explicitly asked to remember. A direct user \"remember this\" request is treated as approval, so fresh captures are active and served to agents immediately. Call WHENEVER the user signals intent to make a rule stick (\"remember this\", \"from now on\", \"don't do X again\", \"always require tests before merge\", \"make this a rule\"). Pass `title` as a short imperative and `body` containing the user's reasoning in English - the WHY, not just what (translate and summarise it if they explained in another language). Return the active rule id and tell the user it has been saved and enabled. Full trigger guide at difflore://skills/remember_rule.",
+            "description": "Save and activate a local DiffLore rule from a coding rule the user explicitly asked to remember. A direct user \"remember this\" request is treated as approval, so fresh captures are active and served to agents immediately. Call WHENEVER the user signals intent to make a rule stick (\"remember this\", \"from now on\", \"don't do X again\", \"always require tests before merge\", \"make this a rule\"). Pass `title` as a short imperative and `body` containing the user's reasoning in English - the WHY, not just what (translate and summarise it if they explained in another language). Return the active rule id and tell the user it has been saved and enabled. Full trigger guide at difflore://skills/remember_rule.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -339,7 +339,7 @@ pub(super) fn tools_list() -> Value {
         },
         {
             "name": "plan_pr",
-            "description": "Read-only planning aid before editing: given an issue/PR description (`intent`), returns the expected file count, file-category mix, and the closest historical PRs from local review history. It does not mutate files, memory, cloud state, or PRs. Use this to avoid silently under-completing - when the team's prior pattern for similar work touches 4+ files, finishing at 2 is the failure mode this prevents. Falls back to an empty prediction with a hint when no local PR review data exists - run `difflore import-reviews` to populate.",
+            "description": "Read-only planning aid before editing: given an issue/PR description (`intent`), returns the expected file count, file-category mix, and the closest historical PRs from local review history. It does not mutate files, rules, cloud state, or PRs. Use this to avoid silently under-completing - when the team's prior pattern for similar work touches 4+ files, finishing at 2 is the failure mode this prevents. Falls back to an empty prediction with a hint when no local PR review data exists - run `difflore import-reviews` to populate.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -361,7 +361,7 @@ pub(super) fn tools_list() -> Value {
                 "readOnlyHint": true
             },
             "_meta": {
-                "governance": "read_only_for_ai; planning only; no file, memory, cloud, or PR mutation"
+                "governance": "read_only_for_ai; planning only; no file, rules, cloud, or PR mutation"
             }
         }
     ])
@@ -427,13 +427,13 @@ pub(super) const SKILL_RESOURCES: &[SkillResource] = &[
     SkillResource {
         uri: "difflore://skills/knowledge-agent",
         name: "knowledge-agent SKILL",
-        description: "Answer cross-cutting questions over team review memory via `difflore ask` plus MCP rule tools.",
+        description: "Answer cross-cutting questions over team review rules via `difflore ask` plus MCP rule tools.",
         markdown: KNOWLEDGE_AGENT_SKILL_MD,
     },
     SkillResource {
-        uri: "difflore://skills/memory-candidate-triage",
-        name: "memory-candidate-triage SKILL",
-        description: "Inspect and group pending DiffLore memory candidates without approving or rejecting them through MCP.",
+        uri: "difflore://skills/rule-candidate-triage",
+        name: "rule-candidate-triage SKILL",
+        description: "Inspect and group pending DiffLore rule candidates without approving or rejecting them through MCP.",
         markdown: MEMORY_CANDIDATE_TRIAGE_SKILL_MD,
     },
     SkillResource {
@@ -459,9 +459,9 @@ pub(super) fn resources_list() -> Value {
             "mimeType": "text/markdown"
         }),
         json!({
-            "uri": "difflore://memory/inbox",
-            "name": "Memory Inbox",
-            "description": "Structured local memory inventory: active rules, pending drafts, session-mined candidates, queues, and local activity counts.",
+            "uri": "difflore://rules/inbox",
+            "name": "Rules Inbox",
+            "description": "Structured local rule inventory: active rules, pending drafts, session-mined candidates, queues, and local activity counts.",
             "mimeType": "application/json"
         }),
     ];
@@ -501,7 +501,7 @@ pub(super) fn resource_templates_list() -> Value {
 /// still pull the full decision tree on demand.
 pub(super) const REMEMBER_RULE_GUIDE_MD: &str = r#"# `remember_rule` - Full Trigger Guide
 
-**Save and activate a local DiffLore memory rule from a coding rule the user explicitly asked to remember.** A direct user "remember this" request counts as approval, so fresh captures are active and served to agents immediately. This tool is the durable capture path; saying "got it, I'll remember" without calling it means the rule is lost the moment the conversation ends.
+**Save and activate a local DiffLore rule from a coding rule the user explicitly asked to remember.** A direct user "remember this" request counts as approval, so fresh captures are active and served to agents immediately. This tool is the durable capture path; saying "got it, I'll remember" without calling it means the rule is lost the moment the conversation ends.
 
 ## MUST CALL when the user expresses intent like (in any language):
 
@@ -547,23 +547,23 @@ Capture the user's reasoning in `body` - the WHY, not just the what; the reasoni
 Echo the returned `item_id`, explain that it is active because the user explicitly asked to remember it, and show the CLI command to inspect it:
 
 ```bash
-difflore memory show rule:<id>
+difflore rules show rule:<id>
 ```
 
 If the `remember_rule` MCP tool is not available after tool discovery, use the CLI fallback instead:
 
 ```bash
-difflore memory remember --title "<short actionable rule>" --body "<full context>" --file-pattern "src/**/*.rs" --json
+difflore rules remember --title "<short actionable rule>" --body "<full context>" --file-pattern "src/**/*.rs" --json
 ```
 
 The CLI fallback also treats the explicit user request as approval and saves an active rule. Tell the user you saved and enabled it.
 
 If the tool says it strengthened an existing active rule, say that rule remains available to agents.
 
-Do not reject, sync, archive, delete, or edit other memory through MCP. To undo an active remembered rule, tell the user they can run:
+Do not reject, sync, archive, delete, or edit other rules through MCP. To undo an active remembered rule, tell the user they can run:
 
 ```bash
-difflore memory disable rule:<id>
+difflore rules disable rule:<id>
 ```
 "#;
 

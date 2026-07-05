@@ -199,19 +199,19 @@ const fn agent_usage_pending_upload_recovery(
     }
     Some(match summary.pending_upload_issue {
         Some(ObservationUploadIssue::MissingCloudScope) => {
-            "memory activity is pending; refresh login once to upload: difflore cloud login"
+            "rule activity is pending; refresh login once to upload: difflore cloud login"
         }
         Some(ObservationUploadIssue::RateLimited) => {
-            "memory activity uploads are rate-limited and will retry automatically"
+            "rule activity uploads are rate-limited and will retry automatically"
         }
         Some(ObservationUploadIssue::InvalidBatch) => {
-            "memory activity uploads need the latest cloud version"
+            "rule activity uploads need the latest cloud version"
         }
         Some(ObservationUploadIssue::ServerRejected) => {
-            "memory activity uploads were rejected; run difflore doctor --report"
+            "rule activity uploads were rejected; run difflore doctor --report"
         }
         Some(ObservationUploadIssue::Unknown) | None => {
-            "memory activity uploads are pending; run difflore doctor --report if they stay pending"
+            "rule activity uploads are pending; run difflore doctor --report if they stay pending"
         }
     })
 }
@@ -222,7 +222,7 @@ fn agent_usage_pending_upload_line(summary: Option<&ActualCitationSummary>) -> O
         return None;
     }
     let mut line = format!(
-        "{} memory activity upload{} pending",
+        "{} rule activity upload{} pending",
         summary.pending_uploads,
         if summary.pending_uploads == 1 {
             ""
@@ -286,7 +286,7 @@ mod tests {
         assert_eq!(value["pendingUploadState"], "queued_needs_login_refresh");
         assert_eq!(
             value["pendingUploadAction"],
-            "memory activity is pending; refresh login once to upload: difflore cloud login"
+            "rule activity is pending; refresh login once to upload: difflore cloud login"
         );
         assert_eq!(value["actualCitationRate"], 0.4);
     }
@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(
             agent_usage_pending_upload_line(Some(&summary)).as_deref(),
             Some(
-                "2 memory activity uploads pending | memory activity is pending; refresh login once to upload: difflore cloud login"
+                "2 rule activity uploads pending | rule activity is pending; refresh login once to upload: difflore cloud login"
             )
         );
     }

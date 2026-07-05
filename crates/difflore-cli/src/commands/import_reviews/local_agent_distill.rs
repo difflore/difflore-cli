@@ -175,7 +175,7 @@ fn build_distill_prompt(seeds: &[DistillSeed]) -> String {
          A SOURCE_INDEX may contain a whole review thread; if it contains multiple independent findings, emit multiple candidates with the same source_index.\n\
          Titles must be generalized imperative rules, not copied review comments.\n\
          Never prefix titles with \"Review:\", \"Review rule for\", or \"Rule from review\".\n\
-         Prefer tight file_patterns and set confidence from 0.40 to 0.90 based on how directly the thread supports the rule; use 0.82+ only for evidence you would safely activate as local memory.\n\
+         Prefer tight file_patterns and set confidence from 0.40 to 0.90 based on how directly the thread supports the rule; use 0.82+ only for evidence you would safely activate as local rules.\n\
          Return STRICT JSON only, no markdown:\n\
          {\"candidates\":[{\"source_index\":1,\"title\":\"...\",\"body\":\"Rule:\\n...\\n\\nSource evidence:\\n...\",\"confidence\":0.72,\"file_patterns\":[\"src/**/*.ts\"]}]}\n\
          If nothing is reusable, return {\"candidates\":[]}; the CLI will fall back to deterministic heuristics.\n\n",
@@ -332,7 +332,7 @@ async fn write_agent_candidates(
                                     .await
                             {
                                 return Err(distill_error(format!(
-                                    "failed to activate local-agent memory: {e}"
+                                    "failed to activate local-agent rules: {e}"
                                 )));
                             }
                             progress.candidates_activated += 1;
@@ -347,7 +347,7 @@ async fn write_agent_candidates(
                     progress.candidates_created += 1;
                 }
             }
-            Err(e) => return Err(distill_error(format!("failed to create local memory: {e}"))),
+            Err(e) => return Err(distill_error(format!("failed to create local rules: {e}"))),
         }
     }
     Ok(())

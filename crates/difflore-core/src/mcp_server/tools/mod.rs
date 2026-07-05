@@ -26,8 +26,8 @@ pub(super) mod validate;
 
 pub(super) use get_rules::tool_get_rules;
 pub(super) use memory::{
-    tool_get_memory_activity, tool_get_memory_autopilot_log, tool_get_memory_digest,
-    tool_get_memory_item, tool_list_memory,
+    tool_get_rule_activity, tool_get_rule_digest, tool_get_rule_item, tool_get_rule_triage_log,
+    tool_list_rules,
 };
 pub(super) use past_verdicts::tool_get_past_verdicts;
 pub(super) use plan_pr::tool_plan_pr;
@@ -43,10 +43,10 @@ pub use evidence::{origin_to_kind, parse_file_patterns};
 pub use validate::{detect_active_model, haiku_auto_disable_active, is_haiku_model};
 
 pub const CONTROL_PLANE_DENIED_TOOL_NAMES: &[&str] = &[
-    "approve_memory",
-    "reject_memory",
+    "approve_rule",
+    "reject_rule",
     "disable_rule",
-    "delete_memory",
+    "delete_rule",
     "cloud_sync",
     "cloud_publish",
     "cloud_unpublish",
@@ -62,11 +62,11 @@ pub const ALLOWED_MCP_TOOL_NAMES: &[&str] = &[
     "search_rules",
     "get_rules",
     "get_past_verdicts",
-    "list_memory",
-    "get_memory_item",
-    "get_memory_activity",
-    "get_memory_digest",
-    "get_memory_autopilot_log",
+    "list_rules",
+    "get_rule_item",
+    "get_rule_activity",
+    "get_rule_digest",
+    "get_rule_triage_log",
     "remember_rule",
     "rule_timeline",
     "plan_pr",
@@ -87,7 +87,7 @@ pub(super) async fn handle_tools_call(
         return Err((
             -32602,
             format!(
-                "{tool_name} is intentionally not exposed through MCP. Use the explicit DiffLore CLI command so a human controls memory, cloud, config, auth, agent install, and file mutations."
+                "{tool_name} is intentionally not exposed through MCP. Use the explicit DiffLore CLI command so a human controls rules, cloud, config, auth, agent install, and file mutations."
             ),
         ));
     }
@@ -104,11 +104,11 @@ pub(super) async fn handle_tools_call(
         "search_rules" => tool_search_rules(state, &arguments).await,
         "get_rules" => tool_get_rules(state, &arguments).await,
         "get_past_verdicts" => tool_get_past_verdicts(state, &arguments).await,
-        "list_memory" => tool_list_memory(state, &arguments).await,
-        "get_memory_item" => tool_get_memory_item(state, &arguments).await,
-        "get_memory_activity" => tool_get_memory_activity(state, &arguments).await,
-        "get_memory_digest" => tool_get_memory_digest(state, &arguments).await,
-        "get_memory_autopilot_log" => tool_get_memory_autopilot_log(state, &arguments).await,
+        "list_rules" => tool_list_rules(state, &arguments).await,
+        "get_rule_item" => tool_get_rule_item(state, &arguments).await,
+        "get_rule_activity" => tool_get_rule_activity(state, &arguments).await,
+        "get_rule_digest" => tool_get_rule_digest(state, &arguments).await,
+        "get_rule_triage_log" => tool_get_rule_triage_log(state, &arguments).await,
         "remember_rule" => tool_remember_rule(state, &arguments).await,
         "rule_timeline" => tool_rule_timeline(state, &arguments).await,
         "plan_pr" => tool_plan_pr(state, &arguments).await,

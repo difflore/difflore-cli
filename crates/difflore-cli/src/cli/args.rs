@@ -32,7 +32,7 @@ pub(crate) struct FixCliArgs {
     #[arg(long, value_name = "SCOPE")]
     pub(crate) diff: Option<String>,
 
-    /// Print which recalled memories produced each finding.
+    /// Print which recalled rules produced each finding.
     #[arg(long, hide = true)]
     pub(crate) explain_rules: bool,
 
@@ -88,7 +88,7 @@ pub(crate) struct ReviewCliArgs {
     #[arg(long, value_name = "SCOPE")]
     pub(crate) diff: Option<String>,
 
-    /// Print which recalled memories produced each finding.
+    /// Print which recalled rules produced each finding.
     #[arg(long, hide = true)]
     pub(crate) explain_rules: bool,
 
@@ -134,7 +134,7 @@ pub(crate) struct SyncCliArgs {
     #[arg(long)]
     pub(crate) include_observations: bool,
 
-    /// Also upload raw session-mined memory candidates. Skipped by default.
+    /// Also upload raw session-mined rule candidates. Skipped by default.
     #[arg(long)]
     pub(crate) include_candidates: bool,
 
@@ -171,7 +171,7 @@ pub(crate) struct ImportReviewsCliArgs {
     #[arg(long)]
     pub(crate) repo: Option<String>,
 
-    /// Import from an upstream GitHub repo and attach memory to this repo.
+    /// Import from an upstream GitHub repo and attach rules to this repo.
     #[arg(long, value_name = "OWNER/REPO")]
     pub(crate) from_upstream: Option<String>,
 

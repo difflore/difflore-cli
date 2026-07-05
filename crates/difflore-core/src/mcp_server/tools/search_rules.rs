@@ -472,9 +472,9 @@ const fn empty_recall_message(
     retry_kind: Option<&'static str>,
 ) -> &'static str {
     if repo_scopes.is_empty() {
-        "No GitHub repo scope detected. Run inside a GitHub repo or pass repo_full_name; DiffLore will not inject global memory without a repo scope."
+        "No GitHub repo scope detected. Run inside a GitHub repo or pass repo_full_name; DiffLore will not inject global rules without a repo scope."
     } else if no_current_repo_rules(repo_scopes, rules_indexed) {
-        "No rules are scoped to THIS repo yet, so DiffLore served nothing as team memory. Run `difflore import-reviews` for this repo, or pass an explicit repo_full_name if this is not the repo you meant."
+        "No rules are scoped to THIS repo yet, so DiffLore served nothing as team rules. Run `difflore import-reviews` for this repo, or pass an explicit repo_full_name if this is not the repo you meant."
     } else if retry_kind.is_some() {
         "No rules found after a targeted retry. Pass a concrete file and intent, or add/import rules for this repo."
     } else {

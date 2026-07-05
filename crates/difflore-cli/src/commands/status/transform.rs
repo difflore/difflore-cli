@@ -274,7 +274,7 @@ pub(super) fn local_value_loop_status(
         (
             "auditable_value_loop_ready",
             format!(
-                "{} from {}#{} matched memory #{} and became an accepted edit",
+                "{} from {}#{} matched rule #{} and became an accepted edit",
                 evidence.accepted_rule.title,
                 evidence.imported_review.source_repo,
                 evidence.imported_review.pr_number,
@@ -290,7 +290,7 @@ pub(super) fn local_value_loop_status(
         (
             "accepted_edit_proof_ready",
             format!(
-                "{} accepted edit{} ({} after prior memory use{} within {}d)",
+                "{} accepted edit{} ({} after prior rule use{} within {}d)",
                 accepted_total,
                 plural(accepted_total),
                 accepted.accepted_outcomes_linked_to_prior_recall,
@@ -316,7 +316,7 @@ pub(super) fn local_value_loop_status(
         (
             "accepted_edit_seen",
             format!(
-                "{} accepted edit{} recorded for this repo, but 0 followed memory use within {}d; review recalled memories before accepting edits",
+                "{} accepted edit{} recorded for this repo, but 0 followed rule use within {}d; review recalled rules before accepting edits",
                 accepted_total,
                 plural(accepted_total),
                 accepted.recall_lookback_days,
@@ -325,7 +325,7 @@ pub(super) fn local_value_loop_status(
     } else if repo_scoped_rules_ready {
         (
             "repo_rules_ready",
-            "repo-scoped memories exist; review them against this diff".to_owned(),
+            "repo-scoped rules exist; review them against this diff".to_owned(),
         )
     } else if repo_candidates_ready {
         (
@@ -337,12 +337,12 @@ pub(super) fn local_value_loop_status(
         )
     } else if scope.review_source_repo_full_name.is_some() {
         (
-            "fork_memory_missing",
+            "fork_rules_missing",
             "attach upstream review rules to this fork, then test recall".to_owned(),
         )
     } else {
         (
-            "repo_memory_missing",
+            "repo_rules_missing",
             "import this repo's review rules before testing recall".to_owned(),
         )
     };
@@ -363,15 +363,15 @@ pub(super) fn local_value_loop_status(
 pub(super) fn mcp_agent_recall_buyer_evidence(serves: &LocalMcpRuleServe) -> String {
     if serves.strict_matches > 0 {
         return format!(
-            "{} file-scoped memory match{} ready for agents; review the current diff, then accept a matching agent edit",
+            "{} file-scoped rule match{} ready for agents; review the current diff, then accept a matching agent edit",
             serves.strict_matches,
             if serves.strict_matches == 1 { "" } else { "es" },
         );
     }
     format!(
-        "{} memor{} ready for agents; review the current diff, then accept a matching agent edit",
+        "{} rule{} ready for agents; review the current diff, then accept a matching agent edit",
         serves.rules_served,
-        if serves.rules_served == 1 { "y" } else { "ies" },
+        plural(serves.rules_served),
     )
 }
 
@@ -408,7 +408,7 @@ fn local_beta_lane_readiness(
     } else if value_loop.repo_candidates_ready {
         "repo_candidates_pending"
     } else {
-        "needs_review_memory"
+        "needs_review_rules"
     };
     let summary = if ready {
         format!(
@@ -490,15 +490,12 @@ pub(super) fn repo_scope_status(
     ) {
         (None, _, _, _) => "no supported origin/upstream git remote was detected".to_owned(),
         (Some(_repo), Some(source_repo), 0, source_count) if source_count > 0 => format!(
-            "{source_count} upstream active memor{} from {source_repo} are available to this fork",
-            if source_count == 1 { "y" } else { "ies" }
+            "{source_count} upstream active rule{} from {source_repo} are available to this fork",
+            plural(source_count)
         ),
-        (Some(_), _, 0, _) => "no active memory is scoped to this repo yet".to_owned(),
+        (Some(_), _, 0, _) => "no active rules are scoped to this repo yet".to_owned(),
         (Some(repo), _, count, _) => {
-            format!(
-                "{count} active memor{} scoped to {repo}",
-                if count == 1 { "y" } else { "ies" }
-            )
+            format!("{count} active rule{} scoped to {repo}", plural(count))
         }
     };
     RepoScopeStatus {
@@ -557,7 +554,7 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
         if local_recall_proof.recall_events > 0 || local_mcp_serves.strict_matches > 0 {
             return NextAction {
                 command: "difflore review --diff all".to_owned(),
-                reason: "review recalled memories against the current diff".to_owned(),
+                reason: "review recalled rules against the current diff".to_owned(),
                 blocked_by: None,
             };
         }
@@ -604,7 +601,7 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
 
     if pending_candidates > 0 && scope.repo_full_name.is_none() {
         return NextAction {
-            command: "difflore memory review".to_owned(),
+            command: "difflore rules review".to_owned(),
             reason: "review pending drafts; add a supported origin remote for repo-scoped guidance"
                 .to_owned(),
             blocked_by: None,
@@ -620,19 +617,19 @@ pub(super) fn next_action(inputs: &NextActionInputs<'_>) -> NextAction {
 
 fn next_for_session_mined_candidates(count: i64) -> NextAction {
     let noun = if count == 1 {
-        "candidate memory"
+        "candidate rule"
     } else {
-        "candidate memories"
+        "candidate rules"
     };
     NextAction {
-        command: "difflore memory review".to_owned(),
+        command: "difflore rules review".to_owned(),
         reason: format!("approve {count} {noun} into active local rules"),
         blocked_by: None,
     }
 }
 
 fn draft_review_command(_scope: &RepoScopeStatus) -> String {
-    "difflore memory review".to_owned()
+    "difflore rules review".to_owned()
 }
 
 pub(super) fn proof_path_commands(next: &NextAction, cloud_logged_in: bool) -> Vec<String> {
@@ -667,7 +664,7 @@ pub(super) fn proof_path_commands(next: &NextAction, cloud_logged_in: bool) -> V
         vec![command.to_owned()]
     };
 
-    if command == "difflore memory review" {
+    if command == "difflore rules review" {
         return path;
     }
 
@@ -710,8 +707,8 @@ fn candidate_preview(candidate: &difflore_core::skills::CandidateRule) -> Candid
             .as_ref()
             .and_then(|proof| proof.comment_url.clone()),
         preview: candidate_body_preview(&candidate.description),
-        accept_command: format!("difflore memory approve draft:{}", candidate.id),
-        explain_command: format!("difflore memory show draft:{}", candidate.id),
+        accept_command: format!("difflore rules approve draft:{}", candidate.id),
+        explain_command: format!("difflore rules show draft:{}", candidate.id),
     }
 }
 
@@ -888,7 +885,7 @@ mod tests {
 
         let empty_repo = scope(Some("acme/app"), 0);
         assert!(!empty_repo.scoped_recall_ready);
-        assert!(empty_repo.reason.contains("no active memory"));
+        assert!(empty_repo.reason.contains("no active rules"));
 
         let ready = scope(Some("acme/app"), 2);
         assert!(ready.scoped_recall_ready);
@@ -911,7 +908,7 @@ mod tests {
 
         assert!(status.scoped_recall_ready);
         assert_eq!(status.suggested_import_command, None);
-        assert!(status.reason.contains("12 upstream active memories"));
+        assert!(status.reason.contains("12 upstream active rules"));
         assert!(status.reason.contains("upstream/app"));
     }
 
@@ -922,7 +919,7 @@ mod tests {
 
         assert_eq!(
             next_action_for_test(0, 4, 2, &scope, &proof).command,
-            "difflore memory review"
+            "difflore rules review"
         );
     }
 
@@ -933,7 +930,7 @@ mod tests {
 
         assert_eq!(
             next_action_for_test(0, 4, 2, &scope, &proof).command,
-            "difflore memory review"
+            "difflore rules review"
         );
     }
 
@@ -965,8 +962,8 @@ mod tests {
             local_mcp_serves: &empty_mcp_serves(),
         });
 
-        assert_eq!(next.command, "difflore memory review");
-        assert!(next.reason.contains("candidate memories"));
+        assert_eq!(next.command, "difflore rules review");
+        assert!(next.reason.contains("candidate rules"));
         assert_eq!(next.blocked_by, None);
     }
 
@@ -987,7 +984,7 @@ mod tests {
             local_mcp_serves: &empty_mcp_serves(),
         });
 
-        assert_eq!(next.command, "difflore memory review");
+        assert_eq!(next.command, "difflore rules review");
         assert_eq!(next.blocked_by, None);
     }
 
@@ -1008,7 +1005,7 @@ mod tests {
             local_mcp_serves: &empty_mcp_serves(),
         });
 
-        assert_eq!(next.command, "difflore memory review");
+        assert_eq!(next.command, "difflore rules review");
         assert_eq!(next.blocked_by, None);
     }
 
@@ -1198,18 +1195,18 @@ mod tests {
     #[test]
     fn proof_path_keeps_memory_review_local_first() {
         let review = NextAction {
-            command: "difflore memory review".to_owned(),
+            command: "difflore rules review".to_owned(),
             reason: String::new(),
             blocked_by: None,
         };
 
         assert_eq!(
             proof_path_commands(&review, true),
-            vec!["difflore memory review"]
+            vec!["difflore rules review"]
         );
         assert_eq!(
             proof_path_commands(&review, false),
-            vec!["difflore memory review"]
+            vec!["difflore rules review"]
         );
     }
 
@@ -1231,7 +1228,7 @@ mod tests {
 
         assert_eq!(
             next_action_for_test(0, 3, 0, &scope, &proof).command,
-            "difflore memory review"
+            "difflore rules review"
         );
     }
 
@@ -1318,7 +1315,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(status.stage, "repo_memory_missing");
+        assert_eq!(status.stage, "repo_rules_missing");
         assert!(!status.repo_scoped_rules_ready);
         assert!(status.buyer_evidence.contains("import this repo"));
     }
@@ -1360,7 +1357,7 @@ mod tests {
 
         assert_eq!(status.stage, "agent_recall_seen");
         assert!(status.mcp_agent_recall_proof_ready);
-        assert!(status.buyer_evidence.contains("file-scoped memory matches"));
+        assert!(status.buyer_evidence.contains("file-scoped rule matches"));
         assert!(status.buyer_evidence.contains("review the current diff"));
         assert!(!status.buyer_evidence.contains("run impact"));
     }
@@ -1424,7 +1421,7 @@ mod tests {
         assert!(
             status
                 .buyer_evidence
-                .contains("2 after prior memory use (2 rule recalls) within 7d")
+                .contains("2 after prior rule use (2 rule recalls) within 7d")
         );
         assert_eq!(status.saved_review_minutes, 8);
     }
@@ -1533,7 +1530,7 @@ mod tests {
             id: "cand-123".to_owned(),
             name: "Use stable waits in router tests".to_owned(),
             description: "\
-Imported from a GitHub PR review comment. Keep as a pending memory draft until a human confirms this is a repeatable review rule.
+Imported from a GitHub PR review comment. Keep as a pending rule draft until a human confirms this is a repeatable review rule.
 
 Source: tanstack/router#42
 Comment: https://github.com/tanstack/router/pull/42#discussion_r1
@@ -1574,11 +1571,11 @@ Prefer stable waits here instead of relying on a race with the scheduler.",
         );
         assert_eq!(
             preview.accept_command,
-            "difflore memory approve draft:cand-123"
+            "difflore rules approve draft:cand-123"
         );
         assert_eq!(
             preview.explain_command,
-            "difflore memory show draft:cand-123"
+            "difflore rules show draft:cand-123"
         );
     }
 }

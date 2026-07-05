@@ -379,8 +379,8 @@ async fn record_remember_provenance_event(
     })
     .to_string();
     let reason = match status {
-        RuleStatus::Active => "Captured active memory through remember_rule",
-        RuleStatus::Pending => "Proposed untrusted memory draft through remember_rule",
+        RuleStatus::Active => "Captured active rule through remember_rule",
+        RuleStatus::Pending => "Proposed untrusted rule draft through remember_rule",
     };
     sqlx::query(
         "INSERT INTO rule_events
@@ -613,7 +613,7 @@ async fn enforce_remember_rate_limit(db: &sqlx::SqlitePool, origin: &str) -> cra
             return Err(CoreError::Validation(format!(
                 "remember_rule daily cap reached ({captures_today}/{REMEMBER_DAILY_LIMIT}). \
                  If this is intentional, import review history with `difflore import-reviews`. \
-                 If an agent is looping, run `difflore status --json` to audit local memory and archive noisy entries in DiffLore Cloud."
+                 If an agent is looping, run `difflore status --json` to audit local rules and archive noisy entries in DiffLore Cloud."
             )));
         }
     }

@@ -597,7 +597,7 @@ fn local_accepted_recall_note(proof: &McpValueProof) -> String {
             .local_accepted_outcomes_linked_to_edit_attribution_last30
             .unwrap_or(0),
     );
-    format!(" | {linked} after prior memory recall{breakdown} within 7d")
+    format!(" | {linked} after prior rule recall{breakdown} within 7d")
 }
 
 const fn plural(n: i64) -> &'static str {
@@ -1113,7 +1113,7 @@ name = "safe"
                 tool_call_name: Some("search_rules".to_owned()),
                 tool_call_rules_injected: Some(1),
                 tool_call_rules_indexed: Some(3),
-                tool_call_top_result: Some("Review memory probe rule".to_owned()),
+                tool_call_top_result: Some("Review rule probe rule".to_owned()),
                 tool_count: Some(2),
                 tool_names: vec!["search_rules".to_owned(), "get_rules".to_owned()],
             }),
@@ -1157,14 +1157,14 @@ name = "safe"
         assert!(out.contains("runtime: ok | stdio self-check served initialize + tools/list"));
         assert!(out.contains("tools: 2 | search_rules, get_rules"));
         assert!(out.contains("tool call: search_rules | 1 injected | 3 indexed"));
-        assert!(out.contains("top=Review memory probe rule"));
+        assert!(out.contains("top=Review rule probe rule"));
         assert!(out.contains("installed clients: Cursor"));
         assert!(out.contains("rule set: 3882 active rules ready for recall"));
         assert!(out.contains("agent reach: 1 installed client | 2 MCP tools served"));
         assert!(out.contains("local accepted activity: 4 accepted edits"));
         assert!(out.contains("(3 signed local fixes + 1 agent/hook outcome)"));
         assert!(
-            out.contains("2 after prior memory recall (1 rule recall + 1 agent recall) within 7d")
+            out.contains("2 after prior rule recall (1 rule recall + 1 agent recall) within 7d")
         );
         assert!(!out.contains("review time saved"));
         assert!(out.contains("remote Impact activity: 46/46 accepted edits in the last 30d"));
@@ -1226,9 +1226,8 @@ name = "safe"
         assert!(lines[2].contains("local accepted activity: 2 accepted edits"));
         assert!(lines[2].contains("(2 agent/hook outcomes)"));
         assert!(
-            lines[2].contains(
-                "2 after prior memory recall (1 agent recall + 1 accepted edit) within 7d"
-            )
+            lines[2]
+                .contains("2 after prior rule recall (1 agent recall + 1 accepted edit) within 7d")
         );
         assert!(!lines[2].contains("review time saved"));
         assert_eq!(

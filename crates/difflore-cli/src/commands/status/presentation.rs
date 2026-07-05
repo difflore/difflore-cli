@@ -55,7 +55,7 @@ fn format_local_hero_evidence(hero: &LocalHeroEvidence) -> Vec<String> {
     } else {
         " (best on this machine)"
     };
-    let mut lines = vec![format!("best local memory{scope_note}: {}", hero.title)];
+    let mut lines = vec![format!("best local rules{scope_note}: {}", hero.title)];
 
     let mut trail = Vec::new();
     if let Some(source) = hero
@@ -119,7 +119,7 @@ fn format_local_hero_evidence(hero: &LocalHeroEvidence) -> Vec<String> {
         );
     }
     if let Some(rank) = hero.best_recall_rank.filter(|rank| *rank > 0) {
-        let _ = write!(metrics, " | best matched memory #{rank}");
+        let _ = write!(metrics, " | best matched rule #{rank}");
     }
     lines.push(metrics);
 
@@ -142,14 +142,11 @@ fn format_scoped_recall(scope: &RepoScopeStatus) -> String {
         upstream,
         scope.review_source_repo_full_name.as_deref(),
     ) {
-        (0, n, Some(source)) if n > 0 => format!(
-            "ready ({} memor{} from {})",
-            n,
-            if n == 1 { "y" } else { "ies" },
-            source
-        ),
+        (0, n, Some(source)) if n > 0 => {
+            format!("ready ({} rule{} from {})", n, plural(n), source)
+        }
         (s, n, Some(source)) if n > 0 => format!("ready ({s} scoped + {n} from {source})"),
-        (s, _, _) => format!("ready ({} memor{})", s, if s == 1 { "y" } else { "ies" }),
+        (s, _, _) => format!("ready ({} rule{})", s, plural(s)),
     }
 }
 
@@ -206,9 +203,9 @@ fn format_readiness(selected_lane: &str, lane_status: &LaneStatusSummary) -> Vec
     if show_beta {
         lines.push(
             if lane_status.local_beta.ready {
-                "beta: ready | local review memory is working"
+                "beta: ready | local review rules is working"
             } else {
-                "beta: not yet | no usable local review memory yet"
+                "beta: not yet | no usable local review rules yet"
             }
             .to_owned(),
         );
@@ -281,8 +278,8 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
         let _ = writeln!(out);
     }
 
-    // Memory & recall: what a new user needs to understand first.
-    let _ = writeln!(out, "{}", style::ok("Memory"));
+    // Rules & recall: what a new user needs to understand first.
+    let _ = writeln!(out, "{}", style::ok("Rules"));
     let _ = writeln!(
         out,
         "  {bullet} active on this machine: {active_rules} rule{}",
@@ -292,7 +289,7 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
     {
         let _ = writeln!(
             out,
-            "    memory lives in: {}",
+            "    rules live in: {}",
             format_repo_distribution(&memory_inbox.active_rule_repos)
         );
     }
@@ -310,7 +307,7 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
     let _ = writeln!(out, "  {bullet} drafts: {drafts}");
     if pending_candidates_for_repo > 0 {
         if let Some(repo) = scope.repo_full_name.as_deref() {
-            let _ = writeln!(out, "    review: {}", style::cmd("difflore memory review"));
+            let _ = writeln!(out, "    review: {}", style::cmd("difflore rules review"));
             let _ = writeln!(
                 out,
                 "    agent: {}",
@@ -325,7 +322,7 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
             );
         }
     } else if pending_candidates > 0 {
-        let _ = writeln!(out, "    review: {}", style::cmd("difflore memory review"));
+        let _ = writeln!(out, "    review: {}", style::cmd("difflore rules review"));
         let _ = writeln!(
             out,
             "    agent: {}",
@@ -336,12 +333,12 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
     if discoveries > 0 {
         let _ = writeln!(
             out,
-            "  {bullet} candidate memories: {discoveries} waiting for local review"
+            "  {bullet} candidate rules: {discoveries} waiting for local review"
         );
         if let Some(latest) = memory_inbox.local_discoveries.latest.first() {
             let _ = writeln!(out, "    latest: {}", style::pewter(&latest.title));
         }
-        let _ = writeln!(out, "    review: {}", style::cmd("difflore memory review"));
+        let _ = writeln!(out, "    review: {}", style::cmd("difflore rules review"));
         let _ = writeln!(
             out,
             "    cloud: {}",
@@ -560,12 +557,12 @@ fn top_candidates_heading(
     pending_candidates_for_repo: i64,
 ) -> String {
     match candidate_scope {
-        "currentRepo" => "Pending memory drafts for current repo".to_owned(),
+        "currentRepo" => "Pending rule drafts for current repo".to_owned(),
         "all" if scope.repo_full_name.is_some() && pending_candidates_for_repo == 0 => {
-            "Pending memory drafts from other repos".to_owned()
+            "Pending rule drafts from other repos".to_owned()
         }
-        "all" => "Pending memory drafts across repos".to_owned(),
-        _ => "Pending memory drafts".to_owned(),
+        "all" => "Pending rule drafts across repos".to_owned(),
+        _ => "Pending rule drafts".to_owned(),
     }
 }
 
@@ -580,10 +577,10 @@ fn top_candidates_scope_note(
         pending_candidates_for_repo,
     ) {
         ("all", Some(repo), 0) => Some(format!(
-            "current repo {repo} has 0 pending memory drafts; these are not counted as ready for this repo"
+            "current repo {repo} has 0 pending rule drafts; these are not counted as ready for this repo"
         )),
         ("all", None, _) => Some(
-            "no supported origin/upstream git remote detected; add one for repo-scoped memory guidance"
+            "no supported origin/upstream git remote detected; add one for repo-scoped rule guidance"
                 .to_owned(),
         ),
         _ => None,
@@ -633,7 +630,7 @@ mod tests {
             "Return 413 for large request bodies: 2 accepted edits from gin-gonic/gin"
         );
         // No linkage internals leak into the human line.
-        assert!(!out.contains("memory-use proof"));
+        assert!(!out.contains("rule-use proof"));
         assert!(!out.contains("hook outcome"));
     }
 
@@ -669,7 +666,7 @@ mod tests {
 
         let lines = format_local_hero_evidence(&hero);
         let out = lines.join("\n");
-        assert!(out.contains("best local memory (best on this machine)"));
+        assert!(out.contains("best local rules (best on this machine)"));
         assert!(out.contains("learned from tanstack/router"));
         assert!(out.contains("used on difflore-fixtures/router#4"));
         assert!(out.contains("5 accepted edits"));
@@ -677,7 +674,7 @@ mod tests {
         assert!(out.contains("6 file-matched deliveries"));
         assert!(out.contains("not current-repo readiness"));
         assert!(!out.contains("accepted edit proof"));
-        assert!(!out.contains("memory-use proof"));
+        assert!(!out.contains("rule-use proof"));
     }
 
     #[test]
@@ -714,16 +711,16 @@ mod tests {
 
         assert_eq!(
             top_candidates_heading("all", &scope, 0),
-            "Pending memory drafts from other repos"
+            "Pending rule drafts from other repos"
         );
         assert!(
             top_candidates_scope_note("all", &scope, 0)
                 .expect("note")
-                .contains("current repo acme/app has 0 pending memory drafts")
+                .contains("current repo acme/app has 0 pending rule drafts")
         );
         assert_eq!(
             top_candidates_heading("currentRepo", &scope, 2),
-            "Pending memory drafts for current repo"
+            "Pending rule drafts for current repo"
         );
         assert!(top_candidates_scope_note("currentRepo", &scope, 2).is_none());
     }
@@ -989,11 +986,11 @@ mod tests {
         assert!(out.contains("difflore try"), "{out}");
         assert!(out.contains("no supported origin/upstream"), "{out}");
         // Value-first, human framing via the plain section headers.
-        assert!(out.contains("Memory") && out.contains("Value"), "{out}");
+        assert!(out.contains("Rules") && out.contains("Value"), "{out}");
         // Internal release-gate vocabulary stays out of the human view.
         assert!(!out.contains("countsAsProductionEvidence"), "{out}");
         assert!(!out.contains("Lane boundary"), "{out}");
-        assert!(!out.contains("memory-use proof"), "{out}");
+        assert!(!out.contains("rule-use proof"), "{out}");
     }
 
     #[test]
@@ -1073,7 +1070,7 @@ mod tests {
             estimated_tokens: 0,
         };
         let next = NextAction {
-            command: "difflore memory review".to_owned(),
+            command: "difflore rules review".to_owned(),
             reason: "review pending drafts into active local rules".to_owned(),
             blocked_by: None,
         };
@@ -1108,7 +1105,7 @@ mod tests {
         });
 
         assert!(out.contains("drafts: 8 pending (8 for this repo)"), "{out}");
-        assert!(out.contains("review: difflore memory review"), "{out}");
+        assert!(out.contains("review: difflore rules review"), "{out}");
         assert!(
             out.contains("agent: difflore drafts list --repo acme/widgets --json"),
             "{out}"
@@ -1136,7 +1133,7 @@ mod tests {
         };
         let next = NextAction {
             command: "difflore review --diff all".to_owned(),
-            reason: "review recalled memories against the current diff".to_owned(),
+            reason: "review recalled rules against the current diff".to_owned(),
             blocked_by: None,
         };
         let memory_inbox = empty_memory_inbox();
@@ -1173,7 +1170,7 @@ mod tests {
             out.contains("signals: 5 recalls | 64 ready for agents"),
             "{out}"
         );
-        assert!(!out.contains("top memory"), "{out}");
+        assert!(!out.contains("top rule"), "{out}");
         assert!(!out.contains("no accepted edits yet"), "{out}");
     }
 
@@ -1195,7 +1192,7 @@ mod tests {
         };
         let next = NextAction {
             command: "difflore import-reviews".to_owned(),
-            reason: "seed local memories from past PR reviews".to_owned(),
+            reason: "seed local rules from past PR reviews".to_owned(),
             blocked_by: None,
         };
         let memory_inbox = empty_memory_inbox();
@@ -1375,7 +1372,7 @@ mod tests {
         };
         let next = NextAction {
             command: "difflore status".to_owned(),
-            reason: "inspect local memory".to_owned(),
+            reason: "inspect local rules".to_owned(),
             blocked_by: None,
         };
         let memory_inbox = empty_memory_inbox();

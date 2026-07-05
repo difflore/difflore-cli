@@ -123,11 +123,11 @@ async fn tools_list_advertises_expected_tools() {
         "search_rules",
         "get_rules",
         "get_past_verdicts",
-        "list_memory",
-        "get_memory_item",
-        "get_memory_activity",
-        "get_memory_digest",
-        "get_memory_autopilot_log",
+        "list_rules",
+        "get_rule_item",
+        "get_rule_activity",
+        "get_rule_digest",
+        "get_rule_triage_log",
         "rule_timeline",
     ] {
         assert!(
@@ -185,40 +185,40 @@ async fn tools_list_advertises_expected_tools() {
         json!(["query"]),
         "get_past_verdicts schema should require semantic query: {get_past_verdicts}"
     );
-    let memory_digest = result["tools"]
+    let rule_digest = result["tools"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|t| t["name"].as_str() == Some("get_memory_digest"))
-        .expect("get_memory_digest tool");
-    let memory_digest_description = memory_digest["description"]
+        .find(|t| t["name"].as_str() == Some("get_rule_digest"))
+        .expect("get_rule_digest tool");
+    let rule_digest_description = rule_digest["description"]
         .as_str()
-        .expect("get_memory_digest description");
+        .expect("get_rule_digest description");
     assert!(
-        memory_digest_description.contains("read-only for AI")
-            && memory_digest_description.contains("Background Memory Autopilot runs automatically")
-            && !memory_digest_description.contains("run `difflore memory autopilot`"),
-        "memory digest tool should avoid routing agents to foreground autopilot: {memory_digest_description}"
+        rule_digest_description.contains("read-only for AI")
+            && rule_digest_description.contains("Background rules triage runs automatically")
+            && !rule_digest_description.contains("run `difflore rules autopilot`"),
+        "rule digest tool should avoid routing agents to foreground autopilot: {rule_digest_description}"
     );
     assert_eq!(
-        memory_digest["annotations"]["readOnlyHint"].as_bool(),
+        rule_digest["annotations"]["readOnlyHint"].as_bool(),
         Some(true),
-        "memory digest should advertise read-only annotation: {memory_digest}"
+        "rule digest should advertise read-only annotation: {rule_digest}"
     );
     assert!(
-        memory_digest["_meta"]["governance"]
+        rule_digest["_meta"]["governance"]
             .as_str()
             .unwrap_or_default()
             .contains("read_only_for_ai"),
-        "memory digest should expose governance metadata: {memory_digest}"
+        "rule digest should expose governance metadata: {rule_digest}"
     );
     for read_only in [
         "search_rules",
         "get_rules",
         "get_past_verdicts",
-        "list_memory",
-        "get_memory_item",
-        "get_memory_activity",
+        "list_rules",
+        "get_rule_item",
+        "get_rule_activity",
         "rule_timeline",
         "plan_pr",
     ] {
@@ -238,11 +238,11 @@ async fn tools_list_advertises_expected_tools() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|t| t["name"].as_str() == Some("get_memory_autopilot_log"))
-        .expect("get_memory_autopilot_log tool");
+        .find(|t| t["name"].as_str() == Some("get_rule_triage_log"))
+        .expect("get_rule_triage_log tool");
     let autopilot_log_description = autopilot_log["description"]
         .as_str()
-        .expect("get_memory_autopilot_log description");
+        .expect("get_rule_triage_log description");
     assert!(
         autopilot_log_description.contains("audit log")
             && autopilot_log_description.contains("CLI"),
@@ -295,7 +295,7 @@ async fn memory_tools_read_user_remembered_active_rules() {
     let (list_body, _) = call_tool_json(
         &state,
         21,
-        "list_memory",
+        "list_rules",
         json!({ "state": "active", "limit": 20 }),
     )
     .await;
@@ -310,7 +310,7 @@ async fn memory_tools_read_user_remembered_active_rules() {
     assert_eq!(listed["approvalRequired"].as_bool(), Some(false));
 
     let (detail_body, _) =
-        call_tool_json(&state, 22, "get_memory_item", json!({ "id": item_id })).await;
+        call_tool_json(&state, 22, "get_rule_item", json!({ "id": item_id })).await;
     assert_eq!(
         detail_body["item"]["itemId"].as_str(),
         Some(listed["itemId"].as_str().unwrap())
@@ -335,7 +335,7 @@ async fn memory_tools_read_user_remembered_active_rules() {
 #[tokio::test]
 async fn memory_activity_tool_labels_surface_proof_carefully() {
     let state = build_state().await;
-    let (body, _) = call_tool_json(&state, 23, "get_memory_activity", json!({})).await;
+    let (body, _) = call_tool_json(&state, 23, "get_rule_activity", json!({})).await;
     assert_eq!(body["summary"]["calls"].as_i64(), Some(0));
     assert!(
         body["note"].as_str().unwrap().contains("not proof"),
@@ -347,26 +347,21 @@ async fn memory_activity_tool_labels_surface_proof_carefully() {
 async fn memory_autopilot_tools_return_structured_json_read_only() {
     let state = build_state().await;
     let (digest_body, digest_result) =
-        call_tool_json(&state, 24, "get_memory_digest", json!({})).await;
+        call_tool_json(&state, 24, "get_rule_digest", json!({})).await;
     assert!(
         digest_body.is_object(),
-        "memory digest should return structured JSON object: {digest_body}"
+        "rule digest should return structured JSON object: {digest_body}"
     );
     assert!(
         digest_result["_meta"]["governance"]
             .as_str()
             .unwrap_or_default()
             .contains("read_only_for_ai"),
-        "memory digest response should carry read-only governance metadata: {digest_result}"
+        "rule digest response should carry read-only governance metadata: {digest_result}"
     );
 
-    let (log_body, log_result) = call_tool_json(
-        &state,
-        25,
-        "get_memory_autopilot_log",
-        json!({ "limit": 5 }),
-    )
-    .await;
+    let (log_body, log_result) =
+        call_tool_json(&state, 25, "get_rule_triage_log", json!({ "limit": 5 })).await;
     assert_eq!(log_body["limit"].as_u64(), Some(5));
     assert!(
         log_body["events"].is_array(),
@@ -769,7 +764,7 @@ async fn remember_rule_dedup_returns_strengthened_meta() {
             .expect("status")
             .as_deref(),
         Some("active"),
-        "deduped user-requested memory should remain active"
+        "deduped user-requested rule should remain active"
     );
     let confidence = second["_meta"]["confidence"].as_f64().unwrap();
     assert!(
@@ -828,7 +823,7 @@ async fn promote_rule_for_test(state: &McpState, rule_id: &str) {
     match crate::skills::promote_candidate(&state.db, rule_id).await {
         Ok(_) => {}
         Err(crate::CoreError::Validation(message)) if message.contains("already active") => {}
-        Err(err) => panic!("promote test memory draft {rule_id}: {err}"),
+        Err(err) => panic!("promote test rule draft {rule_id}: {err}"),
     }
 }
 
@@ -1203,7 +1198,7 @@ async fn search_rules_empty_result_exposes_retry_attempt_meta() {
         "search_rules",
         json!({
             "file": "packages/router/src/parser.ts",
-            "intent": "please search review memory for any relevant rules",
+            "intent": "please search review rules for any relevant rules",
             "repo_full_name": "acme/empty"
         }),
     )
@@ -2047,7 +2042,7 @@ async fn remember_rule_rejects_oversized_body() {
 #[tokio::test]
 async fn mcp_rejects_control_plane_mutation_tools() {
     let state = build_state().await;
-    let req = call_tool(42, "approve_memory", json!({ "id": "draft:conv-x" }));
+    let req = call_tool(42, "approve_rule", json!({ "id": "draft:conv-x" }));
     let resp = handle_message(&state, &req).await.unwrap();
     let error = resp
         .get("error")
@@ -2459,9 +2454,9 @@ async fn resources_list_advertises_explore_and_journey_skills() {
     // Every shipped plugin skill should also be mirrored as an MCP resource so
     // the advertised set stays in lockstep with plugin/skills/.
     for uri in [
-        "difflore://memory/inbox",
+        "difflore://rules/inbox",
         "difflore://skills/knowledge-agent",
-        "difflore://skills/memory-candidate-triage",
+        "difflore://skills/rule-candidate-triage",
         "difflore://skills/session-recap",
         "difflore://skills/difflore-onboard",
     ] {
@@ -2519,25 +2514,25 @@ async fn resource_read_rule_search_tells_agents_to_pass_file_to_get_rules() {
 }
 
 #[tokio::test]
-async fn resource_read_memory_inbox_returns_structured_json() {
+async fn resource_read_rules_inbox_returns_structured_json() {
     let state = build_state().await;
     let result = call_ok(
         &state,
         &rpc_with(
             707,
             "resources/read",
-            json!({ "uri": "difflore://memory/inbox" }),
+            json!({ "uri": "difflore://rules/inbox" }),
         ),
     )
     .await;
     let contents = result["contents"][0].clone();
-    assert_eq!(contents["uri"].as_str(), Some("difflore://memory/inbox"));
+    assert_eq!(contents["uri"].as_str(), Some("difflore://rules/inbox"));
     assert_eq!(contents["mimeType"].as_str(), Some("application/json"));
     let body: Value =
         serde_json::from_str(contents["text"].as_str().expect("json text")).expect("json body");
     assert!(
         body["items"].is_array() && body["counts"].is_object(),
-        "memory inbox resource should expose structured inventory: {body}"
+        "rules inbox resource should expose structured inventory: {body}"
     );
 }
 

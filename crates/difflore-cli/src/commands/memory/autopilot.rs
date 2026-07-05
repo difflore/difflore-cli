@@ -120,12 +120,10 @@ pub(crate) async fn handle_autopilot(
         match try_acquire_manual_autopilot_lease(&ctx.db, &owner).await {
             Ok(true) => Some(owner),
             Ok(false) => exit_structured_err(
-                "memory autopilot is already running in the background; retry shortly",
+                "rules triage is already running in the background; retry shortly",
                 json,
             ),
-            Err(err) => {
-                exit_structured_err(&format!("failed to lock memory autopilot: {err}"), json)
-            }
+            Err(err) => exit_structured_err(&format!("failed to lock rules triage: {err}"), json),
         }
     };
 
@@ -144,7 +142,7 @@ pub(crate) async fn handle_autopilot(
             if let Some(owner) = manual_lease_owner.as_deref() {
                 let _ = release_autopilot_lease(&ctx.db, owner, "manual_failed").await;
             }
-            exit_structured_err(&format!("failed to run memory autopilot: {err}"), json)
+            exit_structured_err(&format!("failed to run rules triage: {err}"), json)
         }
     };
     if let Some(owner) = manual_lease_owner.as_deref() {
@@ -156,7 +154,7 @@ pub(crate) async fn handle_autopilot(
         return;
     }
 
-    println!("{}", style::title("Memory Autopilot"));
+    println!("{}", style::title("Rules Triage"));
     if let Ok(status) = load_autopilot_schedule_status(&ctx.db).await {
         println!(
             "  background        {} | runs {} ({} productive) | triggers {}",
@@ -173,10 +171,10 @@ pub(crate) async fn handle_autopilot(
         }
     }
     if report.dry_run {
-        println!("  preview only; local memory was not changed");
+        println!("  preview only; local rules were not changed");
     }
     if report.auto_enabled.is_empty() {
-        println!("  no high-confidence memory groups were enabled");
+        println!("  no high-confidence rule groups were enabled");
     } else {
         let verb = if report.dry_run {
             "would enable"
@@ -213,7 +211,7 @@ pub(crate) async fn handle_autopilot(
             "  recommended       {}",
             count_phrase(recommended as i64, "group", "groups")
         );
-        println!("  inspect: {}", style::cmd("difflore memory recommended"));
+        println!("  inspect: {}", style::cmd("difflore rules recommended"));
     }
     if needs_review > 0 {
         println!();
@@ -221,14 +219,14 @@ pub(crate) async fn handle_autopilot(
             "  left for review   {}",
             count_phrase(needs_review as i64, "group", "groups")
         );
-        println!("  inspect: {}", style::cmd("difflore memory digest"));
-        println!("  review: {}", style::cmd("difflore memory review"));
+        println!("  inspect: {}", style::cmd("difflore rules digest"));
+        println!("  review: {}", style::cmd("difflore rules review"));
     }
     println!();
-    println!("  log: {}", style::cmd("difflore memory log"));
+    println!("  log: {}", style::cmd("difflore rules log"));
     println!(
         "  disable: {}",
-        style::cmd("difflore memory disable rule:<id>")
+        style::cmd("difflore rules disable rule:<id>")
     );
 }
 
@@ -242,7 +240,7 @@ pub(crate) async fn handle_cleanup(
     let digest = load_memory_digest(&ctx.db, limit)
         .await
         .unwrap_or_else(|err| {
-            exit_structured_err(&format!("failed to load memory cleanup plan: {err}"), json)
+            exit_structured_err(&format!("failed to load rule cleanup plan: {err}"), json)
         });
     let planned = plan_memory_cleanup(&digest.candidate_groups);
     let mut removed = Vec::new();
@@ -288,7 +286,7 @@ pub(crate) async fn mark_memory_autopilot_dirty_best_effort(db: &SqlitePool, rea
     if let Err(err) = mark_autopilot_dirty(db, reason).await
         && difflore_core::infra::env::debug_telemetry()
     {
-        eprintln!("[difflore.memory_autopilot] mark dirty failed: {err}");
+        eprintln!("[difflore.rule_triage] mark dirty failed: {err}");
     }
 }
 
@@ -311,7 +309,7 @@ pub(crate) async fn schedule_memory_autopilot_best_effort(
         Ok(acquired) => acquired,
         Err(err) => {
             if difflore_core::infra::env::debug_telemetry() {
-                eprintln!("[difflore.memory_autopilot] schedule failed: {err}");
+                eprintln!("[difflore.rule_triage] schedule failed: {err}");
             }
             return;
         }
@@ -325,12 +323,12 @@ pub(crate) async fn schedule_memory_autopilot_best_effort(
             if let Err(err) = note_autopilot_spawn_success(db, &lease_owner).await
                 && difflore_core::infra::env::debug_telemetry()
             {
-                eprintln!("[difflore.memory_autopilot] spawn note failed: {err}");
+                eprintln!("[difflore.rule_triage] spawn note failed: {err}");
             }
         }
         Err(err) => {
             if difflore_core::infra::env::debug_telemetry() {
-                eprintln!("[difflore.memory_autopilot] spawn failed: {err}");
+                eprintln!("[difflore.rule_triage] spawn failed: {err}");
             }
             let _ = release_autopilot_lease(db, &lease_owner, "spawn_failed").await;
         }
@@ -343,13 +341,13 @@ async fn handle_background_autopilot(
     json: bool,
 ) {
     let Some(lease_owner) = lease_owner.filter(|value| !value.trim().is_empty()) else {
-        exit_structured_err("background autopilot requires --lease-owner", json);
+        exit_structured_err("background rules triage requires --lease-owner", json);
     };
     let run = run_background_memory_autopilot(&ctx.db, &lease_owner)
         .await
         .unwrap_or_else(|err| {
             exit_structured_err(
-                &format!("failed to run background memory autopilot: {err}"),
+                &format!("failed to run background rules triage: {err}"),
                 json,
             )
         });
@@ -375,7 +373,7 @@ pub(crate) async fn handle_digest(ctx: &CommandContext, limit: Option<usize>, js
     let digest = load_memory_digest(&ctx.db, limit.unwrap_or(20))
         .await
         .unwrap_or_else(|err| {
-            exit_structured_err(&format!("failed to load memory digest: {err}"), json)
+            exit_structured_err(&format!("failed to load rule digest: {err}"), json)
         });
 
     if json {
@@ -383,13 +381,13 @@ pub(crate) async fn handle_digest(ctx: &CommandContext, limit: Option<usize>, js
         return;
     }
 
-    println!("{}", style::title("Memory Digest"));
+    println!("{}", style::title("Rules Digest"));
     println!(
         "  active rules      {}",
         count_phrase(digest.counts.active_rules, "rule", "rules")
     );
     println!(
-        "  autopilot-ready   {}",
+        "  triage-ready      {}",
         count_phrase(digest.counts.auto_enable_groups as i64, "group", "groups")
     );
     println!(
@@ -412,7 +410,7 @@ pub(crate) async fn handle_digest(ctx: &CommandContext, limit: Option<usize>, js
     }
 
     print_group_section(
-        "Autopilot-ready",
+        "Triage-ready",
         digest
             .candidate_groups
             .iter()
@@ -435,7 +433,7 @@ pub(crate) async fn handle_digest(ctx: &CommandContext, limit: Option<usize>, js
 
     if digest.candidate_groups.is_empty() && digest.active_rules.is_empty() {
         println!();
-        println!("  no local memory yet");
+        println!("  no local rules yet");
     }
     if !digest.next_actions.is_empty() {
         println!();
@@ -454,7 +452,7 @@ pub(crate) async fn handle_recommended(
     let digest = load_memory_digest(&ctx.db, 1_000)
         .await
         .unwrap_or_else(|err| {
-            exit_structured_err(&format!("failed to load recommended memory: {err}"), json)
+            exit_structured_err(&format!("failed to load recommended rules: {err}"), json)
         });
     let mut recommended = digest
         .candidate_groups
@@ -489,12 +487,12 @@ pub(crate) async fn handle_recommended(
         return;
     }
 
-    println!("{}", style::title("Recommended Memory"));
+    println!("{}", style::title("Recommended Rules"));
     if recommended.is_empty() {
-        println!("  no recommended memory groups right now");
+        println!("  no recommended rules groups right now");
         println!(
             "  refresh: {}",
-            style::cmd("difflore memory autopilot --dry-run")
+            style::cmd("difflore rules autopilot --dry-run")
         );
         return;
     }
@@ -511,9 +509,9 @@ pub(crate) async fn handle_recommended(
     println!();
     println!(
         "  approve: {}",
-        style::cmd("difflore memory recommended --approve")
+        style::cmd("difflore rules recommended --approve")
     );
-    println!("  review:  {}", style::cmd("difflore memory review"));
+    println!("  review:  {}", style::cmd("difflore rules review"));
 }
 
 async fn approve_recommended_groups(
@@ -534,7 +532,7 @@ async fn approve_recommended_groups(
     if !json
         && let Err(err) = confirm_destructive(
             yes,
-            &format!("approve {} recommended memory group(s)?", groups.len()),
+            &format!("approve {} recommended rules group(s)?", groups.len()),
         )
     {
         exit_structured_err(&err.to_string(), json);
@@ -607,16 +605,18 @@ pub(crate) async fn handle_log(ctx: &CommandContext, limit: Option<usize>, json:
         },
     )
     .await
-    .unwrap_or_else(|err| exit_structured_err(&format!("failed to load memory log: {err}"), json));
+    .unwrap_or_else(|err| {
+        exit_structured_err(&format!("failed to load rules triage log: {err}"), json)
+    });
 
     if json {
         println!("{}", json_compact_or(&log, "{}"));
         return;
     }
 
-    println!("{}", style::title("Memory Log"));
+    println!("{}", style::title("Rules Triage Log"));
     if log.events.is_empty() {
-        println!("  no local autopilot events yet");
+        println!("  no local rules triage events yet");
         return;
     }
     for event in &log.events {
@@ -645,7 +645,7 @@ pub(crate) async fn handle_conflicts(
     let report = load_memory_conflicts(&ctx.db, MemoryConflictFilter { limit, status })
         .await
         .unwrap_or_else(|err| {
-            exit_structured_err(&format!("failed to load memory conflicts: {err}"), json)
+            exit_structured_err(&format!("failed to load rule conflicts: {err}"), json)
         });
 
     if json {
@@ -653,7 +653,7 @@ pub(crate) async fn handle_conflicts(
         return;
     }
 
-    println!("{}", style::title("Memory Conflicts"));
+    println!("{}", style::title("Rule Conflicts"));
     if report.conflicts.is_empty() {
         println!("  no recorded conflicts");
         return;
@@ -685,9 +685,7 @@ pub(crate) async fn handle_disable(
 ) {
     let outcome = disable_memory_rule(&ctx.db, &rule_id, reason.as_deref())
         .await
-        .unwrap_or_else(|err| {
-            exit_structured_err(&format!("failed to disable memory rule: {err}"), json)
-        });
+        .unwrap_or_else(|err| exit_structured_err(&format!("failed to disable rule: {err}"), json));
 
     if json {
         println!("{}", json_compact_or(&outcome, "{}"));
@@ -695,17 +693,14 @@ pub(crate) async fn handle_disable(
     }
 
     println!(
-        "{} Disabled local memory rule {}.",
+        "{} Disabled local rules rule {}.",
         style::ok(style::sym::OK),
         style::ident(&outcome.rule_id)
     );
     println!("  It is no longer served to local agents.");
     println!(
         "  Re-enable manually with {}",
-        style::cmd(&format!(
-            "difflore memory approve draft:{}",
-            outcome.rule_id
-        ))
+        style::cmd(&format!("difflore rules approve draft:{}", outcome.rule_id))
     );
 }
 
@@ -808,18 +803,18 @@ fn cleanup_summary(
 }
 
 fn print_cleanup_report(report: &MemoryCleanupReport) {
-    println!("{}", style::title("Memory Cleanup"));
+    println!("{}", style::title("Rules Cleanup"));
     println!(
         "  scanned           {}",
         count_phrase(report.summary.groups_scanned as i64, "group", "groups")
     );
     if report.dry_run {
-        println!("  preview only; local memory was not changed");
+        println!("  preview only; local rules was not changed");
     }
 
     if report.summary.planned == 0 {
         println!("  nothing safe to clean");
-        println!("  inspect: {}", style::cmd("difflore memory digest"));
+        println!("  inspect: {}", style::cmd("difflore rules digest"));
         return;
     }
 
@@ -892,7 +887,7 @@ fn print_cleanup_report(report: &MemoryCleanupReport) {
 
     if report.dry_run {
         println!();
-        println!("  apply: {}", style::cmd("difflore memory cleanup --apply"));
+        println!("  apply: {}", style::cmd("difflore rules cleanup --apply"));
     }
 }
 
@@ -915,7 +910,7 @@ fn print_group_section<'a>(title: &str, groups: impl Iterator<Item = &'a MemoryC
         if let Some(first) = group.item_ids.first() {
             println!(
                 "    inspect: {}",
-                style::cmd(&format!("difflore memory show {first}"))
+                style::cmd(&format!("difflore rules show {first}"))
             );
         }
     }

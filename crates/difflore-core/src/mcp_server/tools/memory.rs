@@ -2,8 +2,7 @@ use serde_json::{Value, json};
 
 use crate::memory_autopilot::{MemoryAutopilotLogFilter, load_autopilot_log, load_memory_digest};
 use crate::memory_inbox::{
-    MemoryActivityFilter, MemoryListFilter, get_memory_item, load_memory_activity,
-    load_memory_items,
+    MemoryActivityFilter, MemoryListFilter, get_rule_item, load_memory_activity, load_memory_items,
 };
 
 use super::super::{McpState, build_cost_meta, estimate_tokens};
@@ -13,7 +12,7 @@ const DEFAULT_ACTIVITY_LIMIT: usize = 20;
 const DEFAULT_AUTOPILOT_DIGEST_LIMIT: usize = 20;
 const DEFAULT_AUTOPILOT_LOG_LIMIT: usize = 20;
 
-pub(crate) async fn tool_list_memory(
+pub(crate) async fn tool_list_rules(
     state: &McpState,
     args: &Value,
 ) -> Result<Value, (i32, String)> {
@@ -30,11 +29,11 @@ pub(crate) async fn tool_list_memory(
         },
     )
     .await
-    .map_err(|e| (-32603, format!("Failed to list memory: {e}")))?;
-    json_response("list_memory", &memory)
+    .map_err(|e| (-32603, format!("Failed to list rules: {e}")))?;
+    json_response("list_rules", &memory)
 }
 
-pub(crate) async fn tool_get_memory_item(
+pub(crate) async fn tool_get_rule_item(
     state: &McpState,
     args: &Value,
 ) -> Result<Value, (i32, String)> {
@@ -42,14 +41,14 @@ pub(crate) async fn tool_get_memory_item(
         .get("id")
         .and_then(Value::as_str)
         .ok_or((-32602, "Missing required parameter: id".to_owned()))?;
-    let detail = get_memory_item(&state.db, item_id)
+    let detail = get_rule_item(&state.db, item_id)
         .await
-        .map_err(|e| (-32603, format!("Failed to load memory item: {e}")))?
-        .ok_or((-32602, format!("Memory item not found: {item_id}")))?;
-    json_response("get_memory_item", &detail)
+        .map_err(|e| (-32603, format!("Failed to load rule item: {e}")))?
+        .ok_or((-32602, format!("Rule item not found: {item_id}")))?;
+    json_response("get_rule_item", &detail)
 }
 
-pub(crate) async fn tool_get_memory_activity(
+pub(crate) async fn tool_get_rule_activity(
     state: &McpState,
     args: &Value,
 ) -> Result<Value, (i32, String)> {
@@ -67,11 +66,11 @@ pub(crate) async fn tool_get_memory_activity(
         },
     )
     .await
-    .map_err(|e| (-32603, format!("Failed to load memory activity: {e}")))?;
-    json_response("get_memory_activity", &activity)
+    .map_err(|e| (-32603, format!("Failed to load rule activity: {e}")))?;
+    json_response("get_rule_activity", &activity)
 }
 
-pub(crate) async fn tool_get_memory_digest(
+pub(crate) async fn tool_get_rule_digest(
     state: &McpState,
     args: &Value,
 ) -> Result<Value, (i32, String)> {
@@ -80,11 +79,11 @@ pub(crate) async fn tool_get_memory_digest(
     });
     let digest = load_memory_digest(&state.db, limit)
         .await
-        .map_err(|e| (-32603, format!("Failed to load memory digest: {e}")))?;
-    json_response("get_memory_digest", &digest)
+        .map_err(|e| (-32603, format!("Failed to load rule digest: {e}")))?;
+    json_response("get_rule_digest", &digest)
 }
 
-pub(crate) async fn tool_get_memory_autopilot_log(
+pub(crate) async fn tool_get_rule_triage_log(
     state: &McpState,
     args: &Value,
 ) -> Result<Value, (i32, String)> {
@@ -93,14 +92,14 @@ pub(crate) async fn tool_get_memory_autopilot_log(
     });
     let log = load_autopilot_log(&state.db, MemoryAutopilotLogFilter { limit })
         .await
-        .map_err(|e| (-32603, format!("Failed to load memory autopilot log: {e}")))?;
+        .map_err(|e| (-32603, format!("Failed to load rule triage log: {e}")))?;
     json_response(
-        "get_memory_autopilot_log",
+        "get_rule_triage_log",
         &json!({
             "schemaVersion": log.schema_version,
             "limit": limit,
             "events": log.events,
-            "note": "Read-only audit log. Background Memory Autopilot runs automatically; ask the user to run the DiffLore CLI for review, disable, approve, reject, sync, archive, delete, or manual catch-up/debug actions.",
+            "note": "Read-only audit log. Background rules triage runs automatically; ask the user to run the DiffLore CLI for review, disable, approve, reject, sync, archive, delete, or manual catch-up/debug actions.",
         }),
     )
 }
@@ -129,7 +128,7 @@ fn json_response<T: serde::Serialize>(tool: &str, body: &T) -> Result<Value, (i3
         }],
         "_meta": {
             "cost": build_cost_meta(tokens, None),
-            "governance": "read_only_for_ai; use CLI commands for review, disable, approve, reject, sync, archive, delete, or manual catch-up/debug memory actions",
+            "governance": "read_only_for_ai; use CLI commands for review, disable, approve, reject, sync, archive, delete, or manual catch-up/debug rule actions",
         }
     }))
 }

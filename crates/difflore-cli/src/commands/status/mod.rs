@@ -196,7 +196,7 @@ pub(crate) async fn redacted_proof_summary_value(
         },
         "queues": {
             "observationsSkipped": queues.observations,
-            "memoryCandidatesSkipped": queues.memory_candidates,
+            "ruleCandidatesSkipped": queues.memory_candidates,
             "telemetrySkipped": queues.telemetry,
             "acceptedEditUploadsPending": accepted_edit_funnel.accepted_edit_upload_pending,
         },
@@ -290,7 +290,7 @@ impl StatusPayload {
             "activeRules": self.active_rules,
             "pendingCandidates": self.pending_candidates,
             "pendingCandidatesForRepo": self.pending_candidates_for_repo,
-            "memoryInbox": self.memory_inbox,
+            "rulesInbox": self.memory_inbox,
             "repoScope": self.scope,
             "valueLoop": self.value_loop,
             "localAcceptedProof": self.local_proof,
@@ -303,7 +303,7 @@ impl StatusPayload {
             "valueLoopEvidence": self.value_loop_evidence,
             "localHeroEvidence": self.local_hero_evidence,
             "autopilot": self.autopilot,
-            "memoryPulse": self.memory_pulse,
+            "rulesPulse": self.memory_pulse,
             "topCandidatesScope": self.candidate_scope,
             "topCandidates": self.top_candidates,
             "next": NextActionContract::with_blocked_by(
@@ -365,7 +365,7 @@ fn append_memory_pulse_text(out: &mut String, pulse: &MemoryPulseStatus) {
     use std::fmt::Write as _;
     let bullet = crate::style::pewter(crate::style::sym::BULLET);
     let _ = writeln!(out);
-    let _ = writeln!(out, "{}", crate::style::ok("Memory pulse"));
+    let _ = writeln!(out, "{}", crate::style::ok("Rules pulse"));
     if !pulse.newly_active.is_empty() {
         let _ = writeln!(
             out,
@@ -578,7 +578,7 @@ async fn compute_status_payload(
     .await;
     let autopilot = difflore_core::memory_autopilot_schedule::load_autopilot_schedule_status(db)
         .await
-        .map_err(|e| format!("failed to load memory autopilot status: {e}"))?;
+        .map_err(|e| format!("failed to load rules triage status: {e}"))?;
     let memory_pulse = memory_pulse_status(db, &repo_remotes).await;
     let value_loop = transform::local_value_loop_status(
         &scope,
@@ -719,8 +719,6 @@ mod tests {
                 "localHeroEvidence",
                 "localMcpRuleServes",
                 "localRecallProof",
-                "memoryInbox",
-                "memoryPulse",
                 "next",
                 "pendingCandidates",
                 "pendingCandidatesForRepo",
@@ -728,6 +726,8 @@ mod tests {
                 "provenRuleDrilldown",
                 "recallTrace",
                 "repoScope",
+                "rulesInbox",
+                "rulesPulse",
                 "schemaVersion",
                 "selectedLane",
                 "topCandidates",
@@ -747,27 +747,27 @@ mod tests {
         assert_eq!(envelope["autopilot"]["triggerCount"], 0);
         assert_eq!(envelope["autopilot"]["runCount"], 0);
         assert_eq!(envelope["autopilot"]["productiveRunCount"], 0);
-        assert_eq!(envelope["memoryInbox"]["activeRules"], 0);
-        assert_eq!(envelope["memoryInbox"]["localDrafts"], 0);
+        assert_eq!(envelope["rulesInbox"]["activeRules"], 0);
+        assert_eq!(envelope["rulesInbox"]["localDrafts"], 0);
         assert_eq!(
-            envelope["memoryInbox"]["localDiscoveries"]["sessionMinedCandidates"],
+            envelope["rulesInbox"]["localDiscoveries"]["sessionMinedCandidates"],
             0
         );
         assert_eq!(
-            envelope["memoryInbox"]["localDiscoveries"]["latest"],
+            envelope["rulesInbox"]["localDiscoveries"]["latest"],
             serde_json::json!([])
         );
         assert_eq!(
-            envelope["memoryInbox"]["queues"]["cloudOutbox"],
+            envelope["rulesInbox"]["queues"]["cloudOutbox"],
             serde_json::json!([])
         );
-        assert_eq!(envelope["memoryInbox"]["queues"]["sessionMinedPending"], 0);
+        assert_eq!(envelope["rulesInbox"]["queues"]["sessionMinedPending"], 0);
         assert!(
-            !envelope["memoryInbox"]["cloud"]["loggedIn"]
+            !envelope["rulesInbox"]["cloud"]["loggedIn"]
                 .as_bool()
                 .expect("cloud logged-in flag")
         );
-        assert!(envelope["memoryInbox"]["cloud"]["teamReady"].is_null());
+        assert!(envelope["rulesInbox"]["cloud"]["teamReady"].is_null());
         assert_eq!(envelope["localAcceptedProof"]["acceptedProofSignatures"], 0);
         assert_eq!(envelope["localAcceptedProof"]["proofGrade"], "none");
         let accepted_proof_signatures = envelope["localAcceptedProof"]["acceptedProofSignatures"]
@@ -868,7 +868,7 @@ mod tests {
         let text = payload.text_view();
 
         // Value-first, human framing via the plain section headers.
-        assert!(text.contains("Memory"), "missing Memory section: {text}");
+        assert!(text.contains("Rules"), "missing Rules section: {text}");
         assert!(text.contains("Value"), "missing Value section: {text}");
         assert!(text.contains("next:"), "missing next action: {text}");
         // With no supported origin, the humanized view surfaces a plain
@@ -884,7 +884,7 @@ mod tests {
             "Lane boundary",
             "countsAsProductionEvidence",
             "releaseReadyInfluence",
-            "memory-use proof",
+            "rule-use proof",
             "context tokens",
             "accepted edit proof",
         ] {
@@ -910,7 +910,7 @@ mod tests {
             value,
             "Readiness (last 30d): 5 recalls | 64 ready for agents"
         );
-        assert!(!value.contains("top memory"));
+        assert!(!value.contains("top rule"));
         assert!(!value.contains("accepted edit"));
     }
 

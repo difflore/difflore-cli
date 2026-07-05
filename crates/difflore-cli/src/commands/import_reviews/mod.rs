@@ -2301,7 +2301,7 @@ We should validate the header before parsing because malformed requests panic.\n
             active_candidate_next_step_commands(),
             &[
                 "difflore status",
-                "difflore memory active",
+                "difflore rules active",
                 "difflore recall --diff",
                 "difflore review --diff all",
             ],
@@ -2309,7 +2309,7 @@ We should validate the header before parsing because malformed requests panic.\n
         assert_eq!(
             pending_candidate_next_step_commands("acme/widgets"),
             vec![
-                "difflore memory review".to_owned(),
+                "difflore rules review".to_owned(),
                 "difflore drafts list --repo acme/widgets --json".to_owned(),
                 "difflore drafts approve --all --repo acme/widgets --yes".to_owned(),
             ],
@@ -2325,7 +2325,7 @@ We should validate the header before parsing because malformed requests panic.\n
             let full = format!("{prefix}{command}{suffix}");
 
             assert_eq!(
-                command, "difflore memory review",
+                command, "difflore rules review",
                 "hint must steer to a real command"
             );
             assert!(

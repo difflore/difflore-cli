@@ -727,7 +727,7 @@ pub(super) fn build_zero_match_diagnostics(
 
     // A no-remote / non-GitHub checkout also reports rules_indexed == 0 (the
     // scope filter copies nothing in), so diagnose a missing scope FIRST.
-    // Otherwise it is mislabeled "no memory, import reviews" when the real fix is
+    // Otherwise it is mislabeled "no rules, import reviews" when the real fix is
     // adding a supported git remote.
     let no_scope = local.repo_full_name.is_none();
     let empty_corpus = !no_scope && local.rules_indexed == 0;
@@ -735,7 +735,7 @@ pub(super) fn build_zero_match_diagnostics(
     if no_scope {
         possible_causes.push(DiagnosticItem {
             code: "repo_scope_missing",
-            message: "No supported origin/upstream git remote was detected; local recall scopes rules by repo, so an unscoped checkout retrieves nothing. This is by design, not empty local memory.".to_owned(),
+            message: "No supported origin/upstream git remote was detected; local recall scopes rules by repo, so an unscoped checkout retrieves nothing. This is by design, not an empty local rule set.".to_owned(),
         });
     } else if empty_corpus {
         possible_causes.push(DiagnosticItem {
@@ -794,12 +794,12 @@ pub(super) fn build_zero_match_diagnostics(
     if !cloud.logged_in {
         possible_causes.push(DiagnosticItem {
             code: "cloud_not_logged_in",
-            message: "Cloud PR review memory is available after sign-in.".to_owned(),
+            message: "Cloud PR review rules are available after sign-in.".to_owned(),
         });
     } else if cloud.repo_full_name.is_none() {
         possible_causes.push(DiagnosticItem {
             code: "cloud_repo_scope_missing",
-            message: "Cloud PR review memory needs a supported repo remote.".to_owned(),
+            message: "Cloud PR review rules need a supported repo remote.".to_owned(),
         });
     } else {
         possible_causes.push(DiagnosticItem {
@@ -813,7 +813,7 @@ pub(super) fn build_zero_match_diagnostics(
         // imported rules to, so the first step is the remote, not import-reviews.
         next_steps.push(DiagnosticStep {
             command: Some("git remote -v".to_owned()),
-            message: "local recall is repo-scoped; add a supported origin/upstream git remote (or run inside a repo that has one) so this checkout has memory to retrieve".to_owned(),
+            message: "local recall is repo-scoped; add a supported origin/upstream git remote (or run inside a repo that has one) so this checkout has rules to retrieve".to_owned(),
         });
     } else if empty_corpus {
         next_steps.push(DiagnosticStep {
@@ -823,13 +823,12 @@ pub(super) fn build_zero_match_diagnostics(
     } else {
         next_steps.push(DiagnosticStep {
             command: Some("difflore status".to_owned()),
-            message: "inspect local memory readiness and the current next action".to_owned(),
+            message: "inspect local rules readiness and the current next action".to_owned(),
         });
         next_steps.push(DiagnosticStep {
             command: Some("difflore import-reviews --max-prs 50".to_owned()),
-            message:
-                "mine more review history if the current repo has no memory for this topic yet"
-                    .to_owned(),
+            message: "mine more review history if the current repo has no rules for this topic yet"
+                .to_owned(),
         });
     }
 
@@ -838,7 +837,7 @@ pub(super) fn build_zero_match_diagnostics(
     }
 
     RecallDiagnostics {
-        summary: "No local rules or cloud review memories matched; recall ran, but the available memory did not overlap this scope.".to_owned(),
+        summary: "No local rules or cloud review rules matched; recall ran, but the available rules did not overlap this scope.".to_owned(),
         possible_causes,
         next_steps,
     }

@@ -27,7 +27,7 @@ impl MemoryCloudSummary {
                 logged_in: true,
                 team_ready: None,
                 blocker: None,
-                note: Some("approved local memory can be shared with your team"),
+                note: Some("approved local rules can be shared with your team"),
             }
         } else {
             Self {

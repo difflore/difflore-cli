@@ -81,7 +81,7 @@ fn render_scope_guardrail(
     let mut out = String::new();
     writeln!(
         out,
-        "- DiffLore memory predicts reviewing about {} file{} before declaring done (median {}; strongest match touched {}).",
+        "- DiffLore rules predict reviewing about {} file{} before declaring done (median {}; strongest match touched {}).",
         recommended,
         if recommended == 1 { "" } else { "s" },
         median,
@@ -91,7 +91,7 @@ fn render_scope_guardrail(
     if memory_recommended != recommended {
         writeln!(
             out,
-            "- Raw memory estimate was {memory_recommended}; handoff kept it conservative for the current diff and repo history."
+            "- Raw rule estimate was {memory_recommended}; handoff kept it conservative for the current diff and repo history."
         )
         .ok();
     }
@@ -126,7 +126,7 @@ fn render_scope_guardrail(
         } else {
             writeln!(
                 out,
-                "- Scope check: current file count meets the review-memory scope estimate."
+                "- Scope check: current file count meets the review-rule scope estimate."
             )
             .ok();
         }
@@ -262,7 +262,7 @@ fn handoff_repo_scope_line(prediction: &serde_json::Value) -> Option<String> {
         .unwrap_or(false);
     if no_repo_scope_memory {
         return Some(
-            "Repo scope: no same-repo plan history matched; this guardrail stays silent until local repo-scoped memory exists."
+            "Repo scope: no same-repo plan history matched; this guardrail stays silent until local repo-scoped rules exist."
                 .to_owned(),
         );
     }
@@ -378,7 +378,7 @@ mod tests {
         let guardrail = render_scope_guardrail(&prediction, &diff_records).expect("guardrail");
 
         assert!(guardrail.contains("reviewing about 3 files"));
-        assert!(guardrail.contains("Raw memory estimate was 66"));
+        assert!(guardrail.contains("Raw rule estimate was 66"));
         assert!(guardrail.contains("only 2 same-repo historical PRs matched"));
         assert!(guardrail.contains("current file count meets"));
         assert!(!guardrail.contains("likely under-scoped"));

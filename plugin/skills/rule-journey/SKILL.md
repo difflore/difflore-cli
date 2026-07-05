@@ -1,6 +1,6 @@
 ---
 name: rule-journey
-description: Summarize the local DiffLore rule library for onboarding, retros, or repo memory review.
+description: Summarize the local DiffLore rule library for onboarding, retros, or repo rule review.
 ---
 
 # Rule Journey

@@ -791,7 +791,7 @@ mod tests {
 
         assert!(
             hits.is_empty(),
-            "MCP recall must not fall back to global memory when no repo scope is available"
+            "MCP recall must not fall back to global rules when no repo scope is available"
         );
     }
 }
@@ -918,7 +918,7 @@ mod filter_from_file_tests {
     fn empty_recall_retry_query_keeps_file_and_distinctive_intent_terms() {
         let retry = build_empty_recall_retry_query(
             "packages/router/src/parser.ts",
-            "Please search review memory for deeply nested optional route parsing with no exact wording",
+            "Please search review rules for deeply nested optional route parsing with no exact wording",
         )
         .expect("retry query");
 

@@ -13,7 +13,7 @@ use super::scope::{
     is_review_table_wrapper_line, repo_wide_file_pattern_from_path,
 };
 
-/// Floor for the auto-scaling local memory budget.
+/// Floor for the auto-scaling local rules budget.
 const LOCAL_CANDIDATE_DEFAULT_MIN: usize = 25;
 const LOCAL_CANDIDATE_RELATED_FILES_BODY_LIMIT: usize = 12;
 const FALLBACK_REVIEW_DIRECTIVE: &str =
@@ -84,7 +84,7 @@ pub(super) struct LocalCandidateProgress {
     /// this import run. These are skipped before touching the store, so they do
     /// not strengthen an existing memory.
     pub(super) candidates_duplicate_in_run: usize,
-    /// Store-level dedupe into an existing pending memory. This strengthens the
+    /// Store-level dedupe into an existing pending rule. This strengthens the
     /// stored memory instead of writing a duplicate row.
     pub(super) candidates_deduped: usize,
     /// Re-imported comments whose content already exists as an `active` rule
@@ -1791,7 +1791,7 @@ pub(super) async fn run_local_candidates(
                         progress.candidates_created += 1;
                     }
                 }
-                Err(e) => exit_err(&format!("failed to create local memory: {e}")),
+                Err(e) => exit_err(&format!("failed to create local rules: {e}")),
             }
             if local_candidate_budget_reached(&progress) {
                 progress.capped = true;
@@ -1863,7 +1863,7 @@ pub(super) fn print_local_candidate_next_steps(
             style::pewter(style::sym::BULLET),
         );
         style::println_wrapped(&format!(
-            "  {} Try a larger import window, then review pending local memory before enabling agents.",
+            "  {} Try a larger import window, then review pending local rules before enabling agents.",
             style::pewter(style::sym::BULLET),
         ));
         println!(
@@ -1880,29 +1880,29 @@ pub(super) fn print_local_candidate_next_steps(
 
     if progress.candidates_created == 0 {
         println!(
-            "  {} No new local review memories created.",
+            "  {} No new local review rules created.",
             style::emerald(style::sym::OK),
         );
         if progress.candidates_deduped > 0 {
             println!(
-                "  {} strengthened existing memories: {}",
+                "  {} strengthened existing rules: {}",
                 style::pewter(style::sym::BULLET),
                 progress.candidates_deduped,
             );
         }
     } else {
         println!(
-            "  {} Created {} local review memor{}.",
+            "  {} Created {} local review rule{}.",
             style::emerald(style::sym::OK),
             progress.candidates_created,
             if progress.candidates_created == 1 {
-                "y"
+                ""
             } else {
-                "ies"
+                "s"
             },
         );
         println!(
-            "  +{} local memory write{} ({} active, {} pending, {} strengthened).",
+            "  +{} local rules write{} ({} active, {} pending, {} strengthened).",
             progress.candidates_created,
             if progress.candidates_created == 1 {
                 ""
@@ -1965,7 +1965,7 @@ pub(super) fn print_local_candidate_next_steps(
     }
     if progress.candidates_deduped > 0 {
         style::println_wrapped(&format!(
-            "  {} strengthened means matching existing memories were reinforced instead of repeated.",
+            "  {} strengthened means matching existing rules were reinforced instead of repeated.",
             style::pewter(style::sym::BULLET),
         ));
     }
@@ -2001,7 +2001,7 @@ pub(super) fn print_local_candidate_next_steps(
     }
     if progress.capped {
         style::println_wrapped(&format!(
-            "  {} hit the local memory budget.",
+            "  {} hit the local rules budget.",
             style::pewter(style::sym::BULLET),
         ));
         style::println_wrapped(&format!(
@@ -2013,7 +2013,7 @@ pub(super) fn print_local_candidate_next_steps(
     println!();
     if progress.candidates_activated > 0 {
         println!(
-            "  {} Agents can use approved local memory now:",
+            "  {} Agents can use approved local rules now:",
             style::emerald(style::sym::TIP),
         );
         for cmd in active_candidate_next_step_commands() {
@@ -2021,7 +2021,7 @@ pub(super) fn print_local_candidate_next_steps(
         }
         if progress.candidates_pending > 0 {
             println!(
-                "  {} Review remaining pending memory before agents use it:",
+                "  {} Review remaining pending rule before agents use it:",
                 style::emerald(style::sym::TIP),
             );
             for cmd in pending_candidate_next_step_commands(repo) {
@@ -2030,7 +2030,7 @@ pub(super) fn print_local_candidate_next_steps(
         }
     } else if progress.candidates_pending > 0 {
         println!(
-            "  {} Review pending memory before agents use it:",
+            "  {} Review pending rule before agents use it:",
             style::emerald(style::sym::TIP),
         );
         for cmd in pending_candidate_next_step_commands(repo) {
@@ -2042,7 +2042,7 @@ pub(super) fn print_local_candidate_next_steps(
 pub(super) const fn active_candidate_next_step_commands() -> &'static [&'static str] {
     &[
         "difflore status",
-        "difflore memory active",
+        "difflore rules active",
         "difflore recall --diff",
         "difflore review --diff all",
     ]
@@ -2050,7 +2050,7 @@ pub(super) const fn active_candidate_next_step_commands() -> &'static [&'static 
 
 pub(super) fn pending_candidate_next_step_commands(repo: &str) -> Vec<String> {
     vec![
-        "difflore memory review".to_owned(),
+        "difflore rules review".to_owned(),
         format!("difflore drafts list --repo {repo} --json"),
         format!("difflore drafts approve --all --repo {repo} --yes"),
     ]
@@ -2065,7 +2065,7 @@ pub(super) fn pending_drafts_review_hint(count: usize) -> (String, String, &'sta
     let plural = if count == 1 { "" } else { "s" };
     (
         format!("{count} medium-confidence draft{plural} held for review; decide in "),
-        "difflore memory review".to_owned(),
+        "difflore rules review".to_owned(),
         ", or let an agent inspect with `difflore drafts list --json`.",
     )
 }

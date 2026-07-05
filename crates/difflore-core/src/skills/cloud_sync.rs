@@ -718,7 +718,7 @@ pub async fn update_confidence(
     .await?;
     let row = existing.ok_or_else(|| {
         CoreError::NotFound(format!(
-            "rule '{}' not found; cannot apply {} feedback. Run `difflore status --json` to inspect current local memory ids.",
+            "rule '{}' not found; cannot apply {} feedback. Run `difflore status --json` to inspect current local rule ids.",
             input.skill_id, input.signal
         ))
     })?;
@@ -830,7 +830,7 @@ pub async fn remove_example(db: &sqlx::SqlitePool, input: RemoveExampleInput) ->
     // user their id was wrong instead of claiming a phantom success.
     if result.rows_affected() == 0 {
         return Err(CoreError::NotFound(format!(
-            "example '{}' not found. Run `difflore status --json` to inspect current local memory ids.",
+            "example '{}' not found. Run `difflore status --json` to inspect current local rule ids.",
             input.id
         )));
     }

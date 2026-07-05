@@ -137,7 +137,7 @@ pub(super) fn classify_group(
         }) {
             return (
                 MemoryCandidateGroupState::NeedsReview,
-                "bot-sourced PR review memory needs human validation before autopilot can enable it"
+                "bot-sourced PR review rule needs human validation before triage can enable it"
                     .to_owned(),
                 None,
             );
@@ -199,7 +199,7 @@ pub(super) fn classify_group(
     }
     (
         MemoryCandidateGroupState::NeedsReview,
-        "needs human review before becoming active memory".to_owned(),
+        "needs human review before becoming an active rule".to_owned(),
         None,
     )
 }
@@ -309,7 +309,7 @@ mod tests {
         );
 
         assert_eq!(state, MemoryCandidateGroupState::NeedsReview);
-        assert!(reason.contains("bot-sourced PR review memory"));
+        assert!(reason.contains("bot-sourced PR review rule"));
         assert_eq!(confidence, None);
     }
 
@@ -357,6 +357,6 @@ mod tests {
             &[],
         );
         assert_eq!(bot_state, MemoryCandidateGroupState::NeedsReview);
-        assert!(bot_reason.contains("bot-sourced PR review memory"));
+        assert!(bot_reason.contains("bot-sourced PR review rule"));
     }
 }

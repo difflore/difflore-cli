@@ -19,21 +19,21 @@ Versioning.
 ### Changed
 
 - Updated the vendored Cloud OpenAPI contract used by the CLI.
-- Improved memory autopilot and recall proof reporting for local dogfood data.
+- Improved rules triage and recall proof reporting for local dogfood data.
 
 ## [0.5.0] - 2026-06-30
 
 ### Added
 
-- Added `difflore memory team-candidates` for reviewing, counting, showing,
-  approving, and rejecting team memory suggestions.
-- Added a richer `difflore memory summary` overview covering remembered rules,
+- Added `difflore rules team-candidates` for reviewing, counting, showing,
+  approving, and rejecting team rule suggestions.
+- Added a richer `difflore rules summary` overview covering active rules,
   review queues, paused rules, sync state, and recent recall activity.
-- Added cloud candidate client support for team memory governance workflows.
+- Added cloud candidate client support for team rule governance workflows.
 
 ### Changed
 
-- Disabling a memory rule now pauses it as `disabled` instead of moving it back
+- Disabling a rule now pauses it as `disabled` instead of moving it back
   to pending review.
 - Disabled rules are excluded from recall and local review queues.
 
@@ -46,9 +46,9 @@ Versioning.
 ### Added
 
 - Added local-agent review import distillation for extracting higher-quality
-  memory candidates from GitHub and GitLab review history.
+  rule candidates from GitHub and GitLab review history.
 - Added richer MCP rule evidence, safety guidance, and recall diagnostics for
-  agents consuming DiffLore memory.
+  agents consuming DiffLore rules.
 
 ### Changed
 
@@ -72,14 +72,14 @@ Versioning.
 ## [0.2.0] - 2026-06-24
 
 First general release. DiffLore turns past code-review feedback into local
-memory that your AI coding agent recalls automatically.
+rules that your AI coding agent recalls automatically.
 
 ### Added
 
 - Import review history from GitHub and GitLab pull/merge requests.
 - Automatic recall of relevant past reviews, delivered to agents over MCP and
   lifecycle hooks.
-- `difflore memory` — a local control plane to inspect, curate, and prune what
+- `difflore rules` — a local control plane to inspect, curate, and prune what
   the agent recalls.
 - Semantic embeddings on by default for higher-recall retrieval, with automatic
   full-text fallback.

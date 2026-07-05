@@ -26,7 +26,7 @@ fn exit_structured_err(message: &str, json: bool) -> ! {
 }
 
 /// `"1 rule"` / `"3 rules"` — `count` paired with the correctly pluralized
-/// noun. Shared by the memory inbox and autopilot summaries.
+/// noun. Shared by the rules inbox and autopilot summaries.
 fn count_phrase(count: i64, singular: &str, plural_word: &str) -> String {
     format!("{count} {}", plural(count, singular, plural_word))
 }
