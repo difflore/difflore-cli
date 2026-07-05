@@ -203,15 +203,19 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) -> anyh
         println!();
         println!("{}", style::pewter("Optional cloud path:"));
         println!(
-            "  {} Team sync for shared review rules",
+            "  {} One approved rule set shared by the whole team",
             style::pewter(sym::BULLET),
         );
         println!(
-            "  {} Explicit team memory sync without hosted ingestion",
+            "  {} Approval workflow: every rule traceable to the review that set it",
             style::pewter(sym::BULLET),
         );
         println!(
-            "  {} Team rule governance, accepted-edit dashboards, and sync",
+            "  {} CI gate plus team coverage and recall dashboards",
+            style::pewter(sym::BULLET),
+        );
+        println!(
+            "  {} Free for one person, forever; team plans start when a second person joins.",
             style::pewter(sym::BULLET),
         );
         println!("  {}", style::pewter(&pricing));
@@ -224,7 +228,7 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) -> anyh
         style::pewter(sym::BULLET),
     );
     println!(
-        "  {} Use {} to inspect accepted edits, then {} to see exact recall.",
+        "  {} Use {} to inspect coverage and recall, then {} to see exact matches.",
         style::pewter(sym::BULLET),
         style::cmd("difflore status"),
         style::cmd("difflore recall --diff"),
@@ -277,11 +281,11 @@ pub(crate) fn tier_badge_line(status: &difflore_core::cloud::sync::CloudStatus) 
     let tier = difflore_core::cloud::sync::cloud_tier_from_status(status);
     if tier.is_team() {
         format!(
-            "{} | multi-device sync + governed team memory",
+            "{} | shared team rule system of record + approval workflow",
             tier.default_label()
         )
     } else if status.logged_in {
-        "Cloud Free | logged in | optional team sync path".to_owned()
+        "Cloud Free | logged in | optional team rule path".to_owned()
     } else {
         "Local | private repos + local AI CLI recall".to_owned()
     }
@@ -444,8 +448,8 @@ mod tests {
             assert!(is_cloud_team(&s), "plan {plan} should be team-tier");
             let line = tier_badge_line(&s);
             assert!(line.starts_with("Cloud Team"), "unexpected: {line}");
-            assert!(line.contains("multi-device sync"));
-            assert!(line.contains("governed team memory"));
+            assert!(line.contains("shared team rule system of record"));
+            assert!(line.contains("approval workflow"));
         }
     }
 

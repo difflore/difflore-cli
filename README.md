@@ -5,16 +5,17 @@
 [![Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-stdio-green.svg)](https://modelcontextprotocol.io)
 
-DiffLore is the local-first orchestration layer for Claude Code, Codex, Cursor,
-OpenCodeReview, and other free review engines: it turns your team's past PR/MR
-review decisions into source-backed rules those agents can recall before they
-write code.
+Never write the same review comment twice. DiffLore mines the rules your team
+already settled in PR/MR review — human-approved, traceable to the comment that
+set them — and hands them to Claude Code, Codex, Cursor, and other local AI CLIs
+before they write or review code. Review engines are free now; your team's
+judgment isn't.
 
 ![How DiffLore works: past PR reviews are mined into source-traced rules and served to your coding agent over MCP](.github/assets/difflore-concept.gif)
 
-DiffLore builds a local rule memory from two places — your team's past PR/MR
-reviews and your live coding sessions — and keeps you in control of what the
-agent sees:
+DiffLore builds a local system of record for your team's rules from two places —
+your team's past PR/MR reviews and your live coding sessions — and keeps you in
+control of what the agent sees:
 
 1. **Mine** — import review history, capture rules mid-conversation, and observe
    edits as they happen. Every rule stays traceable to its source.
@@ -36,8 +37,8 @@ team already made:
 - "This service rejects raw SQL outside migrations."
 
 Those rules are buried in old review threads — exactly where your agent never
-looks. DiffLore mines them into local memory, keeps the source evidence
-attached, and hands agents the relevant rules before they edit matching code.
+looks. DiffLore mines them into local rules, keeps the source evidence attached,
+and hands agents the relevant rules before they edit matching code.
 
 ## Install
 
@@ -85,16 +86,16 @@ difflore agents install             # wire into Claude Code / Cursor / Codex / .
 difflore recall --diff              # rules that match your current diff
 ```
 
-That flow imports merged review history, turns review comments into local memory
-candidates, lets you approve or reject them, and wires DiffLore into detected
-local agents.
+That flow imports merged review history, turns review comments into
+source-backed rule candidates, lets you approve or reject them, and wires
+DiffLore into detected local agents.
 
 ## On a real repo
 
 Pointed at one dogfood workspace, DiffLore mined 237 PRs and 484 human review
-comments into 505 source-backed rule candidates — each traceable to the exact
-review comment that set it. You approve the real conventions and drop
-the rest; DiffLore doesn't decide for you.
+comments into source-backed rule candidates, each traceable to the exact review
+comment that set it. You approve the few real conventions and drop the rest;
+DiffLore doesn't decide for you.
 
 Want to see the extraction quality on your own code? See
 [Design partners](#design-partners) below.
@@ -142,7 +143,7 @@ gate you run on your machine:
 
 See [`examples/github-actions-review.yml`](examples/github-actions-review.yml)
 and [`examples/gitlab-ci-review.yml`](examples/gitlab-ci-review.yml) for
-copy-pasteable workflows. If you have shared team memory, pass
+copy-pasteable workflows. If you have a shared team rule set, pass
 `DIFFLORE_CLOUD_TOKEN` so CI can run `difflore cloud sync --pull`; otherwise
 commit static exports such as `CLAUDE.md`, `AGENTS.md`, or `.cursor/rules/*.mdc`.
 
@@ -185,11 +186,11 @@ Run `difflore --help` for the full command list.
 
 ## Optional Cloud
 
-The cloud layer is for teams that want private sync, shared team rules,
-dashboards, managed semantic recall, governance, and audit workflows. Review
-import and first-pass distillation stay local; cloud sync is an explicit opt-in.
-The local CLI has no hosted PR quota. Cloud capacity applies only to managed
-team memory, semantic recall, and governance workflows.
+The cloud layer is for teams: one shared, approved rule set, an approval
+workflow with source provenance, dashboards, and managed semantic recall.
+Everything local is free for individuals, forever; paid plans start when the
+second person joins. Review import and first-pass distillation stay local; cloud
+sync is an explicit opt-in.
 
 ```bash
 difflore cloud login
@@ -199,7 +200,7 @@ difflore memory team-candidates
 ```
 
 Use the local CLI first when you want a no-account path. Use cloud when multiple
-people need one shared memory and review workflow.
+people need one shared, approved rule set and review workflow.
 
 ## Design partners
 

@@ -796,7 +796,8 @@ fn cloud_row(probe: &CloudProbe) -> Row {
             label: "cloud",
             value: "local runtime".to_owned(),
             hints: vec![
-                "team sync, dashboard, and accepted-edit proof: difflore cloud login".to_owned(),
+                "team rule set, approval workflow, coverage and recall reporting: difflore cloud login"
+                    .to_owned(),
             ],
             repair: None,
         },
@@ -830,62 +831,54 @@ fn cloud_impact_hints(impact: &CloudImpactProbe) -> Vec<String> {
     }
 
     if let Some(fix) = &impact.fix_scorecard {
-        let accepted_outcomes = fix
-            .roi
-            .as_ref()
-            .map_or(0, |roi| roi.accepted_fix_outcomes_last30);
-        if fix.last30.total > 0 {
-            let accepted = format!(
-                "{}/{} accepted edit proof{} in 30d",
-                fix.last30.accepted,
-                fix.last30.total,
-                if fix.last30.total == 1 { "" } else { "s" },
-            );
-            let mut proof_parts = vec![accepted];
-            if let Some(roi) = &fix.roi {
-                if roi.source_evidence_items > 0 {
-                    proof_parts.push(format_count(
-                        "source evidence item",
-                        roi.source_evidence_items,
-                    ));
-                }
-                if roi.saved_review_minutes > 0 {
-                    proof_parts.push(format!("{} saved review minutes", roi.saved_review_minutes));
-                }
+        if let Some(roi) = &fix.roi {
+            let mut proof_parts = Vec::new();
+            if roi.agent_rules_served_last30 > 0 {
+                proof_parts.push(format!(
+                    "{} rule{} recalled into agent sessions (30d)",
+                    roi.agent_rules_served_last30,
+                    if roi.agent_rules_served_last30 == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ));
             }
-            hints.push(format!("accepted-fix proof: {}", proof_parts.join(" · ")));
-        } else if accepted_outcomes > 0 {
-            let mut proof_parts = vec![format_count("accepted outcome", accepted_outcomes)];
-            if let Some(roi) = &fix.roi {
-                if roi.source_evidence_items > 0 {
-                    proof_parts.push(format_count(
-                        "source evidence item",
-                        roi.source_evidence_items,
-                    ));
-                }
-                let saved_minutes = roi
-                    .saved_review_minutes_last30
-                    .max(roi.saved_review_minutes)
-                    .max(roi.modeled_review_minutes);
-                if saved_minutes > 0 {
-                    proof_parts.push(format!("{saved_minutes} saved review minutes"));
-                }
+            if roi.agent_rules_fired_last30 > 0 {
+                proof_parts.push(format!(
+                    "{} rule{} matched by path triggers (30d)",
+                    roi.agent_rules_fired_last30,
+                    if roi.agent_rules_fired_last30 == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ));
             }
-            hints.push(format!(
-                "accepted outcome activity: {}",
-                proof_parts.join(" · ")
-            ));
-        } else if let Some(roi) = &fix.roi
-            && roi.source_evidence_items > 0
-        {
-            hints.push(format!(
-                "source evidence: {}",
-                format_count("item", roi.source_evidence_items)
-            ));
+            if roi.agent_rules_cited_last30 > 0 {
+                proof_parts.push(format!(
+                    "{} rule{} cited (30d)",
+                    roi.agent_rules_cited_last30,
+                    if roi.agent_rules_cited_last30 == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ));
+            }
+            if roi.source_evidence_items > 0 {
+                proof_parts.push(format_count(
+                    "source evidence item",
+                    roi.source_evidence_items,
+                ));
+            }
+            if !proof_parts.is_empty() {
+                hints.push(format!("coverage and recall: {}", proof_parts.join(" · ")));
+            }
         }
     } else if let Some(error) = impact.fix_scorecard_error.as_deref() {
         hints.push(format!(
-            "accepted-fix proof unavailable: {}",
+            "coverage and recall unavailable: {}",
             short_detail(error)
         ));
     }
@@ -1431,8 +1424,12 @@ mod tests {
         let hints = row.hints.join("\n");
         assert!(hints.contains("484 review comments"), "{hints}");
         assert!(hints.contains("505 source evidence items"), "{hints}");
-        assert!(hints.contains("58 accepted outcomes"), "{hints}");
-        assert!(hints.contains("accepted outcome activity"), "{hints}");
+        assert!(
+            hints.contains("61 rules matched by path triggers"),
+            "{hints}"
+        );
+        assert!(hints.contains("2 rules cited"), "{hints}");
+        assert!(hints.contains("coverage and recall"), "{hints}");
         assert!(hints.contains("difflore cloud impact"), "{hints}");
     }
 

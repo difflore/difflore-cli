@@ -292,16 +292,6 @@ pub(crate) fn saved_review_minutes_for_scorecard(scorecard: &ImpactFixScorecardD
         .saturating_mul(REVIEW_MINUTES_PER_ACCEPTED_FIX)
 }
 
-pub(crate) const fn saved_review_time_label(minutes: i64) -> Option<String> {
-    if minutes <= 0 {
-        return None;
-    }
-
-    // Review-minute savings are a model, not a measured value proof. Keep the
-    // helper as a compatibility shim for callers while suppressing the label.
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,7 +389,6 @@ mod tests {
             Some("Local Fix activity")
         );
         assert_eq!(payload["fixScorecard"]["roi"]["savedReviewMinutes"], 8);
-        assert_eq!(saved_review_time_label(125), None);
     }
 
     #[test]

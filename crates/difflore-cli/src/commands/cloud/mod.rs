@@ -49,10 +49,10 @@ pub(crate) async fn handle_status(json: bool) {
             style::pewter(style::sym::BULLET)
         );
         println!(
-            "  Local memory still works. Connect with {} to enable team sync.",
+            "  Local rules still work. Connect with {} to share an approved team rule set.",
             style::cmd("difflore cloud login")
         );
-        println!("  Team impact and accepted-fix counts unlock after login.");
+        println!("  Team coverage and recall reporting unlock after login.");
         println!("  next: {}", style::cmd("difflore cloud login"));
         return;
     }

@@ -700,8 +700,8 @@ async fn cloud_workspace_subsection(s: &mut String) {
         if !crate::commands::init::is_cloud_team(&cloud_status) {
             sw!(
                 s,
-                "  Team unlocks governed team memory, Reviewer Context, \
-                 and cross-machine sync — {pricing} · local BYOK stays free."
+                "  Team unlocks the shared, approved team rule set, Reviewer Context, \
+                 and multi-device access — {pricing} · local BYOK stays free."
             );
         }
     } else {

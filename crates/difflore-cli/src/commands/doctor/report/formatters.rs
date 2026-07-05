@@ -241,10 +241,8 @@ struct McpValueProof {
     local_accepted_outcomes_linked_to_mcp_rule_serve_last30: Option<i64>,
     local_accepted_outcomes_linked_to_edit_attribution_last30: Option<i64>,
     local_total_outcomes_last30: Option<i64>,
-    local_saved_review_time: Option<String>,
     accepted_fixes_last30: Option<i64>,
     total_fixes_last30: Option<i64>,
-    saved_review_time: Option<String>,
 }
 
 pub(super) async fn mcp_section(ctx: &crate::runtime::CommandContext, s: &mut String) {
@@ -378,8 +376,6 @@ async fn load_mcp_value_proof(
         let total = summary.applied + summary.failed + summary.rejected;
         proof.local_accepted_edits_last30 = Some(summary.applied);
         proof.local_total_outcomes_last30 = Some(total);
-        proof.local_saved_review_time =
-            crate::support::impact_payload::saved_review_time_label(summary.applied * 4);
     }
     if let Ok(emitter) =
         difflore_core::cloud::observations::ObservationEmitter::open_default().await
@@ -390,9 +386,6 @@ async fn load_mcp_value_proof(
             proof.local_accepted_hook_outcomes_last30 = Some(hook_outcomes);
             proof.local_total_outcomes_last30 =
                 Some(proof.local_total_outcomes_last30.unwrap_or(0) + hook_outcomes);
-            let accepted_total = local_accepted_proof_total(&proof);
-            proof.local_saved_review_time =
-                crate::support::impact_payload::saved_review_time_label(accepted_total * 4);
         }
         if let Ok(summary) = emitter.accepted_recall_link_summary(30, 7).await {
             proof.local_accepted_outcomes_linked_to_prior_recall_last30 =
@@ -410,10 +403,6 @@ async fn load_mcp_value_proof(
     if let Ok(scorecard) = cloud.get_impact_fix_scorecard().await {
         proof.accepted_fixes_last30 = Some(scorecard.last30.accepted);
         proof.total_fixes_last30 = Some(scorecard.last30.total);
-        let saved_minutes =
-            crate::support::impact_payload::saved_review_minutes_for_scorecard(&scorecard);
-        proof.saved_review_time =
-            crate::support::impact_payload::saved_review_time_label(saved_minutes);
     }
 
     proof
@@ -518,17 +507,17 @@ fn mcp_value_proof_lines(proof: &McpValueProof) -> Vec<String> {
     let memory = match (proof.active_rules, proof.imported_prs) {
         (Some(rules), Some(prs)) => {
             format!(
-                "synced memory: {rules} active rule{} ready for recall | {prs} imported PR{}",
+                "rule set: {rules} active rule{} ready for recall | {prs} imported PR{}",
                 plural(rules),
                 plural(prs)
             )
         }
         (Some(rules), None) => format!(
-            "synced memory: {rules} active rule{} ready for recall",
+            "rule set: {rules} active rule{} ready for recall",
             plural(rules)
         ),
-        (None, Some(prs)) => format!("synced memory: {prs} imported PR{}", plural(prs)),
-        (None, None) => "synced memory: unavailable in this report".to_owned(),
+        (None, Some(prs)) => format!("rule set: {prs} imported PR{}", plural(prs)),
+        (None, None) => "rule set: unavailable in this report".to_owned(),
     };
     lines.push(memory);
 
@@ -1159,10 +1148,8 @@ name = "safe"
             local_accepted_outcomes_linked_to_mcp_rule_serve_last30: Some(1),
             local_accepted_outcomes_linked_to_edit_attribution_last30: Some(0),
             local_total_outcomes_last30: Some(4),
-            local_saved_review_time: None,
             accepted_fixes_last30: Some(46),
             total_fixes_last30: Some(46),
-            saved_review_time: None,
         };
         mcp_support_bundle_subsection(&mut out, &snapshot, &proof);
 
@@ -1172,7 +1159,7 @@ name = "safe"
         assert!(out.contains("tool call: search_rules | 1 injected | 3 indexed"));
         assert!(out.contains("top=Review memory probe rule"));
         assert!(out.contains("installed clients: Cursor"));
-        assert!(out.contains("synced memory: 3882 active rules ready for recall"));
+        assert!(out.contains("rule set: 3882 active rules ready for recall"));
         assert!(out.contains("agent reach: 1 installed client | 2 MCP tools served"));
         assert!(out.contains("local accepted activity: 4 accepted edits"));
         assert!(out.contains("(3 signed local fixes + 1 agent/hook outcome)"));
@@ -1201,10 +1188,8 @@ name = "safe"
             local_accepted_outcomes_linked_to_mcp_rule_serve_last30: None,
             local_accepted_outcomes_linked_to_edit_attribution_last30: None,
             local_total_outcomes_last30: Some(3),
-            local_saved_review_time: None,
             accepted_fixes_last30: None,
             total_fixes_last30: None,
-            saved_review_time: None,
         };
         let lines = mcp_value_proof_lines(&proof);
 
@@ -1233,10 +1218,8 @@ name = "safe"
             local_accepted_outcomes_linked_to_mcp_rule_serve_last30: Some(1),
             local_accepted_outcomes_linked_to_edit_attribution_last30: Some(1),
             local_total_outcomes_last30: Some(2),
-            local_saved_review_time: None,
             accepted_fixes_last30: None,
             total_fixes_last30: None,
-            saved_review_time: None,
         };
         let lines = mcp_value_proof_lines(&proof);
 

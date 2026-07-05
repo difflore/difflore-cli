@@ -225,15 +225,6 @@ pub(crate) async fn redacted_proof_summary_value(
 }
 
 pub(crate) fn render_compact_value_summary(summary: &CompactValueSummary) -> Option<String> {
-    if summary.accepted_edits > 0 {
-        return Some(format!(
-            "Value (last {}d): {} accepted edit{}",
-            summary.window_days,
-            summary.accepted_edits,
-            transform::plural(summary.accepted_edits),
-        ));
-    }
-
     let mut parts = Vec::new();
     if summary.recall_events > 0 {
         parts.push(format!(
@@ -341,7 +332,6 @@ impl StatusPayload {
             local_proof: &self.local_proof,
             local_recall_proof: &self.local_recall_proof,
             local_mcp_serves: &self.local_mcp_serves,
-            accepted_edit_funnel: &self.accepted_edit_funnel,
             cloud_proof: self.cloud_proof.as_ref(),
             recall_trace: &self.recall_trace,
             proven_rule: self.proven_rule.as_ref(),
@@ -906,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_summary_uses_value_only_after_accepted_edits() {
+    fn compact_summary_leads_with_recall_and_agent_readiness() {
         let value = render_compact_value_summary(&CompactValueSummary {
             window_days: 30,
             accepted_edits: 2,
@@ -914,11 +904,14 @@ mod tests {
             recall_events: 5,
             agent_serves: 64,
         })
-        .expect("accepted edits should produce a value line");
+        .expect("recall and agent serves should produce a readiness line");
 
-        assert_eq!(value, "Value (last 30d): 2 accepted edits");
+        assert_eq!(
+            value,
+            "Readiness (last 30d): 5 recalls | 64 ready for agents"
+        );
         assert!(!value.contains("top memory"));
-        assert!(!value.contains("ready for agents"));
+        assert!(!value.contains("accepted edit"));
     }
 
     #[test]

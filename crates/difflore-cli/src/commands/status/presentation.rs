@@ -10,8 +10,8 @@ use std::fmt::Write as _;
 use crate::style::{self, sym};
 
 use super::queries::{
-    AcceptedEditProofFunnel, LocalAcceptedProof, LocalHeroEvidence, LocalMcpRuleServe,
-    LocalRecallProof, MemoryInboxSummary, ProvenRuleDrilldown,
+    LocalAcceptedProof, LocalHeroEvidence, LocalMcpRuleServe, LocalRecallProof, MemoryInboxSummary,
+    ProvenRuleDrilldown,
 };
 use super::transform::{CandidatePreview, NextAction, RepoScopeStatus, plural};
 use super::{CloudProofSummary, RecallTraceSummary};
@@ -22,6 +22,7 @@ use super::transform::LaneStatusSummary;
 
 /// One rule that already earned accepted edits -- the most concrete "it works"
 /// signal to show in plain language.
+#[cfg(test)]
 fn format_top_rule(rule: &ProvenRuleDrilldown) -> String {
     let mut line = format!(
         "{}: {} accepted edit{}",
@@ -236,7 +237,6 @@ pub(super) struct StatusTextView<'a> {
     pub(super) local_proof: &'a LocalAcceptedProof,
     pub(super) local_recall_proof: &'a LocalRecallProof,
     pub(super) local_mcp_serves: &'a LocalMcpRuleServe,
-    pub(super) accepted_edit_funnel: &'a AcceptedEditProofFunnel,
     pub(super) cloud_proof: Option<&'a CloudProofSummary>,
     pub(super) recall_trace: &'a RecallTraceSummary,
     pub(super) proven_rule: Option<&'a ProvenRuleDrilldown>,
@@ -258,7 +258,6 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
         local_proof,
         local_recall_proof,
         local_mcp_serves,
-        accepted_edit_funnel,
         cloud_proof,
         recall_trace,
         proven_rule,
@@ -380,27 +379,13 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
         }
     }
 
-    // Value: concrete accepted-edit activity. Link details stay in --json.
+    // Value: coverage and recall activity. Accepted-edit details stay in --json.
     let _ = writeln!(out);
     let _ = writeln!(
         out,
         "{}",
         style::ok(&format!("Value (last {}d)", local_proof.window_days))
     );
-    let accepted = local_proof.accepted_proof_signatures + local_proof.accepted_hook_outcomes;
-    if accepted > 0 {
-        let traced = local_proof.accepted_outcomes_linked_to_prior_recall;
-        let traced_note = if traced > 0 {
-            format!(" | {traced} via captured recall-to-edit loop")
-        } else {
-            " | recall-to-edit loop not captured yet".to_owned()
-        };
-        let _ = writeln!(
-            out,
-            "  {bullet} {accepted} edit{} accepted{traced_note}",
-            plural(accepted),
-        );
-    }
     // Count only non-empty lookups as "serves": a call that returned no rule
     // delivered no memory, so it must not inflate the value summary.
     let agent_serves = local_mcp_serves
@@ -424,9 +409,6 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
     if !signal_parts.is_empty() {
         let _ = writeln!(out, "  {bullet} signals: {}", signal_parts.join(" | "));
     }
-    for line in format_accepted_edit_funnel(local_proof, accepted_edit_funnel) {
-        let _ = writeln!(out, "  {bullet} {line}");
-    }
     if recall_trace.events > 0 {
         let mut trace = format!(
             "{} trace (24h): {} event{} | {} rule{} injected",
@@ -447,11 +429,7 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
         }
         let _ = writeln!(out, "  {bullet} {trace}");
     }
-    if accepted > 0
-        && let Some(rule) = proven_rule
-    {
-        let _ = writeln!(out, "  {bullet} top memory: {}", format_top_rule(rule));
-    }
+    let _ = proven_rule;
     if let Some(hero) = local_hero_evidence {
         for (index, line) in format_local_hero_evidence(hero).into_iter().enumerate() {
             if index == 0 {
@@ -567,74 +545,11 @@ fn format_cloud_proof(summary: &CloudProofSummary) -> Vec<String> {
             plural(summary.source_evidence_items)
         ));
     }
-    if summary.accepted_fix_outcomes_last30 > 0 {
-        proof_parts.push(format!(
-            "{}/{} accepted outcome{} in 30d",
-            summary.accepted_fix_outcomes_last30,
-            summary
-                .total_fixes_last30
-                .max(summary.accepted_fix_outcomes_last30),
-            if summary
-                .total_fixes_last30
-                .max(summary.accepted_fix_outcomes_last30)
-                == 1
-            {
-                ""
-            } else {
-                "s"
-            }
-        ));
-    }
-    if summary.saved_review_minutes > 0 {
-        proof_parts.push(format!(
-            "{} saved review minute{}",
-            summary.saved_review_minutes,
-            plural(summary.saved_review_minutes)
-        ));
-    }
     if !proof_parts.is_empty() {
         lines.push(format!(
-            "cloud accepted-outcome activity: {}",
+            "cloud coverage and recall: {}",
             proof_parts.join(" | ")
         ));
-    }
-    lines
-}
-
-fn format_accepted_edit_funnel(
-    local_proof: &LocalAcceptedProof,
-    funnel: &AcceptedEditProofFunnel,
-) -> Vec<String> {
-    let mut lines = Vec::new();
-    if local_proof.accepted_hook_outcomes > 0 {
-        lines.push(format!(
-            "Observed agent-retained value: {} accepted hook outcome{}",
-            local_proof.accepted_hook_outcomes,
-            plural(local_proof.accepted_hook_outcomes)
-        ));
-    }
-    if local_proof.accepted_proof_signatures > 0 {
-        lines.push(format!(
-            "Auditable accepted edits: {} local/cloud accepted-edit proof{}",
-            local_proof.accepted_proof_signatures,
-            plural(local_proof.accepted_proof_signatures)
-        ));
-    }
-
-    if funnel.launch_grade_paid_value_ready {
-        lines.push("Launch-grade paid value: ready".to_owned());
-    } else if !funnel.blockers.is_empty() || funnel.accepted_edit_upload_pending > 0 {
-        let blocker = funnel
-            .blockers
-            .iter()
-            .find(|blocker| blocker.as_str() == "no_launch_grade_paid_attribution_yet")
-            .or_else(|| funnel.blockers.first())
-            .map_or("cloud attribution", String::as_str);
-        let mut line = format!("Launch-grade paid value: needs {blocker}");
-        if let Some(command) = funnel.next_commands.first() {
-            let _ = write!(line, " | next: {command}");
-        }
-        lines.push(line);
     }
     lines
 }
@@ -975,32 +890,6 @@ mod tests {
         MemoryInboxSummary::empty(0, 0, false)
     }
 
-    fn empty_accepted_edit_funnel() -> AcceptedEditProofFunnel {
-        AcceptedEditProofFunnel {
-            window_days: 30,
-            stage: "no_accepted_edit_captured".to_owned(),
-            proof_grade: "none".to_owned(),
-            ready_for_cloud_value: false,
-            observed_value_ready: false,
-            auditable_accepted_edit_ready: false,
-            launch_grade_paid_value_ready: false,
-            blockers: Vec::new(),
-            next_commands: Vec::new(),
-            repo_scope_ready: false,
-            agent_recall_ready: false,
-            accepted_edit_captured: false,
-            accepted_edit_rows_last30: 0,
-            accepted_edit_rows_for_current_repo: 0,
-            accepted_edit_rows_without_repo: 0,
-            accepted_edit_upload_pending: 0,
-            accepted_edit_upload_failed: 0,
-            accepted_edit_rows_missing_rule_ids: 0,
-            accepted_edit_rows_with_cloud_rule_ids: 0,
-            accepted_edit_rows_with_local_rule_ids: 0,
-            last_upload_error: None,
-        }
-    }
-
     fn empty_recall_trace() -> RecallTraceSummary {
         RecallTraceSummary {
             window_hours: 24,
@@ -1076,7 +965,6 @@ mod tests {
             local_proof: proof,
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
-            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: None,
             local_hero_evidence: None,
@@ -1147,7 +1035,6 @@ mod tests {
             local_proof: &proof_with(0, 0, 0),
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
-            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: None,
             local_hero_evidence: None,
@@ -1209,7 +1096,6 @@ mod tests {
             local_proof: &proof_with(0, 0, 0),
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
-            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: None,
             local_hero_evidence: None,
@@ -1272,7 +1158,6 @@ mod tests {
             local_proof: &proof_with(0, 0, 0),
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
-            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: Some(&proven_rule()),
             local_hero_evidence: None,
@@ -1335,7 +1220,6 @@ mod tests {
             local_proof: &empty_proof,
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
-            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: None,
             local_hero_evidence: None,
@@ -1354,20 +1238,17 @@ mod tests {
     }
 
     #[test]
-    fn value_line_qualifies_recall_traced_edits() {
+    fn value_line_keeps_accepted_edit_details_out_of_text() {
         let traced = render_with_proof(&proof_with(8, 3, 32));
-        assert!(traced.contains("8 edits accepted"), "{traced}");
+        assert!(!traced.contains("8 edits accepted"), "{traced}");
         assert!(!traced.contains("review-minutes saved"), "{traced}");
-        assert!(
-            traced.contains("3 via captured recall-to-edit loop"),
-            "{traced}"
-        );
+        assert!(!traced.contains("captured recall-to-edit loop"), "{traced}");
 
         // No captured loop: do not imply a closed loop the proof does not show.
         let untraced = render_with_proof(&proof_with(5, 0, 20));
-        assert!(untraced.contains("5 edits accepted"), "{untraced}");
+        assert!(!untraced.contains("5 edits accepted"), "{untraced}");
         assert!(
-            untraced.contains("recall-to-edit loop not captured yet"),
+            !untraced.contains("recall-to-edit loop not captured yet"),
             "{untraced}"
         );
     }
@@ -1393,12 +1274,13 @@ mod tests {
         assert!(out.contains("cloud corpus: 7 repos | 237 PRs"), "{out}");
         assert!(out.contains("484 review comments"), "{out}");
         assert!(
-            out.contains("cloud accepted-outcome activity: 505 source evidence items"),
+            out.contains("cloud coverage and recall: 505 source evidence items"),
             "{out}"
         );
-        assert!(out.contains("58/58 accepted outcomes in 30d"), "{out}");
-        assert!(out.contains("232 saved"), "{out}");
-        assert!(out.contains("review minutes"), "{out}");
+        assert!(!out.contains("recall-backed"), "{out}");
+        assert!(!out.contains("outcomes in 30d"), "{out}");
+        assert!(!out.contains("232 saved"), "{out}");
+        assert!(!out.contains("review minutes"), "{out}");
     }
 
     #[test]
@@ -1433,7 +1315,6 @@ mod tests {
                 local_proof: &proof,
                 local_recall_proof: &recall,
                 local_mcp_serves: serves,
-                accepted_edit_funnel: &empty_accepted_edit_funnel(),
                 recall_trace: &empty_recall_trace(),
                 proven_rule: None,
                 local_hero_evidence: None,
@@ -1517,7 +1398,6 @@ mod tests {
             local_proof: &proof,
             local_recall_proof: &recall,
             local_mcp_serves: &serves,
-            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &recall_trace_with_drop("retrieval_empty"),
             proven_rule: None,
             local_hero_evidence: None,

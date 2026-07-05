@@ -13,11 +13,12 @@ use super::args::{
 #[command(about = "Source-backed team rules for local coding agents")]
 #[command(next_line_help = true)]
 #[command(
-    long_about = "DiffLore turns your team's past PR review judgment into local memory \
-your AI agents can recall before they code. The core loop is: \
+    long_about = "DiffLore turns your team's past PR review judgment into approved, \
+source-traceable rules your AI agents recall before they write or review code. \
+The core loop is: \
 `difflore init`, `difflore import-reviews`, `difflore agents install`, then \
-`difflore recall --diff` or `difflore review --diff all`. Background memory \
-autopilot handles high-confidence local memory automatically; use \
+`difflore recall --diff` or `difflore review --diff all`. Background triage \
+auto-enables only high-confidence candidates and leaves the rest for your review; use \
 `difflore memory`, `difflore memory review`, and `difflore memory log` to \
 inspect and decide. Cloud sync is optional."
 )]
@@ -36,8 +37,8 @@ pub(crate) enum Commands {
     /// See DiffLore work on a bundled sample — no setup, no repo, nothing written.
     #[command(
         long_about = concat!(
-            "Run a zero-config demo with bundled review memory and a sample edit.\n",
-            "It shows which memories fire and the next command to run.\n",
+            "Run a zero-config demo with bundled review rules and a sample edit.\n",
+            "It shows which rules fire and the next command to run.\n",
             "Nothing leaves your laptop and nothing is written to disk."
         )
     )]

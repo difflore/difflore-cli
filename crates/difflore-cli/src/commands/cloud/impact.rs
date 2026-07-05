@@ -20,9 +20,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                 "{} Not logged in to DiffLore Cloud.",
                 style::pewter(style::sym::BULLET)
             );
-            println!(
-                "  Impact shows accepted-fix counts, top recalled rules, and review-effort trends."
-            );
+            println!("  Impact shows coverage, top recalled rules, and team recall reporting.");
             println!("  none of which are computable from local-only data.");
             println!();
             println!("  next: {}", style::cmd("difflore cloud login"));
@@ -157,7 +155,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         let max = w
             .weeks
             .iter()
-            .map(|p| p.rules_sedimented + p.past_verdicts_recalled + p.fixes_accepted)
+            .map(|p| p.rules_sedimented + p.past_verdicts_recalled)
             .max()
             .unwrap_or(0)
             .max(1);
@@ -166,7 +164,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
             .weeks
             .iter()
             .map(|p| {
-                let total = p.rules_sedimented + p.past_verdicts_recalled + p.fixes_accepted;
+                let total = p.rules_sedimented + p.past_verdicts_recalled;
                 let idx = ((total as f64 / max as f64) * 7.0).round() as usize;
                 blocks[idx.min(7)]
             })
@@ -176,7 +174,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         println!("  {}  (max {})", style::emerald(&bar), max);
         println!(
             "  {}",
-            style::pewter("rules learned | past verdicts recalled | fixes accepted")
+            style::pewter("rules learned | past verdicts recalled")
         );
     }
 
@@ -301,39 +299,67 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
     }
 
     println!();
-    println!("  {}", "Fix acceptance - last 30 days".bold());
+    println!("  {}", "Recall - last 30 days".bold());
     match &fix {
         Ok(f) => {
-            let rate = if f.last30.total > 0 {
-                Some((f.last30.accepted as f64 / f.last30.total as f64) * 100.0)
-            } else {
-                None
-            };
-            let rate_str = match rate {
-                Some(r) => format!("{r:.0}%"),
-                None => "-".to_owned(),
-            };
-            let mut line = format!(
-                "    {} ({} / {} fixes accepted)",
-                style::ok(&rate_str),
-                f.last30.accepted,
-                f.last30.total
-            );
-            if let Some(t) = f.trend_pct {
-                let sign = if t >= 0.0 { "+" } else { "-" };
-                let trend = format!(" {sign}{:.0}% vs prior 30d", t.abs());
-                line.push_str(&if t >= 0.0 {
-                    style::emerald(&trend).to_string()
-                } else {
-                    style::danger(&trend).to_string()
-                });
+            let mut parts = Vec::new();
+            if let Some(roi) = &f.roi {
+                if roi.agent_rules_served_last30 > 0 {
+                    parts.push(format!(
+                        "{} rule{} recalled into agent sessions",
+                        roi.agent_rules_served_last30,
+                        if roi.agent_rules_served_last30 == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ));
+                }
+                if roi.agent_rules_fired_last30 > 0 {
+                    parts.push(format!(
+                        "{} rule{} matched by path triggers",
+                        roi.agent_rules_fired_last30,
+                        if roi.agent_rules_fired_last30 == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ));
+                }
+                if roi.agent_rules_cited_last30 > 0 {
+                    parts.push(format!(
+                        "{} rule{} cited",
+                        roi.agent_rules_cited_last30,
+                        if roi.agent_rules_cited_last30 == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ));
+                }
+                if roi.source_evidence_items > 0 {
+                    parts.push(format!(
+                        "{} source evidence item{}",
+                        roi.source_evidence_items,
+                        if roi.source_evidence_items == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ));
+                }
             }
-            println!("{line}");
+            let line = if parts.is_empty() {
+                "coverage and recall signal unavailable".to_owned()
+            } else {
+                parts.join(" | ")
+            };
+            println!("    {}", style::ok(&line));
         }
         Err(e) => println!(
             "    {} {}",
             style::amber("!"),
-            impact_panel_error("fix acceptance", &e.to_string())
+            impact_panel_error("recall", &e.to_string())
         ),
     }
 
@@ -371,14 +397,14 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
             "    {} {}",
             style::pewter(style::sym::BULLET),
             style::pewter(
-                "Sync approved memory and accepted-edit proof via `difflore cloud sync` so this report can show real signal."
+                "Connect approved rules with cloud reporting via `difflore cloud sync` so this report can show coverage and recall."
             )
         );
         println!(
             "    {} {}",
             style::pewter(style::sym::BULLET),
             style::pewter(
-                "Run another local import, then sync approved memory when the team is ready."
+                "Run another local import, then share approved rules when the team is ready."
             )
         );
         return;
@@ -399,19 +425,17 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
     println!("  {}", "Why Cloud Team".bold());
     if prs > 0 {
         println!(
-            "    You've reviewed {} PR{} locally. Cloud plans sync that memory \
-             into governed rules every teammate's agent can use.",
+            "    You've reviewed {} PR{} locally. Cloud gives every teammate's agent \
+             the same approved rule set — one system of record, each rule traceable \
+             to the review that set it.",
             style::emerald(&prs.to_string()),
             if prs == 1 { "" } else { "s" }
         );
     }
     if fixes_total >= 5 {
         println!(
-            "    {} local fix outcome{} were recorded in 30d. Cloud plans add \
-             shared team rules, Reviewer Context, team controls, \
-             and impact analytics.",
-            style::emerald(&fixes_total.to_string()),
-            if fixes_total == 1 { "" } else { "s" }
+            "    Cloud plans add the shared team rule set, Reviewer Context, \
+             team controls, and coverage and recall reporting."
         );
     }
     println!(
@@ -447,7 +471,7 @@ fn impact_logged_out_value() -> serde_json::Value {
     impact_needs_login_value(
         "needs_cloud_login",
         "cloud_login_required",
-        "Impact needs cloud-linked activity to show accepted-fix counts, top recalled rules, and review-effort trends.",
+        "Impact needs cloud-linked activity to show coverage, top recalled rules, and team recall reporting.",
     )
 }
 
