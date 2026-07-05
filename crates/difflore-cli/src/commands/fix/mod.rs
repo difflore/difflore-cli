@@ -43,7 +43,7 @@ use errors::format_fix_err;
 use modes::FixOutputMode;
 use pr::print_pr_review_instructions;
 use preflight::{
-    REVIEW_TIMEOUT_SECS, preflight_provider_backend, review_id_for_provider_run,
+    REVIEW_TIMEOUT_RETRY_SECS, preflight_provider_backend, review_id_for_provider_run,
     review_timeout_for_args,
 };
 use render::{
@@ -247,6 +247,7 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
     }
 
     let review_diff = review_diff_context_for_fix(&ctx);
+    let packed_diff_bytes = review_diff.packed.as_ref().map(|packed| packed.text.len());
     let diff_text = review_diff.text;
     if let Some(packed) = review_diff.packed.as_ref() {
         fix_debug!(
@@ -325,7 +326,7 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
         fast_preview: args.preview,
     };
 
-    let review_timeout = review_timeout_for_args(&args);
+    let review_timeout = review_timeout_for_args(&args, packed_diff_bytes);
     let review_started = Instant::now();
     let mut result = match tokio::time::timeout(
         review_timeout,
@@ -354,7 +355,6 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
         }
         Ok(Err(e)) => exit_err(&format_fix_err(pipeline_failed_label, &e.to_string())),
         Err(_) if args.preview => {
-            let review_timeout_secs = review_timeout.as_secs();
             emit_preview_diagnostic(
                 &ctx,
                 &args,
@@ -363,10 +363,7 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
                 primary_file.as_deref(),
                 PreviewDiagnostic {
                     kind: "review_timeout",
-                    message: format!(
-                        "review stopped after {review_timeout_secs}s while waiting for the review provider. \
-                         Set DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS to a higher value for slow local providers."
-                    ),
+                    message: provider_timeout_message(&args, review_timeout),
                     budget_ms: Some(duration_ms(review_timeout)),
                     elapsed_ms: duration_ms(review_timeout),
                 },
@@ -374,11 +371,7 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
             .await;
             return;
         }
-        Err(_) => exit_err(&format!(
-            "{} pipeline timed out after {REVIEW_TIMEOUT_SECS}s while waiting for the review provider. \
-             Run `difflore doctor` to check the active provider, then retry.",
-            if args.read_only { "review" } else { "fix" },
-        )),
+        Err(_) => exit_err(&provider_timeout_message(&args, review_timeout)),
     };
     fix_debug!(
         "review_provider elapsed={}ms budget={}ms preview={}",
@@ -1039,6 +1032,91 @@ fn duration_ms(duration: Duration) -> u64 {
 
 fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn provider_timeout_message(args: &FixArgs, timeout: Duration) -> String {
+    let mut command = provider_timeout_retry_command(args);
+    if args.read_only {
+        command = format!(
+            "{}={} {command}",
+            difflore_core::infra::env::DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS,
+            REVIEW_TIMEOUT_RETRY_SECS,
+        );
+    }
+    format!(
+        "review provider timed out after {}s. Large diffs need more headroom — retry with: {command}",
+        timeout.as_secs(),
+    )
+}
+
+fn provider_timeout_retry_command(args: &FixArgs) -> String {
+    let mut parts = vec![
+        "difflore".to_owned(),
+        if args.read_only { "review" } else { "fix" }.to_owned(),
+    ];
+
+    if args.read_only && args.ci {
+        parts.push("--ci".to_owned());
+    }
+    if args.read_only && args.strict {
+        parts.push("--strict".to_owned());
+    }
+    if !args.read_only && args.yes {
+        parts.push("--yes".to_owned());
+    }
+    if let Some(scope) = args.diff_scope.as_deref() {
+        push_shell_option(&mut parts, "--diff", scope);
+    }
+    if args.explain_rules {
+        parts.push("--explain-rules".to_owned());
+    }
+    if let Some(report) = args.report.as_deref() {
+        push_shell_option(&mut parts, "--report", report);
+    }
+    if args.json {
+        parts.push("--json".to_owned());
+    }
+    if let Some(pr) = args.pr.as_deref() {
+        push_shell_option(&mut parts, "--pr", pr);
+    }
+    if let Some(work_branch) = args.work_branch.as_deref() {
+        push_shell_option(&mut parts, "--work-branch", work_branch);
+    }
+    if args.no_checkout {
+        parts.push("--no-checkout".to_owned());
+    }
+    if args.allow_dirty {
+        parts.push("--allow-dirty".to_owned());
+    }
+    if !args.read_only && args.no_upload_acceptance {
+        parts.push("--no-upload-acceptance".to_owned());
+    }
+    if let Some(path) = args.path.as_ref() {
+        let path = path.to_string_lossy();
+        parts.push(shell_arg(path.as_ref()));
+    }
+
+    parts.join(" ")
+}
+
+fn push_shell_option(parts: &mut Vec<String>, flag: &str, value: &str) {
+    parts.push(flag.to_owned());
+    parts.push(shell_arg(value));
+}
+
+fn shell_arg(value: &str) -> String {
+    if !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'/' | b'.' | b'-' | b'_' | b':' | b'#' | b'@' | b'=' | b',' | b'+'
+                )
+        })
+    {
+        return value.to_owned();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 async fn recall_rules_for_preview_diagnostic(
@@ -1994,8 +2072,48 @@ mod tests {
 
         assert_eq!(FixOutputMode::pick(&args, true), FixOutputMode::Structured);
         assert_eq!(
-            review_timeout_for_args_with_env(&args, |_| None),
+            review_timeout_for_args_with_env(&args, None, |_| None),
             Duration::from_secs(PREVIEW_REVIEW_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn provider_timeout_message_reconstructs_pr_review_retry() {
+        let mut args = fix_args(true, false);
+        args.pr = Some("6".to_owned());
+
+        assert_eq!(
+            provider_timeout_message(&args, Duration::from_secs(PREVIEW_REVIEW_TIMEOUT_SECS)),
+            "review provider timed out after 300s. Large diffs need more headroom — retry with: DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS=900 difflore review --pr 6"
+        );
+    }
+
+    #[test]
+    fn provider_timeout_retry_preserves_ci_review_flags() {
+        let mut args = fix_args(false, true);
+        args.read_only = true;
+        args.ci = true;
+        args.strict = true;
+        args.diff_scope = Some("all".to_owned());
+
+        assert_eq!(
+            provider_timeout_message(&args, Duration::from_secs(360)),
+            "review provider timed out after 360s. Large diffs need more headroom — retry with: DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS=900 difflore review --ci --strict --diff all --json"
+        );
+        assert_eq!(
+            provider_timeout_retry_command(&args),
+            "difflore review --ci --strict --diff all --json"
+        );
+    }
+
+    #[test]
+    fn provider_timeout_retry_quotes_path_values() {
+        let mut args = fix_args(true, false);
+        args.path = Some(PathBuf::from("src/file with spaces.rs"));
+
+        assert_eq!(
+            provider_timeout_retry_command(&args),
+            "difflore review 'src/file with spaces.rs'"
         );
     }
 

@@ -2,9 +2,12 @@ use std::time::Duration;
 
 use super::{FixArgs, fix_debug};
 
-pub(super) const REVIEW_TIMEOUT_SECS: u64 = 120;
-pub(super) const PREVIEW_REVIEW_TIMEOUT_SECS: u64 = 30;
+pub(super) const REVIEW_TIMEOUT_SECS: u64 = 300;
+pub(super) const PREVIEW_REVIEW_TIMEOUT_SECS: u64 = 300;
+pub(super) const REVIEW_TIMEOUT_RETRY_SECS: u64 = 900;
 const MAX_REVIEW_TIMEOUT_SECS: u64 = 30 * 60;
+const REVIEW_TIMEOUT_SCALE_CHUNK_BYTES: usize = 100_000;
+const REVIEW_TIMEOUT_SCALE_INCREMENT_SECS: u64 = 60;
 
 fn supported_agent_cli_on_path() -> Option<&'static str> {
     supported_agent_cli_on_path_with(|cmd| which::which(cmd).is_ok())
@@ -99,20 +102,46 @@ fn parse_review_timeout_override(raw: Option<&str>) -> Option<u64> {
 
 pub(super) fn review_timeout_for_args_with_env<'a>(
     args: &FixArgs,
+    packed_diff_bytes: Option<usize>,
     env_var: impl Fn(&'a str) -> Option<String>,
 ) -> Duration {
+    let override_secs = args.read_only.then(|| {
+        env_var(difflore_core::infra::env::DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS)
+            .and_then(|value| parse_review_timeout_override(Some(&value)))
+    });
     if args.preview {
-        let override_secs =
-            env_var(difflore_core::infra::env::DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS)
-                .and_then(|value| parse_review_timeout_override(Some(&value)));
-        Duration::from_secs(override_secs.unwrap_or(PREVIEW_REVIEW_TIMEOUT_SECS))
+        Duration::from_secs(override_secs.flatten().unwrap_or_else(|| {
+            scaled_review_timeout_secs(PREVIEW_REVIEW_TIMEOUT_SECS, packed_diff_bytes)
+        }))
     } else {
-        Duration::from_secs(REVIEW_TIMEOUT_SECS)
+        Duration::from_secs(
+            override_secs.flatten().unwrap_or_else(|| {
+                scaled_review_timeout_secs(REVIEW_TIMEOUT_SECS, packed_diff_bytes)
+            }),
+        )
     }
 }
 
-pub(super) fn review_timeout_for_args(args: &FixArgs) -> Duration {
-    review_timeout_for_args_with_env(args, difflore_core::infra::env::var)
+fn scaled_review_timeout_secs(base_secs: u64, packed_diff_bytes: Option<usize>) -> u64 {
+    let Some(packed_diff_bytes) = packed_diff_bytes else {
+        return base_secs;
+    };
+    let additional_bytes = packed_diff_bytes.saturating_sub(REVIEW_TIMEOUT_SCALE_CHUNK_BYTES);
+    let additional_chunks = additional_bytes.saturating_add(REVIEW_TIMEOUT_SCALE_CHUNK_BYTES - 1)
+        / REVIEW_TIMEOUT_SCALE_CHUNK_BYTES;
+    let additional_secs = u64::try_from(additional_chunks)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(REVIEW_TIMEOUT_SCALE_INCREMENT_SECS);
+    base_secs
+        .saturating_add(additional_secs)
+        .min(REVIEW_TIMEOUT_RETRY_SECS)
+}
+
+pub(super) fn review_timeout_for_args(
+    args: &FixArgs,
+    packed_diff_bytes: Option<usize>,
+) -> Duration {
+    review_timeout_for_args_with_env(args, packed_diff_bytes, difflore_core::infra::env::var)
 }
 
 pub(super) fn review_id_for_provider_run(review_id: Option<&str>, preview: bool) -> Option<String> {
@@ -151,24 +180,75 @@ mod tests {
         }
     }
 
+    fn ci_review_args() -> FixArgs {
+        FixArgs {
+            read_only: true,
+            ci: true,
+            ..fix_args(false, true)
+        }
+    }
+
     #[test]
     fn preview_review_timeout_accepts_env_override() {
         let args = fix_args(true, true);
 
         assert_eq!(
-            review_timeout_for_args_with_env(&args, |key| {
+            review_timeout_for_args_with_env(&args, None, |_| None),
+            Duration::from_secs(PREVIEW_REVIEW_TIMEOUT_SECS)
+        );
+        assert_eq!(
+            review_timeout_for_args_with_env(&args, None, |key| {
                 (key == difflore_core::infra::env::DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS)
                     .then(|| "75".to_owned())
             }),
             Duration::from_secs(75)
         );
         assert_eq!(
-            review_timeout_for_args_with_env(&args, |_| Some("0".to_owned())),
+            review_timeout_for_args_with_env(&args, None, |_| Some("0".to_owned())),
             Duration::from_secs(PREVIEW_REVIEW_TIMEOUT_SECS)
         );
         assert_eq!(
-            review_timeout_for_args_with_env(&args, |_| Some("not-a-number".to_owned())),
+            review_timeout_for_args_with_env(&args, None, |_| Some("not-a-number".to_owned())),
             Duration::from_secs(PREVIEW_REVIEW_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn review_timeout_scales_with_packed_diff_size() {
+        let args = fix_args(true, true);
+
+        assert_eq!(
+            review_timeout_for_args_with_env(&args, Some(100_000), |_| None),
+            Duration::from_secs(PREVIEW_REVIEW_TIMEOUT_SECS)
+        );
+        assert_eq!(
+            review_timeout_for_args_with_env(&args, Some(100_001), |_| None),
+            Duration::from_secs(PREVIEW_REVIEW_TIMEOUT_SECS + 60)
+        );
+        assert_eq!(
+            review_timeout_for_args_with_env(&args, Some(1_500_000), |_| None),
+            Duration::from_secs(REVIEW_TIMEOUT_RETRY_SECS)
+        );
+    }
+
+    #[test]
+    fn ci_review_timeout_uses_same_default_and_env_override() {
+        let args = ci_review_args();
+
+        assert_eq!(
+            review_timeout_for_args_with_env(&args, None, |_| None),
+            Duration::from_secs(REVIEW_TIMEOUT_SECS)
+        );
+        assert_eq!(
+            review_timeout_for_args_with_env(&args, None, |key| {
+                (key == difflore_core::infra::env::DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS)
+                    .then(|| "420".to_owned())
+            }),
+            Duration::from_secs(420)
+        );
+        assert_eq!(
+            review_timeout_for_args_with_env(&args, None, |_| Some("0".to_owned())),
+            Duration::from_secs(REVIEW_TIMEOUT_SECS)
         );
     }
 

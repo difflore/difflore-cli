@@ -5,7 +5,7 @@ use super::tools::CONTROL_PLANE_DENIED_TOOL_NAMES;
 pub(super) use super::skill_docs::{
     DIFFLORE_ONBOARD_SKILL_MD, KNOWLEDGE_AGENT_SKILL_MD, MEMORY_CANDIDATE_TRIAGE_SKILL_MD,
     RULE_DIFF_SKILL_MD, RULE_GAP_SKILL_MD, RULE_JOURNEY_SKILL_MD, RULE_SEARCH_SKILL_MD,
-    RULE_WHY_FIRED_SKILL_MD, SESSION_RECAP_SKILL_MD, SMART_EXPLORE_SKILL_MD,
+    RULE_WHY_FIRED_SKILL_MD, RULES_REVIEW_SKILL_MD, SESSION_RECAP_SKILL_MD, SMART_EXPLORE_SKILL_MD,
 };
 
 pub(super) fn tools_list() -> Value {
@@ -387,6 +387,12 @@ pub(super) const SKILL_RESOURCES: &[SkillResource] = &[
         name: "remember_rule trigger guide",
         description: "Full guide for when to call the remember_rule MCP tool, with trigger phrases and anti-patterns.",
         markdown: REMEMBER_RULE_GUIDE_MD,
+    },
+    SkillResource {
+        uri: "difflore://skills/rules-review",
+        name: "rules-review SKILL",
+        description: "Review a diff or PR with the team's approved rules as authoritative criteria; cite rule provenance per finding.",
+        markdown: RULES_REVIEW_SKILL_MD,
     },
     SkillResource {
         uri: "difflore://skills/rule-search",
