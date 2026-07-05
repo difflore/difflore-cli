@@ -205,8 +205,8 @@ async fn dispatch_hook_event_with_state(
                 crate::session_mine::run_targeted_pairs_detached(
                     client_name.to_owned(),
                     vec![pair],
-                    session_id.clone(),
-                    cwd.clone(),
+                    session_id,
+                    cwd,
                     crate::session_mine::GateMode::Correction,
                 );
             }

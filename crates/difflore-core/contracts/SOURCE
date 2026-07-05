@@ -6,10 +6,10 @@
 
 source-repo:   difflore-cloud
 source-path:   src/contracts/openapi/api.json
-source-commit: cdea2bfb396fc3ae2efd866c1daf3e2b63e8e129
+source-commit: 14384fbecff76918dac9de922e7849b33c16de8d
 
 # sha256 of the vendored openapi-spec.json currently checked in here.
-spec-sha256:   ca7a2be77e2be595d4ed7ce7e45dff5bb19d4c38462fd054f9127f7616e01684
+spec-sha256:   e97f64a96e043fe8361bde34ee911980ff3f36a94d2072892abbf4969b43c21b
 
 # In sync: re-exported from difflore-cloud at the source-commit above via
 # `pnpm contract:export` and re-vendored. The `check-vendored-spec` gate

@@ -2401,7 +2401,8 @@
                           "rule_candidates_admin_workflow",
                           "governance_audit_log",
                           "support",
-                          "audit_log_export"
+                          "audit_log_export",
+                          "sso_saml_dpa_soc2_vpc_self_hosted"
                         ],
                         "type": "string"
                       },
@@ -8929,6 +8930,9 @@
                   "teamId": {
                     "type": "string",
                     "format": "uuid"
+                  },
+                  "offer": {
+                    "const": "founding_team"
                   }
                 },
                 "required": [

@@ -23,6 +23,7 @@ const REQUIRED_SKILL_DIRS: &[&str] = &[
     "rule-journey",
     "rule-search",
     "rule-why-fired",
+    "rules-review",
     "session-recap",
     "smart-explore",
 ];

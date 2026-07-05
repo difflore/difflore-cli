@@ -310,8 +310,9 @@ mod tests {
 
     fn claude_project_slug(repo_root: &Path) -> String {
         let canonical = repo_root.canonicalize().expect("canonical repo path");
-        canonical
-            .to_string_lossy()
+        let path = canonical.to_string_lossy();
+        path.strip_prefix(r"\\?\")
+            .unwrap_or(path.as_ref())
             .chars()
             .map(|ch| match ch {
                 '\\' | '/' | ':' | '<' | '>' | '"' | '|' | '?' | '*' => '-',
@@ -523,8 +524,10 @@ mod tests {
         .unwrap();
         std::fs::write(memory.join("MEMORY.md"), "- [API handlers](api-rules.md)").unwrap();
 
-        temp_env::with_var("HOME", Some(home.path().as_os_str()), || {
-            temp_env::with_var("DIFFLORE_CLAUDE_HOME", None::<&str>, || {
+        temp_env::with_var(
+            "DIFFLORE_CLAUDE_HOME",
+            Some(home.path().as_os_str()),
+            || {
                 rt.block_on(async {
                     let db = fresh_pool().await;
                     let repo = RepoScope::canonical("owner/repo").expect("repo scope");
@@ -586,8 +589,8 @@ mod tests {
                         1
                     );
                 });
-            });
-        });
+            },
+        );
     }
 
     #[test]
@@ -596,8 +599,10 @@ mod tests {
         let home = TempDir::new().unwrap();
         let repo_root = TempDir::new().unwrap();
 
-        temp_env::with_var("HOME", Some(home.path().as_os_str()), || {
-            temp_env::with_var("DIFFLORE_CLAUDE_HOME", None::<&str>, || {
+        temp_env::with_var(
+            "DIFFLORE_CLAUDE_HOME",
+            Some(home.path().as_os_str()),
+            || {
                 rt.block_on(async {
                     let db = fresh_pool().await;
                     let repo = RepoScope::canonical("owner/repo").expect("repo scope");
@@ -615,7 +620,7 @@ mod tests {
                             .contains(&CLAUDE_CODE_MEMORY_SOURCE_ID.to_owned())
                     );
                 });
-            });
-        });
+            },
+        );
     }
 }
