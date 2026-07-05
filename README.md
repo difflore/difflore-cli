@@ -6,10 +6,10 @@
 [![MCP](https://img.shields.io/badge/MCP-stdio-green.svg)](https://modelcontextprotocol.io)
 
 Never write the same review comment twice. DiffLore mines the rules your team
-already settled in PR/MR review — human-approved, traceable to the comment that
-set them — and hands them to Claude Code, Codex, Cursor, and other local AI CLIs
-before they write or review code. Review engines are free now; your team's
-judgment isn't.
+already settled in PR/MR review, keeps capturing the corrections you make in
+live coding sessions, and hands the approved, source-traceable result to Claude
+Code, Codex, Cursor, and other local AI CLIs before they write or review code.
+Review engines are free now; your team's judgment isn't.
 
 ![How DiffLore works: past PR reviews are mined into source-traced rules and served to your coding agent over MCP](.github/assets/difflore-concept.gif)
 
