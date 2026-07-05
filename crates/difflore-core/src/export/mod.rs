@@ -33,6 +33,8 @@ use crate::context::rule_render::{RuleExportRenderInput, render_rule_export};
 
 pub const REVIEW_SEARCH_RULES_INSTRUCTION: &str = "When reviewing code, query difflore's `search_rules` MCP tool for each changed file - matched team rules are authoritative review criteria.";
 
+pub const PRE_SUBMIT_GATE_INSTRUCTION: &str = "Before committing, pushing, or opening a PR, run `difflore review --diff all` and fix rule-backed findings first.";
+
 /// Header metadata stamped into the generated block. `generated_at_utc` is
 /// deliberately *excluded* from the content hash so an unchanged corpus
 /// re-exported later short-circuits to `Unchanged` instead of churning the
@@ -70,7 +72,7 @@ pub fn export_content_hash(body: &str) -> String {
 /// a static file has no query to rank against.
 #[must_use]
 pub fn render_export_body(rules: &[ExportRule]) -> String {
-    let mut out = format!("{REVIEW_SEARCH_RULES_INSTRUCTION}\n\n");
+    let mut out = format!("{REVIEW_SEARCH_RULES_INSTRUCTION}\n{PRE_SUBMIT_GATE_INSTRUCTION}\n\n");
     if rules.is_empty() {
         out.push_str("_No DiffLore rules are in scope for this repo yet. Run `difflore import-reviews` to capture review rules._\n");
         return out;

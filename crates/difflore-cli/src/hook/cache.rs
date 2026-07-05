@@ -34,21 +34,6 @@ pub(crate) fn should_skip_recent_with_signal(
     should_skip_recent_for_project_hash_with_signal(file_path, purpose, &project_hash, signal)
 }
 
-pub(crate) fn should_skip_recent_lookup_with_signal(
-    file_path: &str,
-    purpose: &str,
-    signal: Option<&str>,
-) -> bool {
-    let project_root = difflore_core::infra::db::current_project_root();
-    let project_hash = difflore_core::infra::db::project_hash_from_root(&project_root);
-    should_skip_recent_lookup_for_project_hash_with_signal(
-        file_path,
-        purpose,
-        &project_hash,
-        signal,
-    )
-}
-
 pub(crate) fn should_skip_recent_for_project_hash_with_signal(
     file_path: &str,
     purpose: &str,
@@ -61,21 +46,6 @@ pub(crate) fn should_skip_recent_for_project_hash_with_signal(
         project_hash,
         signal,
         false,
-    )
-}
-
-pub(crate) fn should_skip_recent_lookup_for_project_hash_with_signal(
-    file_path: &str,
-    purpose: &str,
-    project_hash: &str,
-    signal: Option<&str>,
-) -> bool {
-    should_skip_recent_for_project_hash_with_signal_inner(
-        file_path,
-        purpose,
-        project_hash,
-        signal,
-        true,
     )
 }
 
