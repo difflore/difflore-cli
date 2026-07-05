@@ -39,7 +39,7 @@ pub(super) fn diagnose_status_snapshot(snapshot: &McpStatusSnapshot) -> McpStatu
             actions.extend(client_reload_actions(&installed_clients));
             actions.push("If the error persists, compare that client's DiffLore entry with `difflore agents status --json`; the status check already showed DiffLore starts, lists tools, and completes a search_rules call.".to_owned());
             build_diagnosis(
-                "DiffLore is ready for agents and can complete a search_rules memory check; installed client wiring matches the current status snapshot.",
+                "DiffLore is ready for agents and can complete a search_rules check; installed client wiring matches the current status snapshot.",
                 actions,
                 affected_clients,
             )
@@ -52,7 +52,7 @@ pub(super) fn diagnose_status_snapshot(snapshot: &McpStatusSnapshot) -> McpStatu
             actions.extend(client_reload_actions(&affected_clients));
             actions.push("If a refreshed client still reports `Transport closed`, compare that client's config in `difflore agents status --json`; the status check already showed DiffLore can list tools and complete a search_rules call.".to_owned());
             build_diagnosis(
-                "DiffLore is ready for agents and can complete a memory tool call; remaining issues are install-record or client-wiring drift.",
+                "DiffLore is ready for agents and can complete a rules tool call; remaining issues are install-record or client-wiring drift.",
                 actions,
                 affected_clients,
             )
@@ -66,7 +66,7 @@ pub(super) fn diagnose_status_snapshot(snapshot: &McpStatusSnapshot) -> McpStatu
             affected_clients,
         ),
         Some(RuntimeProbeState::Failed) => build_diagnosis(
-            "DiffLore failed the status check; clients will not receive memory tools until startup succeeds.",
+            "DiffLore failed the status check; clients will not receive rules tools until startup succeeds.",
             vec![
                 "Run `difflore agents status --json` for stderr/details.".to_owned(),
                 "Rebuild or upgrade the binary before reinstalling agents.".to_owned(),

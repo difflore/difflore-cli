@@ -4,7 +4,6 @@ use crate::commands::doctor::labels::{
     doctor_install_state_label,
 };
 use crate::installer;
-use crate::support::util::format_recall_edit_proof_breakdown;
 
 use crate::commands::doctor::embedding_degradation::{
     SUSTAINED_TRANSIENT_FALLBACK_THRESHOLD, is_persistent_embedding_degradation,
@@ -531,28 +530,23 @@ fn mcp_value_proof_lines(proof: &McpValueProof) -> Vec<String> {
         plural_usize(proof.installed_clients),
     ));
 
-    let local_accepted = local_accepted_proof_total(proof);
-    if local_accepted > 0
-        && let Some(total) = proof.local_total_outcomes_last30
-    {
-        let source_note = local_accepted_source_note(proof);
-        let recall_note = local_accepted_recall_note(proof);
-        lines.push(format!(
-            "local accepted activity: {local_accepted} accepted edit{}{} in the last 30d ({total} local outcome{}){recall_note}",
-            plural(local_accepted),
-            source_note,
-            plural(total),
-        ));
+    let has_local_rule_use_evidence = local_accepted_proof_total(proof) > 0;
+    if has_local_rule_use_evidence && proof.local_total_outcomes_last30.is_some() {
+        lines.push(
+            "local coverage and recall: recent rule-use evidence captured in local outcomes"
+                .to_owned(),
+        );
     }
 
-    if let (Some(accepted), Some(total)) = (proof.accepted_fixes_last30, proof.total_fixes_last30) {
-        lines.push(format!(
-            "remote Impact activity: {accepted}/{total} accepted edits in the last 30d"
-        ));
-    } else if local_accepted > 0 {
-        lines.push("remote Impact activity: unavailable; local activity captured above".to_owned());
+    if proof.accepted_fixes_last30.is_some() && proof.total_fixes_last30.is_some() {
+        lines.push("remote Impact coverage and recall: available; run `difflore cloud impact` for recalled/path-triggered rules and source evidence".to_owned());
+    } else if has_local_rule_use_evidence {
+        lines.push(
+            "remote Impact coverage and recall: unavailable; local rule-use evidence captured above"
+                .to_owned(),
+        );
     } else {
-        lines.push("remote Impact activity: unavailable in this report; run `difflore status` for local activity or `difflore cloud impact` after login".to_owned());
+        lines.push("remote Impact coverage and recall: unavailable in this report; run `difflore status` for local recall or `difflore cloud impact` after login".to_owned());
     }
 
     lines
@@ -561,43 +555,6 @@ fn mcp_value_proof_lines(proof: &McpValueProof) -> Vec<String> {
 fn local_accepted_proof_total(proof: &McpValueProof) -> i64 {
     proof.local_accepted_edits_last30.unwrap_or(0)
         + proof.local_accepted_hook_outcomes_last30.unwrap_or(0)
-}
-
-fn local_accepted_source_note(proof: &McpValueProof) -> String {
-    let signed = proof.local_accepted_edits_last30.unwrap_or(0);
-    let hook = proof.local_accepted_hook_outcomes_last30.unwrap_or(0);
-    if signed > 0 && hook > 0 {
-        format!(
-            " ({signed} signed local fix{} + {hook} agent/hook outcome{})",
-            if signed == 1 { "" } else { "es" },
-            plural(hook),
-        )
-    } else if hook > 0 {
-        format!(" ({hook} agent/hook outcome{})", plural(hook))
-    } else {
-        String::new()
-    }
-}
-
-fn local_accepted_recall_note(proof: &McpValueProof) -> String {
-    let linked = proof
-        .local_accepted_outcomes_linked_to_prior_recall_last30
-        .unwrap_or(0);
-    if linked <= 0 {
-        return String::new();
-    }
-    let breakdown = format_recall_edit_proof_breakdown(
-        proof
-            .local_accepted_outcomes_linked_to_rule_recall_last30
-            .unwrap_or(0),
-        proof
-            .local_accepted_outcomes_linked_to_mcp_rule_serve_last30
-            .unwrap_or(0),
-        proof
-            .local_accepted_outcomes_linked_to_edit_attribution_last30
-            .unwrap_or(0),
-    );
-    format!(" | {linked} after prior rule recall{breakdown} within 7d")
 }
 
 const fn plural(n: i64) -> &'static str {
@@ -1161,13 +1118,13 @@ name = "safe"
         assert!(out.contains("installed clients: Cursor"));
         assert!(out.contains("rule set: 3882 active rules ready for recall"));
         assert!(out.contains("agent reach: 1 installed client | 2 MCP tools served"));
-        assert!(out.contains("local accepted activity: 4 accepted edits"));
-        assert!(out.contains("(3 signed local fixes + 1 agent/hook outcome)"));
-        assert!(
-            out.contains("2 after prior rule recall (1 rule recall + 1 agent recall) within 7d")
-        );
+        assert!(out.contains("local coverage and recall: recent rule-use evidence captured"));
+        assert!(!out.contains("local accepted activity"));
+        assert!(!out.contains("signed local fixes"));
+        assert!(!out.contains("after prior rule recall"));
         assert!(!out.contains("review time saved"));
-        assert!(out.contains("remote Impact activity: 46/46 accepted edits in the last 30d"));
+        assert!(out.contains("remote Impact coverage and recall: available"));
+        assert!(!out.contains("remote Impact activity"));
         assert!(out.contains("affected clients: none"));
         assert!(out.contains("Cursor: run `Developer: Reload Window`"));
         assert!(out.contains("installed surfaces:"));
@@ -1196,11 +1153,11 @@ name = "safe"
         assert!(lines[0].contains("1 active rule ready for recall"));
         assert!(lines[0].contains("2 imported PRs"));
         assert!(lines[1].contains("3 installed clients | 7 MCP tools"));
-        assert!(lines[2].contains("local accepted activity: 2 accepted edits"));
+        assert!(lines[2].contains("local coverage and recall"));
         assert!(!lines[2].contains("review time saved"));
         assert_eq!(
             lines[3],
-            "remote Impact activity: unavailable; local activity captured above"
+            "remote Impact coverage and recall: unavailable; local rule-use evidence captured above"
         );
     }
 
@@ -1223,16 +1180,13 @@ name = "safe"
         };
         let lines = mcp_value_proof_lines(&proof);
 
-        assert!(lines[2].contains("local accepted activity: 2 accepted edits"));
-        assert!(lines[2].contains("(2 agent/hook outcomes)"));
-        assert!(
-            lines[2]
-                .contains("2 after prior rule recall (1 agent recall + 1 accepted edit) within 7d")
-        );
+        assert!(lines[2].contains("local coverage and recall"));
+        assert!(!lines[2].contains("agent/hook outcomes"));
+        assert!(!lines[2].contains("accepted edit"));
         assert!(!lines[2].contains("review time saved"));
         assert_eq!(
             lines[3],
-            "remote Impact activity: unavailable; local activity captured above"
+            "remote Impact coverage and recall: unavailable; local rule-use evidence captured above"
         );
     }
 }

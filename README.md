@@ -176,7 +176,7 @@ Code, Warp, and Antigravity.
 | `difflore agents status` | Show which agents are connected |
 | `difflore status` | Show readiness and the next command |
 | `difflore recall --diff` | Retrieve matching rules for the current diff |
-| `difflore review --diff all` | Review the current diff without modifying files |
+| `difflore review --diff all` | Run your review engine (Claude Code, Codex, ...) on the current diff with team rules loaded; modifies nothing |
 | `difflore fix` | Apply rule-aware local fixes |
 | `difflore ask "..."` | Ask the team's source-backed rules a question |
 | `difflore export` | Write static snapshots to `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`, or `.opencodereview/rule.json` |

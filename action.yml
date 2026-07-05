@@ -1,5 +1,5 @@
 name: "DiffLore Review"
-description: "Team-memory-aware AI code review gate. Local-first: your code and your LLM key never touch DiffLore servers."
+description: "Team-rules-aware AI code review gate. Local-first: your code and your LLM key never touch DiffLore servers."
 branding: { icon: "book-open", color: "purple" }
 inputs:
   engine:
@@ -12,7 +12,7 @@ inputs:
     description: "DiffLore version to install (default: latest release)"
     default: "latest"
   difflore-token:
-    description: "Optional DiffLore Cloud token for pulling shared team memory"
+    description: "Optional DiffLore Cloud token for pulling the shared team rule set"
     required: false
   master-key:
     description: "Optional 64-character hex DIFFLORE_MASTER_KEY for headless runners"
@@ -33,7 +33,7 @@ runs:
           export PATH="$HOME/.cargo/bin:$PATH"
         fi
         difflore --version
-    - name: Hydrate team memory
+    - name: Hydrate team rules
       shell: bash
       run: |
         if [ -n "${{ inputs.master-key }}" ]; then

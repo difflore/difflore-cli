@@ -206,30 +206,23 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                     (None, Some(l)) => format!(" [{l}]"),
                     _ => String::new(),
                 };
-                let trust = rule.trust_rate.map_or_else(String::new, |rate| {
-                    let pct = (rate * 100.0).round() as i64;
-                    if rule.cited_count > 0 {
-                        format!(" | trust {pct}% ({} cited)", rule.cited_count)
-                    } else {
-                        format!(" | trust {pct}%")
-                    }
-                });
-                let proof = crate::support::impact_payload::accepted_proof_source_label(
+                let source_evidence = crate::support::impact_payload::accepted_proof_source_label(
                     rule.accepted_proof_source
                         .as_deref()
                         .or_else(|| local_proof_sources.get(&rule.id).map(String::as_str)),
                 )
-                .map_or_else(String::new, |label| format!(" | {}", style::pewter(label)));
-                let agent_ready = crate::support::impact_payload::agent_ready_proof_label(
-                    rule.reviewer_proof_ready_count,
-                )
-                .map_or_else(String::new, |label| format!(" | {}", style::pewter(&label)));
-                let reviewer_context =
-                    crate::support::impact_payload::reviewer_context_proof_label(
+                .map(|label| format!("source evidence: {label}"));
+                let reviewer_context = (rule.reviewer_context_serves > 0).then(|| {
+                    format!(
+                        "{} reviewer context recall{}",
                         rule.reviewer_context_serves,
-                        rule.reviewer_mentions,
+                        if rule.reviewer_context_serves == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
                     )
-                    .map_or_else(String::new, |label| format!(" | {}", style::pewter(&label)));
+                });
                 let source_repo = rule
                     .source_repo
                     .as_deref()
@@ -237,14 +230,22 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                         format!(" | {}", style::pewter(&format!("learned from {repo}")))
                     });
                 println!(
-                    "    {} {}{} - {} accepted, {} user{}{trust}{proof}{agent_ready}{reviewer_context}{source_repo}",
+                    "    {} {}{}{}",
                     style::pewter(style::sym::BULLET),
                     rule.name.bold(),
                     style::pewter(&meta),
-                    style::emerald(&rule.acceptance_count.to_string()),
-                    rule.distinct_users,
-                    if rule.distinct_users == 1 { "" } else { "s" },
+                    source_repo,
                 );
+                let evidence = [source_evidence, reviewer_context]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
+                if !evidence.is_empty() {
+                    println!(
+                        "      {}",
+                        style::pewter(&format!("coverage and recall: {}", evidence.join(" | ")))
+                    );
+                }
             }
         }
         Ok(r) => {
@@ -257,18 +258,14 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                 println!(
                     "    {}",
                     style::pewter(&format!(
-                        "Candidate warming up: {}/{} matching fixes and {}/{} users for {target}.",
-                        progress.acceptance_count,
-                        progress.required_count,
-                        progress.distinct_users,
-                        progress.required_distinct_users,
+                        "Candidate warming up for {target}; coverage and recall need more source evidence before promotion."
                     ))
                 );
             } else {
                 println!(
                     "    {}",
                     style::pewter(
-                        "No candidate rules yet. As your team accepts fixes, patterns will surface here."
+                        "No candidate rules yet. Imported review history and source evidence will surface patterns here."
                     )
                 );
             }
@@ -327,17 +324,6 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                         "{} rule{} matched by path triggers",
                         roi.agent_rules_fired_last30,
                         if roi.agent_rules_fired_last30 == 1 {
-                            ""
-                        } else {
-                            "s"
-                        }
-                    ));
-                }
-                if roi.agent_rules_cited_last30 > 0 {
-                    parts.push(format!(
-                        "{} rule{} cited",
-                        roi.agent_rules_cited_last30,
-                        if roi.agent_rules_cited_last30 == 1 {
                             ""
                         } else {
                             "s"

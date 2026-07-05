@@ -855,17 +855,6 @@ fn cloud_impact_hints(impact: &CloudImpactProbe) -> Vec<String> {
                     }
                 ));
             }
-            if roi.agent_rules_cited_last30 > 0 {
-                proof_parts.push(format!(
-                    "{} rule{} cited (30d)",
-                    roi.agent_rules_cited_last30,
-                    if roi.agent_rules_cited_last30 == 1 {
-                        ""
-                    } else {
-                        "s"
-                    }
-                ));
-            }
             if roi.source_evidence_items > 0 {
                 proof_parts.push(format_count(
                     "source evidence item",
@@ -1429,7 +1418,7 @@ mod tests {
             hints.contains("61 rules matched by path triggers"),
             "{hints}"
         );
-        assert!(hints.contains("2 rules cited"), "{hints}");
+        assert!(!hints.contains("2 rules cited"), "{hints}");
         assert!(hints.contains("coverage and recall"), "{hints}");
         assert!(hints.contains("difflore cloud impact"), "{hints}");
     }

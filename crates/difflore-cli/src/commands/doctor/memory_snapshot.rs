@@ -9,7 +9,6 @@
 
 use crate::style;
 use crate::support::proven_rule::{ProvenRuleRank, fetch_rule_metadata_for_ids};
-use crate::support::util::format_recall_edit_proof_breakdown;
 use difflore_core::cloud::observations::ObservationUploadIssue;
 use std::collections::BTreeMap;
 
@@ -595,11 +594,10 @@ pub(crate) fn render(snapshot: &MemorySnapshot) -> String {
                 format!("  {}", style::pewter(&format!("\u{2190} from {r}")))
             });
             out.push_str(&format!(
-                "  {:<width$} {} {}  {}{suffix}\n",
+                "  {:<width$} {} {}{suffix}\n",
                 style::pewter(label),
                 style::pewter("\u{00b7}"),
                 rule.name,
-                style::pewter(&accepted_proof_label(rule)),
                 width = LABEL_W,
             ));
             let try_label = if i == 0 { "try" } else { "" };
@@ -628,56 +626,6 @@ pub(crate) fn render(snapshot: &MemorySnapshot) -> String {
         }
     }
     out
-}
-
-fn accepted_proof_label(rule: &ProvenRule) -> String {
-    if rule.accepted_hook_outcomes <= 0 {
-        return format!(
-            "{} accepted {}",
-            rule.accepted_count,
-            fix_noun(rule.accepted_count)
-        );
-    }
-
-    let mut detail = Vec::new();
-    if rule.accepted_fix_proofs > 0 {
-        detail.push(format!(
-            "{} signed local {}",
-            rule.accepted_fix_proofs,
-            fix_noun(rule.accepted_fix_proofs)
-        ));
-    }
-    detail.push(format!(
-        "{} agent/hook outcome{}",
-        rule.accepted_hook_outcomes,
-        if rule.accepted_hook_outcomes == 1 {
-            ""
-        } else {
-            "s"
-        }
-    ));
-    if rule.accepted_hook_outcomes_linked_to_prior_recall > 0 {
-        detail.push(format!(
-            "{} linked to prior rule recall{}",
-            rule.accepted_hook_outcomes_linked_to_prior_recall,
-            format_recall_edit_proof_breakdown(
-                rule.accepted_hook_outcomes_linked_to_rule_recall,
-                rule.accepted_hook_outcomes_linked_to_mcp_rule_serve,
-                rule.accepted_hook_outcomes_linked_to_edit_attribution,
-            )
-        ));
-    }
-
-    format!(
-        "{} accepted outcome{} ({})",
-        rule.accepted_count,
-        if rule.accepted_count == 1 { "" } else { "s" },
-        detail.join(" + ")
-    )
-}
-
-const fn fix_noun(count: i64) -> &'static str {
-    if count == 1 { "fix" } else { "fixes" }
 }
 
 #[cfg(test)]
@@ -917,7 +865,7 @@ mod tests {
         let rendered = render(&snap);
         assert!(rendered.contains("proven"));
         assert!(rendered.contains("Return 413 for body size limit errors"));
-        assert!(rendered.contains("2 accepted fixes"));
+        assert!(!rendered.contains("2 accepted fixes"));
         assert!(
             rendered.contains(
                 "difflore recall \"Return 413 for body size limit errors\" --file \"a_newer.go\" --top-k 3"
@@ -981,9 +929,13 @@ mod tests {
             proven,
             ..MemorySnapshot::default()
         });
-        assert!(rendered.contains("2 accepted outcomes"));
-        assert!(rendered.contains("2 agent/hook outcomes"));
-        assert!(rendered.contains("1 linked to prior rule recall (1 agent recall)"));
+        assert!(rendered.contains("Prefer structured API parsing"));
+        assert!(rendered.contains(
+            "difflore recall \"Prefer structured API parsing\" --file \"src/parser.rs\" --top-k 3"
+        ));
+        assert!(!rendered.contains("2 accepted outcomes"));
+        assert!(!rendered.contains("2 agent/hook outcomes"));
+        assert!(!rendered.contains("1 linked to prior rule recall (1 agent recall)"));
         assert!(!rendered.contains("difflore rules explain"));
     }
 

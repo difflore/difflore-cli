@@ -96,11 +96,7 @@ fn format_local_hero_evidence(hero: &LocalHeroEvidence) -> Vec<String> {
 
     let real_agent_serves = hero.agent_serves.max(0);
     let mut metrics = format!(
-        "{} accepted edit{} | {} signed diff{} | {} recall{} | {} ready for agent{}",
-        hero.accepted_edits,
-        plural(hero.accepted_edits),
-        hero.signed_diff_proofs,
-        plural(hero.signed_diff_proofs),
+        "{} recall{} | {} ready for agent{}",
         hero.recall_events,
         plural(hero.recall_events),
         real_agent_serves,
@@ -669,10 +665,12 @@ mod tests {
         assert!(out.contains("best local rules (best on this machine)"));
         assert!(out.contains("learned from tanstack/router"));
         assert!(out.contains("used on difflore-fixtures/router#4"));
-        assert!(out.contains("5 accepted edits"));
-        assert!(out.contains("5 signed diffs"));
+        assert!(out.contains("7 recalls"));
+        assert!(out.contains("6 ready for agents"));
         assert!(out.contains("6 file-matched deliveries"));
         assert!(out.contains("not current-repo readiness"));
+        assert!(!out.contains("accepted edits"));
+        assert!(!out.contains("signed diffs"));
         assert!(!out.contains("accepted edit proof"));
         assert!(!out.contains("rule-use proof"));
     }

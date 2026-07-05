@@ -11,7 +11,7 @@ permissions:
   pull-requests: read
 
 jobs:
-  import-review-memory:
+  import-review-rules:
     runs-on: ubuntu-latest
     env:
       # Recommended for headless runners: stable 64-char hex secret.
@@ -38,7 +38,7 @@ jobs:
         shell: bash
         run: npm install -g @anthropic-ai/claude-code
 
-      - name: Import recent review memory
+      - name: Import recent review history into rules
         shell: bash
         run: |
           if [ -n "${DIFFLORE_MASTER_KEY_SECRET:-}" ]; then

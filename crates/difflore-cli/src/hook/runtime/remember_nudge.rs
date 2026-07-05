@@ -1,6 +1,6 @@
 use crate::hook::adapters::types::HookResult;
 
-const REMEMBER_NUDGE: &str = "DiffLore memory nudge: the user explicitly asked for this to be remembered. Consider turning it into a candidate preference/rule through the existing memory flow; do not silently persist sensitive or one-off data.";
+const REMEMBER_NUDGE: &str = "DiffLore rules nudge: the user explicitly asked for this to be remembered. Consider turning it into a candidate rule via remember_rule / the existing rules flow; do not silently persist sensitive or one-off data.";
 
 const ENGLISH_POSITIVE_PHRASES: &[&str] = &[
     "remember this",
@@ -131,7 +131,7 @@ mod tests {
             value["hookSpecificOutput"]["additionalContext"]
                 .as_str()
                 .expect("additional context")
-                .contains("candidate preference/rule")
+                .contains("candidate rule")
         );
     }
 }
