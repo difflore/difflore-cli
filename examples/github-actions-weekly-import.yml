@@ -1,0 +1,85 @@
+# .github/workflows/difflore-weekly-import.yml - copy into your repo
+name: DiffLore Weekly Import
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  import-review-rules:
+    runs-on: ubuntu-latest
+    env:
+      # Recommended for headless runners: stable 64-char hex secret.
+      DIFFLORE_MASTER_KEY_SECRET: ${{ secrets.DIFFLORE_MASTER_KEY }}
+      IMPORT_DAYS: "7"
+      MAX_PRS: "75"
+      GH_TOKEN: ${{ github.token }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DIFFLORE_CLOUD_TOKEN: ${{ secrets.DIFFLORE_CLOUD_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install DiffLore
+        shell: bash
+        run: |
+          curl -fsSL https://difflore.dev/install.sh | sh
+          echo "$HOME/.difflore/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.difflore/bin:$PATH"
+          difflore --version
+
+      - name: Install Claude Code
+        shell: bash
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Import recent review history into rules
+        shell: bash
+        run: |
+          if [ -n "${DIFFLORE_MASTER_KEY_SECRET:-}" ]; then
+            export DIFFLORE_MASTER_KEY="$DIFFLORE_MASTER_KEY_SECRET"
+          fi
+          SINCE="$(date -u -d "${IMPORT_DAYS} days ago" +%F)"
+          difflore import-reviews \
+            --provider github \
+            --repo "${GITHUB_REPOSITORY}" \
+            --distill local-agent \
+            --since "${SINCE}" \
+            --max-prs "${MAX_PRS}" \
+            --json | tee difflore-import.json
+
+      - name: Push approved local rule changes
+        shell: bash
+        run: |
+          if [ -n "${DIFFLORE_MASTER_KEY_SECRET:-}" ]; then
+            export DIFFLORE_MASTER_KEY="$DIFFLORE_MASTER_KEY_SECRET"
+          fi
+          if [ -n "${DIFFLORE_CLOUD_TOKEN:-}" ]; then
+            difflore cloud sync --push
+          else
+            echo "::notice::DIFFLORE_CLOUD_TOKEN is not set; keeping imported candidates local to this runner"
+          fi
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## DiffLore weekly import"
+            echo
+            if [ -f difflore-import.json ]; then
+              jq -r '
+                "- PRs fetched: " + ((.prsFetched // 0) | tostring),
+                "- Comments imported: " + ((.commentsImported // 0) | tostring),
+                "- Candidates pending: " + ((.localCandidates.candidatesPending // 0) | tostring),
+                "- Distill mode: " + (.localCandidates.distill // "none")
+              ' difflore-import.json
+            else
+              echo "- Import did not produce a JSON report; see job log."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

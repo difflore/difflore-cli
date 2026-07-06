@@ -21,7 +21,7 @@ use super::trust_proof::{RuleTrustMap, format_trust_evidence};
 /// differ between the MCP tool (`❌ Bad:` / `✅ Good:`) and the hook (`- Bad:` /
 /// `- Good:`), so those are parameterised rather than baked in.
 pub(crate) struct RuleBlockArgs<'a> {
-    /// 1-based memory number shown in the `## Memory {n}:` header, resolved by
+    /// 1-based rule number shown in the `## Rule {n}:` header, resolved by
     /// the caller (tool: enumerate index; hook: budget-gated `injected + 1`).
     pub position: usize,
     /// Rank-relative score (`rule.score / max_score`, or `0.0`), computed by
@@ -44,7 +44,7 @@ pub(crate) struct RuleBlockArgs<'a> {
 }
 
 /// Render one rule's product-facing block: the title-in-header attribution
-/// line (`## Memory N [df:N-fp]: <title> ← learned from <repo> (rank score:
+/// line (`## Rule N [df:N-fp]: <title> ← learned from <repo> (rank score:
 /// … · raw: …)`), an optional cloud `Proof:` line, the rule body, and any
 /// captured `### Examples`, terminated by the `\n---\n\n` separator.
 pub(crate) fn render_rule_block(args: &RuleBlockArgs<'_>) -> String {
@@ -82,11 +82,11 @@ pub(crate) fn render_rule_block(args: &RuleBlockArgs<'_>) -> String {
         .unwrap_or_default();
     // whyRanked: surface the arbitration facts (path hint / score band /
     // source priority) on the same header line the agent already reads, so
-    // citing a memory carries its ranking justification for free.
+    // citing a rule carries its ranking justification for free.
     let why_seg = why.map(|w| format!(" | why: {w}")).unwrap_or_default();
     let citation_token = memory_citation_token(position, &rule.skill_id);
     let mut text = format!(
-        "## Memory {} [{}]: {}{} (rank score: {:.2} | raw: {:.3}{})\n\n",
+        "## Rule {} [{}]: {}{} (rank score: {:.2} | raw: {:.3}{})\n\n",
         position, citation_token, title, source_seg, rel, rule.score, why_seg
     );
     if let Some(proof) = trust_evidence.get(&rule.skill_id)
@@ -157,7 +157,7 @@ fn render_safety_notes(content: &str) -> Option<String> {
         notes.push("Markup guardrail: do not reuse a full Markdown link as a URL destination; extract the raw URL and render simple valid syntax.");
     }
     if has_named_api_reference(&lower) {
-        notes.push("Completeness guardrail: if applying an API named by this memory, include the required imports/setup and keep the snippet compile-complete.");
+        notes.push("Completeness guardrail: if applying an API named by this rule, include the required imports/setup and keep the snippet compile-complete.");
     }
     if contains_any(
         &lower,
@@ -188,7 +188,7 @@ fn render_safety_notes(content: &str) -> Option<String> {
             "command convention",
         ],
     ) {
-        notes.push("Enforcement guardrail: if the memory prefers tests/lint/static assertions, satisfy it with static validation; do not expand runtime wrappers, telemetry hooks, or command execution paths unless the task explicitly asks.");
+        notes.push("Enforcement guardrail: if the rule prefers tests/lint/static assertions, satisfy it with static validation; do not expand runtime wrappers, telemetry hooks, or command execution paths unless the task explicitly asks.");
     }
     if contains_any(
         &lower,
@@ -387,7 +387,7 @@ mod tests {
         let with_why = render(Some("path-hint; band 9/10; source manual"));
         let header = with_why.lines().next().expect("header line");
         assert!(
-            header.starts_with("## Memory 1 [df:1-"),
+            header.starts_with("## Rule 1 [df:1-"),
             "header must carry stable citation token: {header}"
         );
         assert!(

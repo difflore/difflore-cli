@@ -202,6 +202,7 @@ async fn retrieve_and_gate_rules(
             lexical_query: Some(intent),
             top_k: candidate_limit,
             target_file,
+            target_scope: None,
             repo_scopes,
             confidence_map: ranking_inputs.confidence_map.as_ref(),
             age_days_map: ranking_inputs.age_days_map.as_ref(),
@@ -229,6 +230,7 @@ async fn retrieve_and_gate_rules(
                 lexical_query: None,
                 top_k: candidate_limit,
                 target_file,
+                target_scope: None,
                 repo_scopes,
                 confidence_map: ranking_inputs.confidence_map.as_ref(),
                 age_days_map: ranking_inputs.age_days_map.as_ref(),
@@ -472,9 +474,9 @@ const fn empty_recall_message(
     retry_kind: Option<&'static str>,
 ) -> &'static str {
     if repo_scopes.is_empty() {
-        "No GitHub repo scope detected. Run inside a GitHub repo or pass repo_full_name; DiffLore will not inject global memory without a repo scope."
+        "No GitHub repo scope detected. Run inside a GitHub repo or pass repo_full_name; DiffLore will not inject global rules without a repo scope."
     } else if no_current_repo_rules(repo_scopes, rules_indexed) {
-        "No rules are scoped to THIS repo yet, so DiffLore served nothing as team memory. Run `difflore import-reviews` for this repo, or pass an explicit repo_full_name if this is not the repo you meant."
+        "No rules are scoped to THIS repo yet, so DiffLore served nothing as team rules. Run `difflore import-reviews` for this repo, or pass an explicit repo_full_name if this is not the repo you meant."
     } else if retry_kind.is_some() {
         "No rules found after a targeted retry. Pass a concrete file and intent, or add/import rules for this repo."
     } else {
@@ -577,6 +579,7 @@ async fn build_results_response(
             id: meta.id.clone(),
             title: meta.name.clone(),
             origin: meta.origin.clone(),
+            source_kind: meta.source_kind.clone(),
             confidence: meta.confidence_score,
             similarity: public_relevance_score(s.score),
             file_patterns,
@@ -611,6 +614,7 @@ async fn build_results_response(
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned);
             let source_repo = object.get("sourceRepo").cloned().unwrap_or(Value::Null);
+            let source_kind = object.get("sourceKind").cloned().unwrap_or(Value::Null);
             let source_rank = id
                 .as_deref()
                 .and_then(|id| source_rank_by_id.get(id).copied())
@@ -620,6 +624,7 @@ async fn build_results_response(
                 "sourceProvenance".to_owned(),
                 json!({
                     "origin": origin,
+                    "sourceKind": source_kind,
                     "sourceRepo": source_repo,
                     "sourceRank": source_rank,
                 }),
@@ -702,8 +707,15 @@ async fn build_results_response(
             intent_summary: format!("{file} | {intent}"),
         },
     );
-    // Estimate savings against fetching each full rule body.
-    let tokens_if_full = Some(AVG_FULL_RULE_TOKENS * entries.len());
+    // Estimate savings against the full-detail alternative: the same index
+    // response, but with each rule's full body embedded in place of its
+    // compact preview. Computed as an additive delta so the comparison stays
+    // valid however large the per-entry index metadata grows.
+    let full_body_extra: usize = entries
+        .iter()
+        .map(|e| AVG_FULL_RULE_TOKENS.saturating_sub(estimate_tokens(&e.preview)))
+        .sum();
+    let tokens_if_full = Some(tokens_used + full_body_extra);
 
     emit_trajectory_step(&TrajectoryStep::McpResponseSize {
         tool: "search_rules".to_owned(),

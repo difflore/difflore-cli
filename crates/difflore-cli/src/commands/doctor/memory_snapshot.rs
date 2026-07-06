@@ -9,7 +9,6 @@
 
 use crate::style;
 use crate::support::proven_rule::{ProvenRuleRank, fetch_rule_metadata_for_ids};
-use crate::support::util::format_recall_edit_proof_breakdown;
 use difflore_core::cloud::observations::ObservationUploadIssue;
 use std::collections::BTreeMap;
 
@@ -482,7 +481,7 @@ async fn fetch_agent_citation_proof() -> Option<AgentCitationProof> {
 
 fn agent_citation_line(proof: &AgentCitationProof) -> String {
     let mut line = format!(
-        "{} actual citation{} · {} memory fire{} in 7d",
+        "{} actual citation{} · {} rule fire{} in 7d",
         proof.actual_citations,
         if proof.actual_citations == 1 { "" } else { "s" },
         proof.rule_fires,
@@ -539,7 +538,7 @@ pub(crate) fn render(snapshot: &MemorySnapshot) -> String {
     const LABEL_W: usize = 10;
     let mut out = String::new();
     out.push('\n');
-    out.push_str(&format!("  {}\n", style::pewter("Memory snapshot")));
+    out.push_str(&format!("  {}\n", style::pewter("Rules snapshot")));
 
     // Up to 3 repos inline; collapse the rest into `+N more`.
     let repos_line = if snapshot.top_repos.is_empty() {
@@ -595,11 +594,10 @@ pub(crate) fn render(snapshot: &MemorySnapshot) -> String {
                 format!("  {}", style::pewter(&format!("\u{2190} from {r}")))
             });
             out.push_str(&format!(
-                "  {:<width$} {} {}  {}{suffix}\n",
+                "  {:<width$} {} {}{suffix}\n",
                 style::pewter(label),
                 style::pewter("\u{00b7}"),
                 rule.name,
-                style::pewter(&accepted_proof_label(rule)),
                 width = LABEL_W,
             ));
             let try_label = if i == 0 { "try" } else { "" };
@@ -628,56 +626,6 @@ pub(crate) fn render(snapshot: &MemorySnapshot) -> String {
         }
     }
     out
-}
-
-fn accepted_proof_label(rule: &ProvenRule) -> String {
-    if rule.accepted_hook_outcomes <= 0 {
-        return format!(
-            "{} accepted {}",
-            rule.accepted_count,
-            fix_noun(rule.accepted_count)
-        );
-    }
-
-    let mut detail = Vec::new();
-    if rule.accepted_fix_proofs > 0 {
-        detail.push(format!(
-            "{} signed local {}",
-            rule.accepted_fix_proofs,
-            fix_noun(rule.accepted_fix_proofs)
-        ));
-    }
-    detail.push(format!(
-        "{} agent/hook outcome{}",
-        rule.accepted_hook_outcomes,
-        if rule.accepted_hook_outcomes == 1 {
-            ""
-        } else {
-            "s"
-        }
-    ));
-    if rule.accepted_hook_outcomes_linked_to_prior_recall > 0 {
-        detail.push(format!(
-            "{} linked to prior memory recall{}",
-            rule.accepted_hook_outcomes_linked_to_prior_recall,
-            format_recall_edit_proof_breakdown(
-                rule.accepted_hook_outcomes_linked_to_rule_recall,
-                rule.accepted_hook_outcomes_linked_to_mcp_rule_serve,
-                rule.accepted_hook_outcomes_linked_to_edit_attribution,
-            )
-        ));
-    }
-
-    format!(
-        "{} accepted outcome{} ({})",
-        rule.accepted_count,
-        if rule.accepted_count == 1 { "" } else { "s" },
-        detail.join(" + ")
-    )
-}
-
-const fn fix_noun(count: i64) -> &'static str {
-    if count == 1 { "fix" } else { "fixes" }
 }
 
 #[cfg(test)]
@@ -826,7 +774,7 @@ mod tests {
         assert_eq!(snap.recent[0].source_repo.as_deref(), Some("gin-gonic/gin"));
 
         let rendered = render(&snap);
-        assert!(rendered.contains("Memory snapshot"));
+        assert!(rendered.contains("Rules snapshot"));
         assert!(rendered.contains("gin-gonic/gin (3)"));
         assert!(rendered.contains("vitejs/vite (2)"));
         assert!(rendered.contains("Return 413 for body size limit errors"));
@@ -917,7 +865,7 @@ mod tests {
         let rendered = render(&snap);
         assert!(rendered.contains("proven"));
         assert!(rendered.contains("Return 413 for body size limit errors"));
-        assert!(rendered.contains("2 accepted fixes"));
+        assert!(!rendered.contains("2 accepted fixes"));
         assert!(
             rendered.contains(
                 "difflore recall \"Return 413 for body size limit errors\" --file \"a_newer.go\" --top-k 3"
@@ -981,9 +929,13 @@ mod tests {
             proven,
             ..MemorySnapshot::default()
         });
-        assert!(rendered.contains("2 accepted outcomes"));
-        assert!(rendered.contains("2 agent/hook outcomes"));
-        assert!(rendered.contains("1 linked to prior memory recall (1 agent recall)"));
+        assert!(rendered.contains("Prefer structured API parsing"));
+        assert!(rendered.contains(
+            "difflore recall \"Prefer structured API parsing\" --file \"src/parser.rs\" --top-k 3"
+        ));
+        assert!(!rendered.contains("2 accepted outcomes"));
+        assert!(!rendered.contains("2 agent/hook outcomes"));
+        assert!(!rendered.contains("1 linked to prior rule recall (1 agent recall)"));
         assert!(!rendered.contains("difflore rules explain"));
     }
 
@@ -1004,7 +956,7 @@ mod tests {
 
         assert!(rendered.contains("agent"));
         assert!(rendered.contains("1 actual citation"));
-        assert!(rendered.contains("3 memory fires in 7d"));
+        assert!(rendered.contains("3 rule fires in 7d"));
         assert!(rendered.contains("1 pending upload"));
         assert!(rendered.contains("activity queued safely"));
         assert!(rendered.contains("refresh login once"));

@@ -28,5 +28,5 @@ If none apply cleanly, say "borderline match" — never fabricate a reason.
 - Don't explain in ML abstractions — cite "line X matches glob Y".
 - Don't dismiss a dispute with "the rule is always right." If the user says it
   doesn't apply, they're probably right — check `rule_timeline`; if confirmed
-  bad, say it should be removed via the team memory admin path.
+  bad, say it should be removed via the team rule admin path.
 - Don't walk the whole retrieval stack unless asked.

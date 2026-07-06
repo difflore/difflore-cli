@@ -16,6 +16,7 @@ pub(super) struct LocalRuleUploadRow {
     pub(super) check_prompt: Option<String>,
     pub(super) file_patterns_json: Option<String>,
     pub(super) origin: String,
+    pub(super) source_kind: String,
     pub(super) source_repo: Option<String>,
 }
 

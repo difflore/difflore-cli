@@ -31,6 +31,8 @@ pub struct RuleRenderInput<'a> {
     pub r#type: &'a str,
     pub confidence: f64,
     pub origin: &'a str,
+    /// Review-source bucket (`human`, `bot:<name>`, `human_override_bot`).
+    pub source_kind: &'a str,
     /// `owner/repo` attribution column, if any.
     pub source_repo: Option<&'a str>,
     /// Already-parsed `file_patterns` (use [`crate::mcp_server::tools::evidence::parse_file_patterns`]
@@ -380,10 +382,11 @@ pub fn render_code_spec(input: &RuleRenderInput<'_>) -> String {
         .map(|s| format!(" <- learned from {s}"))
         .unwrap_or_default();
     out.push_str(&format!(
-        "Type: {} | Confidence: {:.2} | Origin: {}{}\n",
+        "Type: {} | Confidence: {:.2} | Origin: {} | Source kind: {}{}\n",
         input.r#type,
         input.confidence,
         origin_label(input.origin),
+        input.source_kind,
         learned_from,
     ));
 
@@ -424,6 +427,7 @@ pub fn render_code_spec(input: &RuleRenderInput<'_>) -> String {
 /// query to rank against).
 pub struct RuleExportRenderInput<'a> {
     pub name: &'a str,
+    pub source_kind: &'a str,
     /// Canonical lower-cased `owner/repo` the rule was learned from.
     pub repo_scope: Option<&'a str>,
     /// Rule body prose, normalized for legacy path-prefixed review rules.
@@ -444,6 +448,7 @@ pub fn render_rule_export(input: &RuleExportRenderInput<'_>) -> String {
         .map(|scope| format!(" \u{2190} learned from {scope}"))
         .unwrap_or_default();
     let mut out = format!("## {}{learned}\n\n", input.name);
+    out.push_str(&format!("Review source: {}\n\n", input.source_kind));
 
     let parsed = parse_candidate_drafted_rule(input.description);
     let normalized;
@@ -649,6 +654,7 @@ mod tests {
             r#type: "review_standard",
             confidence: 0.82,
             origin: "pr_review",
+            source_kind: "human",
             source_repo: Some("vitejs/vite"),
             file_patterns: &["packages/vite/src/**/*.ts".to_owned()],
             description: "Rule:\nWhen touching `packages/vite/src`, never unwrap resolve results.\n\nSource evidence:\nSource: vitejs/vite#42\nComment: https://example.com/pr/42#c\nFile: resolve.ts\n\nReviewer said:\nPlease return a structured error.",
@@ -681,6 +687,7 @@ mod tests {
             r#type: "review_standard",
             confidence: 0.5,
             origin: "conversation",
+            source_kind: "human",
             source_repo: None,
             file_patterns: &[],
             description: "Keep request handlers thin and push logic into services.",
@@ -708,6 +715,7 @@ mod tests {
             r#type: "review_standard",
             confidence: 0.9,
             origin: "team",
+            source_kind: "human",
             source_repo: None,
             file_patterns: &["src/webhooks/**/*.ts".to_owned()],
             description: "Always verify the HMAC signature before processing a webhook.",
@@ -731,6 +739,7 @@ mod tests {
         )];
         let body = render_rule_export(&RuleExportRenderInput {
             name: "Return 413 for body size limit errors",
+            source_kind: "bot:bito-code-review[bot]",
             repo_scope: Some("acme/widgets"),
             description: "When binding fails with MaxBytesError, return HTTP 413.",
             check_prompt: Some("Did you map MaxBytesError to 413?"),
@@ -740,6 +749,7 @@ mod tests {
             "## Return 413 for body size limit errors \u{2190} learned from acme/widgets\n"
         ));
         assert!(body.contains("When binding fails with MaxBytesError, return HTTP 413."));
+        assert!(body.contains("Review source: bot:bito-code-review[bot]"));
         assert!(body.contains("**Check prompt:** Did you map MaxBytesError to 413?"));
         assert!(body.contains("\u{274c} Bad:"));
         assert!(body.contains("\u{2705} Good:"));
@@ -753,6 +763,7 @@ mod tests {
     fn export_render_minimal_rule_omits_empty_sections() {
         let body = render_rule_export(&RuleExportRenderInput {
             name: "Keep handlers thin",
+            source_kind: "human",
             repo_scope: None,
             description: "Keep request handlers thin and push logic into services.",
             check_prompt: None,
@@ -768,6 +779,7 @@ mod tests {
     fn export_render_normalizes_legacy_path_prefixed_rule() {
         let body = render_rule_export(&RuleExportRenderInput {
             name: "Use stable waits",
+            source_kind: "human",
             repo_scope: Some("tanstack/router"),
             description: "Rule:\nWhen touching `packages/router/**/*.ts`, prefer stable waits.\n\nSource evidence:\nSource: tanstack/router#42",
             check_prompt: None,

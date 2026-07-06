@@ -1,0 +1,33 @@
+# Add this job to .gitlab-ci.yml. DiffLore runs inside your own runner:
+# no GitHub App, no webhook, and no DiffLore-hosted code access.
+# Recommended for headless runners: set DIFFLORE_MASTER_KEY to a stable
+# 64-character hex secret so provider/cloud metadata never waits on OS keyring.
+difflore-review:
+  image: node:22
+  stage: test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - curl -fsSL https://difflore.dev/install.sh | sh
+    - export PATH="$HOME/.difflore/bin:$PATH"
+    - npm install -g @anthropic-ai/claude-code
+    - |
+      if [ -n "${DIFFLORE_CLOUD_TOKEN:-}" ]; then
+        difflore cloud sync --pull
+      else
+        echo "no DIFFLORE_CLOUD_TOKEN; relying on committed export files (CLAUDE.md/AGENTS.md/.cursor/rules/*.mdc)"
+      fi
+    - git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+    - git reset --soft "$(git merge-base HEAD "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME")"
+    - difflore providers add --tool claude
+    - difflore providers set-active claude-cli
+    - difflore review --ci --json --diff staged | tee difflore-review.json
+  artifacts:
+    when: always
+    paths: [difflore-review.json]
+# Requires CI/CD variable: ANTHROPIC_API_KEY (masked); the npm step installs
+# Claude Code CLI for `difflore providers add --tool claude`.
+# Optional: DIFFLORE_CLOUD_TOKEN for the shared team rule set; DIFFLORE_MASTER_KEY
+# for stable non-interactive secret storage.

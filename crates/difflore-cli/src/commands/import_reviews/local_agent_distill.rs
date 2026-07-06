@@ -9,8 +9,9 @@ use sqlx::SqlitePool;
 use crate::agent_exec::{AgentKind, GateResult, dispatch_gate};
 
 use super::local_candidates::{
-    CAPTURE_CONFIDENCE_LOW, CaptureRoute, LocalCandidateProgress, clean_review_comment,
-    local_candidate_budget_reached, local_candidate_dedupe_signature, local_candidate_input,
+    CAPTURE_CONFIDENCE_LOW, CaptureRoute, LocalCandidateProgress, ReviewSourceKind,
+    clean_review_comment, local_candidate_budget_reached, local_candidate_dedupe_signature,
+    local_candidate_input,
 };
 
 const LOCAL_AGENT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(45);
@@ -54,6 +55,7 @@ struct DistillSeed {
     index: usize,
     input: RememberRuleInput,
     source_evidence: String,
+    source_kind: ReviewSourceKind,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -152,6 +154,7 @@ fn collect_distill_seeds(
                 index: next_index,
                 input: local_candidate.input,
                 source_evidence,
+                source_kind: local_candidate.source_kind,
             });
             next_index += 1;
             if seeds.len() >= max_candidates.min(LOCAL_AGENT_PROMPT_MAX_SEEDS) {
@@ -170,7 +173,9 @@ fn build_distill_prompt(seeds: &[DistillSeed]) -> String {
          Use only the supplied review evidence. Keep reusable, non-obvious coding rules.\n\
          Improve wording and merge away duplicates, but do not invent facts.\n\
          A SOURCE_INDEX may contain a whole review thread; if it contains multiple independent findings, emit multiple candidates with the same source_index.\n\
-         Prefer tight file_patterns and set confidence from 0.40 to 0.90 based on how directly the thread supports the rule; use 0.82+ only for evidence you would safely activate as local memory.\n\
+         Titles must be generalized imperative rules, not copied review comments.\n\
+         Never prefix titles with \"Review:\", \"Review rule for\", or \"Rule from review\".\n\
+         Prefer tight file_patterns and set confidence from 0.40 to 0.90 based on how directly the thread supports the rule; use 0.82+ only for evidence you would safely activate as local rules.\n\
          Return STRICT JSON only, no markdown:\n\
          {\"candidates\":[{\"source_index\":1,\"title\":\"...\",\"body\":\"Rule:\\n...\\n\\nSource evidence:\\n...\",\"confidence\":0.72,\"file_patterns\":[\"src/**/*.ts\"]}]}\n\
          If nothing is reusable, return {\"candidates\":[]}; the CLI will fall back to deterministic heuristics.\n\n",
@@ -187,6 +192,7 @@ fn build_distill_prompt(seeds: &[DistillSeed]) -> String {
                 .map_or_else(|| "(none)".to_owned(), |patterns| patterns.join(", ")),
             truncate_chars(&seed.input.body, 2_000),
         ));
+        out.push_str(&format!("SOURCE_KIND: {}\n", seed.source_kind.wire_label()));
         out.push_str(&format!(
             "THREAD_SOURCE_EVIDENCE:\n{}\n",
             truncate_chars(
@@ -271,12 +277,13 @@ async fn write_agent_candidates(
             progress.capped = true;
             break;
         }
-        let Some(input) = input_from_agent_candidate(&candidate, seeds) else {
+        let Some(resolution) = seed_for_agent_candidate(&candidate, seeds) else {
             progress.comments_skipped += 1;
             continue;
         };
+        let input = input_from_agent_candidate_with_seed(&candidate, resolution.seed);
         let confidence = candidate_confidence(&candidate);
-        let route = candidate_route(&candidate);
+        let (route, source_kind) = agent_candidate_gate(&candidate, &resolution, seeds);
         if route == CaptureRoute::Drop {
             progress.comments_skipped += 1;
             continue;
@@ -301,11 +308,12 @@ async fn write_agent_candidates(
         }
         seen_candidate_signatures.insert(signature);
 
-        match difflore_core::skills::remember_as_candidate_with_confidence_for_repo(
+        match difflore_core::skills::remember_as_candidate_with_confidence_for_repo_and_source_kind(
             db,
             input,
             confidence,
             source_repo,
+            Some(&source_kind.wire_label()),
         )
         .await
         {
@@ -324,7 +332,7 @@ async fn write_agent_candidates(
                                     .await
                             {
                                 return Err(distill_error(format!(
-                                    "failed to activate local-agent memory: {e}"
+                                    "failed to activate local-agent rules: {e}"
                                 )));
                             }
                             progress.candidates_activated += 1;
@@ -339,25 +347,91 @@ async fn write_agent_candidates(
                     progress.candidates_created += 1;
                 }
             }
-            Err(e) => return Err(distill_error(format!("failed to create local memory: {e}"))),
+            Err(e) => return Err(distill_error(format!("failed to create local rules: {e}"))),
         }
     }
     Ok(())
 }
 
+#[cfg(test)]
 fn input_from_agent_candidate(
     candidate: &AgentDistillCandidate,
     seeds: &[DistillSeed],
 ) -> Option<RememberRuleInput> {
-    let seed = candidate
+    let resolution = seed_for_agent_candidate(candidate, seeds)?;
+    Some(input_from_agent_candidate_with_seed(
+        candidate,
+        resolution.seed,
+    ))
+}
+
+/// A seed matched to an agent candidate, plus whether the agent's
+/// `source_index` actually resolved to that seed. Unresolved candidates keep
+/// the first seed for display/evidence attribution only — they must never be
+/// trusted for auto-activation, because the true source (possibly a bot) is
+/// unknown.
+struct SeedResolution<'a> {
+    seed: &'a DistillSeed,
+    resolved: bool,
+}
+
+fn seed_for_agent_candidate<'a>(
+    candidate: &AgentDistillCandidate,
+    seeds: &'a [DistillSeed],
+) -> Option<SeedResolution<'a>> {
+    if let Some(seed) = candidate
         .source_index
         .and_then(|idx| seeds.iter().find(|seed| seed.index == idx))
-        .or_else(|| seeds.first())?;
+    {
+        return Some(SeedResolution {
+            seed,
+            resolved: true,
+        });
+    }
+    seeds.first().map(|seed| SeedResolution {
+        seed,
+        resolved: false,
+    })
+}
+
+/// Trust gate for one agent candidate: the capture route plus the
+/// `source_kind` to persist. Fail-closed on an unresolved `source_index`:
+/// attribution cannot be verified, so the candidate inherits the most
+/// conservative source_kind in the batch (any bot seed poisons the fallback)
+/// and is never eligible for auto-activation.
+fn agent_candidate_gate(
+    candidate: &AgentDistillCandidate,
+    resolution: &SeedResolution<'_>,
+    seeds: &[DistillSeed],
+) -> (CaptureRoute, ReviewSourceKind) {
+    let source_kind = if resolution.resolved {
+        resolution.seed.source_kind.clone()
+    } else {
+        seeds
+            .iter()
+            .map(|seed| &seed.source_kind)
+            .find(|kind| kind.requires_human_validation())
+            .cloned()
+            .unwrap_or_else(|| resolution.seed.source_kind.clone())
+    };
+    let route = candidate_route_for_source(candidate, &source_kind);
+    let route = if route == CaptureRoute::Active && !resolution.resolved {
+        CaptureRoute::Candidate
+    } else {
+        route
+    };
+    (route, source_kind)
+}
+
+fn input_from_agent_candidate_with_seed(
+    candidate: &AgentDistillCandidate,
+    seed: &DistillSeed,
+) -> RememberRuleInput {
     let title = candidate
         .title
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty() && !is_raw_review_title(s))
         .unwrap_or_else(|| fallback_title_for_seed(seed));
     let body = candidate
         .body
@@ -368,7 +442,7 @@ fn input_from_agent_candidate(
     let file_patterns = sanitized_file_patterns(&candidate.file_patterns)
         .or_else(|| seed.input.file_patterns.clone());
 
-    Some(RememberRuleInput {
+    RememberRuleInput {
         title: difflore_core::observability::privacy::redact_secrets(&truncate_chars(title, 180)),
         body: difflore_core::observability::privacy::redact_secrets(&body_with_source_evidence(
             body,
@@ -382,16 +456,28 @@ fn input_from_agent_candidate(
         category: None,
         origin: Some("pr_review".to_owned()),
         captured_by_client: Some("import-reviews:local-agent".to_owned()),
-    })
+    }
 }
 
 fn fallback_title_for_seed(seed: &DistillSeed) -> &str {
     let title = seed.input.title.trim();
-    if !title.is_empty() && !title.starts_with("Review:") {
+    if !title.is_empty() && !is_raw_review_title(title) {
         title
     } else {
         "Imported PR review rule"
     }
+}
+
+fn is_raw_review_title(title: &str) -> bool {
+    let normalized = title.trim().to_ascii_lowercase();
+    normalized.starts_with("review:")
+        || normalized.starts_with("review rule for ")
+        || normalized.starts_with("review rule from ")
+        || normalized.starts_with("rule from review")
+        || normalized
+            .strip_prefix("source ")
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(|ch| ch.is_ascii_digit())
 }
 
 const fn candidate_confidence(candidate: &AgentDistillCandidate) -> f32 {
@@ -402,9 +488,17 @@ const fn candidate_confidence(candidate: &AgentDistillCandidate) -> f32 {
     }
 }
 
+#[cfg(test)]
 fn candidate_route(candidate: &AgentDistillCandidate) -> CaptureRoute {
+    candidate_route_for_source(candidate, &ReviewSourceKind::Human)
+}
+
+fn candidate_route_for_source(
+    candidate: &AgentDistillCandidate,
+    source_kind: &ReviewSourceKind,
+) -> CaptureRoute {
     let confidence = candidate_confidence(candidate);
-    if confidence >= LOCAL_AGENT_ACTIVE_CONFIDENCE {
+    let route = if confidence >= LOCAL_AGENT_ACTIVE_CONFIDENCE {
         if has_distilled_title(candidate) {
             CaptureRoute::Active
         } else {
@@ -414,6 +508,11 @@ fn candidate_route(candidate: &AgentDistillCandidate) -> CaptureRoute {
         CaptureRoute::Candidate
     } else {
         CaptureRoute::Drop
+    };
+    if source_kind.requires_human_validation() && route == CaptureRoute::Active {
+        CaptureRoute::Candidate
+    } else {
+        route
     }
 }
 
@@ -422,7 +521,7 @@ fn has_distilled_title(candidate: &AgentDistillCandidate) -> bool {
         .title
         .as_deref()
         .map(str::trim)
-        .is_some_and(|title| !title.is_empty())
+        .is_some_and(|title| !title.is_empty() && !is_raw_review_title(title))
 }
 
 fn sanitized_file_patterns(patterns: &[String]) -> Option<Vec<String>> {
@@ -601,6 +700,7 @@ mod tests {
         DistillSeed {
             index,
             source_evidence: source_evidence.clone(),
+            source_kind: ReviewSourceKind::Human,
             input: RememberRuleInput {
                 title: "Review: validate API responses".to_owned(),
                 body: format!(
@@ -710,6 +810,26 @@ mod tests {
     }
 
     #[test]
+    fn raw_review_title_is_not_treated_as_distilled_rule() {
+        let seeds = vec![seed(1)];
+        let candidate = AgentDistillCandidate {
+            source_index: Some(1),
+            title: Some("Review: validate API responses".to_owned()),
+            body: Some("Rule:\nValidate API responses before deserializing.".to_owned()),
+            confidence: Some(LOCAL_AGENT_ACTIVE_CONFIDENCE),
+            file_patterns: vec!["src/**/*.ts".to_owned()],
+        };
+        let input = input_from_agent_candidate(&candidate, &seeds).expect("input");
+
+        assert_eq!(input.title, "Imported PR review rule");
+        assert_eq!(candidate_route(&candidate), CaptureRoute::Candidate);
+        assert!(is_raw_review_title("Review rule for src/api/client.ts"));
+        assert!(is_raw_review_title("Rule from review 7"));
+        assert!(is_raw_review_title("Source 3: Validate response payloads"));
+        assert!(!is_raw_review_title("Source maps should remain inline"));
+    }
+
+    #[test]
     fn candidate_confidence_defaults_and_rejects_weak_or_excessive_scores() {
         assert!(
             (candidate_confidence(&AgentDistillCandidate {
@@ -801,6 +921,155 @@ mod tests {
     }
 
     #[test]
+    fn high_confidence_agent_candidate_from_bot_source_stays_pending() {
+        let candidate = AgentDistillCandidate {
+            source_index: Some(1),
+            title: Some("Respect Jest lodash-es aliasing".to_owned()),
+            body: None,
+            confidence: Some(LOCAL_AGENT_ACTIVE_CONFIDENCE),
+            file_patterns: Vec::new(),
+        };
+        let bot_source = ReviewSourceKind::from_comment_author(Some("bito-code-review[bot]"));
+
+        assert_eq!(bot_source.wire_label(), "bot:bito-code-review[bot]");
+        assert_eq!(
+            candidate_route_for_source(&candidate, &bot_source),
+            CaptureRoute::Candidate
+        );
+        assert_eq!(
+            candidate_route_for_source(&candidate, &ReviewSourceKind::Human),
+            CaptureRoute::Active
+        );
+    }
+
+    fn bot_seed(index: usize) -> DistillSeed {
+        let mut seed = seed(index);
+        seed.source_kind = ReviewSourceKind::Bot("bito-code-review[bot]".to_owned());
+        seed
+    }
+
+    fn human_override_seed(index: usize) -> DistillSeed {
+        let mut seed = seed(index);
+        seed.source_kind = ReviewSourceKind::HumanOverrideBot;
+        seed
+    }
+
+    fn activation_level_candidate(source_index: Option<usize>) -> AgentDistillCandidate {
+        AgentDistillCandidate {
+            source_index,
+            title: Some("Validate API responses".to_owned()),
+            body: Some("Rule:\nValidate API responses before deserializing.".to_owned()),
+            confidence: Some(LOCAL_AGENT_ACTIVE_CONFIDENCE),
+            file_patterns: vec!["src/**/*.ts".to_owned()],
+        }
+    }
+
+    #[test]
+    fn unresolved_source_index_candidate_never_activates() {
+        // All seeds are human, so the old fail-open fallback would have
+        // inherited Human from seed #1 and auto-activated. Fail-closed: an
+        // unverifiable attribution must stay pending.
+        let seeds = vec![seed(1), seed(2)];
+        for source_index in [Some(99), None] {
+            let candidate = activation_level_candidate(source_index);
+            let resolution = seed_for_agent_candidate(&candidate, &seeds).expect("fallback seed");
+            assert!(!resolution.resolved);
+            let (route, source_kind) = agent_candidate_gate(&candidate, &resolution, &seeds);
+            assert_eq!(
+                route,
+                CaptureRoute::Candidate,
+                "unresolved source_index ({source_index:?}) must not auto-activate"
+            );
+            assert_eq!(source_kind, ReviewSourceKind::Human);
+        }
+
+        // Sanity: the same candidate with a resolving source_index still
+        // reaches the active gate, so the fail-closed path is not over-broad.
+        let candidate = activation_level_candidate(Some(1));
+        let resolution = seed_for_agent_candidate(&candidate, &seeds).expect("resolved seed");
+        assert!(resolution.resolved);
+        let (route, source_kind) = agent_candidate_gate(&candidate, &resolution, &seeds);
+        assert_eq!(route, CaptureRoute::Active);
+        assert_eq!(source_kind, ReviewSourceKind::Human);
+    }
+
+    #[test]
+    fn unresolved_source_index_inherits_most_conservative_batch_source_kind() {
+        // With any bot seed in the batch, an unresolvable candidate must be
+        // labelled as bot-sourced (the safest available attribution), not
+        // laundered as human via seeds.first().
+        let seeds = vec![seed(1), bot_seed(2)];
+        let candidate = activation_level_candidate(Some(99));
+        let resolution = seed_for_agent_candidate(&candidate, &seeds).expect("fallback seed");
+        assert!(!resolution.resolved);
+        let (route, source_kind) = agent_candidate_gate(&candidate, &resolution, &seeds);
+        assert_eq!(route, CaptureRoute::Candidate);
+        assert_eq!(source_kind.wire_label(), "bot:bito-code-review[bot]");
+    }
+
+    #[test]
+    fn high_confidence_agent_candidate_from_human_override_bot_stays_pending() {
+        let seeds = vec![human_override_seed(1)];
+        let candidate = activation_level_candidate(Some(1));
+        let resolution = seed_for_agent_candidate(&candidate, &seeds).expect("resolved seed");
+
+        let (route, source_kind) = agent_candidate_gate(&candidate, &resolution, &seeds);
+
+        assert_eq!(route, CaptureRoute::Candidate);
+        assert_eq!(source_kind, ReviewSourceKind::HumanOverrideBot);
+        assert_eq!(source_kind.wire_label(), "human_override_bot");
+    }
+
+    #[test]
+    fn unresolved_source_index_inherits_human_override_bot_source_kind() {
+        let seeds = vec![seed(1), human_override_seed(2)];
+        let candidate = activation_level_candidate(Some(99));
+        let resolution = seed_for_agent_candidate(&candidate, &seeds).expect("fallback seed");
+
+        let (route, source_kind) = agent_candidate_gate(&candidate, &resolution, &seeds);
+
+        assert_eq!(route, CaptureRoute::Candidate);
+        assert_eq!(source_kind, ReviewSourceKind::HumanOverrideBot);
+    }
+
+    #[tokio::test]
+    async fn write_agent_candidates_keeps_bot_sourced_activation_confidence_pending() {
+        // End-to-end over the local-agent persistence path (mirrors the
+        // heuristic-path regression test in mod.rs): a bot-sourced seed at
+        // activation-level confidence must persist as a pending draft carrying
+        // the bot source_kind, never as an active rule.
+        let db = super::super::fixtures::fresh_import_pool().await;
+        let source_repo = RepoScope::canonical("acme/api").expect("scope");
+        let seeds = vec![bot_seed(1)];
+        let candidates = vec![activation_level_candidate(Some(1))];
+        let mut progress = LocalCandidateProgress {
+            budget: 5,
+            ..LocalCandidateProgress::default()
+        };
+
+        write_agent_candidates(&db, &source_repo, &seeds, candidates, &mut progress)
+            .await
+            .expect("write agent candidates");
+
+        assert_eq!(progress.candidates_created, 1);
+        assert_eq!(
+            progress.candidates_activated, 0,
+            "bot-sourced distilled rules must never auto-activate"
+        );
+        assert_eq!(progress.candidates_pending, 1);
+        let status: String = sqlx::query_scalar("SELECT status FROM skills")
+            .fetch_one(&db)
+            .await
+            .expect("persisted skill status");
+        assert_eq!(status, "pending");
+        let memories = difflore_core::skills::list_candidates(&db, None, None)
+            .await
+            .expect("list pending memories");
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].source_kind, "bot:bito-code-review[bot]");
+    }
+
+    #[test]
     fn collect_distill_seeds_keeps_whole_thread_as_source_evidence() {
         let item = ReviewItemWithComments {
             item: review_store::ReviewItemRecord {
@@ -869,7 +1138,9 @@ mod tests {
 
         let prompt = build_distill_prompt(&seeds);
         assert!(prompt.contains("THREAD_SOURCE_EVIDENCE:"));
+        assert!(prompt.contains("SOURCE_KIND: human"));
         assert!(prompt.contains("left no-content responses"));
+        assert!(prompt.contains("Never prefix titles with \"Review:\""));
     }
 
     #[test]

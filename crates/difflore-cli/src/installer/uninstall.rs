@@ -208,7 +208,7 @@ pub fn uninstall_all(dry_run: bool) {
         );
     } else {
         println!(
-            "{} restart/reload any open agents so they drop the DiffLore memory server.",
+            "{} restart/reload any open agents so they drop the DiffLore rules MCP server.",
             style::emerald(sym::TIP),
         );
         println!(

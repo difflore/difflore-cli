@@ -8,7 +8,7 @@ use crate::memory_inbox::{
     load_memory_activity, load_memory_inbox, load_memory_items,
 };
 
-const MEMORY_OVERVIEW_SCHEMA_VERSION: &str = "memory-overview.v1";
+const MEMORY_OVERVIEW_SCHEMA_VERSION: &str = "rules-overview.v1";
 const DEFAULT_LATEST_LIMIT: usize = 5;
 const MAX_LATEST_LIMIT: usize = 1_000;
 const DEFAULT_ACTIVITY_DAYS: i64 = 30;
@@ -75,6 +75,7 @@ pub struct OverviewRule {
     pub rule_id: String,
     pub title: String,
     pub origin: String,
+    pub source_kind: String,
     pub source_repo: Option<String>,
     pub file_patterns: Vec<String>,
     pub updated_at: String,
@@ -87,6 +88,7 @@ pub struct OverviewReviewItem {
     pub kind: String,
     pub title: String,
     pub origin: Option<String>,
+    pub source_kind: Option<String>,
     pub source_repo: Option<String>,
     pub file_patterns: Vec<String>,
     pub updated_at: Option<String>,
@@ -232,6 +234,7 @@ impl OverviewRule {
             rule_id: rule.id.clone(),
             title: rule.name.clone(),
             origin: rule.origin.clone(),
+            source_kind: rule.source_kind.clone(),
             source_repo: rule.source_repo.clone(),
             file_patterns: rule.file_patterns.clone(),
             updated_at: rule.updated_at.clone(),
@@ -246,6 +249,7 @@ impl OverviewReviewItem {
             kind: item.kind,
             title: item.title,
             origin: item.origin,
+            source_kind: item.source_kind,
             source_repo: item.source_repo,
             file_patterns: item.file_patterns,
             updated_at: item.updated_at,
@@ -279,7 +283,7 @@ async fn load_paused_overview(pool: &SqlitePool, latest_limit: usize) -> Result<
             .fetch_one(pool)
             .await?;
     let rows = sqlx::query(
-        "SELECT id, name, origin, source_repo, file_patterns, \
+        "SELECT id, name, origin, source_kind, source_repo, file_patterns, \
                 COALESCE(updated_at, installed_at) AS updated_at \
          FROM skills \
          WHERE status = 'disabled' \
@@ -300,6 +304,9 @@ async fn load_paused_overview(pool: &SqlitePool, latest_limit: usize) -> Result<
                 rule_id: id,
                 title: row.try_get("name").unwrap_or_default(),
                 origin: row.try_get("origin").unwrap_or_default(),
+                source_kind: row
+                    .try_get("source_kind")
+                    .unwrap_or_else(|_| "human".to_owned()),
                 source_repo: row.try_get("source_repo").ok().flatten(),
                 file_patterns: parse_string_list(file_patterns.as_deref()),
                 updated_at: row.try_get("updated_at").unwrap_or_default(),
@@ -322,9 +329,9 @@ fn next_action(
     {
         return MemoryOverviewNextAction {
             kind: "review".to_owned(),
-            label: "Review memory suggestions".to_owned(),
-            command: Some("difflore memory review".to_owned()),
-            reason: "Some local memory is waiting for approval before agents can use it."
+            label: "Review rule suggestions".to_owned(),
+            command: Some("difflore rules review".to_owned()),
+            reason: "Some local rules are waiting for approval before agents can use them."
                 .to_owned(),
         };
     }
@@ -334,28 +341,28 @@ fn next_action(
     {
         return MemoryOverviewNextAction {
             kind: "sync".to_owned(),
-            label: "Sync memory activity".to_owned(),
-            command: Some("difflore memory sync".to_owned()),
-            reason: "Approved memory activity is queued for upload.".to_owned(),
+            label: "Sync rule activity".to_owned(),
+            command: Some("difflore rules sync".to_owned()),
+            reason: "Approved rule activity is queued for upload.".to_owned(),
         };
     }
 
     if remembered.available == 0 {
         return MemoryOverviewNextAction {
             kind: "import_or_review".to_owned(),
-            label: "Import or review memory".to_owned(),
-            command: Some("difflore memory import-agent-files".to_owned()),
-            reason: "No active memory is available yet; import agent files or review discoveries."
+            label: "Import or review rules".to_owned(),
+            command: Some("difflore rules import-agent-files".to_owned()),
+            reason: "No active rules are available yet; import agent files or review discoveries."
                 .to_owned(),
         };
     }
 
     if remembered.active_for_repo == Some(0) {
         return MemoryOverviewNextAction {
-            kind: "add_repo_memory".to_owned(),
-            label: "Add memory for this repo".to_owned(),
-            command: Some("difflore memory remember --title <title> --body <body>".to_owned()),
-            reason: "Memory exists on this machine, but none is scoped to the current repo."
+            kind: "add_repo_rules".to_owned(),
+            label: "Add rules for this repo".to_owned(),
+            command: Some("difflore rules remember --title <title> --body <body>".to_owned()),
+            reason: "Rules exist on this machine, but none are scoped to the current repo."
                 .to_owned(),
         };
     }
@@ -363,17 +370,17 @@ fn next_action(
     if paused.count > 0 {
         return MemoryOverviewNextAction {
             kind: "ready_with_paused".to_owned(),
-            label: "Memory is ready".to_owned(),
+            label: "Rules are ready".to_owned(),
             command: None,
-            reason: "Active memory is available; paused rules stay out of agent recall.".to_owned(),
+            reason: "Active rules are available; paused rules stay out of agent recall.".to_owned(),
         };
     }
 
     MemoryOverviewNextAction {
         kind: "ready".to_owned(),
-        label: "Memory is ready".to_owned(),
+        label: "Rules are ready".to_owned(),
         command: None,
-        reason: "Active memory is available for agent recall.".to_owned(),
+        reason: "Active rules are available for agent recall.".to_owned(),
     }
 }
 
@@ -513,7 +520,7 @@ mod tests {
         assert_eq!(overview.remembered.active_total, 2);
         assert_eq!(overview.remembered.active_for_repo, Some(0));
         assert_eq!(overview.remembered.latest.len(), 2);
-        assert_eq!(overview.next.kind, "add_repo_memory");
+        assert_eq!(overview.next.kind, "add_repo_rules");
     }
 
     #[tokio::test]

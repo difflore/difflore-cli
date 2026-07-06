@@ -263,7 +263,7 @@ fn render(hits: &[retrieval::ScoredRuleChunk], elapsed: Duration) {
 
     if scoped.is_empty() {
         println!(
-            "  {} demo memory returned no match: this should not happen; please report it.",
+            "  {} demo rules returned no match: this should not happen; please report it.",
             style::warn(sym::WARN),
         );
         return;
@@ -312,6 +312,14 @@ fn render(hits: &[retrieval::ScoredRuleChunk], elapsed: Duration) {
         );
         println!();
     }
+
+    println!(
+        "  {}",
+        style::pewter(
+            "Every rule you just saw was human-approved. On your repo, difflore drafts candidates from your review history and your session corrections — you approve what becomes a rule (difflore rules review)."
+        ),
+    );
+    println!();
 
     println!(
         "  {}",

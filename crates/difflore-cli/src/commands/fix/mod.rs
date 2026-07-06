@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use difflore_core::domain::models::DiffContentRecord;
+use difflore_core::observability::review_gate_events::{ReviewGateEventInput, ReviewGateSource};
 use difflore_core::review_engine::{
     DiffContextFile, DiffContextMode, DiffContextOptions, PackedDiffContext, ReviewCheckResult,
     ReviewIssueRecord, pack_diff_context,
@@ -34,7 +35,7 @@ use apply::{
     yes_mode_should_fail,
 };
 use attribution::fetch_rule_source_repos;
-use ci::{exit_after_output, finish_ci_mode};
+use ci::{ci_blocking_suggestions, exit_after_output, finish_ci_mode};
 use context::{
     FixContext, changed_files_for_retrieval, prepare_fix_context, primary_file_for_retrieval,
 };
@@ -42,7 +43,7 @@ use errors::format_fix_err;
 use modes::FixOutputMode;
 use pr::print_pr_review_instructions;
 use preflight::{
-    REVIEW_TIMEOUT_SECS, preflight_provider_backend, review_id_for_provider_run,
+    REVIEW_TIMEOUT_RETRY_SECS, preflight_provider_backend, review_id_for_provider_run,
     review_timeout_for_args,
 };
 use render::{
@@ -246,6 +247,7 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
     }
 
     let review_diff = review_diff_context_for_fix(&ctx);
+    let packed_diff_bytes = review_diff.packed.as_ref().map(|packed| packed.text.len());
     let diff_text = review_diff.text;
     if let Some(packed) = review_diff.packed.as_ref() {
         fix_debug!(
@@ -324,7 +326,7 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
         fast_preview: args.preview,
     };
 
-    let review_timeout = review_timeout_for_args(&args);
+    let review_timeout = review_timeout_for_args(&args, packed_diff_bytes);
     let review_started = Instant::now();
     let mut result = match tokio::time::timeout(
         review_timeout,
@@ -353,7 +355,6 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
         }
         Ok(Err(e)) => exit_err(&format_fix_err(pipeline_failed_label, &e.to_string())),
         Err(_) if args.preview => {
-            let review_timeout_secs = review_timeout.as_secs();
             emit_preview_diagnostic(
                 &ctx,
                 &args,
@@ -362,10 +363,7 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
                 primary_file.as_deref(),
                 PreviewDiagnostic {
                     kind: "review_timeout",
-                    message: format!(
-                        "review stopped after {review_timeout_secs}s while waiting for the review provider. \
-                         Set DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS to a higher value for slow local providers."
-                    ),
+                    message: provider_timeout_message(&args, review_timeout),
                     budget_ms: Some(duration_ms(review_timeout)),
                     elapsed_ms: duration_ms(review_timeout),
                 },
@@ -373,11 +371,7 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
             .await;
             return;
         }
-        Err(_) => exit_err(&format!(
-            "{} pipeline timed out after {REVIEW_TIMEOUT_SECS}s while waiting for the review provider. \
-             Run `difflore doctor` to check the active provider, then retry.",
-            if args.read_only { "review" } else { "fix" },
-        )),
+        Err(_) => exit_err(&provider_timeout_message(&args, review_timeout)),
     };
     fix_debug!(
         "review_provider elapsed={}ms budget={}ms preview={}",
@@ -430,6 +424,23 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
         .collect();
 
     let attributions = fetch_rule_source_repos(&ctx.db, &result.matched_rule_ids).await;
+    let ci_blocking_for_record = args
+        .ci
+        .then(|| ci_blocking_suggestions(&suggestions, &result.matched_rule_ids, args.strict));
+    if args.read_only {
+        let (source, findings) = if let Some(blocking) = ci_blocking_for_record.as_ref() {
+            (ReviewGateSource::Ci, blocking.as_slice())
+        } else {
+            (ReviewGateSource::Review, suggestions.as_slice())
+        };
+        record_rule_backed_review_gate_findings(
+            &ctx.db,
+            source,
+            findings,
+            &result.matched_rule_ids,
+        )
+        .await;
+    }
 
     match mode {
         FixOutputMode::Handoff => {
@@ -473,7 +484,12 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
             }
             if args.ci {
                 flush_fix_outbox_before_exit(&ctx.db).await;
-                finish_ci_mode(&suggestions, args.strict, scope_label);
+                finish_ci_mode(
+                    &suggestions,
+                    &result.matched_rule_ids,
+                    args.strict,
+                    scope_label,
+                );
             }
         }
         FixOutputMode::Preview => {
@@ -489,7 +505,12 @@ pub(crate) async fn handle_fix(cmd_ctx: &CommandContext, args: FixArgs) {
         }
         FixOutputMode::Ci => {
             flush_fix_outbox_before_exit(&ctx.db).await;
-            finish_ci_mode(&suggestions, args.strict, scope_label);
+            finish_ci_mode(
+                &suggestions,
+                &result.matched_rule_ids,
+                args.strict,
+                scope_label,
+            );
         }
         FixOutputMode::Yes => {
             if suggestions.is_empty() {
@@ -581,6 +602,65 @@ async fn print_compact_value_summary(db: &difflore_core::SqlitePool) {
     if let Some(line) = crate::commands::status::render_compact_value_summary(&summary) {
         println!("{}", style::pewter(&line));
     }
+}
+
+async fn record_rule_backed_review_gate_findings(
+    db: &difflore_core::SqlitePool,
+    source: ReviewGateSource,
+    findings: &[&ReviewIssueRecord],
+    matched_rule_ids: &[String],
+) {
+    let events: Vec<ReviewGateEventInput> = findings
+        .iter()
+        .filter_map(|issue| review_gate_event_for_issue(issue, source, matched_rule_ids))
+        .collect();
+    let _ = difflore_core::observability::review_gate_events::record_many(db, &events).await;
+}
+
+fn review_gate_event_for_issue(
+    issue: &ReviewIssueRecord,
+    source: ReviewGateSource,
+    matched_rule_ids: &[String],
+) -> Option<ReviewGateEventInput> {
+    let rule_id = issue_rule_backed_id(issue, matched_rule_ids)?.to_owned();
+    let file_path = issue
+        .file
+        .as_deref()
+        .map(str::trim)
+        .filter(|file| !file.is_empty())?
+        .to_owned();
+    let finding_text = format!(
+        "{}\n{}\n{}",
+        issue.rule,
+        issue.message,
+        issue.suggestion.as_deref().unwrap_or_default(),
+    );
+    let finding_hash = difflore_core::observability::review_gate_events::finding_hash(
+        &rule_id,
+        &file_path,
+        issue.line,
+        &finding_text,
+    );
+    Some(ReviewGateEventInput {
+        rule_id,
+        file_path,
+        finding_hash,
+        source,
+    })
+}
+
+fn issue_rule_backed_id<'a>(
+    issue: &'a ReviewIssueRecord,
+    matched_rule_ids: &[String],
+) -> Option<&'a str> {
+    let rule_id = issue.rule_id.as_deref()?.trim();
+    if rule_id.is_empty() {
+        return None;
+    }
+    matched_rule_ids
+        .iter()
+        .any(|matched| matched.trim() == rule_id)
+        .then_some(rule_id)
 }
 
 fn review_diff_context_for_fix(ctx: &FixContext) -> ReviewDiffContext {
@@ -761,7 +841,7 @@ fn handoff_rule_recall_failed(stage: &str, error: impl std::fmt::Display) -> Han
         ids: Vec::new(),
         titles: Vec::new(),
         note: Some(format!(
-            "Rule memory retrieval could not complete while trying to {stage}: {error}. Treat this as unavailable recall, not a sign that no memory matched."
+            "Rule retrieval could not complete while trying to {stage}: {error}. Treat this as unavailable recall, not a sign that no rule matched."
         )),
     }
 }
@@ -954,6 +1034,91 @@ fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+fn provider_timeout_message(args: &FixArgs, timeout: Duration) -> String {
+    let mut command = provider_timeout_retry_command(args);
+    if args.read_only {
+        command = format!(
+            "{}={} {command}",
+            difflore_core::infra::env::DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS,
+            REVIEW_TIMEOUT_RETRY_SECS,
+        );
+    }
+    format!(
+        "review provider timed out after {}s. Large diffs need more headroom — retry with: {command}",
+        timeout.as_secs(),
+    )
+}
+
+fn provider_timeout_retry_command(args: &FixArgs) -> String {
+    let mut parts = vec![
+        "difflore".to_owned(),
+        if args.read_only { "review" } else { "fix" }.to_owned(),
+    ];
+
+    if args.read_only && args.ci {
+        parts.push("--ci".to_owned());
+    }
+    if args.read_only && args.strict {
+        parts.push("--strict".to_owned());
+    }
+    if !args.read_only && args.yes {
+        parts.push("--yes".to_owned());
+    }
+    if let Some(scope) = args.diff_scope.as_deref() {
+        push_shell_option(&mut parts, "--diff", scope);
+    }
+    if args.explain_rules {
+        parts.push("--explain-rules".to_owned());
+    }
+    if let Some(report) = args.report.as_deref() {
+        push_shell_option(&mut parts, "--report", report);
+    }
+    if args.json {
+        parts.push("--json".to_owned());
+    }
+    if let Some(pr) = args.pr.as_deref() {
+        push_shell_option(&mut parts, "--pr", pr);
+    }
+    if let Some(work_branch) = args.work_branch.as_deref() {
+        push_shell_option(&mut parts, "--work-branch", work_branch);
+    }
+    if args.no_checkout {
+        parts.push("--no-checkout".to_owned());
+    }
+    if args.allow_dirty {
+        parts.push("--allow-dirty".to_owned());
+    }
+    if !args.read_only && args.no_upload_acceptance {
+        parts.push("--no-upload-acceptance".to_owned());
+    }
+    if let Some(path) = args.path.as_ref() {
+        let path = path.to_string_lossy();
+        parts.push(shell_arg(path.as_ref()));
+    }
+
+    parts.join(" ")
+}
+
+fn push_shell_option(parts: &mut Vec<String>, flag: &str, value: &str) {
+    parts.push(flag.to_owned());
+    parts.push(shell_arg(value));
+}
+
+fn shell_arg(value: &str) -> String {
+    if !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'/' | b'.' | b'-' | b'_' | b':' | b'#' | b'@' | b'=' | b',' | b'+'
+                )
+        })
+    {
+        return value.to_owned();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 async fn recall_rules_for_preview_diagnostic(
     ctx: &FixContext,
     diff_text: &str,
@@ -970,7 +1135,7 @@ async fn recall_rules_for_preview_diagnostic(
             ids: Vec::new(),
             titles: Vec::new(),
             note: Some(format!(
-                "Rule memory retrieval did not finish within {}ms; this review could not confirm whether memory matched.",
+                "Rule retrieval did not finish within {}ms; this review could not confirm whether any rule matched.",
                 duration_ms(PREVIEW_RECALL_DIAGNOSTIC_TIMEOUT)
             )),
         },
@@ -1067,7 +1232,7 @@ fn print_preview_diagnostic(
         println!();
         println!(
             "  {}",
-            style::pewter("Recalled memories available before patching:")
+            style::pewter("Recalled rules available before patching:")
         );
         for (i, title) in recalled.titles.iter().take(3).enumerate() {
             let attribution_suffix = recalled
@@ -1088,7 +1253,7 @@ fn print_preview_diagnostic(
     println!(
         "next: {}  {}",
         style::cmd("difflore recall --diff"),
-        style::pewter("inspect memory without calling the review provider"),
+        style::pewter("inspect rules without calling the review provider"),
     );
 }
 
@@ -1143,7 +1308,7 @@ async fn handle_empty_diff(
         }
         if args.ci {
             flush_fix_outbox_before_exit(&ctx.db).await;
-            finish_ci_mode(&empty_suggestions, args.strict, scope_label);
+            finish_ci_mode(&empty_suggestions, &[], args.strict, scope_label);
         }
         return;
     }
@@ -1561,16 +1726,12 @@ async fn print_empty_state_hint(db: &difflore_core::SqlitePool) {
                 "  > inspect recalled rules: {}",
                 style::cmd("difflore recall --diff")
             );
-            // `--upload` and `sync` both need an active session, so keep the
-            // always-available CLI path first for OSS-only users.
+            // Cloud sync needs an active session, so keep the always-available
+            // local import path first for OSS-only users.
             let cloud_client = difflore_core::cloud::client::CloudClient::create().await;
             if cloud_client.is_logged_in() {
                 println!(
-                    "  > or upload PR history for Cloud to process: {}",
-                    style::cmd("difflore import-reviews --max-prs 50 --upload")
-                );
-                println!(
-                    "  > then pull team memory: {}",
+                    "  > or sync team rules: {}",
                     style::cmd("difflore cloud sync")
                 );
             } else {
@@ -1616,7 +1777,7 @@ fn run_preview_mode(
     );
     if !matched_rule_titles.is_empty() {
         println!();
-        println!("  {}", style::pewter("Recalled memories (top 3):"));
+        println!("  {}", style::pewter("Recalled rules (top 3):"));
         for (i, title) in matched_rule_titles.iter().take(3).enumerate() {
             let attribution_suffix = matched_rule_ids
                 .get(i)
@@ -1635,10 +1796,10 @@ fn run_preview_mode(
         // users don't assume the system is broken.
         if matched_rules > 0 {
             println!(
-                "{} {scope_label} looks clean against {} recalled memor{}. No patches suggested.",
+                "{} {scope_label} looks clean against {} recalled rule{}. No patches suggested.",
                 style::ok(sym::OK),
                 matched_rules,
-                if matched_rules == 1 { "y" } else { "ies" },
+                if matched_rules == 1 { "" } else { "s" },
             );
             println!();
             // A clean scope is the good outcome, so route to evidence of
@@ -1659,7 +1820,7 @@ fn run_preview_mode(
             println!(
                 "next: {}  {}",
                 style::cmd("difflore recall --diff"),
-                style::pewter("# see what memory agents would receive"),
+                style::pewter("# see what rules an agent would receive"),
             );
         }
         return;
@@ -1911,8 +2072,48 @@ mod tests {
 
         assert_eq!(FixOutputMode::pick(&args, true), FixOutputMode::Structured);
         assert_eq!(
-            review_timeout_for_args_with_env(&args, |_| None),
+            review_timeout_for_args_with_env(&args, None, |_| None),
             Duration::from_secs(PREVIEW_REVIEW_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn provider_timeout_message_reconstructs_pr_review_retry() {
+        let mut args = fix_args(true, false);
+        args.pr = Some("6".to_owned());
+
+        assert_eq!(
+            provider_timeout_message(&args, Duration::from_secs(PREVIEW_REVIEW_TIMEOUT_SECS)),
+            "review provider timed out after 300s. Large diffs need more headroom — retry with: DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS=900 difflore review --pr 6"
+        );
+    }
+
+    #[test]
+    fn provider_timeout_retry_preserves_ci_review_flags() {
+        let mut args = fix_args(false, true);
+        args.read_only = true;
+        args.ci = true;
+        args.strict = true;
+        args.diff_scope = Some("all".to_owned());
+
+        assert_eq!(
+            provider_timeout_message(&args, Duration::from_secs(360)),
+            "review provider timed out after 360s. Large diffs need more headroom — retry with: DIFFLORE_FIX_PREVIEW_REVIEW_TIMEOUT_SECS=900 difflore review --ci --strict --diff all --json"
+        );
+        assert_eq!(
+            provider_timeout_retry_command(&args),
+            "difflore review --ci --strict --diff all --json"
+        );
+    }
+
+    #[test]
+    fn provider_timeout_retry_quotes_path_values() {
+        let mut args = fix_args(true, false);
+        args.path = Some(PathBuf::from("src/file with spaces.rs"));
+
+        assert_eq!(
+            provider_timeout_retry_command(&args),
+            "difflore review 'src/file with spaces.rs'"
         );
     }
 
@@ -2142,7 +2343,7 @@ mod tests {
             issues: vec![
                 review_issue(
                     "Correct index for headChar",
-                    "The provider finding title no longer shares words with the recalled memory.",
+                    "The provider finding title no longer shares words with the recalled rule.",
                     Some("Use the already validated byte index."),
                 ),
                 review_issue(

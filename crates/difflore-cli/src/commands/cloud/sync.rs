@@ -180,7 +180,7 @@ pub(crate) async fn handle_sync(ctx: &CommandContext, args: SyncArgs) {
         .await
         .unwrap_or(0);
 
-    let mut spinner = sync_spinner(json, "Uploading local memory activity");
+    let mut spinner = sync_spinner(json, "Uploading local rule activity");
     let (
         observation_events_attempted,
         observation_events_uploaded,
@@ -457,14 +457,14 @@ async fn prepare_excluded_ids(
     local_skills: &[difflore_core::domain::models::SkillRecord],
 ) -> Vec<String> {
     // `/rules/sync` only syncs active cloud-published rules. Local pending
-    // memory drafts are not candidate-rule upserts; `--include-candidates`
+    // local pending drafts are not candidate-rule upserts; `--include-candidates`
     // drains approved session-mined candidate outbox rows into the cloud
     // candidate_rules table. Keep local pending drafts out of `/rules/sync`
     // so the cloud doesn't round-trip them as missing-active rules.
     let pending_ids = match difflore_core::skills::list_candidate_ids(db).await {
         Ok(ids) => ids,
         Err(e) => exit_err(&format!(
-            "Failed to load pending memory drafts (would risk syncing them as active): {e}"
+            "Failed to load pending rule drafts (would risk syncing them as active): {e}"
         )),
     };
     let source_repos = match difflore_core::skills::list_source_repos(db).await {
@@ -664,7 +664,7 @@ async fn run_observations_phase(
             }
             Err(e) => {
                 eprintln!(
-                    "{} Local memory activity upload skipped: {e}",
+                    "{} Local rule activity upload skipped: {e}",
                     style::amber(style::sym::WARN),
                 );
                 break;
@@ -717,8 +717,11 @@ async fn run_cloud_outbox_phase(
                         outcome.telemetry_attempted += report.attempted;
                         outcome.telemetry_uploaded += report.confirmed;
                     }
-                    difflore_core::cloud::outbox::kind::IMPORTED_REVIEWS
-                    | difflore_core::cloud::outbox::kind::REVIEW_METRICS
+                    difflore_core::cloud::outbox::kind::IMPORTED_REVIEWS => {
+                        outcome.telemetry_attempted += report.attempted;
+                        outcome.telemetry_skipped += report.confirmed;
+                    }
+                    difflore_core::cloud::outbox::kind::REVIEW_METRICS
                     | difflore_core::cloud::outbox::kind::TRAJECTORY
                     | difflore_core::cloud::outbox::kind::MCP_QUERY => {
                         outcome.telemetry_attempted += report.attempted;
@@ -988,7 +991,7 @@ fn sync_summary_payload(outcome: &SyncOutcome) -> serde_json::Value {
     serde_json::json!({
         "ok": true,
         "dryRun": false,
-        "memory": {
+        "rules": {
             "created": outcome.created,
             "updated": outcome.updated,
             "deleted": outcome.deleted,
@@ -1005,7 +1008,7 @@ fn sync_summary_payload(outcome: &SyncOutcome) -> serde_json::Value {
             "queued": outcome.observations_queued,
             "skipped": outcome.observations_skipped,
         },
-        "memoryCandidates": {
+        "ruleCandidates": {
             "attempted": outcome.memory_candidates_attempted,
             "uploaded": outcome.memory_candidates_uploaded,
             "queued": outcome.memory_candidates_queued,
@@ -1043,7 +1046,7 @@ fn emit_summary_json(outcome: &SyncOutcome) {
 fn skipped_raw_upload_counts_value(skipped: RawUploadSkipCounts) -> serde_json::Value {
     serde_json::json!({
         "observations": skipped.observations,
-        "memoryCandidates": skipped.memory_candidates,
+        "ruleCandidates": skipped.memory_candidates,
         "telemetryOutbox": skipped.telemetry,
         "total": skipped.total(),
     })
@@ -1142,8 +1145,14 @@ fn telemetry_summary_line(
         ));
     }
 
-    let failed = attempted.saturating_sub(uploaded);
+    let failed = attempted.saturating_sub(uploaded + skipped);
     let mut line = format!("  raw telemetry  {uploaded} uploaded | {queued} pending");
+    if skipped > 0 {
+        line.push_str(&format!(
+            " | {skipped} legacy row{} acknowledged",
+            if skipped == 1 { "" } else { "s" }
+        ));
+    }
     if failed > 0 {
         line.push_str(&format!(" | {failed} failed this run"));
     }
@@ -1188,10 +1197,10 @@ async fn emit_summary_human(outcome: &SyncOutcome, db: &difflore_core::SqlitePoo
     } = *outcome;
 
     // Output contract: lead with a single status headline, then one row per
-    // category in fixed order (memory / settings / providers / team), ending
+    // category in fixed order (rules / settings / providers / team), ending
     // with the `next: difflore recall --diff` bridge.
     println!("{} Sync complete", style::ok(style::sym::OK));
-    println!("  memory     {created} created | {updated} updated | {deleted} deleted");
+    println!("  rules      {created} created | {updated} updated | {deleted} deleted");
     println!(
         "{}",
         memory_candidate_summary_line(
@@ -1215,10 +1224,10 @@ async fn emit_summary_human(outcome: &SyncOutcome, db: &difflore_core::SqlitePoo
     }
     if team_count > 0 {
         println!(
-            "  team       {team_count} published memories visible | {team_synced} synced locally"
+            "  team       {team_count} published rules visible | {team_synced} synced locally"
         );
     } else {
-        println!("  team       0 published memories visible");
+        println!("  team       0 published rules visible");
     }
     println!(
         "{}",
@@ -1242,7 +1251,7 @@ async fn emit_summary_human(outcome: &SyncOutcome, db: &difflore_core::SqlitePoo
     }
     if accepted_edit_attribution.warning_count() > 0 {
         println!(
-            "  {} {} accepted edit upload{} need review: {} missing team workspace | {} missing recalled memory ids | {} missing linked memory activity",
+            "  {} {} accepted edit upload{} need review: {} missing team workspace | {} missing recalled rule ids | {} missing linked rule activity",
             style::amber(style::sym::WARN),
             accepted_edit_attribution.warning_count(),
             if accepted_edit_attribution.warning_count() == 1 {
@@ -1291,9 +1300,9 @@ async fn emit_cold_start_hint(db: &difflore_core::SqlitePool) {
     // next move:
     //   (a) zero imported reviews — they haven't started the pipeline
     //       yet, so the import-PR-reviews advice applies.
-    //   (b) imported reviews exist — extraction is mid-flight on the
-    //       cloud, so telling the user to "import PR reviews again"
-    //       loops them. Tell them to wait + retry instead.
+    //   (b) imported reviews exist — local memories have been queued for
+    //       explicit Cloud sync/governance, so telling the user to "import PR
+    //       reviews again" loops them. Tell them to wait + retry instead.
     let imported_review_count = difflore_core::review_store::list_by_source(
         db,
         difflore_core::review_store::ReviewSourceInput {
@@ -1305,16 +1314,16 @@ async fn emit_cold_start_hint(db: &difflore_core::SqlitePool) {
     println!();
     if imported_review_count > 0 {
         println!(
-            "  {} {}; cloud is still extracting rules. Try {} in ~30s.",
+            "  {} {}; Cloud sync is still preparing team rules. Try {} in ~30s.",
             style::emerald(style::sym::TIP),
-            cold_start_extracting_line(imported_review_count),
+            cold_start_sync_line(imported_review_count),
             style::cmd("difflore cloud sync"),
         );
         println!(
             "  {} watch progress: {}",
             style::pewter(style::sym::BULLET),
             style::cmd(&difflore_core::cloud::endpoints::web_link(
-                "?from=cli-sync&intent=extracting"
+                "?from=cli-sync&intent=sync-pending"
             )),
         );
     } else {
@@ -1322,7 +1331,7 @@ async fn emit_cold_start_hint(db: &difflore_core::SqlitePool) {
             "  {} {}",
             style::emerald(style::sym::TIP),
             style::pewter(
-                "No cloud rules yet. Import PR reviews locally first; upload only when you want Cloud extraction."
+                "No cloud rules yet. Import PR reviews locally first; sync only when you want shared Cloud governance."
             ),
         );
         println!(
@@ -1340,10 +1349,10 @@ async fn emit_cold_start_hint(db: &difflore_core::SqlitePool) {
     }
 }
 
-/// Frame the cold-start extracting hint so the count reads as global.
+/// Frame the cold-start sync hint so the count reads as global.
 /// `imported_review_count` is the local DB total across every repo the user
 /// has run `import-reviews` against, not just the current repo.
-pub(crate) fn cold_start_extracting_line(imported_review_count: usize) -> String {
+pub(crate) fn cold_start_sync_line(imported_review_count: usize) -> String {
     let plural = if imported_review_count == 1 { "" } else { "s" };
     format!("{imported_review_count} review{plural} imported across all your repos")
 }
@@ -1380,20 +1389,20 @@ pub(crate) fn format_cloud_err(label: &str, e: &str) -> String {
 mod tests {
     use super::{
         AcceptedEditAttributionSummary, RawUploadPolicy, RawUploadSkipCounts, SyncDirection,
-        SyncOutcome, accepted_edit_proof_summary_line, cold_start_extracting_line, dry_run_payload,
+        SyncOutcome, accepted_edit_proof_summary_line, cold_start_sync_line, dry_run_payload,
         format_cloud_err, memory_candidate_summary_line, outbox_sync_priority_kinds,
         parse_provider_model_mapping, proof_summary_line, sync_summary_payload,
         telemetry_summary_line,
     };
 
     #[test]
-    fn cold_start_extracting_line_disambiguates_per_repo_vs_global() {
-        let one = cold_start_extracting_line(1);
+    fn cold_start_sync_line_disambiguates_per_repo_vs_global() {
+        let one = cold_start_sync_line(1);
         assert!(one.contains("1 review "), "msg: {one}");
         assert!(one.contains("across all your repos"), "msg: {one}");
         assert!(!one.contains("reviews "), "singular form leaked: {one}");
 
-        let many = cold_start_extracting_line(155);
+        let many = cold_start_sync_line(155);
         assert!(many.contains("155 reviews "), "msg: {many}");
         assert!(many.contains("across all your repos"), "msg: {many}");
     }
@@ -1435,11 +1444,11 @@ mod tests {
         assert_eq!(payload["observations"]["uploaded"], 3);
         assert_eq!(payload["observations"]["queued"], 2);
         assert_eq!(payload["observations"]["skipped"], 2);
-        assert_eq!(payload["memoryCandidates"]["attempted"], 6);
-        assert_eq!(payload["memoryCandidates"]["uploaded"], 4);
-        assert_eq!(payload["memoryCandidates"]["queued"], 2);
-        assert_eq!(payload["memoryCandidates"]["failed"], 2);
-        assert_eq!(payload["memoryCandidates"]["skipped"], 2);
+        assert_eq!(payload["ruleCandidates"]["attempted"], 6);
+        assert_eq!(payload["ruleCandidates"]["uploaded"], 4);
+        assert_eq!(payload["ruleCandidates"]["queued"], 2);
+        assert_eq!(payload["ruleCandidates"]["failed"], 2);
+        assert_eq!(payload["ruleCandidates"]["skipped"], 2);
         assert_eq!(payload["telemetryOutbox"]["attempted"], 4);
         assert_eq!(payload["telemetryOutbox"]["uploaded"], 4);
         assert_eq!(payload["telemetryOutbox"]["queued"], 3);
@@ -1608,7 +1617,7 @@ mod tests {
         assert_eq!(payload["rawUploadFlags"]["includeCandidates"], true);
         assert_eq!(payload["rawUploadFlags"]["includeTelemetry"], false);
         assert_eq!(payload["skippedRawUploads"]["observations"], 2);
-        assert_eq!(payload["skippedRawUploads"]["memoryCandidates"], 0);
+        assert_eq!(payload["skippedRawUploads"]["ruleCandidates"], 0);
         assert_eq!(payload["skippedRawUploads"]["telemetryOutbox"], 5);
         assert_eq!(payload["skippedRawUploads"]["total"], 7);
     }

@@ -1,12 +1,12 @@
 use serde_json::Value;
 use sqlx::SqlitePool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt as _, AsyncWriteExt, BufReader};
 
 use crate::cloud::client::CloudClient;
-use crate::context::retrieval::RuleRankingWhy;
+use crate::context::retrieval::{RuleRankingWhy, TargetScope};
 use crate::context::{EmbeddingDiagnostics, gather_embedding_diagnostics_with_activity};
 use crate::error::CoreError;
 use crate::observability::injection_log::InjectionDropReason;
@@ -134,7 +134,7 @@ fn hook_embedding_health_header(diag: &EmbeddingDiagnostics) -> String {
         .unwrap_or("unknown_embedding_state");
     format!(
         "> DiffLore retrieval health: embeddingDegraded={} vectorLaneAvailable={} reason={reason}. \
-         Treat injected memories as lower-confidence unless strict file/source evidence applies.\n\n",
+         Treat injected rules as lower-confidence unless strict file/source evidence applies.\n\n",
         diag.degraded, diag.vector_lane_available
     )
 }
@@ -232,6 +232,7 @@ async fn fetch_relevant_rules_for_hook_inner(
     let short_circuit_cache = super::hook_short_circuit::global_cache();
     let is_bash_error_path = intent == "bash-error" || intent.starts_with("bash-error ");
     let is_post_edit_path = !is_bash_error_path;
+    let is_code_change_recall_path = !is_bash_error_path;
     let short_circuit_now = is_post_edit_path
         && !ext_key.is_empty()
         && match short_circuit_mode {
@@ -286,6 +287,7 @@ async fn fetch_relevant_rules_for_hook_inner(
     mark("embedding_diagnostics");
 
     let target_file = if file == "unknown" { None } else { Some(file) };
+    let target_scope = target_file.map(TargetScope::File);
     // Ranking inputs are best-effort; SQL failures fall back to defaults.
     let ranking_inputs = crate::context::rule_source::load_rule_ranking_inputs(db).await;
     mark("load_rule_ranking_inputs");
@@ -304,6 +306,7 @@ async fn fetch_relevant_rules_for_hook_inner(
             lexical_query: None,
             top_k: candidate_limit,
             target_file,
+            target_scope,
             repo_scopes: &repo_scopes,
             confidence_map: ranking_inputs.confidence_map.as_ref(),
             age_days_map: ranking_inputs.age_days_map.as_ref(),
@@ -326,8 +329,8 @@ async fn fetch_relevant_rules_for_hook_inner(
     let meta_map = tools::evidence::fetch_skills_by_ids(db, &candidate_ids)
         .await
         .unwrap_or_default();
-    let strict_skill_ids = tools::evidence::strict_file_match_ids_for_meta(&meta_map, target_file);
-    if is_post_edit_path {
+    let strict_skill_ids = strict_file_match_ids_for_target_scope(&meta_map, target_scope);
+    if is_code_change_recall_path {
         scored.retain(|rule| {
             meta_map
                 .get(&rule.skill_id)
@@ -353,7 +356,7 @@ async fn fetch_relevant_rules_for_hook_inner(
     // surface ("intent alignment on explicit recall; hook injection guarded
     // by file patterns + score floors only"). Keep README/cli-spec wording in
     // sync with the shipped default.
-    if is_post_edit_path && crate::infra::env::hook_intent_gate_enabled() {
+    if is_code_change_recall_path && crate::infra::env::hook_intent_gate_enabled() {
         crate::context::retrieval::apply_intent_alignment_gate(&mut scored, intent);
     }
 
@@ -448,9 +451,9 @@ async fn fetch_relevant_rules_for_hook_inner(
     let mut text = hook_embedding_health_header(&embedding_diag);
     if cross_repo_starter {
         text.push_str(
-            "> No memory is scoped to THIS repo yet. The memories below are transferable rules \
+            "> No rules are scoped to THIS repo yet. The rules below are transferable \
              from your OTHER repos, matched to this file — starter suggestions, not this repo's \
-             own judgment. Run `difflore import-reviews` to capture this repo's memory.\n\n",
+             own judgment. Run `difflore import-reviews` to capture this repo's rules.\n\n",
         );
     }
     let mut injected = 0usize;
@@ -466,7 +469,7 @@ async fn fetch_relevant_rules_for_hook_inner(
             0.0
         };
         // Shared rule rendering; the hook only changes example labels
-        // and the memory number. The why segment (when arbitration metadata
+        // and the rule number. The why segment (when arbitration metadata
         // exists — cross-repo starter rules carry none) is part of the block
         // text, so the budget gate below accounts for its ~5–10 tokens.
         let why = why_map.get(&rule.skill_id).map(RuleRankingWhy::compact);
@@ -505,13 +508,13 @@ async fn fetch_relevant_rules_for_hook_inner(
     // Standing wrap-up nudge: the per-edit citation above is silent unless the
     // assistant chooses to cite. This guarantees the *instruction* to surface
     // DiffLore's value rides the same (already-non-noisy) injection channel, so
-    // the user reliably learns a memory helped at task end without us emitting a
+    // the user reliably learns a rule helped at task end without us emitting a
     // lifecycle `systemMessage`. Fires only when rules actually applied.
     text.push_str(
         "\n> When you finish this task, add one quiet difflore recap line only when \
          `difflore status` shows accepted edits captured for this task. \
          Do not prefix it with `session-recap:`; if you use a label, \
-         write lowercase `difflore:`. Do not mention top memory, recall counts, \
+         write lowercase `difflore:`. Do not mention top rule, recall counts, \
          ready-for-agent counts, or zero/negative metrics. Skip it if nothing here applied.",
     );
 
@@ -524,7 +527,7 @@ async fn fetch_relevant_rules_for_hook_inner(
     let origin_step = rule_hits_by_origin(db, &skill_ids).await;
     emit_trajectory_step(&origin_step);
     let strict_match_count =
-        tools::evidence::strict_file_match_count_for_ids(&meta_map, &skill_ids, target_file);
+        strict_file_match_count_for_target_scope(&meta_map, &skill_ids, target_scope);
     // Record the non-empty serve and enqueue the matching event.
     let served_event = serve_and_record(
         db,
@@ -571,13 +574,13 @@ async fn fetch_relevant_rules_for_hook_inner(
 
 fn counterfactual_citation_instruction(n: usize, hook_label: &str, applies_to: &str) -> String {
     format!(
-        "\n> DiffLore surfaced {} team memor{} via {hook_label} hook as silent context. \
-         Cite a memory only if your {applies_to} would be materially different without it; \
+        "\n> DiffLore surfaced {} team rule{} via {hook_label} hook as silent context. \
+         Cite a rule only if your {applies_to} would be materially different without it; \
          include its number AND the `learned from <repo>` source if the header shows one — \
-         e.g. \"applying Memory 2: Don't strip null from coalesce (learned from acme/widgets)\". \
-         Otherwise ignore — do not narrate or list memories that do not apply.",
+         e.g. \"applying Rule 2: Don't strip null from coalesce (learned from acme/widgets)\". \
+         Otherwise ignore — do not narrate or list rules that do not apply.",
         n,
-        if n == 1 { "y" } else { "ies" },
+        if n == 1 { "" } else { "s" },
     )
 }
 
@@ -589,7 +592,7 @@ fn hook_serve_record_err_prefix() -> Option<&'static str> {
 
 fn hook_auto_injection_allowed(
     row: &tools::evidence::SkillDetailRow,
-    strict_skill_ids: &std::collections::HashSet<String>,
+    strict_skill_ids: &HashSet<String>,
 ) -> bool {
     // A mined PR-review rule without a file-pattern hit is often a workflow or
     // meta-review note. Keep it discoverable through explicit search/get_rules,
@@ -597,6 +600,54 @@ fn hook_auto_injection_allowed(
     (row.origin != "pr_review" || strict_skill_ids.contains(&row.id))
         && tools::evidence::kind_gate_allows_silent_injection(row, strict_skill_ids)
 }
+
+fn strict_file_match_ids_for_target_scope(
+    meta_map: &HashMap<String, tools::evidence::SkillDetailRow>,
+    target_scope: Option<TargetScope<'_>>,
+) -> HashSet<String> {
+    let Some(target_scope) = target_scope else {
+        return HashSet::new();
+    };
+    meta_map
+        .iter()
+        .filter(|(_, row)| row_matches_target_scope(row, target_scope))
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+fn strict_file_match_count_for_target_scope(
+    meta_map: &HashMap<String, tools::evidence::SkillDetailRow>,
+    ids: &[String],
+    target_scope: Option<TargetScope<'_>>,
+) -> i64 {
+    let Some(target_scope) = target_scope else {
+        return 0;
+    };
+    let count = ids
+        .iter()
+        .filter(|id| {
+            meta_map
+                .get(id.as_str())
+                .is_some_and(|row| row_matches_target_scope(row, target_scope))
+        })
+        .count();
+    i64::try_from(count).unwrap_or(i64::MAX)
+}
+
+fn row_matches_target_scope(
+    row: &tools::evidence::SkillDetailRow,
+    target_scope: TargetScope<'_>,
+) -> bool {
+    match target_scope {
+        TargetScope::File(file) => {
+            tools::evidence::has_strict_file_scope_match(row.file_patterns.as_deref(), file)
+        }
+        TargetScope::Changeset(files) => files.iter().any(|file| {
+            tools::evidence::has_strict_file_scope_match(row.file_patterns.as_deref(), file)
+        }),
+    }
+}
+
 use super::{
     McpState, emit_trajectory_step, estimate_tokens, handle_message, jsonrpc_error,
     rule_hits_by_origin, tools,

@@ -37,7 +37,7 @@ pub fn build_import_command(
 
 #[must_use]
 pub fn build_agent_file_import_command(exe: &Path) -> (PathBuf, Vec<OsString>) {
-    let argv: Vec<OsString> = vec!["memory".into(), "import-agent-files".into()];
+    let argv: Vec<OsString> = vec!["rules".into(), "import-agent-files".into()];
     (exe.to_path_buf(), argv)
 }
 
@@ -108,7 +108,7 @@ pub fn run_agent_file_import(exe: &Path, cwd: &Path) -> Result<(), String> {
     configure_detached(&mut cmd);
     cmd.spawn()
         .map(|_| ())
-        .map_err(|e| format!("failed to spawn `difflore memory import-agent-files`: {e}"))
+        .map_err(|e| format!("failed to spawn `difflore rules import-agent-files`: {e}"))
 }
 
 #[cfg(unix)]
@@ -174,7 +174,7 @@ mod tests {
         assert_eq!(
             argv,
             vec![
-                OsString::from("memory"),
+                OsString::from("rules"),
                 OsString::from("import-agent-files"),
             ]
         );

@@ -53,8 +53,8 @@ pub const ORIGINS: &[OriginDef] = &[
     },
     OriginDef {
         id: "agent-memory",
-        label: "Agent memory",
-        description: "Rule extracted from a coding agent's local memory or rules file.",
+        label: "Agent rules",
+        description: "Rule extracted from a coding agent's local rules file.",
         color_hex: "#94E2D5",
         base_confidence: 0.6,
     },

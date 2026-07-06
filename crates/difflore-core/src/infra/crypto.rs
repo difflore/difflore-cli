@@ -8,7 +8,9 @@ use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{OnceLock, mpsc},
+    thread,
+    time::Duration,
 };
 
 static MASTER_KEY: OnceLock<[u8; 32]> = OnceLock::new();
@@ -20,6 +22,7 @@ const DEBUG_MASTER_KEY_FILE: &str = "master-key";
 const KEYSEED_FILE: &str = "keyseed";
 const KEYSEED_BYTES: usize = 32;
 const LOCAL_FALLBACK_CONTEXT: &[u8] = b"difflore-local-fallback-master-key-v2";
+const KEYRING_ACCESS_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyseedStatus {
@@ -105,19 +108,13 @@ pub fn probe_master_key_storage() -> MasterKeyStorageStatus {
         return MasterKeyStorageStatus::DebugFileOverride { path };
     }
 
-    let entry = match keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
-        Ok(entry) => entry,
-        Err(e) => {
-            let keyring_error = format!("keyring entry error: {e}");
-            return fallback_storage_status(keyring_error);
-        }
-    };
-    match entry.get_password() {
-        Ok(hex) => match parse_32_byte_hex(&hex) {
+    match read_keyring_password_with_timeout(KEYRING_ACCESS_TIMEOUT) {
+        Ok(KeyringPasswordRead::Password(hex)) => match parse_32_byte_hex(&hex) {
             Ok(_) => MasterKeyStorageStatus::KeyringReady,
             Err(e) => MasterKeyStorageStatus::KeyringInvalid(e.to_string()),
         },
-        Err(keyring::Error::NoEntry) => MasterKeyStorageStatus::KeyringWillCreate,
+        Ok(KeyringPasswordRead::NoEntry) => MasterKeyStorageStatus::KeyringWillCreate,
+        Ok(KeyringPasswordRead::Error(e)) => fallback_storage_status(e),
         Err(e) => fallback_storage_status(e.to_string()),
     }
 }
@@ -147,8 +144,13 @@ fn master_key_from_keyring_result(
 ) -> crate::Result<[u8; 32]> {
     match keyring_result {
         Ok(key) => Ok(key),
+        Err(err) if is_keyring_timeout_error(&err.to_string()) => Err(err),
         Err(err) => local_fallback_key_for_keyring_error(&err.to_string()),
     }
+}
+
+fn is_keyring_timeout_error(err: &str) -> bool {
+    err.contains("keyring access timed out")
 }
 
 fn local_fallback_key_for_keyring_error(err: &str) -> crate::Result<[u8; 32]> {
@@ -231,6 +233,10 @@ fn is_ci_environment() -> bool {
 }
 
 fn try_keyring_key() -> crate::Result<[u8; 32]> {
+    run_keyring_operation_with_timeout(try_keyring_key_inner, KEYRING_ACCESS_TIMEOUT)
+}
+
+fn try_keyring_key_inner() -> crate::Result<[u8; 32]> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
         .map_err(|e| crate::CoreError::internal(format!("keyring entry error: {e}")))?;
 
@@ -264,6 +270,53 @@ fn try_keyring_key() -> crate::Result<[u8; 32]> {
         .set_password(&hex)
         .map_err(|e| crate::CoreError::internal(format!("keyring set error: {e}")))?;
     Ok(key)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum KeyringPasswordRead {
+    Password(String),
+    NoEntry,
+    Error(String),
+}
+
+fn read_keyring_password_with_timeout(timeout: Duration) -> crate::Result<KeyringPasswordRead> {
+    run_keyring_operation_with_timeout(
+        || {
+            let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+                .map_err(|e| crate::CoreError::internal(format!("keyring entry error: {e}")))?;
+            Ok(match entry.get_password() {
+                Ok(hex) => KeyringPasswordRead::Password(hex),
+                Err(keyring::Error::NoEntry) => KeyringPasswordRead::NoEntry,
+                Err(e) => KeyringPasswordRead::Error(e.to_string()),
+            })
+        },
+        timeout,
+    )
+}
+
+fn run_keyring_operation_with_timeout<F, T>(operation: F, timeout: Duration) -> crate::Result<T>
+where
+    F: FnOnce() -> crate::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    let (tx, rx) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name("difflore-keyring".to_owned())
+        .spawn(move || {
+            let _ = tx.send(operation());
+        })
+        .map_err(|e| crate::CoreError::internal(format!("keyring thread spawn failed: {e}")))?;
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(crate::CoreError::internal(format!(
+            "keyring access timed out after {}s. Set DIFFLORE_MASTER_KEY=<64-char-hex> \
+             in headless/CI environments, then retry.",
+            timeout.as_secs()
+        ))),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(crate::CoreError::internal(
+            "keyring worker exited unexpectedly",
+        )),
+    }
 }
 
 /// Local fallback key derivation for machines without an OS keyring.
@@ -741,5 +794,35 @@ mod tests {
         let key = [42u8; 32];
 
         assert_eq!(master_key_from_keyring_result(Ok(key)).unwrap(), key);
+    }
+
+    #[test]
+    fn keyring_timeout_reports_master_key_override() {
+        let err = run_keyring_operation_with_timeout(
+            || {
+                thread::sleep(Duration::from_millis(50));
+                Ok(())
+            },
+            Duration::from_millis(1),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("keyring access timed out"), "{err}");
+        assert!(err.contains("DIFFLORE_MASTER_KEY=<64-char-hex>"), "{err}");
+    }
+
+    #[test]
+    fn keyring_timeout_does_not_fall_back_to_local_keyseed() {
+        let err = crate::CoreError::internal(
+            "keyring access timed out after 5s. Set DIFFLORE_MASTER_KEY=<64-char-hex>",
+        );
+
+        let got = master_key_from_keyring_result(Err(err))
+            .unwrap_err()
+            .to_string();
+
+        assert!(got.contains("keyring access timed out"), "{got}");
+        assert!(!got.contains("local fallback keyseed"), "{got}");
     }
 }

@@ -5,7 +5,7 @@ description: Answer broad questions from the team's DiffLore codebase rules — 
 
 # Knowledge Agent
 
-Answer cross-cutting questions over DiffLore memory. Use `difflore ask` for the
+Answer cross-cutting questions over DiffLore rules. Use `difflore ask` for the
 public path; reach for MCP tools only when you need provenance or full bodies.
 
 **Not for:** single-rule lookup (`rule-search`), capturing a rule

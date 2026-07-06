@@ -89,6 +89,7 @@ struct RenderRow {
     confidence_score: f64,
     file_patterns: Option<String>,
     origin: String,
+    source_kind: String,
     source_repo: Option<String>,
     trigger: Option<String>,
     check_prompt: Option<String>,
@@ -117,7 +118,7 @@ pub async fn render_full_rule_bodies(
     // pending candidate.
     let rows = sqlx::query_as::<_, RenderRow>(
         "SELECT id, name, type, description, confidence_score, file_patterns, \
-                origin, source_repo, `trigger`, check_prompt \
+                origin, source_kind, source_repo, `trigger`, check_prompt \
          FROM skills WHERE id IN (SELECT value FROM json_each(?1)) AND status = 'active'",
     )
     .bind(ids_json)
@@ -140,6 +141,7 @@ pub async fn render_full_rule_bodies(
             r#type: &row.r#type,
             confidence: row.confidence_score,
             origin: &row.origin,
+            source_kind: &row.source_kind,
             source_repo: row.source_repo.as_deref(),
             file_patterns: &file_patterns,
             description: &row.description,

@@ -13,16 +13,17 @@ use super::args::{
 #[command(about = "Source-backed team rules for local coding agents")]
 #[command(next_line_help = true)]
 #[command(
-    long_about = "DiffLore turns your team's past PR review judgment into local memory \
-your AI agents can recall before they code. The core loop is: \
+    long_about = "DiffLore turns your team's past PR review judgment into approved, \
+source-traceable rules your AI agents recall before they write or review code. \
+The core loop is: \
 `difflore init`, `difflore import-reviews`, `difflore agents install`, then \
-`difflore recall --diff` or `difflore review --diff all`. Background memory \
-autopilot handles high-confidence local memory automatically; use \
-`difflore memory`, `difflore memory review`, and `difflore memory log` to \
+`difflore recall --diff` or `difflore review --diff all`. Background triage \
+auto-enables only high-confidence candidates and leaves the rest for your review; use \
+`difflore rules`, `difflore rules review`, and `difflore rules log` to \
 inspect and decide. Cloud sync is optional."
 )]
 pub(crate) struct Cli {
-    /// Bare `difflore` shows local memory status and the next command.
+    /// Bare `difflore` shows local rules status and the next command.
     #[command(subcommand)]
     pub(crate) command: Option<Commands>,
 
@@ -36,8 +37,8 @@ pub(crate) enum Commands {
     /// See DiffLore work on a bundled sample — no setup, no repo, nothing written.
     #[command(
         long_about = concat!(
-            "Run a zero-config demo with bundled review memory and a sample edit.\n",
-            "It shows which memories fire and the next command to run.\n",
+            "Run a zero-config demo with bundled review rules and a sample edit.\n",
+            "It shows which rules fire and the next command to run.\n",
             "Nothing leaves your laptop and nothing is written to disk."
         )
     )]
@@ -46,7 +47,7 @@ pub(crate) enum Commands {
     /// Run first-time setup for this repo.
     Init(InitCliArgs),
 
-    /// Show local memory status and the next command.
+    /// Show local rules status and the next command.
     Status {
         /// Output as JSON.
         #[arg(long)]
@@ -84,8 +85,9 @@ pub(crate) enum Commands {
     ImportReviews(ImportReviewsCliArgs),
 
     /// Review and approve the rules DiffLore has learned.
+    #[command(name = "rules")]
     Memory {
-        /// Output the compact memory summary as JSON.
+        /// Output the compact rules summary as JSON.
         #[arg(long)]
         json: bool,
 
@@ -110,7 +112,7 @@ pub(crate) enum Commands {
     #[command(
         next_line_help = false,
         long_about = concat!(
-            "Analyze staged, working-tree, or PR changes against team review memory.\n",
+            "Analyze staged, working-tree, or PR changes against team review rules.\n",
             "Review never modifies files.\n",
             "Use `difflore review --ci` for a machine gate that exits non-zero on actionable findings.\n",
             "Use `difflore fix` when you want to apply suggested patches."
@@ -134,11 +136,11 @@ pub(crate) enum Commands {
     #[command(
         next_line_help = false,
         long_about = concat!(
-            "Write recalled rules into AGENTS.md, CLAUDE.md, or both.\n\n",
+            "Write recalled rules into AGENTS.md, CLAUDE.md, .cursor/rules/*.mdc, and .opencodereview/rule.json.\n\n",
             "Export is a static snapshot: it goes stale and cannot match the file being edited.\n",
             "Prefer `difflore agents install` for live, diff-aware injection.\n\n",
-            "Side effects: writes only selected files and only inside DiffLore markers.\n",
-            "Only the BEGIN/END DIFFLORE RULES block is managed.\n",
+            "Side effects: writes only selected files/directories. Marker targets only manage\n",
+            "the BEGIN/END DIFFLORE RULES block; Cursor only manages difflore-*.mdc files.\n",
             "DiffLore never commits, pushes, or edits .gitignore."
         )
     )]
@@ -158,7 +160,7 @@ pub(crate) enum Commands {
         json: bool,
     },
 
-    /// Compatibility alias for local memory draft review.
+    /// Scriptable list/approve interface for pending rule drafts.
     #[command(hide = true)]
     Drafts {
         #[command(subcommand)]
@@ -235,7 +237,7 @@ nothing is written to your real indexes. Not a published benchmark or competitiv
         json: bool,
     },
 
-    /// Replay a recorded review's decision trail — every issue traced to its memory evidence.
+    /// Replay a recorded review's decision trail — every issue traced to its rule evidence.
     #[command(
         hide = true,
         long_about = "Replay one recorded review decision trail from DiffLore Cloud. \
@@ -327,7 +329,7 @@ Pass `--json` for the raw document."
 
 #[derive(Subcommand)]
 pub(crate) enum SkillsCommands {
-    /// Preview cleanup for stale local memory records.
+    /// Preview cleanup for stale local rule records.
     Sweep {
         /// Apply the cleanup. Without this flag, prints a preview only.
         #[arg(long, default_value_t = false)]
@@ -364,7 +366,7 @@ pub(crate) enum DistCommands {
 
 #[derive(Subcommand)]
 pub(crate) enum DraftsCommands {
-    /// List pending memory drafts.
+    /// List pending rule drafts.
     List {
         /// Filter drafts to a GitHub OWNER/REPO.
         #[arg(long, value_name = "OWNER/REPO")]
@@ -373,6 +375,10 @@ pub(crate) enum DraftsCommands {
         /// Maximum drafts to show.
         #[arg(long, value_name = "N")]
         limit: Option<usize>,
+
+        /// Filter drafts by source kind (human, bot:<name>, human_override_bot).
+        #[arg(long, value_name = "KIND")]
+        source_kind: Option<String>,
 
         /// Output as JSON.
         #[arg(long)]
@@ -398,9 +404,13 @@ pub(crate) enum DraftsCommands {
         /// Maximum drafts to review.
         #[arg(long, value_name = "N")]
         limit: Option<usize>,
+
+        /// Filter drafts by source kind (human, bot:<name>, human_override_bot).
+        #[arg(long, value_name = "KIND")]
+        source_kind: Option<String>,
     },
 
-    /// Approve a draft and activate it as local memory.
+    /// Approve a draft and activate it as a local rule.
     Approve {
         /// Pending draft id. Omit when using --all.
         id: Option<String>,
@@ -462,7 +472,7 @@ pub(crate) enum MemoryCommands {
         json: bool,
     },
 
-    /// Show active memory rules currently available to agents.
+    /// Show active rules currently available to agents.
     Active {
         /// Show active rules from every repo. By default only the current repo is shown.
         #[arg(long)]
@@ -492,7 +502,7 @@ pub(crate) enum MemoryCommands {
         json: bool,
     },
 
-    /// Show one memory item with its rule text and source evidence.
+    /// Show one rule item with its text and source evidence.
     Show {
         /// Item id, such as rule:<skill-id>, draft:<skill-id>, or session:<content_hash>.
         item_id: String,
@@ -544,7 +554,7 @@ pub(crate) enum MemoryCommands {
         json: bool,
     },
 
-    /// Import project agent memory files into local DiffLore memory.
+    /// Import project agent rule files into local DiffLore rules.
     ImportAgentFiles {
         /// Output as JSON.
         #[arg(long)]
@@ -558,9 +568,9 @@ pub(crate) enum MemoryCommands {
         limit: Option<usize>,
     },
 
-    /// Let DiffLore locally enable high-confidence memories and leave noisy ones for review.
+    /// Let DiffLore locally enable high-confidence rules and leave noisy ones for review.
     Autopilot {
-        /// Preview what would be enabled without changing local memory.
+        /// Preview what would be enabled without changing local rules.
         #[arg(long)]
         dry_run: bool,
 
@@ -581,10 +591,10 @@ pub(crate) enum MemoryCommands {
         lease_owner: Option<String>,
     },
 
-    /// Clean up duplicate or already-active pending memory candidates.
+    /// Clean up duplicate or already-active pending rule candidates.
     #[command(
         long_about = concat!(
-            "Clean up local pending memory candidates that are safe to remove.\n",
+            "Clean up local pending rule candidates that are safe to remove.\n",
             "By default this previews only. Pass --apply to reject reviewable session\n",
             "candidates that already match an active rule, plus duplicate rows inside\n",
             "a candidate group. Approved optional-sync rows are left untouched."
@@ -604,7 +614,22 @@ pub(crate) enum MemoryCommands {
         json: bool,
     },
 
-    /// Summarize active memory and pending candidate groups.
+    /// Reclassify old GitHub-imported PR-review rules from GitHub author metadata.
+    BackfillSourceKind {
+        /// Apply the updates. Without this flag, only print a preview.
+        #[arg(long, default_value_t = false)]
+        no_dry_run: bool,
+
+        /// Maximum human GitHub PR-review rules to inspect.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Summarize active rules and pending candidate groups.
     Digest {
         /// Maximum candidate groups to show.
         #[arg(long)]
@@ -615,7 +640,7 @@ pub(crate) enum MemoryCommands {
         json: bool,
     },
 
-    /// Show memory groups DiffLore recommends for approval.
+    /// Show rule groups DiffLore recommends for approval.
     Recommended {
         /// Show all recommended groups instead of the default short preview.
         #[arg(long)]
@@ -638,7 +663,7 @@ pub(crate) enum MemoryCommands {
         json: bool,
     },
 
-    /// Show recent local autopilot and disable events.
+    /// Show recent local rule triage and disable events.
     Log {
         /// Maximum events to show.
         #[arg(long)]
@@ -678,7 +703,7 @@ pub(crate) enum MemoryCommands {
         json: bool,
     },
 
-    /// Approve one pending item into active local memory.
+    /// Approve one pending item into active local rules.
     Approve {
         /// Item id, such as session:<content_hash> or draft:<skill-id>.
         item_id: String,
@@ -688,7 +713,7 @@ pub(crate) enum MemoryCommands {
         json: bool,
     },
 
-    /// Reject one pending item and keep it out of active memory.
+    /// Reject one pending item and keep it out of active rules.
     Reject {
         /// Item id, such as session:<content_hash> or draft:<skill-id>.
         item_id: String,
@@ -698,7 +723,7 @@ pub(crate) enum MemoryCommands {
         json: bool,
     },
 
-    /// Review memory suggestions generated from team activity.
+    /// Review rule suggestions generated from team activity.
     TeamCandidates {
         /// Team id. Defaults to the current cloud team.
         #[arg(long)]
@@ -727,10 +752,10 @@ pub(crate) enum MemoryCommands {
     /// Pull published team rules; raw local queues require opt-in flags.
     Sync(SyncCliArgs),
 
-    /// Export active local/team memory rules as an editable package.
+    /// Export active local/team rules as an editable package.
     #[command(
         long_about = concat!(
-            "Export active memory rules to a versioned package for review or hand editing.\n",
+            "Export active rules to a versioned package for review or hand editing.\n",
             "With --format json this writes one JSON file. With --format markdown this writes\n",
             "manifest.json plus one editable Markdown file per rule. The target must be\n",
             "missing, an empty directory, or an empty file; DiffLore refuses to overwrite\n",
@@ -763,10 +788,10 @@ pub(crate) enum MemoryCommands {
         max_rules: Option<u64>,
     },
 
-    /// Import an editable memory package and update matching existing rules.
+    /// Import an editable rule package and update matching existing rules.
     #[command(
         long_about = concat!(
-            "Import a versioned memory package from a JSON file or Markdown directory.\n",
+            "Import a versioned rule package from a JSON file or Markdown directory.\n",
             "The minimal safe loop updates existing rules by id. Missing ids are reported\n",
             "and never created implicitly. Use --dry-run to validate and preview changes."
         )
@@ -776,7 +801,7 @@ pub(crate) enum MemoryCommands {
         #[arg(long, value_name = "PATH")]
         source: PathBuf,
 
-        /// Validate and preview without updating local memory.
+        /// Validate and preview without updating local rules.
         #[arg(long)]
         dry_run: bool,
 
@@ -858,7 +883,7 @@ pub(crate) enum TeamCandidateSeverityArg {
 
 #[derive(Subcommand)]
 pub(crate) enum TeamCandidateCommands {
-    /// Count team memory suggestions.
+    /// Count team rule suggestions.
     Count {
         /// Team id. Defaults to the current cloud team.
         #[arg(long)]
@@ -873,7 +898,7 @@ pub(crate) enum TeamCandidateCommands {
         json: bool,
     },
 
-    /// Show one team memory suggestion.
+    /// Show one team rule suggestion.
     Show {
         /// Team candidate id.
         candidate_id: String,
@@ -883,7 +908,7 @@ pub(crate) enum TeamCandidateCommands {
         json: bool,
     },
 
-    /// Approve one team memory suggestion.
+    /// Approve one team rule suggestion.
     Approve {
         /// Team candidate id.
         candidate_id: String,
@@ -909,7 +934,7 @@ pub(crate) enum TeamCandidateCommands {
         json: bool,
     },
 
-    /// Reject one team memory suggestion.
+    /// Reject one team rule suggestion.
     Reject {
         /// Team candidate id.
         candidate_id: String,

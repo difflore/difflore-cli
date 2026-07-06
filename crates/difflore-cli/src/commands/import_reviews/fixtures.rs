@@ -1,7 +1,6 @@
 #![allow(clippy::expect_used)]
 
 use crate::support::test_home::pin_test_home;
-use difflore_core::contract::{ImportedCommentUpload, ImportedReviewUpload};
 use difflore_core::review_store::{
     AddCommentInput, EnsureItemInput, ReviewCommentRecord, ReviewItemRecord, ReviewItemWithComments,
 };
@@ -261,29 +260,6 @@ pub(super) async fn seed_gitlab_pr_with_directive(
     )
     .await
     .expect("insert imported review comment");
-}
-
-pub(super) fn review(pr: i32, comments: usize) -> ImportedReviewUpload {
-    ImportedReviewUpload {
-        provider: Some("github".to_owned()),
-        provider_host: None,
-        repo_full_name: "difflore-fixtures/example".to_owned(),
-        source_repo_full_name: Some("upstream/example".to_owned()),
-        pr_number: pr,
-        pr_title: Some(format!("PR {pr}")),
-        comments: (0..comments)
-            .map(|i| ImportedCommentUpload {
-                event_type: None,
-                file_path: Some("src/lib.rs".to_owned()),
-                line_number: Some(i as i32 + 1),
-                content: format!("comment {i}"),
-                author: Some("reviewer".to_owned()),
-                comment_url: format!("https://example.test/{pr}#{i}"),
-                thread_id: Some(format!("thread-{pr}-{i}")),
-                occurred_at: Some("2026-04-30T00:00:00Z".to_owned()),
-            })
-            .collect(),
-    }
 }
 
 pub(super) fn imported_item(repo: Option<&str>, metadata: Option<&str>) -> ReviewItemWithComments {

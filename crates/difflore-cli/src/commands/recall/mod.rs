@@ -137,9 +137,9 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
 
     if !json {
         let header = if diff {
-            "Top memories for current diff".to_owned()
+            "Top rules for current diff".to_owned()
         } else {
-            format!("Top memories for: {resolved_intent}")
+            format!("Top rules for: {resolved_intent}")
         };
         println!("{}", style::ok(&header));
         println!();
@@ -313,13 +313,13 @@ pub(crate) async fn handle_recall(ctx: &CommandContext, args: RecallArgs) {
     println!();
     // Bridge to the next useful action. If 0 rules came back, "review"
     // is a misleading bounce (it would just rerun the same empty retrieval);
-    // route the user toward the local candidate path first. Cloud extraction
+    // route the user toward the local candidate path first. Cloud sync
     // is an upgrade path, not the first gate for CLI-only value.
     if zero_match_diagnostics.is_none() {
         println!(
             "next: {}  {}",
             style::cmd("difflore status"),
-            style::pewter("see matched memories, agent readiness, and accepted edits"),
+            style::pewter("see matched rules, agent readiness, and accepted edits"),
         );
     }
     if diff {
@@ -479,9 +479,9 @@ async fn handle_recall_copy(
             println!("_difflore recalled 0 local rules for \"{intent}\"._");
         }
         if !cloud.logged_in {
-            println!("_Cloud PR review memory is available after sign-in._");
+            println!("_Cloud PR review rules are available after sign-in._");
         } else if cloud.repo_full_name.is_none() {
-            println!("_Cloud PR review memory needs a supported repo remote._");
+            println!("_Cloud PR review rules need a supported repo remote._");
         }
         println!();
         println!("_Likely causes:_");
@@ -514,7 +514,7 @@ async fn handle_recall_copy(
             .source_repo
             .as_deref()
             .filter(|repo| !repo.trim().is_empty())
-            .unwrap_or("review memory");
+            .unwrap_or("review rules");
         println!(
             "- **{}** <- learned from `{}`",
             truncate_one_line(&hit.title, 110),
@@ -530,7 +530,7 @@ async fn handle_recall_copy(
         );
         for verdict in &cloud.verdicts {
             let source = source_label(verdict, cloud.repo_full_name.as_deref())
-                .unwrap_or_else(|| "review memory".to_owned());
+                .unwrap_or_else(|| "review rules".to_owned());
             println!(
                 "- **{}** <- learned from `{}`",
                 truncate_one_line(&verdict.issue_text, 110),
@@ -539,10 +539,10 @@ async fn handle_recall_copy(
         }
     } else if !cloud.logged_in {
         println!();
-        println!("_Cloud PR review memory is available after sign-in._");
+        println!("_Cloud PR review rules are available after sign-in._");
     } else if cloud.repo_full_name.is_none() {
         println!();
-        println!("_Cloud PR review memory needs a supported repo remote._");
+        println!("_Cloud PR review rules need a supported repo remote._");
     }
     // Same honesty note as the styled surface: if this paste-ready block was
     // ranked by the local keyword hash, say so, so a user pasting it into an

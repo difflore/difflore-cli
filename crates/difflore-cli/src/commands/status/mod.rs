@@ -11,7 +11,9 @@ mod transform;
 
 use crate::cli::StatusLane;
 use crate::commands::ai_contract::{CLI_SCHEMA_VERSION, NextActionContract};
-use crate::support::util::{init_db, project_path, repo_scopes_for_path};
+use crate::support::util::{
+    active_rule_repo_distribution, init_db, project_path, repo_scopes_for_path,
+};
 use sqlx::Row;
 use std::collections::BTreeMap;
 
@@ -194,13 +196,17 @@ pub(crate) async fn redacted_proof_summary_value(
         },
         "queues": {
             "observationsSkipped": queues.observations,
-            "memoryCandidatesSkipped": queues.memory_candidates,
+            "ruleCandidatesSkipped": queues.memory_candidates,
             "telemetrySkipped": queues.telemetry,
             "acceptedEditUploadsPending": accepted_edit_funnel.accepted_edit_upload_pending,
         },
         "acceptedEditProofFunnel": {
             "stage": accepted_edit_funnel.stage,
+            "proofGrade": accepted_edit_funnel.proof_grade,
             "readyForCloudValue": accepted_edit_funnel.ready_for_cloud_value,
+            "observedValueReady": accepted_edit_funnel.observed_value_ready,
+            "auditableAcceptedEditReady": accepted_edit_funnel.auditable_accepted_edit_ready,
+            "launchGradePaidValueReady": accepted_edit_funnel.launch_grade_paid_value_ready,
             "repoScopeReady": accepted_edit_funnel.repo_scope_ready,
             "agentRecallReady": accepted_edit_funnel.agent_recall_ready,
             "acceptedEditCaptured": accepted_edit_funnel.accepted_edit_captured,
@@ -219,15 +225,6 @@ pub(crate) async fn redacted_proof_summary_value(
 }
 
 pub(crate) fn render_compact_value_summary(summary: &CompactValueSummary) -> Option<String> {
-    if summary.accepted_edits > 0 {
-        return Some(format!(
-            "Value (last {}d): {} accepted edit{}",
-            summary.window_days,
-            summary.accepted_edits,
-            transform::plural(summary.accepted_edits),
-        ));
-    }
-
     let mut parts = Vec::new();
     if summary.recall_events > 0 {
         parts.push(format!(
@@ -293,7 +290,7 @@ impl StatusPayload {
             "activeRules": self.active_rules,
             "pendingCandidates": self.pending_candidates,
             "pendingCandidatesForRepo": self.pending_candidates_for_repo,
-            "memoryInbox": self.memory_inbox,
+            "rulesInbox": self.memory_inbox,
             "repoScope": self.scope,
             "valueLoop": self.value_loop,
             "localAcceptedProof": self.local_proof,
@@ -306,7 +303,7 @@ impl StatusPayload {
             "valueLoopEvidence": self.value_loop_evidence,
             "localHeroEvidence": self.local_hero_evidence,
             "autopilot": self.autopilot,
-            "memoryPulse": self.memory_pulse,
+            "rulesPulse": self.memory_pulse,
             "topCandidatesScope": self.candidate_scope,
             "topCandidates": self.top_candidates,
             "next": NextActionContract::with_blocked_by(
@@ -335,7 +332,6 @@ impl StatusPayload {
             local_proof: &self.local_proof,
             local_recall_proof: &self.local_recall_proof,
             local_mcp_serves: &self.local_mcp_serves,
-            accepted_edit_funnel: &self.accepted_edit_funnel,
             cloud_proof: self.cloud_proof.as_ref(),
             recall_trace: &self.recall_trace,
             proven_rule: self.proven_rule.as_ref(),
@@ -369,7 +365,7 @@ fn append_memory_pulse_text(out: &mut String, pulse: &MemoryPulseStatus) {
     use std::fmt::Write as _;
     let bullet = crate::style::pewter(crate::style::sym::BULLET);
     let _ = writeln!(out);
-    let _ = writeln!(out, "{}", crate::style::ok("Memory pulse"));
+    let _ = writeln!(out, "{}", crate::style::ok("Rules pulse"));
     if !pulse.newly_active.is_empty() {
         let _ = writeln!(
             out,
@@ -521,6 +517,7 @@ async fn compute_status_payload(
     let source_repos = difflore_core::skills::list_source_repos(db)
         .await
         .unwrap_or_default();
+    let active_rule_repos = active_rule_repo_distribution(&active_rules, &source_repos, 3);
 
     let repo_remotes = repo_scopes_for_path(db, project).await;
     let repo_full_name = repo_remotes.first().cloned();
@@ -571,11 +568,17 @@ async fn compute_status_payload(
     } else {
         None
     };
-    let memory_inbox =
-        queries::memory_inbox_summary(db, stats.total, pending_candidates, cloud_logged_in).await;
+    let memory_inbox = queries::memory_inbox_summary(
+        db,
+        stats.total,
+        active_rule_repos,
+        pending_candidates,
+        cloud_logged_in,
+    )
+    .await;
     let autopilot = difflore_core::memory_autopilot_schedule::load_autopilot_schedule_status(db)
         .await
-        .map_err(|e| format!("failed to load memory autopilot status: {e}"))?;
+        .map_err(|e| format!("failed to load rules triage status: {e}"))?;
     let memory_pulse = memory_pulse_status(db, &repo_remotes).await;
     let value_loop = transform::local_value_loop_status(
         &scope,
@@ -716,8 +719,6 @@ mod tests {
                 "localHeroEvidence",
                 "localMcpRuleServes",
                 "localRecallProof",
-                "memoryInbox",
-                "memoryPulse",
                 "next",
                 "pendingCandidates",
                 "pendingCandidatesForRepo",
@@ -725,6 +726,8 @@ mod tests {
                 "provenRuleDrilldown",
                 "recallTrace",
                 "repoScope",
+                "rulesInbox",
+                "rulesPulse",
                 "schemaVersion",
                 "selectedLane",
                 "topCandidates",
@@ -744,38 +747,48 @@ mod tests {
         assert_eq!(envelope["autopilot"]["triggerCount"], 0);
         assert_eq!(envelope["autopilot"]["runCount"], 0);
         assert_eq!(envelope["autopilot"]["productiveRunCount"], 0);
-        assert_eq!(envelope["memoryInbox"]["activeRules"], 0);
-        assert_eq!(envelope["memoryInbox"]["localDrafts"], 0);
+        assert_eq!(envelope["rulesInbox"]["activeRules"], 0);
+        assert_eq!(envelope["rulesInbox"]["localDrafts"], 0);
         assert_eq!(
-            envelope["memoryInbox"]["localDiscoveries"]["sessionMinedCandidates"],
+            envelope["rulesInbox"]["localDiscoveries"]["sessionMinedCandidates"],
             0
         );
         assert_eq!(
-            envelope["memoryInbox"]["localDiscoveries"]["latest"],
+            envelope["rulesInbox"]["localDiscoveries"]["latest"],
             serde_json::json!([])
         );
         assert_eq!(
-            envelope["memoryInbox"]["queues"]["cloudOutbox"],
+            envelope["rulesInbox"]["queues"]["cloudOutbox"],
             serde_json::json!([])
         );
-        assert_eq!(envelope["memoryInbox"]["queues"]["sessionMinedPending"], 0);
+        assert_eq!(envelope["rulesInbox"]["queues"]["sessionMinedPending"], 0);
         assert!(
-            !envelope["memoryInbox"]["cloud"]["loggedIn"]
+            !envelope["rulesInbox"]["cloud"]["loggedIn"]
                 .as_bool()
                 .expect("cloud logged-in flag")
         );
-        assert!(envelope["memoryInbox"]["cloud"]["teamReady"].is_null());
+        assert!(envelope["rulesInbox"]["cloud"]["teamReady"].is_null());
         assert_eq!(envelope["localAcceptedProof"]["acceptedProofSignatures"], 0);
+        assert_eq!(envelope["localAcceptedProof"]["proofGrade"], "none");
+        assert_eq!(envelope["localAcceptedProof"]["reviewCommentsAvoided"], 0);
+        assert_eq!(
+            envelope["localAcceptedProof"]["reviewCommentsAvoidedTotal"],
+            0
+        );
         let accepted_proof_signatures = envelope["localAcceptedProof"]["acceptedProofSignatures"]
             .as_i64()
             .expect("accepted proof signatures count");
-        let accepted_hook_outcomes = envelope["localAcceptedProof"]["acceptedHookOutcomes"]
+        let _accepted_hook_outcomes = envelope["localAcceptedProof"]["acceptedHookOutcomes"]
             .as_i64()
             .expect("accepted hook outcomes count");
         assert_eq!(
             envelope["localAcceptedProof"]["estimatedSavedReviewMinutes"],
-            (accepted_proof_signatures + accepted_hook_outcomes) * 4
+            accepted_proof_signatures * 4
         );
+        assert!(envelope["acceptedEditProofFunnel"]["proofGrade"].is_string());
+        assert!(envelope["acceptedEditProofFunnel"]["observedValueReady"].is_boolean());
+        assert!(envelope["acceptedEditProofFunnel"]["auditableAcceptedEditReady"].is_boolean());
+        assert!(envelope["acceptedEditProofFunnel"]["launchGradePaidValueReady"].is_boolean());
         assert_eq!(envelope["localRecallProof"]["recallEvents"], 0);
         assert_eq!(envelope["localMcpRuleServes"]["calls"], 0);
         assert_eq!(envelope["recallTrace"]["windowHours"], 24);
@@ -839,6 +852,53 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn status_json_surfaces_local_review_comments_avoided() {
+        use difflore_core::observability::review_gate_events::{
+            ReviewGateEventInput, ReviewGateSource, finding_hash, record_many,
+        };
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        pin_test_home();
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open pool");
+        difflore_core::infra::db::run_migrations(&pool)
+            .await
+            .expect("apply migrations");
+        let finding_hash = finding_hash(
+            "rule-1",
+            "src/auth.ts",
+            Some(12),
+            "Use a constant-time token check.",
+        );
+        record_many(
+            &pool,
+            &[ReviewGateEventInput {
+                rule_id: "rule-1".to_owned(),
+                file_path: "src/auth.ts".to_owned(),
+                finding_hash,
+                source: ReviewGateSource::Review,
+            }],
+        )
+        .await
+        .expect("record review gate event");
+
+        let payload = compute_status_payload(&pool, "/tmp/status-test", StatusLane::All)
+            .await
+            .expect("compute payload");
+        let envelope = payload.to_json_envelope();
+
+        assert_eq!(envelope["localAcceptedProof"]["reviewCommentsAvoided"], 1);
+        assert_eq!(
+            envelope["localAcceptedProof"]["reviewCommentsAvoidedTotal"],
+            1
+        );
+    }
+
     /// The human text view leads with value and must never leak the internal
     /// release-gate / evidence vocabulary that lives in the `--json` envelope.
     #[tokio::test]
@@ -860,7 +920,7 @@ mod tests {
         let text = payload.text_view();
 
         // Value-first, human framing via the plain section headers.
-        assert!(text.contains("Memory"), "missing Memory section: {text}");
+        assert!(text.contains("Rules"), "missing Rules section: {text}");
         assert!(text.contains("Value"), "missing Value section: {text}");
         assert!(text.contains("next:"), "missing next action: {text}");
         // With no supported origin, the humanized view surfaces a plain
@@ -876,7 +936,7 @@ mod tests {
             "Lane boundary",
             "countsAsProductionEvidence",
             "releaseReadyInfluence",
-            "memory-use proof",
+            "rule-use proof",
             "context tokens",
             "accepted edit proof",
         ] {
@@ -888,7 +948,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_summary_uses_value_only_after_accepted_edits() {
+    fn compact_summary_leads_with_recall_and_agent_readiness() {
         let value = render_compact_value_summary(&CompactValueSummary {
             window_days: 30,
             accepted_edits: 2,
@@ -896,11 +956,14 @@ mod tests {
             recall_events: 5,
             agent_serves: 64,
         })
-        .expect("accepted edits should produce a value line");
+        .expect("recall and agent serves should produce a readiness line");
 
-        assert_eq!(value, "Value (last 30d): 2 accepted edits");
-        assert!(!value.contains("top memory"));
-        assert!(!value.contains("ready for agents"));
+        assert_eq!(
+            value,
+            "Readiness (last 30d): 5 recalls | 64 ready for agents"
+        );
+        assert!(!value.contains("top rule"));
+        assert!(!value.contains("accepted edit"));
     }
 
     #[test]

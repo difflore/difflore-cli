@@ -12,7 +12,7 @@ use schema::{DirectGraphResponse, GraphResponse, GraphqlResponse, PrNode};
 // Public types
 
 pub struct ImportOptions {
-    /// Repo that imported review memory should attach to locally/cloud-side.
+    /// Repo that imported review memory should attach to locally.
     pub repo: String,
     /// Repo to read PR review history from. Usually the same as `repo`, but
     /// fork workflows can import upstream review history while attaching the
@@ -26,7 +26,6 @@ pub struct ImportOptions {
     /// leak-free recall evaluation. Empty in the common case.
     pub exclude_prs: std::collections::HashSet<i32>,
     pub since: Option<String>,
-    pub upload_to_cloud: bool,
     /// When true, also pull open PRs (still gated by `-review:none`).
     /// Default false → only merged PRs are imported.
     pub include_open: bool,
@@ -51,7 +50,7 @@ query($q: String!, $first: Int!, $after: String) {
         number
         title
         mergedAt
-        author { login }
+        author { __typename login }
         files(first: 100) {
           nodes { path }
         }
@@ -59,7 +58,7 @@ query($q: String!, $first: Int!, $after: String) {
           nodes {
             databaseId
             body
-            author { login }
+            author { __typename login }
             url
             reactionGroups { content users { totalCount } }
           }
@@ -68,7 +67,7 @@ query($q: String!, $first: Int!, $after: String) {
           nodes {
             databaseId
             body
-            author { login }
+            author { __typename login }
             url
             reactionGroups { content users { totalCount } }
           }
@@ -80,7 +79,7 @@ query($q: String!, $first: Int!, $after: String) {
               nodes {
                 databaseId
                 body
-                author { login }
+                author { __typename login }
                 path
                 line
                 url
@@ -103,7 +102,7 @@ query($owner: String!, $name: String!, $number: Int!) {
       number
       title
       mergedAt
-      author { login }
+      author { __typename login }
       files(first: 100) {
         nodes { path }
       }
@@ -111,7 +110,7 @@ query($owner: String!, $name: String!, $number: Int!) {
         nodes {
           databaseId
           body
-          author { login }
+          author { __typename login }
           url
           reactionGroups { content users { totalCount } }
         }
@@ -120,7 +119,7 @@ query($owner: String!, $name: String!, $number: Int!) {
         nodes {
           databaseId
           body
-          author { login }
+          author { __typename login }
           url
           reactionGroups { content users { totalCount } }
         }
@@ -132,7 +131,7 @@ query($owner: String!, $name: String!, $number: Int!) {
             nodes {
               databaseId
               body
-              author { login }
+              author { __typename login }
               path
               line
               url

@@ -200,7 +200,6 @@ use crate::contract::{
     ImpactTopRulesDto, ImpactWeeklyDto, ObservationIngestResult, PastVerdictDto,
     RecallPastVerdictsRequest, RecordAcceptedEditRequest, RecordAcceptedEditResponse,
     RecordReviewMetricsRequest, SaveTrajectoryRequest, SessionMinedCandidateIngestResult,
-    UploadImportedReviewsRequest,
 };
 
 #[derive(Clone)]
@@ -763,18 +762,6 @@ impl CloudClient {
         .await
     }
 
-    /// Outbox-friendly wrapper around [`upload_imported_reviews`].
-    pub(crate) async fn upload_imported_reviews_outcome(
-        &self,
-        req: &UploadImportedReviewsRequest,
-    ) -> crate::Result<(), OutboxFailure> {
-        self.post_fire_and_forget_outcome(
-            api!(POST "/reviews/import", body = req),
-            "upload_imported_reviews",
-        )
-        .await
-    }
-
     /// Outbox-friendly wrapper around [`post_observations`].
     pub(crate) async fn post_observations_outcome(
         &self,
@@ -861,17 +848,6 @@ impl CloudClient {
         self.fetch_logged_in_api_json(
             api!(POST "/accepted-edits", body = &req),
             "record_accepted_edit",
-        )
-        .await
-    }
-
-    /// POST `/reviews/import`: upload locally-imported PR review comments
-    /// for team-wide recall and analytics. Fire-and-forget — must never
-    /// block the local import pipeline.
-    pub async fn upload_imported_reviews(&self, req: &UploadImportedReviewsRequest) -> bool {
-        self.post_fire_and_forget(
-            api!(POST "/reviews/import", body = req),
-            "upload_imported_reviews",
         )
         .await
     }

@@ -20,9 +20,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                 "{} Not logged in to DiffLore Cloud.",
                 style::pewter(style::sym::BULLET)
             );
-            println!(
-                "  Impact shows accepted-fix counts, top recalled rules, and review-effort trends."
-            );
+            println!("  Impact shows coverage, top recalled rules, and team recall reporting.");
             println!("  none of which are computable from local-only data.");
             println!();
             println!("  next: {}", style::cmd("difflore cloud login"));
@@ -65,6 +63,12 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                 usize::MAX,
             )
             .await;
+        let review_gate_summary =
+            difflore_core::observability::review_gate_events::review_comments_avoided_summary(
+                &ctx.db, 30,
+            )
+            .await
+            .unwrap_or_default();
         let mut payload =
             crate::support::impact_payload::shared_sections_with_accepted_proof_sources(
                 &crate::support::impact_payload::ImpactPayloadInputs {
@@ -75,6 +79,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                     fix_scorecard: &fix,
                 },
                 &accepted_proof_sources,
+                review_gate_summary.last30,
             );
         payload.insert("loggedIn".to_owned(), serde_json::Value::Bool(true));
         payload.insert(
@@ -143,7 +148,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
             "    {} {} {}{}",
             style::ok(&super::agent_usage_text_label(agent_usage)),
             style::pewter(style::sym::BULLET),
-            style::pewter(&format!("{} memory fires observed", agent_usage.rule_fires)),
+            style::pewter(&format!("{} rule fires observed", agent_usage.rule_fires)),
             style::pewter(&pending),
         );
         if let Some(recovery) = super::agent_usage_pending_upload_recovery(agent_usage) {
@@ -157,7 +162,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         let max = w
             .weeks
             .iter()
-            .map(|p| p.rules_sedimented + p.past_verdicts_recalled + p.fixes_accepted)
+            .map(|p| p.rules_sedimented + p.past_verdicts_recalled)
             .max()
             .unwrap_or(0)
             .max(1);
@@ -166,7 +171,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
             .weeks
             .iter()
             .map(|p| {
-                let total = p.rules_sedimented + p.past_verdicts_recalled + p.fixes_accepted;
+                let total = p.rules_sedimented + p.past_verdicts_recalled;
                 let idx = ((total as f64 / max as f64) * 7.0).round() as usize;
                 blocks[idx.min(7)]
             })
@@ -176,7 +181,7 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
         println!("  {}  (max {})", style::emerald(&bar), max);
         println!(
             "  {}",
-            style::pewter("rules learned | past verdicts recalled | fixes accepted")
+            style::pewter("rules learned | past verdicts recalled")
         );
     }
 
@@ -201,30 +206,23 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                     (None, Some(l)) => format!(" [{l}]"),
                     _ => String::new(),
                 };
-                let trust = rule.trust_rate.map_or_else(String::new, |rate| {
-                    let pct = (rate * 100.0).round() as i64;
-                    if rule.cited_count > 0 {
-                        format!(" | trust {pct}% ({} cited)", rule.cited_count)
-                    } else {
-                        format!(" | trust {pct}%")
-                    }
-                });
-                let proof = crate::support::impact_payload::accepted_proof_source_label(
+                let source_evidence = crate::support::impact_payload::accepted_proof_source_label(
                     rule.accepted_proof_source
                         .as_deref()
                         .or_else(|| local_proof_sources.get(&rule.id).map(String::as_str)),
                 )
-                .map_or_else(String::new, |label| format!(" | {}", style::pewter(label)));
-                let agent_ready = crate::support::impact_payload::agent_ready_proof_label(
-                    rule.reviewer_proof_ready_count,
-                )
-                .map_or_else(String::new, |label| format!(" | {}", style::pewter(&label)));
-                let reviewer_context =
-                    crate::support::impact_payload::reviewer_context_proof_label(
+                .map(|label| format!("source evidence: {label}"));
+                let reviewer_context = (rule.reviewer_context_serves > 0).then(|| {
+                    format!(
+                        "{} reviewer context recall{}",
                         rule.reviewer_context_serves,
-                        rule.reviewer_mentions,
+                        if rule.reviewer_context_serves == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
                     )
-                    .map_or_else(String::new, |label| format!(" | {}", style::pewter(&label)));
+                });
                 let source_repo = rule
                     .source_repo
                     .as_deref()
@@ -232,14 +230,22 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                         format!(" | {}", style::pewter(&format!("learned from {repo}")))
                     });
                 println!(
-                    "    {} {}{} - {} accepted, {} user{}{trust}{proof}{agent_ready}{reviewer_context}{source_repo}",
+                    "    {} {}{}{}",
                     style::pewter(style::sym::BULLET),
                     rule.name.bold(),
                     style::pewter(&meta),
-                    style::emerald(&rule.acceptance_count.to_string()),
-                    rule.distinct_users,
-                    if rule.distinct_users == 1 { "" } else { "s" },
+                    source_repo,
                 );
+                let evidence = [source_evidence, reviewer_context]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
+                if !evidence.is_empty() {
+                    println!(
+                        "      {}",
+                        style::pewter(&format!("coverage and recall: {}", evidence.join(" | ")))
+                    );
+                }
             }
         }
         Ok(r) => {
@@ -252,18 +258,14 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
                 println!(
                     "    {}",
                     style::pewter(&format!(
-                        "Candidate warming up: {}/{} matching fixes and {}/{} users for {target}.",
-                        progress.acceptance_count,
-                        progress.required_count,
-                        progress.distinct_users,
-                        progress.required_distinct_users,
+                        "Candidate warming up for {target}; coverage and recall need more source evidence before promotion."
                     ))
                 );
             } else {
                 println!(
                     "    {}",
                     style::pewter(
-                        "No candidate rules yet. As your team accepts fixes, patterns will surface here."
+                        "No candidate rules yet. Imported review history and source evidence will surface patterns here."
                     )
                 );
             }
@@ -301,39 +303,56 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
     }
 
     println!();
-    println!("  {}", "Fix acceptance - last 30 days".bold());
+    println!("  {}", "Recall - last 30 days".bold());
     match &fix {
         Ok(f) => {
-            let rate = if f.last30.total > 0 {
-                Some((f.last30.accepted as f64 / f.last30.total as f64) * 100.0)
-            } else {
-                None
-            };
-            let rate_str = match rate {
-                Some(r) => format!("{r:.0}%"),
-                None => "-".to_owned(),
-            };
-            let mut line = format!(
-                "    {} ({} / {} fixes accepted)",
-                style::ok(&rate_str),
-                f.last30.accepted,
-                f.last30.total
-            );
-            if let Some(t) = f.trend_pct {
-                let sign = if t >= 0.0 { "+" } else { "-" };
-                let trend = format!(" {sign}{:.0}% vs prior 30d", t.abs());
-                line.push_str(&if t >= 0.0 {
-                    style::emerald(&trend).to_string()
-                } else {
-                    style::danger(&trend).to_string()
-                });
+            let mut parts = Vec::new();
+            if let Some(roi) = &f.roi {
+                if roi.agent_rules_served_last30 > 0 {
+                    parts.push(format!(
+                        "{} rule{} recalled into agent sessions",
+                        roi.agent_rules_served_last30,
+                        if roi.agent_rules_served_last30 == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ));
+                }
+                if roi.agent_rules_fired_last30 > 0 {
+                    parts.push(format!(
+                        "{} rule{} matched by path triggers",
+                        roi.agent_rules_fired_last30,
+                        if roi.agent_rules_fired_last30 == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ));
+                }
+                if roi.source_evidence_items > 0 {
+                    parts.push(format!(
+                        "{} source evidence item{}",
+                        roi.source_evidence_items,
+                        if roi.source_evidence_items == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ));
+                }
             }
-            println!("{line}");
+            let line = if parts.is_empty() {
+                "coverage and recall signal unavailable".to_owned()
+            } else {
+                parts.join(" | ")
+            };
+            println!("    {}", style::ok(&line));
         }
         Err(e) => println!(
             "    {} {}",
             style::amber("!"),
-            impact_panel_error("fix acceptance", &e.to_string())
+            impact_panel_error("recall", &e.to_string())
         ),
     }
 
@@ -371,13 +390,15 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
             "    {} {}",
             style::pewter(style::sym::BULLET),
             style::pewter(
-                "Sync more reviews via `difflore cloud sync` so this report can show real signal."
+                "Connect approved rules with cloud reporting via `difflore cloud sync` so this report can show coverage and recall."
             )
         );
         println!(
             "    {} {}",
             style::pewter(style::sym::BULLET),
-            style::pewter("Connect the GitHub App on Cloud Team for auto-review on PR push.")
+            style::pewter(
+                "Run another local import, then share approved rules when the team is ready."
+            )
         );
         return;
     }
@@ -397,19 +418,17 @@ pub(crate) async fn handle_impact(ctx: &crate::runtime::CommandContext, json: bo
     println!("  {}", "Why Cloud Team".bold());
     if prs > 0 {
         println!(
-            "    You've reviewed {} PR{} locally. Cloud Team's GitHub App learns \
-             from review history and shares governed rules with every agent.",
+            "    You've reviewed {} PR{} locally. Cloud gives every teammate's agent \
+             the same approved rule set — one system of record, each rule traceable \
+             to the review that set it.",
             style::emerald(&prs.to_string()),
             if prs == 1 { "" } else { "s" }
         );
     }
     if fixes_total >= 5 {
         println!(
-            "    {} local fix outcome{} were recorded in 30d. Cloud plans add \
-             shared team rules, GitHub App ingest, Reviewer Context, team controls, \
-             and impact analytics.",
-            style::emerald(&fixes_total.to_string()),
-            if fixes_total == 1 { "" } else { "s" }
+            "    Cloud plans add the shared team rule set, Reviewer Context, \
+             team controls, and coverage and recall reporting."
         );
     }
     println!(
@@ -445,7 +464,7 @@ fn impact_logged_out_value() -> serde_json::Value {
     impact_needs_login_value(
         "needs_cloud_login",
         "cloud_login_required",
-        "Impact needs cloud-linked activity to show accepted-fix counts, top recalled rules, and review-effort trends.",
+        "Impact needs cloud-linked activity to show coverage, top recalled rules, and team recall reporting.",
     )
 }
 

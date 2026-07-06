@@ -5,6 +5,7 @@ pub mod fix_outcomes;
 pub mod injection_log;
 pub mod mcp_rule_serves;
 pub mod privacy;
+pub mod review_gate_events;
 pub mod rule_outcomes;
 pub mod stated_vs_actual;
 pub mod trajectory;

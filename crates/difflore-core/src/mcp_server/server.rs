@@ -208,7 +208,7 @@ pub(super) async fn handle_resources_read(
                 }]
             }))
         }
-        "difflore://memory/inbox" => {
+        "difflore://rules/inbox" => {
             let memory = crate::memory_inbox::load_memory_items(
                 &state.db,
                 crate::memory_inbox::MemoryListFilter {
@@ -220,7 +220,7 @@ pub(super) async fn handle_resources_read(
                 },
             )
             .await
-            .map_err(|e| (-32603, format!("Error loading memory inbox: {e}")))?;
+            .map_err(|e| (-32603, format!("Error loading rules inbox: {e}")))?;
             Ok(json!({
                 "contents": [{
                     "uri": uri,

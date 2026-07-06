@@ -295,7 +295,7 @@ pub(super) fn hook_activity_section(s: &mut String) -> hook_runtime::HookFireSum
         let healthy = agg.iter().filter(|s| s.top >= 1).count();
         sw!(
             s,
-            "- memory audit rollup: {} run(s), {} rule(s) seen, {} always-noise (matched >=3 runs / never top-N), {} healthy",
+            "- rules audit rollup: {} run(s), {} rule(s) seen, {} always-noise (matched >=3 runs / never top-N), {} healthy",
             audit_runs.len(),
             agg.len(),
             always_noise,
@@ -383,7 +383,7 @@ pub(super) async fn rules_origin_section(ctx: &crate::runtime::CommandContext, s
     }
 }
 
-/// Memory-pipeline view of the 200-event activity tail.
+/// Rules-pipeline view of the 200-event activity tail.
 ///
 /// This is deliberately a *different* slice of the same tail than the
 /// `## Embedding` section's `embedding_activity_summary` (in `formatters.rs`):
@@ -401,7 +401,7 @@ pub(super) fn memory_pipeline_section(s: &mut String) {
     } else {
         "✓"
     };
-    sw!(s, "\n## {stream_mark} Memory pipeline\n");
+    sw!(s, "\n## {stream_mark} Rules pipeline\n");
     if stream_events.is_empty() {
         sw!(
             s,
@@ -700,8 +700,8 @@ async fn cloud_workspace_subsection(s: &mut String) {
         if !crate::commands::init::is_cloud_team(&cloud_status) {
             sw!(
                 s,
-                "  Team unlocks GitHub App review-memory ingest, governed team rules, \
-                 Reviewer Context, and cross-machine sync — {pricing} · local BYOK stays free."
+                "  Team unlocks the shared, approved team rule set, Reviewer Context, \
+                 and multi-device access — {pricing} · local BYOK stays free."
             );
         }
     } else {

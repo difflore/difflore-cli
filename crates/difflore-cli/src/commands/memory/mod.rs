@@ -1,5 +1,6 @@
 mod agent_files;
 mod autopilot;
+mod backfill_source_kind;
 mod inbox;
 mod overview;
 mod package;
@@ -25,7 +26,7 @@ fn exit_structured_err(message: &str, json: bool) -> ! {
 }
 
 /// `"1 rule"` / `"3 rules"` — `count` paired with the correctly pluralized
-/// noun. Shared by the memory inbox and autopilot summaries.
+/// noun. Shared by the rules inbox and autopilot summaries.
 fn count_phrase(count: i64, singular: &str, plural_word: &str) -> String {
     format!("{count} {}", plural(count, singular, plural_word))
 }
@@ -41,6 +42,7 @@ pub(crate) use autopilot::{
     handle_recommended, mark_memory_autopilot_dirty_best_effort,
     schedule_memory_autopilot_best_effort,
 };
+pub(crate) use backfill_source_kind::{BackfillSourceKindArgs, handle_backfill_source_kind};
 pub(crate) use inbox::{
     handle_active, handle_activity, handle_approve, handle_inbox, handle_reject, handle_remember,
     handle_review, handle_show,

@@ -47,7 +47,7 @@ Surface patterns that should be rules but aren't — the highest-leverage captur
 get_past_verdicts(query="<natural-language topic>", file="<optional-path>")
 ```
 
-Returns `{title, body, file_patterns}` memories — including dismissed
+Returns `{title, body, file_patterns}` past verdicts — including dismissed
 ("tried but rejected") ones.
 
 Treat repeated explicit corrections, review comments, failed-fix patterns, and
@@ -61,13 +61,13 @@ repeated pattern before becoming a proposed rule.
 resource: difflore://rules/active        # this project's library as Markdown
 ```
 
-For each memory, check whether an existing rule already covers its topic +
+For each past verdict, check whether an existing rule already covers its topic +
 `file_patterns`. Cross-check with `difflore ask "Do we already have guidance for
 <topic>?"` or `get_rules(ids=[...])` on suspicious matches.
 
 ### 3. Propose captures
 
-Cluster yourself; pick 3-5 patterns that repeat across **3+ memories** with no
+Cluster yourself; pick 3-5 patterns that repeat across **3+ past verdicts** with no
 covering rule. For each, propose the capture shape: action-phrased title,
 matching `file_patterns`, trigger, minimal bad/good, and 1-2 source examples.
 Only call `remember_rule(...)` after the user approves a proposal or explicitly
@@ -75,7 +75,7 @@ asks you to save all of them.
 
 ## Avoid
 
-- Don't propose rules for single-occurrence memories (3+ is the bar).
+- Don't propose rules for single-occurrence verdicts (3+ is the bar).
 - Don't duplicate an existing strong match.
 - Don't propose vague rules ("write better tests") — actionable or it's noise.
 - Don't turn every preference into a rule; it must affect future coding choices."################;
@@ -147,12 +147,12 @@ If none apply cleanly, say "borderline match" — never fabricate a reason.
 - Don't explain in ML abstractions — cite "line X matches glob Y".
 - Don't dismiss a dispute with "the rule is always right." If the user says it
   doesn't apply, they're probably right — check `rule_timeline`; if confirmed
-  bad, say it should be removed via the team memory admin path.
+  bad, say it should be removed via the team rule admin path.
 - Don't walk the whole retrieval stack unless asked."################;
 
 pub(super) const RULE_JOURNEY_SKILL_MD: &str = r################"---
 name: rule-journey
-description: Summarize the local DiffLore rule library for onboarding, retros, or repo memory review.
+description: Summarize the local DiffLore rule library for onboarding, retros, or repo rule review.
 ---
 
 # Rule Journey
@@ -231,7 +231,7 @@ description: Answer broad questions from the team's DiffLore codebase rules — 
 
 # Knowledge Agent
 
-Answer cross-cutting questions over DiffLore memory. Use `difflore ask` for the
+Answer cross-cutting questions over DiffLore rules. Use `difflore ask` for the
 public path; reach for MCP tools only when you need provenance or full bodies.
 
 **Not for:** single-rule lookup (`rule-search`), capturing a rule
@@ -270,20 +270,20 @@ command output proves they were approved.
 - Don't invent "learned N rules" or value receipts; quote the command output."################;
 
 pub(super) const MEMORY_CANDIDATE_TRIAGE_SKILL_MD: &str = r################"---
-name: memory-candidate-triage
-description: Help a user inspect and triage DiffLore memory candidates without approving or rejecting them yourself.
+name: rule-candidate-triage
+description: Help a user inspect and triage DiffLore rule candidates without approving or rejecting them yourself.
 ---
 
-# Memory Candidate Triage
+# Rule Candidate Triage
 
-Use this when the user asks what DiffLore learned, which candidate memories
-exist, what should be approved, or why a memory is or is not active.
+Use this when the user asks what DiffLore learned, which candidate rules
+exist, what should be approved, or why a rule is or is not active.
 
 ## Flow
 
-1. Read the inventory with `list_memory(state="pending", limit=100)` or the
-   `difflore://memory/inbox` resource.
-2. For any item you might recommend, call `get_memory_item(id="<item-id>")`
+1. Read the inventory with `list_rules(state="pending", limit=100)` or the
+   `difflore://rules/inbox` resource.
+2. For any item you might recommend, call `get_rule_item(id="<item-id>")`
    before judging it.
 3. Group items into:
    - approve: specific, reusable, scoped, and not a duplicate
@@ -295,15 +295,15 @@ exist, what should be approved, or why a memory is or is not active.
 5. Explain that only active rules affect agents. Drafts and candidates do not.
    `pending` means saved for review, not failed learning.
 6. Give the exact CLI commands for the user to run, such as
-   `difflore memory approve draft:<id>` or
-   `difflore memory reject session:<hash>`.
+   `difflore rules approve draft:<id>` or
+   `difflore rules reject session:<hash>`.
 7. Treat `pending` as successfully saved for user review, not as a failed
    capture. Do not call `remember_rule` again for the same persisted draft.
 
 ## Guardrails
 
-- Do not approve, reject, sync, archive, delete, or edit memory through MCP.
-- Do not claim a candidate affected code. Use `get_memory_activity` only for
+- Do not approve, reject, sync, archive, delete, or edit rules through MCP.
+- Do not claim a candidate affected code. Use `get_rule_activity` only for
   retrieved/surfaced evidence, not proof of final-code influence.
 - Do not retry or duplicate an existing pending draft just because it is not
   active yet.
@@ -338,9 +338,9 @@ difflore status   # read accepted edits, not the heading
 - **Nothing applied or only recall/agent-ready activity? Say nothing.**
 - Mention pending captures only if this task created them and the command output
   gave concrete ids; label them as pending review, not active agent behavior.
-- Do not mention "top memory", "best memory", recall counts, ready-for-agent
+- Do not mention "top rule", "best rule", recall counts, ready-for-agent
   counts, or "no accepted edits yet" in the recap line.
-- Name a source repo only if you are citing a specific memory that directly
+- Name a source repo only if you are citing a specific rule that directly
   shaped the edit in your main summary, not as a generic recap metric.
 - Do not translate accepted edits into saved time, ROI, avoided comments, or
   reduced review rework.
@@ -362,30 +362,74 @@ Use this when the user wants to start using DiffLore in a private or public repo
 3. Confirm `difflore agents install` was run or that `difflore init` wired the detected local AI CLIs.
 4. Run `difflore import-reviews --dry-run`.
 5. If the dry run is healthy, run `difflore import-reviews`.
-6. If drafts were created, run `difflore memory review` before calling them active rules.
+6. If drafts were created, run `difflore rules review` before calling them active rules.
 7. Run `difflore recall --diff`.
-8. End with a concrete `difflore status` receipt. Only call it value when accepted edits were actually captured.
+8. End with concrete rule-write receipts from `difflore status` or the write commands you ran.
 
 ## Receipts
 
-After every write step, echo the concrete receipt line DiffLore printed, such as:
+After every write step, echo the concrete rule-write receipt line DiffLore printed, such as:
 
-- `+N local memory writes`
+- `+N local rule writes`
 - `+1 rule captured from agent chat`
-- `+N accepted edits recorded for local value tracking`
 
-If a command writes nothing, say what the next command is and do not invent value numbers.
+If a command writes no rules, say what the next command is and do not invent value numbers.
 If a command creates pending candidates, say they were saved for review and are
 not active rules until approved. Never report "N learnings" unless the command
 printed that number.
 
 ## Upgrade Path
 
-Keep local private review backlog import first. Cloud login, upload, and team sync are upgrades:
+Keep local private review backlog import first. Cloud login and team sync are upgrades:
 
-- Use `difflore cloud login` only when the user asks for team sync, multi-device access, managed tokens, or managed embeddings.
-- Use `difflore import-reviews --upload` only after the user has opted into cloud processing.
-- Existing local conversation captures and imported candidates stay local unless explicitly synced."################;
+- Use `difflore cloud login` only when the user asks for team sync, multi-device access, team rule governance, or approval-workflow dashboards.
+- Use `difflore cloud sync` only after the user wants approved rules or explicit include-flag queues synced to Cloud.
+- Existing local conversation captures, raw queues, and imported candidates stay local unless explicitly synced."################;
+
+pub(super) const RULES_REVIEW_SKILL_MD: &str = r################"---
+name: rules-review
+description: Review a diff or PR with the team's DiffLore rules as the review criteria. Use when the user asks to review changes with team rules, or invokes /rules-review.
+---
+
+# Rules Review
+
+Review changes with the team's approved rules as authoritative criteria —
+not generic best practices.
+
+## Flow
+
+1. Collect the changed files (`git diff --name-only <base>...HEAD`, staged, or
+   the files the user pointed at).
+2. Recall the rules that apply — group files by area, one search per area:
+
+```text
+search_rules(intent="<what this change does>", file="src/billing/retry.ts", top_k=5)
+get_rules(ids=["conv-a1f9c"], file="src/billing/retry.ts")   # only the ones that apply
+```
+
+3. Review the diff. Matched rules are the team's review rules — treat them as
+   authoritative review criteria, ahead of generic style opinions.
+4. For each rule-backed finding, cite the rule and its provenance line
+   (`<rule title> ← learned from <repo/PR/session>`), then the file:line.
+5. Findings no rule covers are normal review judgment — report them separately
+   so rule-backed and generic findings stay distinguishable.
+
+## Deterministic gate
+
+For a metered, CI-identical verdict, run the CLI gate instead of (or after)
+this skill: `difflore review --pr <N>` or `difflore review --diff all`.
+Every rule-backed catch it reports is recorded locally.
+
+## Avoid
+
+- Don't dump the whole rule library into context — recall per changed area only.
+- Don't soften a matched rule because the code "looks fine"; if the rule is
+  wrong or stale, say so and point to `difflore rules review` to amend it.
+- Don't claim a finding is rule-backed when no rule matched.
+
+## Related
+
+`rule-search` — targeted recall · `rule-why-fired` — explain a match · `rule-gap` — a convention the library is missing."################;
 
 #[cfg(test)]
 mod tests {
@@ -414,9 +458,10 @@ mod tests {
             ("rule-journey", RULE_JOURNEY_SKILL_MD),
             ("smart-explore", SMART_EXPLORE_SKILL_MD),
             ("knowledge-agent", KNOWLEDGE_AGENT_SKILL_MD),
-            ("memory-candidate-triage", MEMORY_CANDIDATE_TRIAGE_SKILL_MD),
+            ("rule-candidate-triage", MEMORY_CANDIDATE_TRIAGE_SKILL_MD),
             ("session-recap", SESSION_RECAP_SKILL_MD),
             ("difflore-onboard", DIFFLORE_ONBOARD_SKILL_MD),
+            ("rules-review", RULES_REVIEW_SKILL_MD),
         ] {
             let path = skills_root.join(slug).join("SKILL.md");
             let expected = std::fs::read_to_string(&path)

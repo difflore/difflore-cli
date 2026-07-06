@@ -10,7 +10,7 @@ use std::path::Path;
 
 use super::memory_snapshot::{self, MemorySnapshot};
 use crate::installer;
-use crate::support::util::count_rules_for_repo;
+use crate::support::util::{RepoRuleCount, active_rule_repo_distribution, count_rules_for_repo};
 
 /// Everything the readiness table needs, already fetched and decoded.
 /// Construct one with [`gather`].
@@ -36,6 +36,7 @@ pub(crate) struct Findings {
 pub(crate) struct ProjectDbProbe {
     pub(crate) db_available: bool,
     pub(crate) total_rules: i64,
+    pub(crate) active_rule_repos: Vec<RepoRuleCount>,
     pub(crate) prs_imported: i64,
     pub(crate) repo_full_name: Option<String>,
     pub(crate) review_source_repo_full_name: Option<String>,
@@ -185,6 +186,7 @@ async fn probe_project_db(
             probe: ProjectDbProbe {
                 db_available: false,
                 total_rules: 0,
+                active_rule_repos: Vec::new(),
                 prs_imported: 0,
                 repo_full_name: None,
                 review_source_repo_full_name: None,
@@ -211,6 +213,7 @@ async fn probe_project_db(
             probe: ProjectDbProbe {
                 db_available: true,
                 total_rules: 0,
+                active_rule_repos: Vec::new(),
                 prs_imported,
                 repo_full_name: None,
                 review_source_repo_full_name: None,
@@ -235,6 +238,7 @@ async fn probe_project_db(
     let source_repos = difflore_core::skills::list_source_repos(pool)
         .await
         .unwrap_or_default();
+    let active_rule_repos = active_rule_repo_distribution(&active_rules, &source_repos, 3);
     let scoped_active_rules =
         count_rules_for_repo(&active_rules, &source_repos, repo_full_name.as_deref());
     let review_source_active_rules = count_rules_for_repo(
@@ -251,6 +255,7 @@ async fn probe_project_db(
         probe: ProjectDbProbe {
             db_available: true,
             total_rules,
+            active_rule_repos,
             prs_imported,
             repo_full_name,
             review_source_repo_full_name,

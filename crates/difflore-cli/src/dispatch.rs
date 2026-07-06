@@ -123,7 +123,7 @@ pub(crate) async fn dispatch(command: Commands) {
             let ctx = runtime::CommandContext::new(runtime::OutputMode::Json).await;
             maybe_host_hook_forwarder_in_mcp_server(&ctx.db);
             if let Err(e) = difflore_core::mcp_server::run(ctx.db).await {
-                eprintln!("DiffLore memory server failed: {e}");
+                eprintln!("DiffLore MCP server failed: {e}");
             }
         }
         Commands::HookDaemon { project_hash } => {
@@ -179,14 +179,23 @@ async fn dispatch_learn(args: LearnCliArgs) {
 
 async fn dispatch_drafts(command: DraftsCommands) {
     match command {
-        DraftsCommands::List { repo, limit, json } => {
-            commands::drafts::handle_list(repo, limit, json).await;
+        DraftsCommands::List {
+            repo,
+            limit,
+            source_kind,
+            json,
+        } => {
+            commands::drafts::handle_list(repo, limit, source_kind, json).await;
         }
         DraftsCommands::Show { id, json } => {
             commands::drafts::handle_show(id, json).await;
         }
-        DraftsCommands::Review { repo, limit } => {
-            commands::drafts::handle_review(repo, limit).await;
+        DraftsCommands::Review {
+            repo,
+            limit,
+            source_kind,
+        } => {
+            commands::drafts::handle_review(repo, limit, source_kind).await;
         }
         DraftsCommands::Approve {
             id,
@@ -282,6 +291,22 @@ async fn dispatch_memory(root_json: bool, command: Option<MemoryCommands>) {
         Some(MemoryCommands::Cleanup { apply, limit, json }) => {
             let ctx = ctx(json).await;
             commands::memory::handle_cleanup(&ctx, apply, limit, json).await;
+        }
+        Some(MemoryCommands::BackfillSourceKind {
+            no_dry_run,
+            limit,
+            json,
+        }) => {
+            let ctx = ctx(json).await;
+            commands::memory::handle_backfill_source_kind(
+                &ctx,
+                commands::memory::BackfillSourceKindArgs {
+                    dry_run: !no_dry_run,
+                    limit,
+                    json,
+                },
+            )
+            .await;
         }
         Some(MemoryCommands::Digest { limit, json }) => {
             let ctx = ctx(json).await;

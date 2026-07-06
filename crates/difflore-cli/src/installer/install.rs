@@ -8,7 +8,7 @@ use super::{
         MCP_SERVER_ARG, canonical_target_key, resolve_difflore_binary, write_install_manifest,
     },
     diagnosis::client_name_for_surface,
-    manifest::{self, ManifestTarget},
+    manifest::{self, ManagedBy, ManifestTarget},
     registry::{self, AGENTS, AgentSpec, BlockKind},
     snapshot::{collect_agent_statuses, installed_targets_from_agents},
 };
@@ -282,13 +282,16 @@ fn public_install_detail(detail: &str, mcp_bin: &str) -> String {
 fn public_config_suffix_match(detail: &str) -> Option<(usize, usize, &'static str)> {
     let normalized = detail.replace('\\', "/");
     for (suffix, label) in [
+        ("/.copilot/mcp-config.json", "~/.copilot/mcp-config.json"),
         ("/.github/copilot/mcp.json", "~/.github/copilot/mcp.json"),
         (
             "/.gemini/antigravity/mcp_config.json",
             "~/.gemini/antigravity/mcp_config.json",
         ),
+        ("/.config/crush/crush.json", "~/.config/crush/crush.json"),
         ("/.config/crush/mcp.json", "~/.config/crush/mcp.json"),
         ("/.roo/mcp.json", "./.roo/mcp.json"),
+        ("/.warp/.mcp.json", "~/.warp/.mcp.json"),
         ("/.warp/mcp.json", "~/.warp/mcp.json"),
     ] {
         let mut search_from = 0;
@@ -323,15 +326,15 @@ static MCP_TOOLS_HELP: &[(&str, &str)] = &[
         "        - propose \"remember this rule\" drafts",
     ),
     (
-        "list_memory",
-        "           - inspect active rules and pending memory",
+        "list_rules",
+        "           - inspect active and pending rules",
     ),
     (
-        "get_memory_item",
+        "get_rule_item",
         "      - fetch one rule, draft, or candidate",
     ),
     (
-        "get_memory_activity",
+        "get_rule_activity",
         "  - show retrieved/surfaced rule evidence",
     ),
 ];
@@ -372,7 +375,7 @@ fn print_post_install_help(dry_run: bool, outcomes: &[TargetOutcome]) {
     );
     println!();
     println!(
-        "{} memory tools your local agent can now call:",
+        "{} rule tools your local agent can now call:",
         style::emerald(sym::TIP)
     );
     for (name, desc) in MCP_TOOLS_HELP {
@@ -479,23 +482,25 @@ pub(super) fn plan_update_target(
         // current standard render → just re-stamp the manifest (Adopt);
         // on-disk == a known legacy render → rewrite it (Upgrade). Only a
         // block matching neither is treated as a real local edit.
+        Some(_) if on_disk_is_legacy_render && recorded_version < current_version => {
+            UpdateAction::Upgrade {
+                from: recorded_version,
+                to: current_version,
+            }
+        }
         Some(_) if standard_render_hash == Some(on_disk) => UpdateAction::Adopt,
-        Some(_) if on_disk_is_legacy_render => UpdateAction::Upgrade {
-            from: recorded_version,
-            to: current_version,
-        },
         Some(_) => UpdateAction::SkippedLocalEdits,
         // v1 record adoption: no recorded hash. On-disk matching the current
         // writer's standard render is adopted in place; a known legacy render
         // is upgraded; anything else is a local edit → skip.
         None => {
-            if standard_render_hash == Some(on_disk) {
-                UpdateAction::Adopt
-            } else if on_disk_is_legacy_render {
+            if on_disk_is_legacy_render && recorded_version < current_version {
                 UpdateAction::Upgrade {
                     from: recorded_version,
                     to: current_version,
                 }
+            } else if standard_render_hash == Some(on_disk) {
+                UpdateAction::Adopt
             } else {
                 UpdateAction::SkippedLocalEdits
             }
@@ -717,6 +722,7 @@ fn apply_update_action(
             if dry_run {
                 return false;
             }
+            refresh_target_metadata(target, spec);
             target.block_hash = standard_render_hash.or(on_disk_hash).map(ToOwned::to_owned);
             target.block_version = current_version;
             target.updated_at = now;
@@ -742,6 +748,7 @@ fn apply_update_action(
                 return false;
             }
             // Re-hash from the standard render we just wrote, then re-stamp.
+            refresh_target_metadata(target, spec);
             target.block_hash = standard_render_hash
                 .map(ToOwned::to_owned)
                 .or_else(|| manifest::on_disk_block_hash(spec, cli_bin));
@@ -771,6 +778,7 @@ fn apply_update_action(
                 eprintln!("      {}", style::danger(e));
                 return false;
             }
+            refresh_target_metadata(target, spec);
             target.block_version = current_version;
             target.updated_at = now;
             true
@@ -820,6 +828,7 @@ fn apply_update_action(
                 eprintln!("      {}", style::danger(e));
                 return false;
             }
+            refresh_target_metadata(target, spec);
             target.block_hash = standard_render_hash
                 .map(ToOwned::to_owned)
                 .or_else(|| manifest::on_disk_block_hash(spec, cli_bin));
@@ -841,6 +850,25 @@ fn effective_install_spec(spec: &'static AgentSpec) -> &'static AgentSpec {
         return claude;
     }
     spec
+}
+
+fn refresh_target_metadata(target: &mut ManifestTarget, spec: &'static AgentSpec) {
+    let block_kind = registry::block_kind_of(spec);
+    spec.name.clone_into(&mut target.name);
+    target.surface_key = canonical_target_key(spec.name);
+    block_kind.as_str().clone_into(&mut target.block_kind);
+    if block_kind == BlockKind::ExternalCli {
+        target.managed_by = ManagedBy::ExternalCli;
+        target.config_path = None;
+        target.servers_key = None;
+        target.block_hash = None;
+    } else {
+        target.managed_by = ManagedBy::Difflore;
+        target.config_path = registry::resolve_path(spec)
+            .ok()
+            .map(|path| path.display().to_string());
+        target.servers_key = registry::servers_key_of(spec).map(ToOwned::to_owned);
+    }
 }
 
 fn external_cli_label(spec: &AgentSpec) -> &'static str {
@@ -915,20 +943,82 @@ mod update_tests {
 
     #[test]
     fn public_install_detail_rewrites_multiple_config_paths() {
-        let detail = "skipped C:\\Users\\me\\.warp\\mcp.json and /home/me/.roo/mcp.json";
+        let detail = "skipped C:\\Users\\me\\.warp\\.mcp.json and /home/me/.roo/mcp.json and /Users/me/.github/copilot/mcp.json";
 
         assert_eq!(
             public_install_detail(detail, "C:\\bin\\difflore.exe"),
-            "skipped ~/.warp/mcp.json and ./.roo/mcp.json"
+            "skipped ~/.warp/.mcp.json and ./.roo/mcp.json and ~/.github/copilot/mcp.json"
         );
     }
 
     #[test]
     fn public_install_detail_does_not_rewrite_public_labels_again() {
         assert_eq!(
-            public_install_detail("already ~/.warp/mcp.json", "difflore"),
-            "already ~/.warp/mcp.json"
+            public_install_detail("already ~/.warp/.mcp.json", "difflore"),
+            "already ~/.warp/.mcp.json"
         );
+    }
+
+    #[test]
+    fn refresh_target_metadata_uses_current_json_spec_path_and_key() {
+        let spec = registry::find_spec("Copilot CLI").expect("copilot spec");
+        let mut target = ManifestTarget {
+            name: spec.name.to_owned(),
+            surface_key: canonical_target_key(spec.name),
+            managed_by: ManagedBy::Difflore,
+            config_path: Some("/legacy/copilot/mcp.json".to_owned()),
+            servers_key: Some("legacyServers".to_owned()),
+            block_kind: "mcp_json".to_owned(),
+            block_version: 0,
+            block_hash: Some("sha256:old".to_owned()),
+            installed_at: "2026-01-01T00:00:00Z".to_owned(),
+            updated_at: "2026-01-01T00:00:00Z".to_owned(),
+        };
+
+        refresh_target_metadata(&mut target, spec);
+
+        assert_eq!(target.name, spec.name);
+        assert_eq!(target.surface_key, canonical_target_key(spec.name));
+        assert_eq!(target.managed_by, ManagedBy::Difflore);
+        assert_eq!(
+            target.config_path,
+            registry::resolve_path(spec)
+                .ok()
+                .map(|path| path.display().to_string())
+        );
+        assert_eq!(
+            target.servers_key.as_deref(),
+            registry::servers_key_of(spec)
+        );
+        assert_eq!(target.block_kind, registry::block_kind_of(spec).as_str());
+        assert_eq!(target.block_hash.as_deref(), Some("sha256:old"));
+    }
+
+    #[test]
+    fn refresh_target_metadata_clears_external_cli_local_fields() {
+        let spec = registry::find_spec("Codex").expect("codex spec");
+        let mut target = ManifestTarget {
+            name: spec.name.to_owned(),
+            surface_key: canonical_target_key(spec.name),
+            managed_by: ManagedBy::Difflore,
+            config_path: Some("/should/not/persist.json".to_owned()),
+            servers_key: Some("mcpServers".to_owned()),
+            block_kind: "mcp_json".to_owned(),
+            block_version: 0,
+            block_hash: Some("sha256:old".to_owned()),
+            installed_at: "2026-01-01T00:00:00Z".to_owned(),
+            updated_at: "2026-01-01T00:00:00Z".to_owned(),
+        };
+
+        refresh_target_metadata(&mut target, spec);
+
+        assert_eq!(target.name, spec.name);
+        assert_eq!(target.surface_key, canonical_target_key(spec.name));
+        assert_eq!(target.managed_by, ManagedBy::ExternalCli);
+        assert!(target.config_path.is_none());
+        assert!(target.servers_key.is_none());
+        assert_eq!(target.block_kind, registry::block_kind_of(spec).as_str());
+        assert!(target.block_hash.is_none());
     }
 
     #[test]
@@ -1084,6 +1174,20 @@ mod update_tests {
                 0,
                 2,
                 Some("sha256:legacy"),
+                Some("sha256:std"),
+                true
+            ),
+            UpdateAction::Upgrade { from: 0, to: 2 }
+        );
+        // Path-only migrations (Copilot/Warp) can have the same block bytes as
+        // the current render, but they still need a rewrite to the new path.
+        assert_eq!(
+            plan_update_target(
+                false,
+                None,
+                0,
+                2,
+                Some("sha256:std"),
                 Some("sha256:std"),
                 true
             ),

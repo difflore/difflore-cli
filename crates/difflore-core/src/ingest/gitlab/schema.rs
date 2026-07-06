@@ -34,6 +34,11 @@ pub(super) struct DiffNode {
 
 #[derive(Debug, Deserialize)]
 pub(super) struct UserRef {
+    // TODO(gitlab-source-kind): Model GitLab author bot/service-account
+    // fields when the importer promotes GitLab review source_kind beyond
+    // "human". GitLab.com and self-managed versions can expose this via
+    // different user fields, so keep the current schema neutral until parse
+    // logic has a tested provider-specific mapping.
     pub(super) username: String,
 }
 

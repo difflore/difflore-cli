@@ -129,6 +129,19 @@ pub(super) fn classify_group(
         .iter()
         .any(|candidate| candidate.origin == "pr_review")
     {
+        if candidates.iter().any(|candidate| {
+            let source_kind = candidate.source_kind.as_str();
+            source_kind.starts_with("bot:")
+                || source_kind.starts_with("ai_reviewer:")
+                || source_kind == "human_override_bot"
+        }) {
+            return (
+                MemoryCandidateGroupState::NeedsReview,
+                "bot-sourced PR review rule needs human validation before triage can enable it"
+                    .to_owned(),
+                None,
+            );
+        }
         if pr_review_group_is_auto_enable_safe(candidates, source_repo, file_patterns) {
             return (
                 MemoryCandidateGroupState::AutoEnable,
@@ -186,7 +199,7 @@ pub(super) fn classify_group(
     }
     (
         MemoryCandidateGroupState::NeedsReview,
-        "needs human review before becoming active memory".to_owned(),
+        "needs human review before becoming an active rule".to_owned(),
         None,
     )
 }
@@ -253,4 +266,97 @@ fn has_source_evidence(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     lower.contains("source evidence:")
         && (lower.contains("source:") || lower.contains("comment:") || lower.contains("file:"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clean_pr_review_candidate(source_kind: &str) -> PendingMemory {
+        PendingMemory {
+            item_id: "draft-bot-pr-review".to_owned(),
+            kind: PendingMemoryKind::Draft {
+                id: "draft-bot-pr-review".to_owned(),
+            },
+            title: "Validate request headers before parsing".to_owned(),
+            body: "Rule:\nValidate request headers before parsing them.\n\nSource evidence:\nSource: owner/repo#42\nComment: https://github.com/owner/repo/pull/42#discussion_r123\nFile: src/http/request.rs".to_owned(),
+            raw_description: None,
+            content_hash: None,
+            origin: "pr_review".to_owned(),
+            source_kind: source_kind.to_owned(),
+            source_repo: Some("owner/repo".to_owned()),
+            file_patterns: vec!["src/http/request.rs".to_owned()],
+            verdict: None,
+            session_id: None,
+            session_created_at_ms: None,
+            distinct_evidence_count: None,
+            autopilot_disabled: false,
+        }
+    }
+
+    #[test]
+    fn bot_sourced_pr_review_candidates_must_stay_needs_review() {
+        let candidates = vec![clean_pr_review_candidate("bot:review-assistant")];
+
+        let (state, reason, confidence) = classify_group(
+            "owner/repo:validate-request-headers:src/http/request.rs",
+            &candidates,
+            Some("owner/repo"),
+            &candidates[0].file_patterns,
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+        );
+
+        assert_eq!(state, MemoryCandidateGroupState::NeedsReview);
+        assert!(reason.contains("bot-sourced PR review rule"));
+        assert_eq!(confidence, None);
+    }
+
+    /// Human twin of the bot-gate test: an auto-enable-worthy candidate with
+    /// a human source_kind must auto-enable, pinning that the gate
+    /// discriminates on source_kind rather than blanket-blocking pr_review.
+    /// Content mirrors the proven fixture in mod.rs (team-specific, not
+    /// obvious) — the bot-gate fixture's "validate headers" rule would be
+    /// held by the static obviousness filter regardless of source.
+    #[test]
+    fn human_sourced_twin_of_bot_gate_fixture_auto_enables() {
+        let mut candidate = clean_pr_review_candidate("human");
+        candidate.title = "Use base media components".to_owned();
+        candidate.body = "Rule:\nUse base media components for images and videos in UI code instead of raw media tags outside the base component implementations.\n\nSource evidence:\nSource: owner/repo#57\nComment: https://github.com/owner/repo/pull/57#discussion_r57\nFile: src/components/developers/Hero.tsx".to_owned();
+        candidate.file_patterns = vec!["src/components/developers/hero/**/*.tsx".to_owned()];
+        let candidates = vec![candidate];
+
+        let (state, reason, confidence) = classify_group(
+            "owner/repo:use-base-media-components:src/components",
+            &candidates,
+            Some("owner/repo"),
+            &candidates[0].file_patterns,
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+        );
+
+        assert_eq!(state, MemoryCandidateGroupState::AutoEnable);
+        assert!(reason.contains("cleaned PR-review"));
+        assert!(confidence.is_some());
+
+        // Same content, bot-sourced: the gate must flip it to NeedsReview.
+        let mut bot_twin = clean_pr_review_candidate("bot:review-assistant");
+        bot_twin.title = candidates[0].title.clone();
+        bot_twin.body = candidates[0].body.clone();
+        bot_twin.file_patterns = candidates[0].file_patterns.clone();
+        let bot_candidates = vec![bot_twin];
+        let (bot_state, bot_reason, _) = classify_group(
+            "owner/repo:use-base-media-components:src/components",
+            &bot_candidates,
+            Some("owner/repo"),
+            &bot_candidates[0].file_patterns,
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+        );
+        assert_eq!(bot_state, MemoryCandidateGroupState::NeedsReview);
+        assert!(bot_reason.contains("bot-sourced PR review rule"));
+    }
 }

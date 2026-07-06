@@ -1,7 +1,7 @@
 //! Local-only rule outcome telemetry.
 //!
 //! Records when a rule is surfaced by recall (`kind = 'recalled'`) so
-//! `difflore memory` and `rules show` can report which rules pull weight.
+//! `difflore rules` and `rules show` can report which rules pull weight.
 //! Fix-acceptance telemetry lives separately in `fix_outcomes`; both are read
 //! together by the surfaces.
 //!
@@ -284,7 +284,7 @@ mod tests {
         .expect("insert skill");
     }
 
-    /// Locks in the fix for the `difflore memory` zombie-rule bug:
+    /// Locks in the fix for the `difflore rules` zombie-rule bug:
     /// recall events whose owning rule has been deleted from `skills`
     /// must not surface in the Most-recalled list.
     #[tokio::test]

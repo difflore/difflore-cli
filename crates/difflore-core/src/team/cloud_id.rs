@@ -152,6 +152,7 @@ pub(super) fn build_rule_create_body(row: &LocalRuleUploadRow) -> serde_json::Va
         "visibility": "team",
         "filePatterns": file_patterns,
         "origin": row.origin,
+        "sourceKind": crate::skills::normalize_rule_source_kind(Some(&row.source_kind)),
         "sourceRepo": row.source_repo,
     })
 }
@@ -180,7 +181,7 @@ pub(super) async fn ensure_cloud_rule_id(
     let row: Option<LocalRuleUploadRow> = sqlx::query_as::<_, LocalRuleUploadRow>(
         r"SELECT name, type as rule_type, description, version,
            engines as engines_json, tags as tags_json, trigger, check_prompt,
-           file_patterns as file_patterns_json, origin, source_repo
+           file_patterns as file_patterns_json, origin, source_kind, source_repo
            FROM skills WHERE id = ?1",
     )
     .bind(local_id)

@@ -13,7 +13,7 @@ use super::scope::{
     is_review_table_wrapper_line, repo_wide_file_pattern_from_path,
 };
 
-/// Floor for the auto-scaling local memory budget.
+/// Floor for the auto-scaling local rules budget.
 const LOCAL_CANDIDATE_DEFAULT_MIN: usize = 25;
 const LOCAL_CANDIDATE_RELATED_FILES_BODY_LIMIT: usize = 12;
 const FALLBACK_REVIEW_DIRECTIVE: &str =
@@ -84,7 +84,7 @@ pub(super) struct LocalCandidateProgress {
     /// this import run. These are skipped before touching the store, so they do
     /// not strengthen an existing memory.
     pub(super) candidates_duplicate_in_run: usize,
-    /// Store-level dedupe into an existing pending memory. This strengthens the
+    /// Store-level dedupe into an existing pending rule. This strengthens the
     /// stored memory instead of writing a duplicate row.
     pub(super) candidates_deduped: usize,
     /// Re-imported comments whose content already exists as an `active` rule
@@ -970,14 +970,14 @@ pub(super) fn candidate_title(content: &str, fallback_path: &str) -> String {
     if let Some(directive) = best_review_directive_sentence(content).filter(|directive| {
         directive.chars().count() >= 12 && directive != FALLBACK_REVIEW_DIRECTIVE
     }) {
-        format!(
-            "Review: {}",
-            truncate_chars(&upper_first_ascii(&directive), 76)
-        )
+        truncate_chars(&upper_first_ascii(&directive), 84)
     } else if fallback_path.trim().is_empty() {
-        "Review rule from imported PR comment".to_owned()
+        "Imported PR review rule".to_owned()
     } else {
-        format!("Review rule for {}", truncate_chars(fallback_path, 64))
+        format!(
+            "Imported PR review rule for {}",
+            truncate_chars(fallback_path, 64)
+        )
     }
 }
 
@@ -1253,6 +1253,86 @@ fn is_bot_author(author: Option<&str>) -> bool {
         || lower.contains("renovate")
 }
 
+fn source_kind_requires_human_validation(kind: &str) -> bool {
+    let kind = kind.trim();
+    kind.starts_with("bot:") || kind.starts_with("ai_reviewer:") || kind == "human_override_bot"
+}
+
+/// Trust/source bucket for an imported review comment. This is intentionally
+/// narrower than `review_items.source_kind` (GitHub/GitLab import shape) and
+/// models who originated the candidate rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ReviewSourceKind {
+    Human,
+    Bot(String),
+    HumanOverrideBot,
+}
+
+impl ReviewSourceKind {
+    pub(super) fn from_comment_author_type(
+        author: Option<&str>,
+        author_is_bot: Option<bool>,
+    ) -> Self {
+        if author_is_bot == Some(true) {
+            let name = author
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("unknown-bot");
+            return Self::Bot(name.to_owned());
+        }
+        Self::from_comment_author(author)
+    }
+
+    pub(super) fn from_comment_author(author: Option<&str>) -> Self {
+        if is_bot_author(author) {
+            let name = author
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("unknown-bot");
+            return Self::Bot(name.to_owned());
+        }
+        Self::Human
+    }
+
+    /// Author classification with thread context. A human-authored comment in
+    /// a thread where a bot commented earlier (reply linkage captured at
+    /// ingest as `earlierThreadAuthors` / `earlierThreadSourceKinds`) is a
+    /// human weighing in on a bot
+    /// finding — `human_override_bot`, a distinct trust bucket from both a
+    /// bare bot rule and an independent human review.
+    pub(super) fn from_comment_context(
+        author: Option<&str>,
+        author_is_bot: Option<bool>,
+        earlier_thread_authors: &[String],
+        earlier_thread_source_kinds: &[String],
+    ) -> Self {
+        let own = Self::from_comment_author_type(author, author_is_bot);
+        if own == Self::Human
+            && (earlier_thread_authors
+                .iter()
+                .any(|earlier| is_bot_author(Some(earlier)))
+                || earlier_thread_source_kinds
+                    .iter()
+                    .any(|kind| source_kind_requires_human_validation(kind)))
+        {
+            return Self::HumanOverrideBot;
+        }
+        own
+    }
+
+    pub(super) const fn requires_human_validation(&self) -> bool {
+        matches!(self, Self::Bot(_) | Self::HumanOverrideBot)
+    }
+
+    pub(super) fn wire_label(&self) -> String {
+        match self {
+            Self::Human => "human".to_owned(),
+            Self::Bot(name) => format!("bot:{name}"),
+            Self::HumanOverrideBot => "human_override_bot".to_owned(),
+        }
+    }
+}
+
 /// Correctness/durability signal recovered from a comment's metadata JSON
 /// (written by `ingest::github`). Every field degrades to neutral when the
 /// key is absent so pre-signal imports (and older API shapes) score the
@@ -1264,6 +1344,15 @@ struct CaptureDurabilitySignal {
     thumbs_up: i64,
     thumbs_down: i64,
     later_replies: Vec<String>,
+    /// Authors of the earlier comments in the same review thread (reply
+    /// linkage written by ingest). Lets the trust classifier recognise a
+    /// human replying to a bot finding. Empty for thread starters and for
+    /// pre-linkage imports, which degrade to plain author classification.
+    earlier_thread_authors: Vec<String>,
+    /// Typed provenance for earlier comments in the same thread. This preserves
+    /// GraphQL `__typename=Bot` even when the bot login lacks a `[bot]` suffix.
+    earlier_thread_source_kinds: Vec<String>,
+    author_is_bot: Option<bool>,
 }
 
 fn parse_durability_signal(comment: &ReviewCommentRecord) -> CaptureDurabilitySignal {
@@ -1296,6 +1385,27 @@ fn parse_durability_signal(comment: &ReviewCommentRecord) -> CaptureDurabilitySi
                     .collect()
             })
             .unwrap_or_default(),
+        earlier_thread_authors: value
+            .get("earlierThreadAuthors")
+            .and_then(serde_json::Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        earlier_thread_source_kinds: value
+            .get("earlierThreadSourceKinds")
+            .and_then(serde_json::Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        author_is_bot: value
+            .get("authorIsBot")
+            .and_then(serde_json::Value::as_bool),
     }
 }
 
@@ -1383,7 +1493,7 @@ pub(super) fn route_for_confidence(confidence: f32) -> CaptureRoute {
     }
 }
 
-fn route_for_comment_confidence(confidence: f32, _is_bot: bool) -> CaptureRoute {
+fn route_for_comment_confidence(confidence: f32) -> CaptureRoute {
     match route_for_confidence(confidence) {
         CaptureRoute::Active => CaptureRoute::Candidate,
         route => route,
@@ -1395,6 +1505,7 @@ pub(super) struct LocalCandidate {
     pub(super) input: RememberRuleInput,
     pub(super) confidence: f32,
     pub(super) route: CaptureRoute,
+    pub(super) source_kind: ReviewSourceKind,
 }
 
 pub(super) fn local_candidate_input(
@@ -1430,9 +1541,15 @@ pub(super) fn local_candidate_input(
 
     // ── Correctness-aware confidence + routing ──────────────────────────────
     let signal = parse_durability_signal(comment);
-    let is_bot = is_bot_author(comment.author.as_deref());
+    let source_kind = ReviewSourceKind::from_comment_context(
+        comment.author.as_deref(),
+        signal.author_is_bot,
+        &signal.earlier_thread_authors,
+        &signal.earlier_thread_source_kinds,
+    );
+    let is_bot = source_kind.requires_human_validation();
     let confidence = capture_confidence(directive_score, is_bot, &signal);
-    let route = route_for_comment_confidence(confidence, is_bot);
+    let route = route_for_comment_confidence(confidence);
     if route == CaptureRoute::Drop {
         return None;
     }
@@ -1506,6 +1623,7 @@ pub(super) fn local_candidate_input(
         input,
         confidence,
         route,
+        source_kind,
     })
 }
 
@@ -1606,6 +1724,7 @@ pub(super) async fn run_local_candidates(
                 input,
                 confidence,
                 route,
+                source_kind,
             }) = local_candidate_input(item, comment, source_repo)
             else {
                 progress.comments_skipped += 1;
@@ -1638,11 +1757,12 @@ pub(super) async fn run_local_candidates(
             // Seed the draft with the gate's capture confidence instead of the
             // flat conversation default. Heuristic review import never promotes
             // directly; local-agent distillation owns the active route.
-            match difflore_core::skills::remember_as_candidate_with_confidence_for_repo(
+            match difflore_core::skills::remember_as_candidate_with_confidence_for_repo_and_source_kind(
                 db,
                 input,
                 confidence,
                 source_repo,
+                Some(&source_kind.wire_label()),
             )
             .await
             {
@@ -1671,7 +1791,7 @@ pub(super) async fn run_local_candidates(
                         progress.candidates_created += 1;
                     }
                 }
-                Err(e) => exit_err(&format!("failed to create local memory: {e}")),
+                Err(e) => exit_err(&format!("failed to create local rules: {e}")),
             }
             if local_candidate_budget_reached(&progress) {
                 progress.capped = true;
@@ -1705,8 +1825,17 @@ fn normalize_candidate_signature_part(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress, repo: &str) {
+pub(super) fn print_local_candidate_next_steps(
+    progress: &LocalCandidateProgress,
+    repo: &str,
+    actual_distill: &str,
+) {
     println!();
+    println!(
+        "  {} distill: {}",
+        style::pewter(style::sym::BULLET),
+        style::pewter(actual_distill),
+    );
     if progress.candidates_created == 0
         && progress.candidates_deduped == 0
         && progress.candidates_duplicate_in_run == 0
@@ -1733,8 +1862,17 @@ pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress
             "  {} No local rules created from the imported comments.",
             style::pewter(style::sym::BULLET),
         );
+        let agent_files_here = std::env::current_dir()
+            .is_ok_and(|cwd| crate::support::util::dir_has_agent_rule_files(&cwd));
+        if agent_files_here {
+            style::println_wrapped(&format!(
+                "  {} Fast-merge teams often keep their judgment in agent rule files instead of review threads — mine those:",
+                style::pewter(style::sym::BULLET),
+            ));
+            println!("    {}", style::cmd("difflore rules import-agent-files"));
+        }
         style::println_wrapped(&format!(
-            "  {} Try a larger import window, then review pending local memory before enabling agents.",
+            "  {} Try a larger import window, then review pending local rules before enabling agents.",
             style::pewter(style::sym::BULLET),
         ));
         println!(
@@ -1751,29 +1889,29 @@ pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress
 
     if progress.candidates_created == 0 {
         println!(
-            "  {} No new local review memories created.",
+            "  {} No new local review rules created.",
             style::emerald(style::sym::OK),
         );
         if progress.candidates_deduped > 0 {
             println!(
-                "  {} strengthened existing memories: {}",
+                "  {} strengthened existing rules: {}",
                 style::pewter(style::sym::BULLET),
                 progress.candidates_deduped,
             );
         }
     } else {
         println!(
-            "  {} Created {} local review memor{}.",
+            "  {} Created {} local review rule{}.",
             style::emerald(style::sym::OK),
             progress.candidates_created,
             if progress.candidates_created == 1 {
-                "y"
+                ""
             } else {
-                "ies"
+                "s"
             },
         );
         println!(
-            "  +{} local memory write{} ({} active, {} pending, {} strengthened).",
+            "  +{} local rules write{} ({} active, {} pending, {} strengthened).",
             progress.candidates_created,
             if progress.candidates_created == 1 {
                 ""
@@ -1836,7 +1974,7 @@ pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress
     }
     if progress.candidates_deduped > 0 {
         style::println_wrapped(&format!(
-            "  {} strengthened means matching existing memories were reinforced instead of repeated.",
+            "  {} strengthened means matching existing rules were reinforced instead of repeated.",
             style::pewter(style::sym::BULLET),
         ));
     }
@@ -1872,7 +2010,7 @@ pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress
     }
     if progress.capped {
         style::println_wrapped(&format!(
-            "  {} hit the local memory budget.",
+            "  {} hit the local rules budget.",
             style::pewter(style::sym::BULLET),
         ));
         style::println_wrapped(&format!(
@@ -1884,7 +2022,7 @@ pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress
     println!();
     if progress.candidates_activated > 0 {
         println!(
-            "  {} Agents can use approved local memory now:",
+            "  {} Agents can use approved local rules now:",
             style::emerald(style::sym::TIP),
         );
         for cmd in active_candidate_next_step_commands() {
@@ -1892,7 +2030,7 @@ pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress
         }
         if progress.candidates_pending > 0 {
             println!(
-                "  {} Review remaining pending memory before agents use it:",
+                "  {} Review remaining pending rule before agents use it:",
                 style::emerald(style::sym::TIP),
             );
             for cmd in pending_candidate_next_step_commands(repo) {
@@ -1901,7 +2039,7 @@ pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress
         }
     } else if progress.candidates_pending > 0 {
         println!(
-            "  {} Review pending memory before agents use it:",
+            "  {} Review pending rule before agents use it:",
             style::emerald(style::sym::TIP),
         );
         for cmd in pending_candidate_next_step_commands(repo) {
@@ -1913,7 +2051,7 @@ pub(super) fn print_local_candidate_next_steps(progress: &LocalCandidateProgress
 pub(super) const fn active_candidate_next_step_commands() -> &'static [&'static str] {
     &[
         "difflore status",
-        "difflore memory active",
+        "difflore rules active",
         "difflore recall --diff",
         "difflore review --diff all",
     ]
@@ -1921,7 +2059,7 @@ pub(super) const fn active_candidate_next_step_commands() -> &'static [&'static 
 
 pub(super) fn pending_candidate_next_step_commands(repo: &str) -> Vec<String> {
     vec![
-        "difflore memory review".to_owned(),
+        "difflore rules review".to_owned(),
         format!("difflore drafts list --repo {repo} --json"),
         format!("difflore drafts approve --all --repo {repo} --yes"),
     ]
@@ -1936,7 +2074,7 @@ pub(super) fn pending_drafts_review_hint(count: usize) -> (String, String, &'sta
     let plural = if count == 1 { "" } else { "s" };
     (
         format!("{count} medium-confidence draft{plural} held for review; decide in "),
-        "difflore memory review".to_owned(),
+        "difflore rules review".to_owned(),
         ", or let an agent inspect with `difflore drafts list --json`.",
     )
 }
@@ -1992,7 +2130,7 @@ mod tests {
         assert_confidence(confidence, 0.70);
         assert_eq!(route_for_confidence(confidence), CaptureRoute::Active);
         assert_eq!(
-            route_for_comment_confidence(confidence, false),
+            route_for_comment_confidence(confidence),
             CaptureRoute::Candidate
         );
     }
@@ -2000,11 +2138,11 @@ mod tests {
     #[test]
     fn heuristic_comment_route_vetoes_auto_activation_for_all_authors() {
         assert_eq!(
-            route_for_comment_confidence(CAPTURE_CONFIDENCE_HIGH + 0.10, true),
+            route_for_comment_confidence(CAPTURE_CONFIDENCE_HIGH + 0.10),
             CaptureRoute::Candidate
         );
         assert_eq!(
-            route_for_comment_confidence(CAPTURE_CONFIDENCE_HIGH + 0.10, false),
+            route_for_comment_confidence(CAPTURE_CONFIDENCE_HIGH + 0.10),
             CaptureRoute::Candidate
         );
     }
@@ -2082,9 +2220,126 @@ mod tests {
         assert_confidence(confidence, 0.65);
         assert_eq!(route_for_confidence(confidence), CaptureRoute::Active);
         assert_eq!(
-            route_for_comment_confidence(confidence, false),
+            route_for_comment_confidence(confidence),
             CaptureRoute::Candidate
         );
+    }
+
+    #[test]
+    fn human_reply_in_bot_thread_classifies_as_human_override_bot() {
+        let bot_thread = vec!["coderabbitai[bot]".to_owned()];
+        let human_thread = vec!["reviewer".to_owned()];
+
+        let override_kind =
+            ReviewSourceKind::from_comment_context(Some("alice"), None, &bot_thread, &[]);
+        assert_eq!(override_kind, ReviewSourceKind::HumanOverrideBot);
+        assert_eq!(override_kind.wire_label(), "human_override_bot");
+        assert!(
+            override_kind.requires_human_validation(),
+            "a human overriding a bot source must still require review"
+        );
+
+        // Human thread + human reply stays plain human.
+        assert_eq!(
+            ReviewSourceKind::from_comment_context(Some("alice"), None, &human_thread, &[]),
+            ReviewSourceKind::Human
+        );
+        // No thread context (thread starter / pre-linkage import) stays human.
+        assert_eq!(
+            ReviewSourceKind::from_comment_context(Some("alice"), None, &[], &[]),
+            ReviewSourceKind::Human
+        );
+        // A bot replying in a bot thread stays a pure bot rule.
+        assert_eq!(
+            ReviewSourceKind::from_comment_context(Some("dependabot[bot]"), None, &bot_thread, &[]),
+            ReviewSourceKind::Bot("dependabot[bot]".to_owned())
+        );
+    }
+
+    #[test]
+    fn human_reply_uses_typed_earlier_source_kind_when_login_is_plain() {
+        let earlier_authors = vec!["review-assistant".to_owned()];
+        let earlier_source_kinds = vec!["bot:review-assistant".to_owned()];
+
+        let override_kind = ReviewSourceKind::from_comment_context(
+            Some("alice"),
+            None,
+            &earlier_authors,
+            &earlier_source_kinds,
+        );
+
+        assert_eq!(override_kind, ReviewSourceKind::HumanOverrideBot);
+        assert!(override_kind.requires_human_validation());
+    }
+
+    #[test]
+    fn parse_durability_signal_reads_earlier_thread_authors_from_metadata() {
+        let comment = ReviewCommentRecord {
+            id: "comment-1".to_owned(),
+            review_item_id: "item-1".to_owned(),
+            external_comment_id: Some("comment-1".to_owned()),
+            line_number: Some(3),
+            content: "Agreed, validate the header everywhere.".to_owned(),
+            author: Some("alice".to_owned()),
+            comment_url: None,
+            thread_id: Some("thread-1".to_owned()),
+            metadata: Some(
+                serde_json::json!({
+                    "filePath": "src/http/request.rs",
+                    "resolved": true,
+                    "earlierThreadAuthors": ["coderabbitai[bot]"],
+                    "earlierThreadSourceKinds": ["bot:coderabbitai[bot]"],
+                })
+                .to_string(),
+            ),
+            created_at: "2026-05-01 00:00:00".to_owned(),
+        };
+
+        let signal = parse_durability_signal(&comment);
+        assert_eq!(
+            signal.earlier_thread_authors,
+            vec!["coderabbitai[bot]".to_owned()]
+        );
+        assert_eq!(
+            signal.earlier_thread_source_kinds,
+            vec!["bot:coderabbitai[bot]".to_owned()]
+        );
+    }
+
+    #[test]
+    fn author_is_bot_metadata_classifies_plain_login_as_bot_source_kind() {
+        let comment = ReviewCommentRecord {
+            id: "comment-1".to_owned(),
+            review_item_id: "item-1".to_owned(),
+            external_comment_id: Some("comment-1".to_owned()),
+            line_number: Some(3),
+            content: "Validate headers before parsing.".to_owned(),
+            author: Some("review-assistant".to_owned()),
+            comment_url: None,
+            thread_id: Some("thread-1".to_owned()),
+            metadata: Some(
+                serde_json::json!({
+                    "authorIsBot": true,
+                    "filePath": "src/http/request.rs",
+                })
+                .to_string(),
+            ),
+            created_at: "2026-05-01 00:00:00".to_owned(),
+        };
+
+        let signal = parse_durability_signal(&comment);
+        let source_kind = ReviewSourceKind::from_comment_context(
+            comment.author.as_deref(),
+            signal.author_is_bot,
+            &signal.earlier_thread_authors,
+            &signal.earlier_thread_source_kinds,
+        );
+
+        assert_eq!(
+            source_kind,
+            ReviewSourceKind::Bot("review-assistant".to_owned())
+        );
+        assert_eq!(source_kind.wire_label(), "bot:review-assistant");
     }
 
     #[test]
@@ -2161,11 +2416,11 @@ mod tests {
                 "This endpoint became easier to maintain after the refactor.",
                 "src/api/router.rs",
             ),
-            "Review rule for src/api/router.rs",
+            "Imported PR review rule for src/api/router.rs",
         );
         assert_eq!(
             candidate_title("This endpoint became easier to maintain.", ""),
-            "Review rule from imported PR comment",
+            "Imported PR review rule",
         );
     }
 }

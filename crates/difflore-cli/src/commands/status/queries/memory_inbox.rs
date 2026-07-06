@@ -11,6 +11,7 @@ const LOCAL_TRIAGE_DROPPED_LOW_SIGNAL: &str = "dropped_low_signal";
 #[serde(rename_all = "camelCase")]
 pub(in crate::commands::status) struct MemoryInboxSummary {
     pub(in crate::commands::status) active_rules: i64,
+    pub(in crate::commands::status) active_rule_repos: Vec<crate::support::util::RepoRuleCount>,
     pub(in crate::commands::status) local_drafts: i64,
     pub(in crate::commands::status) local_discoveries: LocalDiscoverySummary,
     pub(in crate::commands::status) queues: MemoryQueueSummary,
@@ -72,6 +73,7 @@ impl MemoryInboxSummary {
     ) -> Self {
         Self {
             active_rules,
+            active_rule_repos: Vec::new(),
             local_drafts,
             local_discoveries: LocalDiscoverySummary {
                 session_mined_candidates: 0,
@@ -92,11 +94,13 @@ impl MemoryInboxSummary {
 pub(in crate::commands::status) async fn memory_inbox_summary(
     db: &difflore_core::SqlitePool,
     active_rules: i64,
+    active_rule_repos: Vec<crate::support::util::RepoRuleCount>,
     local_drafts: i64,
     cloud_logged_in: bool,
 ) -> MemoryInboxSummary {
     let Ok(queue_counts) = cloud_outbox_counts(db).await else {
         let mut summary = MemoryInboxSummary::empty(active_rules, local_drafts, cloud_logged_in);
+        summary.active_rule_repos = active_rule_repos;
         summary
             .warnings
             .push("cloud_outbox summary unavailable".to_owned());
@@ -129,6 +133,7 @@ pub(in crate::commands::status) async fn memory_inbox_summary(
 
     MemoryInboxSummary {
         active_rules,
+        active_rule_repos,
         local_drafts,
         local_discoveries: LocalDiscoverySummary {
             session_mined_candidates: visible_session_mined_count(db, &mut warnings)
@@ -397,7 +402,7 @@ mod tests {
         )
         .await;
 
-        let summary = memory_inbox_summary(&pool, 2, 1, true).await;
+        let summary = memory_inbox_summary(&pool, 2, Vec::new(), 1, true).await;
 
         assert_eq!(summary.active_rules, 2);
         assert_eq!(summary.local_drafts, 1);
@@ -428,7 +433,7 @@ mod tests {
         )
         .await;
 
-        let summary = memory_inbox_summary(&pool, 0, 0, true).await;
+        let summary = memory_inbox_summary(&pool, 0, Vec::new(), 0, true).await;
 
         assert_eq!(summary.local_discoveries.session_mined_candidates, 0);
         assert_eq!(summary.queues.session_mined_blocked, 1);

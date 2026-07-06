@@ -52,7 +52,7 @@ pub fn maybe_offer_import_reviews(opts: &PostInstallScanOpts) -> PostInstallScan
         Err(e) => {
             eprintln!(
                 "{} {e}",
-                style::warn("post-install memory onboarding skipped:")
+                style::warn("post-install rules onboarding skipped:")
             );
             return PostInstallScanOutcome::ImportFailed { error: e };
         }
@@ -94,7 +94,7 @@ fn print_outcome_footer(outcome: &PostInstallScanOutcome, agent_files_queued: bo
         PostInstallScanOutcome::ImportedReviews { pr_count, .. } => {
             println!();
             let queued = if agent_files_queued {
-                format!("Queued memory onboarding for agent files and up to {pr_count} PRs.")
+                format!("Queued rules onboarding for agent files and up to {pr_count} PRs.")
             } else {
                 format!("Queued a bounded import for up to {pr_count} PRs.")
             };
@@ -106,15 +106,15 @@ fn print_outcome_footer(outcome: &PostInstallScanOutcome, agent_files_queued: bo
             );
             println!(
                 "   {} {}",
-                style::cmd("difflore memory import-agent-files"),
-                style::pewter("to seed local agent-file memory anytime."),
+                style::cmd("difflore rules import-agent-files"),
+                style::pewter("to seed local agent-file rules anytime."),
             );
         }
         PostInstallScanOutcome::ImportFailed { error } => {
             eprintln!();
             eprintln!(
                 "{} {error}",
-                style::warn("post-install memory import failed:")
+                style::warn("post-install rules import failed:")
             );
             eprintln!(
                 "  {} retry later with {}.",
@@ -127,7 +127,7 @@ fn print_outcome_footer(outcome: &PostInstallScanOutcome, agent_files_queued: bo
                 println!();
                 println!(
                     "📥 {} {}",
-                    style::emerald("Queued agent-file memory onboarding."),
+                    style::emerald("Queued agent-file rules onboarding."),
                     style::pewter("Run"),
                 );
                 println!(

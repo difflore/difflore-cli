@@ -160,10 +160,10 @@ pub async fn approve_memory_candidate_group(
         .groups
         .into_iter()
         .find(|group| group.digest.group_id == group_id)
-        .ok_or_else(|| CoreError::NotFound(format!("memory candidate group {group_id}")))?;
+        .ok_or_else(|| CoreError::NotFound(format!("rule candidate group {group_id}")))?;
     if group.digest.state != MemoryCandidateGroupState::Recommended {
         return Err(CoreError::Validation(format!(
-            "memory candidate group {group_id} is {:?}, not recommended",
+            "rule candidate group {group_id} is {:?}, not recommended",
             group.digest.state
         )));
     }
@@ -330,7 +330,7 @@ pub(super) async fn refine_pr_review_groups_with_local_ai(
                 .filter(|group| submitted_group_ids.contains(&group.digest.group_id))
             {
                 let Some(decision) = decisions_by_group.get(&group.digest.group_id) else {
-                    "local memory curator did not return a decision for this PR review"
+                    "local rule curator did not return a decision for this PR review"
                         .clone_into(&mut group.digest.reason);
                     continue;
                 };
@@ -406,19 +406,18 @@ pub(super) fn apply_curator_decision(
     let reason = decision
         .reason
         .as_deref()
-        .unwrap_or("local memory curator review");
+        .unwrap_or("local rule curator review");
     group.digest.confidence = Some(format_confidence(decision.confidence));
     if decision.action != MemoryCuratorAction::Enable {
         group.digest.reason =
-            format!("local memory curator left this PR review for human cleanup: {reason}");
+            format!("local rule curator left this PR review for human cleanup: {reason}");
         return;
     }
     let title = decision.title.as_deref().map_or("", str::trim);
     let rule = decision.rule.as_deref().map_or("", str::trim);
     if !curator_rule_is_safe(title, rule) {
-        group.digest.reason = format!(
-            "local memory curator proposed rule text did not pass the safety gate: {reason}"
-        );
+        group.digest.reason =
+            format!("local rule curator proposed rule text did not pass the safety gate: {reason}");
         return;
     }
 
@@ -437,17 +436,17 @@ pub(super) fn apply_curator_decision(
     if decision.confidence >= options.min_confidence {
         group.digest.state = MemoryCandidateGroupState::AutoEnable;
         group.digest.reason = format!(
-            "local memory curator refined this PR review into a high-confidence rule: {reason}"
+            "local rule curator refined this PR review into a high-confidence rule: {reason}"
         );
         group.digest.confidence = Some(AUTOPILOT_CONFIDENCE.to_owned());
     } else if decision.confidence >= DEFAULT_RECOMMENDED_MIN_CONFIDENCE {
         group.digest.state = MemoryCandidateGroupState::Recommended;
         group.digest.reason =
-            format!("local memory curator recommends this rule after review: {reason}");
+            format!("local rule curator recommends this rule after review: {reason}");
         group.digest.confidence = Some(format_confidence(decision.confidence));
     } else {
         group.digest.reason = format!(
-            "local memory curator confidence {:.2} is below recommendation threshold {:.2}: {reason}",
+            "local rule curator confidence {:.2} is below recommendation threshold {:.2}: {reason}",
             decision.confidence, DEFAULT_RECOMMENDED_MIN_CONFIDENCE
         );
     }
@@ -459,8 +458,7 @@ pub(super) fn mark_ai_refinement_unavailable(groups: &mut [PlannedGroup], detail
         .iter_mut()
         .filter(|group| pr_review_group_needs_ai_refinement(group))
     {
-        group.digest.reason =
-            format!("local memory curator unavailable; review manually: {detail}");
+        group.digest.reason = format!("local rule curator unavailable; review manually: {detail}");
     }
 }
 
@@ -470,7 +468,7 @@ pub(super) async fn enable_group(
 ) -> Result<SkillRecord> {
     let Some(primary) = primary_candidate(candidates) else {
         return Err(CoreError::Validation(
-            "cannot enable an empty memory candidate group".to_owned(),
+            "cannot enable an empty rule candidate group".to_owned(),
         ));
     };
 

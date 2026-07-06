@@ -37,6 +37,7 @@ fn rule_create_body_preserves_local_origin() {
         check_prompt: Some("Check logging calls".into()),
         file_patterns_json: Some(r#"["**/*.rs"]"#.into()),
         origin: "conversation".into(),
+        source_kind: "bot:review-assistant".into(),
         source_repo: Some("acme/widgets".into()),
     };
 
@@ -45,6 +46,7 @@ fn rule_create_body_preserves_local_origin() {
     assert_eq!(body["content"].as_str(), Some(row.description.as_str()));
     assert_eq!(body["visibility"].as_str(), Some("team"));
     assert_eq!(body["filePatterns"][0].as_str(), Some("**/*.rs"));
+    assert_eq!(body["sourceKind"].as_str(), Some("bot:review-assistant"));
     assert_eq!(body["sourceRepo"].as_str(), Some("acme/widgets"));
 }
 
@@ -61,12 +63,14 @@ fn rule_create_body_falls_back_to_name_for_empty_content() {
         check_prompt: None,
         file_patterns_json: None,
         origin: "manual".into(),
+        source_kind: "not-a-trusted-kind".into(),
         source_repo: None,
     };
 
     let body = build_rule_create_body(&row);
     assert_eq!(body["content"].as_str(), Some("Name only"));
     assert_eq!(body["origin"].as_str(), Some("manual"));
+    assert_eq!(body["sourceKind"].as_str(), Some("bot:unknown"));
 }
 
 #[tokio::test]

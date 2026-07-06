@@ -1,7 +1,7 @@
 //! SQLite-backed outbox queue for fire-and-forget cloud uploads.
 //!
 //! Every fire-and-forget cloud POST (trajectory, `review_metrics`,
-//! `accepted_edit`, `mcp_query`, `imported_reviews`) is first appended as a
+//! `accepted_edit`, `mcp_query`, observation, session-mined candidates) is first appended as a
 //! `pending` row in the global `~/.difflore/data.db`. Drain can run from CLI
 //! sync paths or the self-managed background daemon; hooks stay on the hot path
 //! by enqueueing locally first.
@@ -737,6 +737,7 @@ pub struct OutboxDrainReport {
 struct DispatchOutcome {
     ok: bool,
     accepted_edit_attribution: Option<AcceptedEditAttributionSummary>,
+    accepted_edit_receipt: Option<crate::cloud::accepted_edit_receipts::AcceptedEditReceiptInsert>,
     /// Greppable string persisted into `cloud_outbox.last_error` when
     /// `ok == false`; `None` on success. HTTP failures use
     /// `"{status} {reason}: {body_snippet}"`, transport failures
@@ -750,6 +751,7 @@ impl DispatchOutcome {
         Self {
             ok,
             accepted_edit_attribution: None,
+            accepted_edit_receipt: None,
             last_error: None,
         }
     }
@@ -759,6 +761,7 @@ impl DispatchOutcome {
         Self {
             ok: false,
             accepted_edit_attribution: None,
+            accepted_edit_receipt: None,
             last_error: Some(last_error),
         }
     }
@@ -774,7 +777,7 @@ fn accepted_edit_attribution_summary(
 ) -> AcceptedEditAttributionSummary {
     let mut summary = AcceptedEditAttributionSummary {
         uploaded: usize::from(response.acceptance_recorded),
-        launch_grade: 0,
+        launch_grade: usize::from(response.launch_grade_paid_value_ready),
         missing_team_workspace: 0,
         missing_rule_ids: 0,
         unlinked_rule_observations: 0,
@@ -788,9 +791,6 @@ fn accepted_edit_attribution_summary(
         }
         if expected_rule_ids > 0 && response.observations_inserted == 0 {
             summary.unlinked_rule_observations = 1;
-        }
-        if summary.warning_count() == 0 {
-            summary.launch_grade = 1;
         }
     }
     summary
@@ -808,6 +808,8 @@ pub mod kind {
     /// feed the current accepted-edit value-loop evidence endpoint.
     pub const LEGACY_FIX_ACCEPTANCE: &str = "fix_acceptance";
     pub const MCP_QUERY: &str = "mcp_query";
+    /// Retired hosted-ingestion rows from pre-pivot CLIs. Drains acknowledge and
+    /// discard them; current imports distill locally and sync selected memory.
     pub const IMPORTED_REVIEWS: &str = "imported_reviews";
     /// `PostToolUse` observation; see `crate::contract::Observation`
     /// and `crate::observability::classifier` for the payload shape.
@@ -886,6 +888,17 @@ async fn drain_rows(
             }
         };
         if outcome.ok {
+            if let Some(receipt) = outcome.accepted_edit_receipt {
+                if let Err(err) =
+                    crate::cloud::accepted_edit_receipts::record_confirmed(&queue.pool, receipt)
+                        .await
+                {
+                    let _ = queue
+                        .mark_failed(item.id, &format!("accepted_edit receipt: {err}"))
+                        .await;
+                    continue;
+                }
+            }
             queue.confirm(item.id).await?;
             confirmed += 1;
             if let Some(summary) = outcome.accepted_edit_attribution {
@@ -1018,16 +1031,14 @@ async fn drain_observation_outbox_kind_report(
 /// * `mcp_query`         — `{ "file", "intent", "rules_injected",
 ///                             "strict_match_count", "rule_titles",
 ///                             "client_label" }`
-/// * `imported_reviews`  — `UploadImportedReviewsRequest`
+/// * `imported_reviews`  — retired hosted-ingestion rows; explicitly skipped
 /// * `session_mined_candidate` — `SessionMinedCandidate`
 async fn dispatch(
     client: &super::client::CloudClient,
     item: &OutboxItem,
 ) -> crate::Result<DispatchOutcome> {
     use crate::cloud::session_mined::SessionMinedCandidate;
-    use crate::contract::{
-        RecordAcceptedEditRequest, RecordReviewMetricsRequest, UploadImportedReviewsRequest,
-    };
+    use crate::contract::{RecordAcceptedEditRequest, RecordReviewMetricsRequest};
     use serde_json::Value;
 
     match item.kind.as_str() {
@@ -1076,8 +1087,11 @@ async fn dispatch(
                 .iter()
                 .filter(|rule_id| !rule_id.trim().is_empty())
                 .count();
-            let response = client.record_accepted_edit_response(req).await?;
+            let response = client.record_accepted_edit_response(req.clone()).await?;
             let summary = accepted_edit_attribution_summary(expected_rule_ids, &response);
+            let receipt = crate::cloud::accepted_edit_receipts::receipt_from_accepted_edit_response(
+                &req, &response,
+            );
             // Semantic-only failure: 2xx but acceptance not recorded (dedup,
             // payload rejection). Surface the cloud's `error`, not a `non-2xx`
             // literal that would be wrong for a 2xx response.
@@ -1092,6 +1106,7 @@ async fn dispatch(
             Ok(DispatchOutcome {
                 ok: response.acceptance_recorded,
                 accepted_edit_attribution: Some(summary),
+                accepted_edit_receipt: receipt,
                 last_error,
             })
         }
@@ -1099,6 +1114,12 @@ async fn dispatch(
             // Legacy `fix_acceptance` rows predate the accepted-edit proof
             // contract. Confirm them so old queues stop retrying, but never
             // POST them or count them as current value-loop evidence.
+            Ok(DispatchOutcome::ok(true))
+        }
+        kind::IMPORTED_REVIEWS => {
+            // Hosted PR-review ingestion was removed in the local-first pivot.
+            // Confirm old queued rows so upgraded CLIs do not hammer a deleted
+            // `/reviews/import` endpoint.
             Ok(DispatchOutcome::ok(true))
         }
         kind::MCP_QUERY => {
@@ -1167,14 +1188,6 @@ async fn dispatch(
                     Err(failure) => DispatchOutcome::from_outbox_failure(&failure),
                 },
             )
-        }
-        kind::IMPORTED_REVIEWS => {
-            let req: UploadImportedReviewsRequest = serde_json::from_str(&item.payload_json)
-                .map_err(|e| crate::CoreError::internal(format!("imported_reviews parse: {e}")))?;
-            Ok(match client.upload_imported_reviews_outcome(&req).await {
-                Ok(()) => DispatchOutcome::ok(true),
-                Err(failure) => DispatchOutcome::from_outbox_failure(&failure),
-            })
         }
         kind::OBSERVATION => {
             let obs: crate::contract::Observation = serde_json::from_str(&item.payload_json)
@@ -1255,6 +1268,10 @@ mod tests {
             team_id: team_id.map(str::to_owned),
             attributed_rule_ids: Vec::new(),
             observations_inserted,
+            launch_grade_provenance_trusted: acceptance_recorded,
+            launch_grade_paid_value_ready: acceptance_recorded
+                && team_id.is_some()
+                && observations_inserted > 0,
             memory_reinforcement_recorded: false,
             memory_reinforcement_deduped: false,
             error: None,
@@ -1268,6 +1285,17 @@ mod tests {
 
         assert_eq!(summary.uploaded, 1);
         assert_eq!(summary.launch_grade, 1);
+        assert_eq!(summary.warning_count(), 0);
+    }
+
+    #[test]
+    fn accepted_edit_attribution_summary_uses_cloud_launch_grade_flag() {
+        let mut response = accepted_edit_response(true, Some("team-1"), 2);
+        response.launch_grade_paid_value_ready = false;
+        let summary = accepted_edit_attribution_summary(2, &response);
+
+        assert_eq!(summary.uploaded, 1);
+        assert_eq!(summary.launch_grade, 0);
         assert_eq!(summary.warning_count(), 0);
     }
 
@@ -1369,6 +1397,24 @@ mod tests {
         let outcome = dispatch(&client, &item)
             .await
             .expect("legacy rows are explicitly acknowledged and skipped");
+
+        assert!(outcome.ok);
+        assert_eq!(outcome.accepted_edit_attribution, None);
+    }
+
+    #[tokio::test]
+    async fn imported_reviews_dispatch_skips_retired_hosted_ingestion_endpoint() {
+        let client = crate::cloud::client::CloudClient::new();
+        let item = OutboxItem {
+            id: 1,
+            kind: kind::IMPORTED_REVIEWS.to_owned(),
+            payload_json: "not import json".to_owned(),
+            retry_count: 0,
+        };
+
+        let outcome = dispatch(&client, &item)
+            .await
+            .expect("retired imported-review rows are acknowledged without HTTP");
 
         assert!(outcome.ok);
         assert_eq!(outcome.accepted_edit_attribution, None);

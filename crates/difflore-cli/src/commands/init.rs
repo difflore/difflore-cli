@@ -135,7 +135,7 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) -> anyh
         ))
         .to_string()
     };
-    println!("  {:<10} {}", style::pewter("memory"), memory_value);
+    println!("  {:<10} {}", style::pewter("rules"), memory_value);
 
     // Print a top-3 sample so the user sees concrete review judgments. Each
     // line ends with `<- from <repo>` (same framing as review and the
@@ -203,15 +203,19 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) -> anyh
         println!();
         println!("{}", style::pewter("Optional cloud path:"));
         println!(
-            "  {} Team sync for shared review rules",
+            "  {} One approved rule set shared by the whole team",
             style::pewter(sym::BULLET),
         );
         println!(
-            "  {} GitHub App imports without local tokens",
+            "  {} Approval workflow: every rule traceable to the review that set it",
             style::pewter(sym::BULLET),
         );
         println!(
-            "  {} Managed embeddings, tokens, and accepted-edit dashboards",
+            "  {} CI gate plus team coverage and recall dashboards",
+            style::pewter(sym::BULLET),
+        );
+        println!(
+            "  {} Free for one person, forever; team plans start when a second person joins.",
             style::pewter(sym::BULLET),
         );
         println!("  {}", style::pewter(&pricing));
@@ -224,18 +228,105 @@ pub(crate) async fn handle_init(ctx: &CommandContext, opts: InitOptions) -> anyh
         style::pewter(sym::BULLET),
     );
     println!(
-        "  {} Use {} to inspect accepted edits, then {} to see exact recall.",
+        "  {} Use {} to inspect coverage and recall, then {} to see exact matches.",
         style::pewter(sym::BULLET),
         style::cmd("difflore status"),
         style::cmd("difflore recall --diff"),
     );
 
-    let next = pick_next_best_action(total_rules, installed, active.is_some());
+    let has_agent_rule_files = crate::support::util::dir_has_agent_rule_files(&cwd);
+    let next = pick_next_best_action(
+        total_rules,
+        installed,
+        active.is_some(),
+        has_agent_rule_files,
+    );
+    if total_rules == 0 && has_agent_rule_files {
+        style::println_wrapped(&format!(
+            "  {} This repo already carries agent rule files (CLAUDE.md / .cursor/rules) — mine them into governed rules first.",
+            style::pewter(sym::BULLET),
+        ));
+    }
+    maybe_print_ollama_semantic_hint().await;
+
     println!();
     println!("{}", style::pewter("Next best action"));
     println!("  {}", style::cmd(next));
 
     Ok(())
+}
+
+/// One-line nudge when semantic recall is still on the keyword fallback but a
+/// local Ollama server is reachable: keyless semantic vectors are one command
+/// away. Probe budget is tiny and failures stay silent — init must not slow
+/// down or warn because Ollama is absent.
+async fn maybe_print_ollama_semantic_hint() {
+    // Gate on the runtime resolver's own answer (BYOK -> cloud -> SHA1) so a
+    // cloud-managed semantic user never sees a bogus keyword-only warning.
+    let kind = difflore_core::context::embedding::probe_active_embedder().await;
+    if kind != difflore_core::context::embedding::ActiveEmbedderKind::Sha1 {
+        return;
+    }
+    let probe = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(400))
+        .build();
+    let Ok(client) = probe else { return };
+    let Ok(resp) = client.get("http://127.0.0.1:11434/api/tags").send().await else {
+        return;
+    };
+    if !resp.status().is_success() {
+        return;
+    }
+    let Ok(tags) = resp.json::<serde_json::Value>().await else {
+        return;
+    };
+    println!();
+    match installed_ollama_embedding_model(&tags) {
+        Some((model, dim)) => {
+            style::println_wrapped(&format!(
+                "  {} Ollama with `{model}` detected — recall currently uses keyword matching only. Enable keyless semantic recall: {}",
+                style::pewter(sym::BULLET),
+                style::cmd(&format!(
+                    "difflore embeddings setup --no-key --provider-url http://127.0.0.1:11434/v1 --model {model} --dim {dim}"
+                )),
+            ));
+        }
+        None => {
+            style::println_wrapped(&format!(
+                "  {} Ollama detected locally — recall currently uses keyword matching only. Pull an embedding model ({}), then: {}",
+                style::pewter(sym::BULLET),
+                style::cmd("ollama pull nomic-embed-text"),
+                style::cmd(
+                    "difflore embeddings setup --no-key --provider-url http://127.0.0.1:11434/v1 --model nomic-embed-text --dim 768"
+                ),
+            ));
+        }
+    }
+}
+
+/// Embedding models Ollama commonly serves, with their output dimensions.
+/// Only models whose dimensionality is stable and documented are listed; an
+/// unknown model must not be suggested with a guessed `--dim`.
+const KNOWN_OLLAMA_EMBEDDING_MODELS: &[(&str, usize)] = &[
+    ("nomic-embed-text", 768),
+    ("mxbai-embed-large", 1024),
+    ("all-minilm", 384),
+    ("bge-m3", 1024),
+];
+
+fn installed_ollama_embedding_model(tags: &serde_json::Value) -> Option<(String, usize)> {
+    let models = tags.get("models")?.as_array()?;
+    for entry in models {
+        let name = entry.get("name")?.as_str().unwrap_or_default();
+        let base = name.split(':').next().unwrap_or_default();
+        if let Some((known, dim)) = KNOWN_OLLAMA_EMBEDDING_MODELS
+            .iter()
+            .find(|(known, _)| *known == base)
+        {
+            return Some(((*known).to_owned(), *dim));
+        }
+    }
+    None
 }
 
 /// Return true when the user is on a Cloud Team plan or has an active team
@@ -277,11 +368,11 @@ pub(crate) fn tier_badge_line(status: &difflore_core::cloud::sync::CloudStatus) 
     let tier = difflore_core::cloud::sync::cloud_tier_from_status(status);
     if tier.is_team() {
         format!(
-            "{} | multi-device sync + GitHub App team review history",
+            "{} | shared team rule system of record + approval workflow",
             tier.default_label()
         )
     } else if status.logged_in {
-        "Cloud Free | logged in | optional team sync path".to_owned()
+        "Cloud Free | logged in | optional team rule path".to_owned()
     } else {
         "Local | private repos + local AI CLI recall".to_owned()
     }
@@ -298,8 +389,14 @@ const fn pick_next_best_action(
     total_rules: i64,
     installed_agents: usize,
     has_active_provider: bool,
+    has_agent_rule_files: bool,
 ) -> &'static str {
-    if total_rules == 0 {
+    if total_rules == 0 && has_agent_rule_files {
+        // Fast-merge teams often have no PR review threads at all; their
+        // judgment lives in committed agent rule files. Mining those is the
+        // 10-minute first-value path, so it outranks the review import.
+        "difflore rules import-agent-files"
+    } else if total_rules == 0 {
         memory_import_command()
     } else if installed_agents == 0 {
         "difflore agents install"
@@ -444,8 +541,8 @@ mod tests {
             assert!(is_cloud_team(&s), "plan {plan} should be team-tier");
             let line = tier_badge_line(&s);
             assert!(line.starts_with("Cloud Team"), "unexpected: {line}");
-            assert!(line.contains("multi-device sync"));
-            assert!(line.contains("GitHub App team review history"));
+            assert!(line.contains("shared team rule system of record"));
+            assert!(line.contains("approval workflow"));
         }
     }
 

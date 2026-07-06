@@ -68,7 +68,7 @@ pub(crate) async fn handle_active(
     )
     .await
     .unwrap_or_else(|err| {
-        exit_structured_err(&format!("failed to load active memory: {err}"), json)
+        exit_structured_err(&format!("failed to load active rules: {err}"), json)
     });
     if !all {
         let current_repo_keys = current_repo_scope_keys(ctx).await;
@@ -100,7 +100,7 @@ pub(crate) async fn handle_activity(
     )
     .await
     .unwrap_or_else(|err| {
-        exit_structured_err(&format!("failed to load memory activity: {err}"), json)
+        exit_structured_err(&format!("failed to load rule activity: {err}"), json)
     });
 
     if json {
@@ -113,13 +113,13 @@ pub(crate) async fn handle_activity(
 
 pub(crate) async fn handle_show(ctx: &CommandContext, item_id: String, json: bool) {
     if item_id.trim().starts_with("rule:") {
-        let detail = difflore_core::memory_inbox::get_memory_item(&ctx.db, &item_id)
+        let detail = difflore_core::memory_inbox::get_rule_item(&ctx.db, &item_id)
             .await
             .unwrap_or_else(|err| {
-                exit_structured_err(&format!("failed to load active memory rule: {err}"), json)
+                exit_structured_err(&format!("failed to load active rule: {err}"), json)
             })
             .unwrap_or_else(|| {
-                exit_structured_err(&format!("memory item `{item_id}` not found"), json)
+                exit_structured_err(&format!("rule item `{item_id}` not found"), json)
             });
         if json {
             println!("{}", json_compact_or(&detail, "{}"));
@@ -153,7 +153,7 @@ pub(crate) async fn handle_show(ctx: &CommandContext, item_id: String, json: boo
             )
         })
         .unwrap_or_else(|| {
-            exit_structured_err(&format!("memory inbox item `{item_id}` not found"), json)
+            exit_structured_err(&format!("rules inbox item `{item_id}` not found"), json)
         });
 
     if json {
@@ -183,7 +183,7 @@ pub(crate) async fn handle_remember(
 ) {
     let title = title.trim().to_owned();
     if title.is_empty() {
-        exit_structured_err("memory remember requires a non-empty --title", json);
+        exit_structured_err("rules remember requires a non-empty --title", json);
     }
     let body = match body {
         Some(value) => value,
@@ -192,7 +192,7 @@ pub(crate) async fn handle_remember(
     let body = body.trim().to_owned();
     if body.is_empty() {
         exit_structured_err(
-            "memory remember requires --body or a non-empty stdin body",
+            "rules remember requires --body or a non-empty stdin body",
             json,
         );
     }
@@ -222,13 +222,11 @@ pub(crate) async fn handle_remember(
 
     let outcome = difflore_core::skills::remember(&ctx.db, input)
         .await
-        .unwrap_or_else(|err| {
-            exit_structured_err(&format!("failed to save memory rule: {err}"), json)
-        });
+        .unwrap_or_else(|err| exit_structured_err(&format!("failed to save rule: {err}"), json));
     let source_repo = attach_current_repo_scope(ctx, &outcome.skill.id, json).await;
     let item_id = format!("rule:{}", outcome.skill.id);
-    let show_command = format!("difflore memory show {item_id}");
-    let disable_command = format!("difflore memory disable {item_id}");
+    let show_command = format!("difflore rules show {item_id}");
+    let disable_command = format!("difflore rules disable {item_id}");
 
     if json {
         println!(
@@ -258,7 +256,7 @@ pub(crate) async fn handle_remember(
         return;
     }
 
-    println!("{}", style::title("Memory Rule Saved"));
+    println!("{}", style::title("Rule Saved"));
     println!("  id: {}", style::ident(&item_id));
     println!("  active: yes (user request treated as approval)");
     println!("  source_repo: {}", source_repo.as_deref().unwrap_or("-"));
@@ -273,19 +271,19 @@ pub(crate) async fn handle_remember(
 pub(crate) async fn handle_review(ctx: &CommandContext, limit: Option<usize>) {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         exit_err(
-            "interactive memory review requires a terminal. Use `difflore memory inbox`, \
-             `difflore memory approve <item-id>`, or \
-             `difflore memory reject <item-id>`.",
+            "interactive rules review requires a terminal. Use `difflore rules inbox`, \
+             `difflore rules approve <item-id>`, or \
+             `difflore rules reject <item-id>`.",
         );
     }
 
     let max_items = limit.unwrap_or(50);
     if max_items == 0 {
-        println!("No memory items selected; pass --limit greater than 0.");
+        println!("No rule items selected; pass --limit greater than 0.");
         return;
     }
     let counts = load_memory_inbox(&ctx.db, 1).await.unwrap_or_else(|err| {
-        exit_structured_err(&format!("failed to load local memory inbox: {err}"), false)
+        exit_structured_err(&format!("failed to load local rules inbox: {err}"), false)
     });
     let draft_pending = count_to_usize(counts.local_draft_count());
     let session_pending = count_to_usize(counts.session_mined_count());
@@ -298,7 +296,7 @@ pub(crate) async fn handle_review(ctx: &CommandContext, limit: Option<usize>) {
             load_memory_inbox(&ctx.db, remaining)
                 .await
                 .unwrap_or_else(|err| {
-                    exit_structured_err(&format!("failed to load local memory inbox: {err}"), false)
+                    exit_structured_err(&format!("failed to load local rules inbox: {err}"), false)
                 }),
         )
     } else {
@@ -310,10 +308,10 @@ pub(crate) async fn handle_review(ctx: &CommandContext, limit: Option<usize>) {
     let reviewing = drafts.len() + discoveries.len();
     if reviewing == 0 {
         if session_pending > 0 {
-            println!("Candidate memory rows exist, but none could be displayed. Run:");
-            println!("  {}", style::cmd("difflore memory inbox"));
+            println!("Candidate rule rows exist, but none could be displayed. Run:");
+            println!("  {}", style::cmd("difflore rules inbox"));
         } else {
-            println!("No memory items waiting for local review.");
+            println!("No rule items waiting for local review.");
         }
         return;
     }
@@ -343,7 +341,7 @@ pub(crate) async fn handle_review(ctx: &CommandContext, limit: Option<usize>) {
 
             let mut line = String::new();
             if reader.read_line(&mut line).is_err() {
-                exit_err("failed to read memory review choice");
+                exit_err("failed to read rule review choice");
             }
             let item_id = format!("draft:{}", draft.id);
             match line.trim().to_ascii_lowercase().as_str() {
@@ -361,7 +359,7 @@ pub(crate) async fn handle_review(ctx: &CommandContext, limit: Option<usize>) {
                 }
                 "v" | "view" => print_draft(draft),
                 "q" | "quit" => {
-                    println!("Stopped with remaining memory items still pending.");
+                    println!("Stopped with remaining rule items still pending.");
                     return;
                 }
                 _ => println!("  enter a, r, s, v, or q."),
@@ -390,7 +388,7 @@ pub(crate) async fn handle_review(ctx: &CommandContext, limit: Option<usize>) {
 
             let mut line = String::new();
             if reader.read_line(&mut line).is_err() {
-                exit_err("failed to read memory review choice");
+                exit_err("failed to read rule review choice");
             }
             match line.trim().to_ascii_lowercase().as_str() {
                 "a" | "approve" => {
@@ -407,7 +405,7 @@ pub(crate) async fn handle_review(ctx: &CommandContext, limit: Option<usize>) {
                 }
                 "v" | "view" => print_session_discovery(discovery),
                 "q" | "quit" => {
-                    println!("Stopped with remaining memory items still pending.");
+                    println!("Stopped with remaining rule items still pending.");
                     return;
                 }
                 _ => println!("  enter a, r, s, v, or q."),
@@ -437,7 +435,7 @@ pub(crate) async fn handle_approve(ctx: &CommandContext, item_id: String, json: 
             );
         } else {
             println!(
-                "{} Approved local memory draft {} into active rule {}.",
+                "{} Approved local rule draft {} into active rule {}.",
                 style::ok(style::sym::OK),
                 style::ident(draft_id),
                 style::ident(&activated.id)
@@ -468,7 +466,7 @@ pub(crate) async fn handle_reject(ctx: &CommandContext, item_id: String, json: b
             );
         } else {
             println!(
-                "{} Rejected local memory draft {}; it will not be shared.",
+                "{} Rejected local rule draft {}; it will not be shared.",
                 style::ok(style::sym::OK),
                 style::ident(draft_id)
             );
@@ -482,7 +480,7 @@ async fn load_inbox(ctx: &CommandContext, json: bool) -> MemoryInbox {
     let inbox = load_memory_inbox_default(&ctx.db)
         .await
         .unwrap_or_else(|err| {
-            exit_structured_err(&format!("failed to load local memory inbox: {err}"), json)
+            exit_structured_err(&format!("failed to load local rules inbox: {err}"), json)
         });
     prioritize_current_repo_inbox(ctx, inbox, json).await
 }
@@ -491,10 +489,7 @@ async fn load_autopilot_status(ctx: &CommandContext, json: bool) -> MemoryAutopi
     load_autopilot_schedule_status(&ctx.db)
         .await
         .unwrap_or_else(|err| {
-            exit_structured_err(
-                &format!("failed to load memory autopilot status: {err}"),
-                json,
-            )
+            exit_structured_err(&format!("failed to load rules triage status: {err}"), json)
         })
 }
 
@@ -532,7 +527,7 @@ async fn load_memory_inbox_for_display(
     let inbox = load_memory_inbox(&ctx.db, limit)
         .await
         .unwrap_or_else(|err| {
-            exit_structured_err(&format!("failed to load local memory inbox: {err}"), json)
+            exit_structured_err(&format!("failed to load local rules inbox: {err}"), json)
         });
     prioritize_current_repo_inbox(ctx, inbox, json).await
 }
@@ -552,7 +547,7 @@ async fn prioritize_current_repo_inbox(
         inbox = load_memory_inbox(&ctx.db, backfill_limit)
             .await
             .unwrap_or_else(|err| {
-                exit_structured_err(&format!("failed to load local memory inbox: {err}"), json)
+                exit_structured_err(&format!("failed to load local rules inbox: {err}"), json)
             });
     }
     prioritize_current_repo_rule_items(&mut inbox.active_rules.latest, &current_repo_keys);
@@ -654,40 +649,31 @@ async fn load_draft(ctx: &CommandContext, id: &str, json: bool) -> CandidateRule
     list_candidates(&ctx.db, None, None)
         .await
         .unwrap_or_else(|err| {
-            exit_structured_err(
-                &format!("failed to list pending memory drafts: {err}"),
-                json,
-            )
+            exit_structured_err(&format!("failed to list pending rule drafts: {err}"), json)
         })
         .into_iter()
         .find(|draft| draft.id == id)
-        .unwrap_or_else(|| exit_structured_err(&format!("memory draft `{id}` not found"), json))
+        .unwrap_or_else(|| exit_structured_err(&format!("rule draft `{id}` not found"), json))
 }
 
 async fn load_drafts(ctx: &CommandContext, limit: Option<usize>, json: bool) -> Vec<CandidateRule> {
     list_candidates(&ctx.db, None, limit)
         .await
         .unwrap_or_else(|err| {
-            exit_structured_err(
-                &format!("failed to list pending memory drafts: {err}"),
-                json,
-            )
+            exit_structured_err(&format!("failed to list pending rule drafts: {err}"), json)
         })
 }
 
 fn read_remember_body_from_stdin(json: bool) -> String {
     if io::stdin().is_terminal() {
         exit_structured_err(
-            "memory remember requires --body when stdin is a terminal",
+            "rules remember requires --body when stdin is a terminal",
             json,
         );
     }
     let mut body = String::new();
     io::stdin().read_to_string(&mut body).unwrap_or_else(|err| {
-        exit_structured_err(
-            &format!("failed to read memory body from stdin: {err}"),
-            json,
-        )
+        exit_structured_err(&format!("failed to read rule body from stdin: {err}"), json)
     });
     body
 }
@@ -721,10 +707,7 @@ async fn attach_current_repo_scope(
     .execute(&ctx.db)
     .await
     .unwrap_or_else(|err| {
-        exit_structured_err(
-            &format!("failed to attach repo scope to memory rule: {err}"),
-            json,
-        )
+        exit_structured_err(&format!("failed to attach repo scope to rule: {err}"), json)
     });
     Some(repo_full_name)
 }
@@ -797,28 +780,28 @@ async fn reject_session_item(ctx: &CommandContext, item_id: &str, json: bool) {
 fn next_action(inbox: &MemoryInbox, _cloud: &MemoryCloudSummary) -> MemoryNextAction {
     if inbox.local_draft_count() > 0 {
         return MemoryNextAction::new(
-            "difflore memory review",
-            "review pending local drafts; background autopilot handles high-confidence items automatically",
+            "difflore rules review",
+            "review pending local drafts; background triage handles high-confidence items automatically",
         );
     }
 
     if inbox.session_mined_count() > 0 {
         return MemoryNextAction::new(
-            "difflore memory review",
-            "review candidate memories before they become active local rules",
+            "difflore rules review",
+            "review candidate rules before they become active local rules",
         );
     }
 
     if inbox.active_rule_count() == 0 {
         return MemoryNextAction::new(
             "difflore import-reviews",
-            "no active local memory is available to agents",
+            "no active local rules are available to agents",
         );
     }
 
     MemoryNextAction::new(
         "difflore recall --diff",
-        "active memory is available to preview against your current diff",
+        "active rules are available to preview against your current diff",
     )
 }
 
@@ -828,7 +811,7 @@ fn print_inbox(
     cloud: &MemoryCloudSummary,
     next: &MemoryNextAction,
 ) {
-    println!("{}", style::title("Memory Inbox"));
+    println!("{}", style::title("Rules Inbox"));
     println!(
         "  autopilot {} | runs {} ({} useful) | triggers {}",
         if autopilot.enabled { "on" } else { "off" },
@@ -854,29 +837,29 @@ fn print_inbox(
     );
     print_rule_items(&inbox.local_drafts.latest);
     if inbox.local_draft_count() > 0 {
-        println!("  background log: {}", style::cmd("difflore memory log"));
+        println!("  background log: {}", style::cmd("difflore rules log"));
         println!(
             "  review remaining: {}",
-            style::cmd("difflore memory review")
+            style::cmd("difflore rules review")
         );
         println!(
             "  approve one: {}",
-            style::cmd("difflore memory approve draft:<id>")
+            style::cmd("difflore rules approve draft:<id>")
         );
         println!(
             "  reject one: {}",
-            style::cmd("difflore memory reject draft:<id>")
+            style::cmd("difflore rules reject draft:<id>")
         );
     }
     println!();
 
-    println!("{}", style::title("Candidate memories"));
+    println!("{}", style::title("Candidate rules"));
     println!(
         "  {} found from recent agent sessions (not active yet)",
         count_phrase(
             inbox.session_mined_count(),
-            "candidate memory",
-            "candidate memories"
+            "candidate rule",
+            "candidate rules"
         )
     );
     if inbox.session_mined_count() > 0 {
@@ -889,24 +872,24 @@ fn print_inbox(
         println!();
         println!(
             "  inspect one: {}",
-            style::cmd("difflore memory show session:<content_hash>")
+            style::cmd("difflore rules show session:<content_hash>")
         );
-        println!("  background log: {}", style::cmd("difflore memory log"));
+        println!("  background log: {}", style::cmd("difflore rules log"));
         println!(
             "  review remaining: {}",
-            style::cmd("difflore memory review")
+            style::cmd("difflore rules review")
         );
         println!(
             "  approve one: {}",
-            style::cmd("difflore memory approve session:<content_hash>")
+            style::cmd("difflore rules approve session:<content_hash>")
         );
         println!(
             "  reject one: {}",
-            style::cmd("difflore memory reject session:<content_hash>")
+            style::cmd("difflore rules reject session:<content_hash>")
         );
         println!(
             "  team sync: {} optional",
-            style::cmd("difflore memory sync")
+            style::cmd("difflore rules sync")
         );
     }
     println!();
@@ -954,7 +937,7 @@ fn print_inbox(
 }
 
 fn print_active(memory: &MemoryList, all: bool) {
-    println!("{}", style::title("Active Memory"));
+    println!("{}", style::title("Active Rules"));
     println!(
         "  scope              {}",
         if all {
@@ -972,12 +955,12 @@ fn print_active(memory: &MemoryList, all: bool) {
         let next = if all {
             "difflore import-reviews"
         } else {
-            "difflore memory active --all"
+            "difflore rules active --all"
         };
         println!("  next: {}", style::cmd(next));
         println!(
             "        {}",
-            style::pewter("or approve pending items from `difflore memory inbox`")
+            style::pewter("or approve pending items from `difflore rules inbox`")
         );
         return;
     }
@@ -986,11 +969,11 @@ fn print_active(memory: &MemoryList, all: bool) {
     }
     println!();
     println!("  preview: {}", style::cmd("difflore recall --diff"));
-    println!("  activity: {}", style::cmd("difflore memory activity"));
+    println!("  activity: {}", style::cmd("difflore rules activity"));
 }
 
 fn print_activity(activity: &MemoryActivity) {
-    println!("{}", style::title("Memory Activity"));
+    println!("{}", style::title("Rule Activity"));
     println!(
         "  window             last {} {}",
         activity.days,
@@ -1033,8 +1016,9 @@ fn print_activity(activity: &MemoryActivity) {
 fn print_memory_item_summary(item: &MemoryListItem) {
     println!("  {} {}", style::ident(&item.item_id), item.title);
     println!(
-        "    state={}  source_repo={}  origin={}",
+        "    state={}  source_kind={}  source_repo={}  origin={}",
         item.state,
+        item.source_kind.as_deref().unwrap_or("-"),
         item.source_repo.as_deref().unwrap_or("-"),
         item.origin.as_deref().unwrap_or("-")
     );
@@ -1051,8 +1035,9 @@ fn print_rule_items(items: &[MemoryRuleItem]) {
     for item in items {
         println!("  {} {}", style::ident(&item.id), item.name);
         println!(
-            "    origin={}  source_repo={}  updated={}",
+            "    origin={}  source_kind={}  source_repo={}  updated={}",
             item.origin,
+            item.source_kind,
             item.source_repo.as_deref().unwrap_or("-"),
             item.updated_at
         );
@@ -1063,7 +1048,7 @@ fn print_rule_items(items: &[MemoryRuleItem]) {
 }
 
 fn print_memory_detail(detail: &difflore_core::memory_inbox::MemoryItemDetail) {
-    println!("{}", style::title("Memory Item"));
+    println!("{}", style::title("Rule Item"));
     println!("  id: {}", style::ident(&detail.item.item_id));
     println!("  kind: {}", detail.item.kind);
     println!("  state: {}", detail.item.state);
@@ -1076,6 +1061,10 @@ fn print_memory_detail(detail: &difflore_core::memory_inbox::MemoryItemDetail) {
         detail.item.source_repo.as_deref().unwrap_or("-")
     );
     println!("  origin: {}", detail.item.origin.as_deref().unwrap_or("-"));
+    println!(
+        "  source_kind: {}",
+        detail.item.source_kind.as_deref().unwrap_or("-")
+    );
     if !detail.item.file_patterns.is_empty() {
         println!("  path hints: {}", detail.item.file_patterns.join(", "));
     }
@@ -1106,16 +1095,16 @@ fn print_session_discovery_summary(discovery: &SessionMinedDiscovery) {
     }
     println!(
         "    inspect: {}",
-        style::cmd(&format!("difflore memory show {}", discovery.item_id))
+        style::cmd(&format!("difflore rules show {}", discovery.item_id))
     );
     println!(
         "    approve: {}",
-        style::cmd(&format!("difflore memory approve {}", discovery.item_id))
+        style::cmd(&format!("difflore rules approve {}", discovery.item_id))
     );
 }
 
 fn print_session_discovery(discovery: &SessionMinedDiscovery) {
-    println!("{}", style::title("Candidate memory"));
+    println!("{}", style::title("Candidate rule"));
     println!("  id: {}", style::ident(&discovery.item_id));
     println!("  active: no (waiting for local approval)");
     println!("  state: {}", candidate_state(&discovery.status));
@@ -1137,17 +1126,17 @@ fn print_session_discovery(discovery: &SessionMinedDiscovery) {
     println!("  approve:");
     println!(
         "    {}",
-        style::cmd(&format!("difflore memory approve {}", discovery.item_id))
+        style::cmd(&format!("difflore rules approve {}", discovery.item_id))
     );
     println!("    activates this rule for local agents now");
     println!("  reject:");
     println!(
         "    {}",
-        style::cmd(&format!("difflore memory reject {}", discovery.item_id))
+        style::cmd(&format!("difflore rules reject {}", discovery.item_id))
     );
     println!("    discards this candidate locally; it will not be shared");
-    println!("  team sync: {}", style::cmd("difflore memory sync"));
-    println!("    optional; shares approved local memory with your team");
+    println!("  team sync: {}", style::cmd("difflore rules sync"));
+    println!("    optional; shares approved local rules with your team");
 }
 
 fn print_draft_review_summary(draft: &CandidateRule) {
@@ -1157,31 +1146,33 @@ fn print_draft_review_summary(draft: &CandidateRule) {
         draft.name
     );
     println!(
-        "    source: {}  origin: {}",
+        "    source: {}  origin: {}  source_kind: {}",
         draft.source_repo.as_deref().unwrap_or("-"),
-        draft.origin
+        draft.origin,
+        draft.source_kind
     );
     if !draft.file_patterns.is_empty() {
         println!("    path hints: {}", draft.file_patterns.join(", "));
     }
     println!(
         "    inspect: {}",
-        style::cmd(&format!("difflore memory show draft:{}", draft.id))
+        style::cmd(&format!("difflore rules show draft:{}", draft.id))
     );
     println!(
         "    approve: {}",
-        style::cmd(&format!("difflore memory approve draft:{}", draft.id))
+        style::cmd(&format!("difflore rules approve draft:{}", draft.id))
     );
 }
 
 fn print_draft(draft: &CandidateRule) {
-    println!("{}", style::title("Local memory draft"));
+    println!("{}", style::title("Local rule draft"));
     println!("  id: {}", style::ident(&format!("draft:{}", draft.id)));
     println!(
         "  source_repo: {}",
         draft.source_repo.as_deref().unwrap_or("-")
     );
     println!("  origin: {}", draft.origin);
+    println!("  source_kind: {}", draft.source_kind);
     println!("  captured: {}", draft.installed_at);
     if !draft.file_patterns.is_empty() {
         println!("  path hints: {}", draft.file_patterns.join(", "));
@@ -1199,13 +1190,13 @@ fn print_draft(draft: &CandidateRule) {
     println!("  approve:");
     println!(
         "    {}",
-        style::cmd(&format!("difflore memory approve draft:{}", draft.id))
+        style::cmd(&format!("difflore rules approve draft:{}", draft.id))
     );
     println!("    activates this rule for local agents now");
     println!("  reject:");
     println!(
         "    {}",
-        style::cmd(&format!("difflore memory reject draft:{}", draft.id))
+        style::cmd(&format!("difflore rules reject draft:{}", draft.id))
     );
     println!("    discards this draft locally; it will not be shared");
 }
@@ -1235,17 +1226,17 @@ fn print_team_status(cloud: &MemoryCloudSummary, with_label: bool) {
         return;
     }
     println!(
-        "{prefix}optional: {} shares approved local memory with the team",
-        style::cmd("difflore memory sync")
+        "{prefix}optional: {} shares approved local rules with the team",
+        style::cmd("difflore rules sync")
     );
 }
 
 fn cloud_outbox_label(kind: &str) -> &'static str {
     match kind {
-        difflore_core::cloud::outbox::kind::SESSION_MINED_CANDIDATE => "memory candidate rows",
+        difflore_core::cloud::outbox::kind::SESSION_MINED_CANDIDATE => "rule candidate rows",
         difflore_core::cloud::outbox::kind::OBSERVATION => "activity rows",
         difflore_core::cloud::outbox::kind::MCP_QUERY => "MCP query rows",
-        difflore_core::cloud::outbox::kind::IMPORTED_REVIEWS => "imported review rows",
+        difflore_core::cloud::outbox::kind::IMPORTED_REVIEWS => "retired imported review rows",
         difflore_core::cloud::outbox::kind::ACCEPTED_EDIT => "accepted edit rows",
         difflore_core::cloud::outbox::kind::REVIEW_METRICS => "review metric rows",
         difflore_core::cloud::outbox::kind::TRAJECTORY => "trajectory rows",
@@ -1272,12 +1263,12 @@ fn count_to_usize(count: i64) -> usize {
 fn review_progress_heading(reviewing: usize, pending: usize) -> String {
     if reviewing < pending {
         format!(
-            "Reviewing {reviewing} of {pending} pending memory {} locally.",
+            "Reviewing {reviewing} of {pending} pending rule {} locally.",
             plural(pending as i64, "item", "items")
         )
     } else {
         format!(
-            "Reviewing {reviewing} pending memory {} locally.",
+            "Reviewing {reviewing} pending rule {} locally.",
             plural(reviewing as i64, "item", "items")
         )
     }
@@ -1296,13 +1287,13 @@ fn candidate_state(status: &str) -> String {
 fn review_hint(verdict: &str) -> String {
     let trimmed = verdict.trim();
     if trimmed.eq_ignore_ascii_case("KEEP") {
-        return "review as a new memory".to_owned();
+        return "review as a new rule".to_owned();
     }
     if trimmed.eq_ignore_ascii_case("DROP") {
         return "probably reject".to_owned();
     }
     if let Some(target) = trimmed.strip_prefix("MERGE:") {
-        return format!("merge with existing memory `{}`", target.trim());
+        return format!("merge with existing rule `{}`", target.trim());
     }
     if trimmed.is_empty() {
         return "needs review".to_owned();
@@ -1384,6 +1375,7 @@ mod tests {
             id: id.to_owned(),
             name: id.to_owned(),
             origin: "pr_review".to_owned(),
+            source_kind: "human".to_owned(),
             source_repo: source_repo.map(str::to_owned),
             file_patterns: Vec::new(),
             updated_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -1401,12 +1393,13 @@ mod tests {
             title: id.to_owned(),
             summary: None,
             origin: Some("agent_file:test".to_owned()),
+            source_kind: Some("human".to_owned()),
             source_repo: source_repo.map(str::to_owned),
             file_patterns: Vec::new(),
             updated_at: Some("2026-01-01 00:00:00".to_owned()),
             review_hint: Some("served to agents when recall matches".to_owned()),
             commands: difflore_core::memory_inbox::MemoryItemCommands {
-                show: format!("difflore memory show rule:{id}"),
+                show: format!("difflore rules show rule:{id}"),
                 approve: None,
                 reject: None,
             },
@@ -1457,7 +1450,7 @@ mod tests {
     #[test]
     fn next_action_prioritizes_drafts() {
         let next = next_action(&empty_inbox(0, 1, 4), &cloud(true));
-        assert_eq!(next.command, "difflore memory review");
+        assert_eq!(next.command, "difflore rules review");
         assert_eq!(next.contract.safety_tier, 2);
         assert!(next.contract.requires_user_intent);
     }
@@ -1465,14 +1458,14 @@ mod tests {
     #[test]
     fn next_action_reviews_session_candidates_when_logged_out() {
         let next = next_action(&empty_inbox(0, 0, 4), &cloud(false));
-        assert_eq!(next.command, "difflore memory review");
+        assert_eq!(next.command, "difflore rules review");
         assert_eq!(next.blocked_by, None);
     }
 
     #[test]
     fn next_action_reviews_session_candidates_when_logged_in() {
         let next = next_action(&empty_inbox(0, 0, 4), &cloud(true));
-        assert_eq!(next.command, "difflore memory review");
+        assert_eq!(next.command, "difflore rules review");
     }
 
     #[test]
@@ -1490,11 +1483,11 @@ mod tests {
     fn review_progress_heading_distinguishes_displayed_from_total_pending() {
         assert_eq!(
             review_progress_heading(50, 75),
-            "Reviewing 50 of 75 pending memory items locally."
+            "Reviewing 50 of 75 pending rule items locally."
         );
         assert_eq!(
             review_progress_heading(1, 1),
-            "Reviewing 1 pending memory item locally."
+            "Reviewing 1 pending rule item locally."
         );
     }
 }

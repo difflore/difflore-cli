@@ -283,7 +283,7 @@ fn self_recall_mrr_mark(mrr: f64) -> &'static str {
 
 // Counts rules with empty file_patterns, a recall-killing signature.
 pub(super) async fn corpus_health_subsection(pool: &difflore_core::SqlitePool, s: &mut String) {
-    sw!(s, "\n## Local memory\n");
+    sw!(s, "\n## Local rules\n");
     match difflore_core::infra::db::corpus_health(pool).await {
         Ok(h) => {
             sw!(s, "- total rules: {}", h.total);
@@ -311,7 +311,7 @@ pub(super) async fn corpus_health_subsection(pool: &difflore_core::SqlitePool, s
             );
         }
         Err(e) => {
-            sw!(s, "- local memory probe failed: {e}");
+            sw!(s, "- local rules probe failed: {e}");
         }
     }
 }
@@ -338,7 +338,7 @@ fn embedder_status_subsection_for(
             sw!(
                 s,
                 "  (configured mode follows DiffLore's cloud-first embedding priority. \
-                 Startup health, the Embedding section, and Memory pipeline events are the \
+                 Startup health, the Embedding section, and Rules pipeline events are the \
                  source of truth for current cloud reachability, caps, and fallback.)"
             );
         }
@@ -354,7 +354,7 @@ fn embedder_status_subsection_for(
             sw!(
                 s,
                 "  (configured mode follows DiffLore's embedding priority. \
-                 The Embedding section and Memory pipeline events show recent provider \
+                 The Embedding section and Rules pipeline events show recent provider \
                  failures or local fallback.)"
             );
         }
@@ -451,7 +451,7 @@ fn embedding_profile_match_subsection_for(
         }
         sw!(
             s,
-            "  → re-embed under the active profile to restore the vector lane: run `difflore embeddings rebuild` (force-rebuild, recovers a same-count inconsistency) or `difflore recall --diff` / open an editor with a memory-wired agent (lazy, freshness-gated re-index); confirm the active profile first via the Embedding section above"
+            "  → re-embed under the active profile to restore the vector lane: run `difflore embeddings rebuild` (force-rebuild, recovers a same-count inconsistency) or `difflore recall --diff` / open an editor with a rules-wired agent (lazy, freshness-gated re-index); confirm the active profile first via the Embedding section above"
         );
     } else if !diag.vector_lane_available {
         sw!(

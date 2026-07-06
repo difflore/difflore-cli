@@ -31,6 +31,7 @@ pub struct CandidateRule {
     pub name: String,
     pub description: String,
     pub origin: String,
+    pub source_kind: String,
     pub installed_at: String,
     pub content_hash: Option<String>,
     pub source_repo: Option<String>,
@@ -45,6 +46,7 @@ struct CandidateRuleRow {
     name: String,
     description: String,
     origin: String,
+    source_kind: String,
     installed_at: String,
     content_hash: Option<String>,
     source_repo: Option<String>,
@@ -76,6 +78,7 @@ impl From<CandidateRuleRow> for CandidateRule {
             name: row.name,
             description: row.description,
             origin: row.origin,
+            source_kind: row.source_kind,
             installed_at: row.installed_at,
             content_hash: row.content_hash,
             source_repo: row.source_repo,
@@ -120,7 +123,7 @@ pub async fn list_candidates(
     // the conditional repo filter is branched here.
     let mut rows: Vec<CandidateRuleRow> = if let Some(r) = repo {
         sqlx::query_as(
-            "SELECT id, name, description, origin, installed_at, content_hash, source_repo, file_patterns FROM skills \
+            "SELECT id, name, description, origin, source_kind, installed_at, content_hash, source_repo, file_patterns FROM skills \
              WHERE status = 'pending' \
              AND lower(source_repo) = lower(?1) \
              ORDER BY installed_at DESC",
@@ -130,7 +133,7 @@ pub async fn list_candidates(
         .await?
     } else {
         sqlx::query_as(
-            "SELECT id, name, description, origin, installed_at, content_hash, source_repo, file_patterns FROM skills \
+            "SELECT id, name, description, origin, source_kind, installed_at, content_hash, source_repo, file_patterns FROM skills \
              WHERE status = 'pending' ORDER BY installed_at DESC",
         )
         .fetch_all(db)
@@ -197,10 +200,10 @@ pub async fn promote_candidate(db: &sqlx::SqlitePool, id: &str) -> crate::Result
         let existing = rule_status(db, id).await?;
         return match existing.as_deref() {
             Some("active") => Err(CoreError::Validation(format!(
-                "rule '{id}' is already active; nothing to promote. Inspect local memory with `difflore status --json`."
+                "rule '{id}' is already active; nothing to promote. Inspect local rules with `difflore status --json`."
             ))),
             _ => Err(CoreError::NotFound(format!(
-                "memory draft '{id}' not found. Run `difflore status` for the next action."
+                "rule draft '{id}' not found. Run `difflore status` for the next action."
             ))),
         };
     };
@@ -220,17 +223,35 @@ pub async fn promote_candidate(db: &sqlx::SqlitePool, id: &str) -> crate::Result
         .await?;
         if let Some(active_id) = active_duplicate {
             return Err(CoreError::Validation(format!(
-                "memory draft '{id}' duplicates active rule '{active_id}'. Inspect both with `difflore memory show` before approving."
+                "rule draft '{id}' duplicates active rule '{active_id}'. Inspect both with `difflore rules show` before approving."
             )));
         }
     }
 
     let source_proof = parse_candidate_source_proof(&candidate_description);
     let mut tx = db.begin().await?;
-    let updated = sqlx::query!(
-        "UPDATE skills SET status = 'active' WHERE id = ?1 AND status = 'pending'",
-        id
+    let updated = sqlx::query(
+        "UPDATE skills
+         SET status = 'active',
+             enabled_for_codex = CASE
+                 WHEN source = 'local' AND origin = 'pr_review'
+                  AND captured_by_client IN ('import-reviews', 'import-reviews:local-agent')
+                 THEN 1 ELSE enabled_for_codex END,
+             enabled_for_claude = CASE
+                 WHEN source = 'local' AND origin = 'pr_review'
+                  AND captured_by_client IN ('import-reviews', 'import-reviews:local-agent')
+                 THEN 1 ELSE enabled_for_claude END,
+             enabled_for_gemini = CASE
+                 WHEN source = 'local' AND origin = 'pr_review'
+                  AND captured_by_client IN ('import-reviews', 'import-reviews:local-agent')
+                 THEN 1 ELSE enabled_for_gemini END,
+             enabled_for_cursor = CASE
+                 WHEN source = 'local' AND origin = 'pr_review'
+                  AND captured_by_client IN ('import-reviews', 'import-reviews:local-agent')
+                 THEN 1 ELSE enabled_for_cursor END
+         WHERE id = ?1 AND status = 'pending'",
     )
+    .bind(id)
     .execute(&mut *tx)
     .await?;
     if updated.rows_affected() == 0 {
@@ -240,10 +261,10 @@ pub async fn promote_candidate(db: &sqlx::SqlitePool, id: &str) -> crate::Result
         let existing = rule_status(db, id).await?;
         return match existing.as_deref() {
             Some("active") => Err(CoreError::Validation(format!(
-                "rule '{id}' is already active; nothing to promote. Inspect local memory with `difflore status --json`."
+                "rule '{id}' is already active; nothing to promote. Inspect local rules with `difflore status --json`."
             ))),
             _ => Err(CoreError::NotFound(format!(
-                "memory draft '{id}' not found. Run `difflore status` for the next action."
+                "rule draft '{id}' not found. Run `difflore status` for the next action."
             ))),
         };
     }
@@ -275,10 +296,10 @@ pub async fn reject_candidate(db: &sqlx::SqlitePool, id: &str) -> crate::Result<
         let existing = rule_status(db, id).await?;
         return match existing.as_deref() {
             Some("active") => Err(CoreError::Validation(format!(
-                "rule '{id}' is already an active rule, not a pending memory draft."
+                "rule '{id}' is already an active rule, not a pending rule draft."
             ))),
             _ => Err(CoreError::NotFound(format!(
-                "memory draft '{id}' not found. Run `difflore status` for the next action."
+                "rule draft '{id}' not found. Run `difflore status` for the next action."
             ))),
         };
     };
@@ -440,21 +461,21 @@ fn source_proof_reason(proof: &CandidateSourceProof) -> String {
         proof.file.as_deref(),
     ) {
         (Some(source), _, Some(file)) => {
-            format!("Promoted review-memory candidate from {source} on {file}")
+            format!("Promoted review-rule candidate from {source} on {file}")
         }
         (Some(source), _, None) => {
-            format!("Promoted review-memory candidate from {source}")
+            format!("Promoted review-rule candidate from {source}")
         }
         (None, Some(comment_url), Some(file)) => {
-            format!("Promoted review-memory candidate from {comment_url} on {file}")
+            format!("Promoted review-rule candidate from {comment_url} on {file}")
         }
         (None, Some(comment_url), None) => {
-            format!("Promoted review-memory candidate from {comment_url}")
+            format!("Promoted review-rule candidate from {comment_url}")
         }
         (None, None, Some(file)) => {
-            format!("Promoted review-memory candidate for {file}")
+            format!("Promoted review-rule candidate for {file}")
         }
-        (None, None, None) => "Promoted review-memory candidate with source proof".to_owned(),
+        (None, None, None) => "Promoted review-rule candidate with source proof".to_owned(),
     }
 }
 
@@ -499,6 +520,7 @@ mod tests {
             name: "n".into(),
             description: "desc".into(),
             origin: "agent-memory".into(),
+            source_kind: "human".into(),
             installed_at: String::new(),
             content_hash: None,
             source_repo: None,

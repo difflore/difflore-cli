@@ -15,7 +15,6 @@ mod gitlab;
 mod local_agent_distill;
 mod local_candidates;
 mod scope;
-mod upload;
 
 pub(crate) use github::format_github_import_err;
 use github::verify_source_repo_access;
@@ -25,7 +24,6 @@ use local_candidates::{
     LocalCandidateProgress, local_candidate_budget, print_local_candidate_next_steps,
     run_local_candidates,
 };
-use upload::{ensure_cloud_session_for_upload, run_upload};
 
 /// Args bundle for `difflore import-reviews`; keeps dispatcher calls from
 /// growing a long positional parameter list.
@@ -45,7 +43,6 @@ pub(crate) struct ImportArgs {
     pub exclude_prs: Vec<i32>,
     pub since: Option<String>,
     pub include_open: bool,
-    pub upload: bool,
     pub distill: ImportDistillArg,
     pub dry_run: bool,
     pub json: bool,
@@ -64,7 +61,6 @@ impl From<crate::cli::ImportReviewsCliArgs> for ImportArgs {
             exclude_prs: args.exclude_prs,
             since: args.since,
             include_open: args.include_open,
-            upload: args.upload,
             distill: args.distill,
             dry_run: args.dry_run,
             json: args.json,
@@ -89,7 +85,6 @@ struct ValidatedArgs {
     exclude_prs: std::collections::HashSet<i32>,
     since: Option<String>,
     include_open: bool,
-    upload: bool,
     distill: ImportDistillArg,
     local_candidates: bool,
     dry_run: bool,
@@ -111,7 +106,6 @@ fn validate_args(args: ImportArgs) -> Result<ValidatedArgs, String> {
         exclude_prs,
         since,
         include_open,
-        upload,
         distill,
         dry_run,
         json,
@@ -139,15 +133,9 @@ fn validate_args(args: ImportArgs) -> Result<ValidatedArgs, String> {
     if exclude_prs.iter().any(|n| *n <= 0) {
         return Err("--exclude-prs must list positive PR numbers.".to_owned());
     }
-    if upload && distill == ImportDistillArg::LocalAgent {
-        return Err(
-            "--distill local-agent cannot be combined with --upload; upload uses cloud extraction."
-                .to_owned(),
-        );
-    }
     let exclude_prs: std::collections::HashSet<i32> = exclude_prs.into_iter().collect();
 
-    let local_candidates = !upload;
+    let local_candidates = true;
 
     Ok(ValidatedArgs {
         repo,
@@ -160,7 +148,6 @@ fn validate_args(args: ImportArgs) -> Result<ValidatedArgs, String> {
         exclude_prs,
         since,
         include_open,
-        upload,
         distill,
         local_candidates,
         dry_run,
@@ -283,11 +270,6 @@ fn run_dry_run(v: &ValidatedArgs, local_repo: &str, source_repo: &str) {
         style::ok(style::sym::TIP),
         v.max_prs,
     ));
-    if v.upload {
-        style::println_wrapped(
-            "  Would upload to cloud for extraction; `difflore cloud sync` then pulls rules down.",
-        );
-    }
     if v.local_candidates {
         let distill_label = distill_label(v.distill);
         style::println_wrapped(&format!(
@@ -342,7 +324,6 @@ fn dry_run_payload(v: &ValidatedArgs, local_repo: &str, source_repo: &str) -> se
         "prNumbers": v.pr_numbers,
         "excludePrs": sorted_exclude_prs(&v.exclude_prs),
         "includeOpen": v.include_open,
-        "upload": v.upload,
         "localCandidates": v.local_candidates,
         "distill": distill_wire(v.distill),
         "localCandidateBudget": if v.local_candidates {
@@ -368,11 +349,6 @@ fn run_gitlab_dry_run(v: &ValidatedArgs, host: &str, gitlab_project: &str) {
         style::ok(style::sym::TIP),
         v.max_prs,
     ));
-    if v.upload {
-        style::println_wrapped(
-            "  Would upload to cloud for extraction; `difflore cloud sync` then pulls rules down.",
-        );
-    }
     if v.local_candidates {
         let distill_label = distill_label(v.distill);
         style::println_wrapped(&format!(
@@ -405,7 +381,6 @@ fn gitlab_dry_run_payload(
         "maxPrsClamped": v.requested_max_prs != v.max_prs,
         "prNumbers": v.pr_numbers,
         "excludePrs": sorted_exclude_prs(&v.exclude_prs),
-        "upload": v.upload,
         "localCandidates": v.local_candidates,
         "distill": distill_wire(v.distill),
         "localCandidateBudget": if v.local_candidates {
@@ -523,7 +498,6 @@ async fn run_import(
     opts: ImportOptions,
     repo: &str,
     source_repo: &str,
-    upload: bool,
     json: bool,
 ) -> Result<ImportProgress, String> {
     if json {
@@ -599,19 +573,8 @@ async fn run_import(
             .join(", ");
         println!("  missing PRs:            {missing}");
     }
-    // Phrase as "requested": upload runs after this summary, so a later
-    // failure must not contradict an earlier "uploaded: yes".
-    println!(
-        "  upload requested:       {}",
-        if upload { "yes" } else { "no" }
-    );
     println!();
-    if upload {
-        println!(
-            "  {} Uploading imported comments for extraction...",
-            style::emerald(style::sym::TIP),
-        );
-    } else if result.comments_imported > 0 {
+    if result.comments_imported > 0 {
         println!(
             "  {} Imports stayed local.",
             style::emerald(style::sym::TIP),
@@ -646,10 +609,8 @@ async fn run_local_candidate_distillation(
         {
             Ok(progress) => return (progress, ImportDistillArg::LocalAgent),
             Err(e) => {
-                if difflore_core::infra::env::debug_telemetry() {
-                    eprintln!(
-                        "[difflore.import_reviews] local-agent distill failed; falling back to heuristic: {e}"
-                    );
+                for line in local_agent_fallback_warning_lines(v.distill, &e.to_string()) {
+                    eprintln!("{line}");
                 }
             }
         }
@@ -668,11 +629,27 @@ async fn run_local_candidate_distillation(
     (progress, ImportDistillArg::Heuristic)
 }
 
+fn local_agent_fallback_warning_lines(
+    requested_distill: ImportDistillArg,
+    reason: &str,
+) -> [String; 4] {
+    [
+        format!(
+            "{} local-agent distill unavailable; falling back to heuristic (requested distill={}).",
+            style::warn(style::sym::WARN),
+            distill_wire(requested_distill)
+        ),
+        format!("  reason: {}", reason.trim()),
+        "  heuristic distill only performs deterministic extraction; review suggested rules before agents use them.".to_owned(),
+        format!("  setup: {}", style::cmd("difflore providers setup")),
+    ]
+}
+
 /// The fields rendered into the `--json` import report. Built once at the call
 /// site and passed by reference so the (formerly duplicated) 10-argument list
 /// can't be reordered: several fields share a type (`provider`/`repo`/
-/// `source_repo` are all `&str`; `max_prs`/`requested_max_prs`/
-/// `uploaded_reviews` are all `usize`), where a positional swap compiles
+/// `source_repo` are all `&str`; `max_prs`/`requested_max_prs` are both
+/// `usize`), where a positional swap compiles
 /// silently.
 struct ImportReport<'a> {
     provider: &'a str,
@@ -684,7 +661,6 @@ struct ImportReport<'a> {
     result: &'a ImportProgress,
     distill: ImportDistillArg,
     local_candidates: Option<&'a LocalCandidateProgress>,
-    uploaded_reviews: usize,
 }
 
 fn print_import_json(report: &ImportReport<'_>) {
@@ -708,8 +684,6 @@ fn import_json_payload(report: &ImportReport<'_>) -> serde_json::Value {
         "commentsSkipped": result.comments_skipped,
         "prsMissing": result.prs_missing,
         "missingPrNumbers": &result.missing_pr_numbers,
-        "uploadedReviews": report.uploaded_reviews,
-        "cloudUploadQueued": report.uploaded_reviews > 0,
         "localCandidates": report.local_candidates.map(|p| serde_json::json!({
             "distill": distill_wire(report.distill),
             "commentsConsidered": p.comments_considered,
@@ -808,10 +782,6 @@ async fn try_handle_github(
         return Ok(ImportRunOutcome);
     }
 
-    if v.upload {
-        ensure_cloud_session_for_upload(ctx).await?;
-    }
-
     print_import_plan(&v, &local_repo, &source_repo);
 
     if let Err(e) = verify_source_repo_access(&source_repo) {
@@ -826,11 +796,10 @@ async fn try_handle_github(
         pr_numbers: v.pr_numbers.clone(),
         exclude_prs: v.exclude_prs.clone(),
         since: v.since.clone(),
-        upload_to_cloud: v.upload,
         include_open: v.include_open,
     };
 
-    let import_result = run_import(db, opts, &local_repo, &source_repo, v.upload, v.json).await?;
+    let import_result = run_import(db, opts, &local_repo, &source_repo, v.json).await?;
 
     let mut actual_distill = v.distill;
     let local_candidate_progress = if v.local_candidates {
@@ -839,7 +808,7 @@ async fn try_handle_github(
                 .await;
         actual_distill = distill;
         if !v.json {
-            print_local_candidate_next_steps(&progress, &local_repo);
+            print_local_candidate_next_steps(&progress, &local_repo, distill_wire(actual_distill));
         }
         if progress.candidates_pending > 0 {
             crate::commands::memory::mark_memory_autopilot_dirty_best_effort(db, "import_reviews")
@@ -856,12 +825,6 @@ async fn try_handle_github(
         None
     };
 
-    let uploaded_reviews = if v.upload {
-        run_upload(ctx, db, "github", &local_repo, None, &import_result, v.json).await?
-    } else {
-        0
-    };
-
     if v.json {
         print_import_json(&ImportReport {
             provider: "github",
@@ -873,7 +836,6 @@ async fn try_handle_github(
             result: &import_result,
             distill: actual_distill,
             local_candidates: local_candidate_progress.as_ref(),
-            uploaded_reviews,
         });
     }
     Ok(ImportRunOutcome)
@@ -914,10 +876,6 @@ async fn try_handle_gitlab(
         return Ok(ImportRunOutcome);
     }
 
-    if v.upload {
-        ensure_cloud_session_for_upload(ctx).await?;
-    }
-
     print_gitlab_import_plan(&v, host, &gitlab_project);
 
     let Some((token, _source)) = difflore_core::ingest::gitlab::auth::resolve_token(host).await
@@ -941,7 +899,7 @@ async fn try_handle_gitlab(
         since: v.since.clone(),
     };
 
-    let import_result = run_gitlab_import(db, opts, v.upload, v.json).await?;
+    let import_result = run_gitlab_import(db, opts, v.json).await?;
 
     let mut actual_distill = v.distill;
     let local_candidate_progress = if v.local_candidates {
@@ -950,7 +908,11 @@ async fn try_handle_gitlab(
                 .await;
         actual_distill = distill;
         if !v.json {
-            print_local_candidate_next_steps(&progress, &gitlab_project);
+            print_local_candidate_next_steps(
+                &progress,
+                &gitlab_project,
+                distill_wire(actual_distill),
+            );
         }
         if progress.candidates_pending > 0 {
             crate::commands::memory::mark_memory_autopilot_dirty_best_effort(db, "import_reviews")
@@ -967,21 +929,6 @@ async fn try_handle_gitlab(
         None
     };
 
-    let uploaded_reviews = if v.upload {
-        run_upload(
-            ctx,
-            db,
-            "gitlab",
-            &gitlab_project,
-            Some(host),
-            &import_result,
-            v.json,
-        )
-        .await?
-    } else {
-        0
-    };
-
     if v.json {
         print_import_json(&ImportReport {
             provider: "gitlab",
@@ -993,7 +940,6 @@ async fn try_handle_gitlab(
             result: &import_result,
             distill: actual_distill,
             local_candidates: local_candidate_progress.as_ref(),
-            uploaded_reviews,
         });
     }
     Ok(ImportRunOutcome)
@@ -1045,27 +991,25 @@ mod tests {
     use difflore_core::ingest::github::ImportProgress;
 
     use super::fixtures::{
-        fresh_import_pool, imported_item, review, seed_gitlab_pr_with_directive,
+        fresh_import_pool, imported_item, seed_gitlab_pr_with_directive,
         seed_imported_review_comments, seed_imported_review_comments_with_resolution,
         seed_pr_with_directive,
     };
     use super::github::{format_github_import_err, gh_repo_view_failure_detail};
     use super::gitlab::format_gitlab_import_err;
     use super::local_candidates::{
-        CAPTURE_CONFIDENCE_HIGH, CAPTURE_CONFIDENCE_LOW, CaptureRoute,
-        active_candidate_next_step_commands, candidate_title, clean_review_comment,
-        distilled_rule_statement, is_high_signal_review_comment_for_paths, local_candidate_budget,
-        local_candidate_budget_reached, local_candidate_input,
+        CAPTURE_CONFIDENCE_HIGH, CAPTURE_CONFIDENCE_LOW, CaptureRoute, LocalCandidateProgress,
+        ReviewSourceKind, active_candidate_next_step_commands, candidate_title,
+        clean_review_comment, distilled_rule_statement, is_high_signal_review_comment_for_paths,
+        local_candidate_budget, local_candidate_budget_reached, local_candidate_input,
         pending_candidate_next_step_commands, pending_drafts_review_hint, route_for_confidence,
         run_local_candidates,
     };
     use super::scope::file_pattern_from_path;
-    use super::upload::{
-        build_upload_batches, cloud_upload_next_step_commands, comment_event_type,
-        comment_file_path_from_metadata, gitlab_host_from_metadata, imported_review_upload,
-        matches_upload_target,
+    use super::{
+        ImportArgs, ImportReport, dry_run_payload, import_json_payload,
+        local_agent_fallback_warning_lines, validate_args,
     };
-    use super::{ImportArgs, ImportReport, dry_run_payload, import_json_payload, validate_args};
 
     fn github_scope(repo: &str) -> RepoScope {
         RepoScope::github(repo).expect("test GitHub repo scope")
@@ -1145,7 +1089,7 @@ mod tests {
         let raw = "_⚠️ Potential issue_ | _🟡 Minor_ Wait for the async submit \
                    path before asserting state. The current code races.";
         let title = candidate_title(raw, "form-core/src/index.ts");
-        assert_eq!(title, "Review rule for form-core/src/index.ts");
+        assert_eq!(title, "Imported PR review rule for form-core/src/index.ts");
         assert!(!title.contains('⚠'));
         assert!(!title.contains('_'));
     }
@@ -1161,10 +1105,7 @@ mod tests {
             "src/http/headers.py",
         );
 
-        assert_eq!(
-            a,
-            "Review: Prefer Mapping[str, str] here instead of dict[str, str]"
-        );
+        assert_eq!(a, "Prefer Mapping[str, str] here instead of dict[str, str]");
         assert_eq!(a, b);
     }
 
@@ -1473,301 +1414,6 @@ mod tests {
     }
 
     #[test]
-    fn upload_batches_split_large_reviews_by_comment_count() {
-        let batches = build_upload_batches(&[review(1, 181)]);
-        let counts: Vec<usize> = batches
-            .iter()
-            .flat_map(|batch| batch.iter().map(|r| r.comments.len()))
-            .collect();
-        assert_eq!(counts, vec![20, 20, 20, 20, 20, 20, 20, 20, 20, 1]);
-    }
-
-    #[test]
-    fn upload_batches_keep_small_reviews_under_batch_limits() {
-        let reviews = (1..=25).map(|pr| review(pr, 1)).collect::<Vec<_>>();
-        let batches = build_upload_batches(&reviews);
-        assert_eq!(batches.len(), 2);
-        assert_eq!(batches[0].len(), 20);
-        assert_eq!(batches[1].len(), 5);
-    }
-
-    #[test]
-    fn import_upload_payload_attaches_to_local_repo_and_keeps_upstream_source() {
-        let item = imported_item(
-            Some("user/fork"),
-            Some(r#"{"sourceRepoFullName":"upstream/project","attachedRepoFullName":"user/fork"}"#),
-        );
-
-        let upload = imported_review_upload(&item).expect("review with comments should upload");
-
-        assert_eq!(upload.repo_full_name, "user/fork");
-        assert_eq!(
-            upload.source_repo_full_name.as_deref(),
-            Some("upstream/project")
-        );
-        assert_eq!(upload.pr_number, 7);
-        assert_eq!(upload.comments.len(), 1);
-    }
-
-    #[test]
-    fn import_upload_payload_preserves_gitlab_provider_and_host() {
-        let mut item = imported_item(
-            Some("group/sub/project"),
-            Some(
-                r#"{"gitlabHost":"GitLab.Corp.Example","sourceRepoFullName":"group/sub/project"}"#,
-            ),
-        );
-        item.item.source = "gitlab".to_owned();
-
-        let upload = imported_review_upload(&item).expect("review with comments should upload");
-
-        assert_eq!(upload.provider.as_deref(), Some("gitlab"));
-        assert_eq!(upload.provider_host.as_deref(), Some("gitlab.corp.example"));
-        assert_eq!(
-            upload.repo_full_name,
-            "gitlab.corp.example/group/sub/project"
-        );
-        assert_eq!(upload.source_repo_full_name, None);
-        assert_eq!(
-            gitlab_host_from_metadata(Some(r#"{"gitlabHost":"https://gitlab.corp.example/"}"#))
-                .as_deref(),
-            Some("gitlab.corp.example")
-        );
-        assert_eq!(
-            gitlab_host_from_metadata(Some(r#"{"gitlabHost":"https://gitlab.corp.example/g/p"}"#)),
-            None
-        );
-    }
-
-    #[test]
-    fn upload_target_filters_gitlab_reviews_by_host_dimension() {
-        let mut corp_item = imported_item(
-            Some("group/project"),
-            Some(r#"{"gitlabHost":"gitlab.corp.example"}"#),
-        );
-        corp_item.item.source = "gitlab".to_owned();
-        let mut dotcom_item = imported_item(
-            Some("group/project"),
-            Some(r#"{"gitlabHost":"gitlab.com"}"#),
-        );
-        dotcom_item.item.source = "gitlab".to_owned();
-
-        assert!(matches_upload_target(
-            &corp_item,
-            "gitlab",
-            "group/project",
-            Some("gitlab.corp.example"),
-        ));
-        assert!(!matches_upload_target(
-            &dotcom_item,
-            "gitlab",
-            "group/project",
-            Some("gitlab.corp.example"),
-        ));
-        assert!(matches_upload_target(
-            &dotcom_item,
-            "gitlab",
-            "group/project",
-            Some("https://gitlab.com/"),
-        ));
-        assert!(
-            !matches_upload_target(&corp_item, "gitlab", "group/project", None),
-            "GitLab upload filtering must fail closed without the requested host"
-        );
-    }
-
-    #[test]
-    fn import_upload_payload_does_not_invent_source_repo_without_metadata() {
-        let item = imported_item(Some("user/fork"), None);
-
-        let upload = imported_review_upload(&item).expect("review with comments should upload");
-
-        assert_eq!(upload.repo_full_name, "user/fork");
-        assert_eq!(upload.source_repo_full_name, None);
-    }
-
-    #[test]
-    fn import_upload_payload_canonicalizes_gitlab_source_repo() {
-        let mut item = imported_item(
-            Some("user/fork"),
-            Some(r#"{"gitlabHost":"gitlab.com","sourceRepoFullName":"upstream/project"}"#),
-        );
-        item.item.source = "gitlab".to_owned();
-
-        let upload = imported_review_upload(&item).expect("review with comments should upload");
-
-        assert_eq!(upload.repo_full_name, "gitlab.com/user/fork");
-        assert_eq!(
-            upload.source_repo_full_name.as_deref(),
-            Some("gitlab.com/upstream/project")
-        );
-    }
-
-    #[test]
-    fn import_upload_payload_preserves_inline_comment_file_path() {
-        let mut item = imported_item(Some("user/fork"), None);
-        item.comments[0].metadata = Some(
-            r#"{"filePath":"src/http/request.rs","sourceRepoFullName":"user/fork","attachedRepoFullName":"user/fork","resolved":true}"#
-                .to_owned(),
-        );
-
-        let upload = imported_review_upload(&item).expect("review with comments should upload");
-
-        assert_eq!(
-            upload.comments[0].file_path.as_deref(),
-            Some("src/http/request.rs"),
-            "the inline comment's path must flow into the cloud payload so extraction can derive file_patterns"
-        );
-    }
-
-    #[test]
-    fn import_upload_payload_leaves_file_path_none_without_a_recorded_path() {
-        // Legacy rows / top-level review bodies carry no per-comment metadata.
-        let item = imported_item(Some("user/fork"), None);
-        let upload = imported_review_upload(&item).expect("review with comments should upload");
-        assert_eq!(upload.comments[0].file_path, None);
-
-        // Explicit null, blank, and unparseable metadata all degrade to None
-        // rather than erroring or uploading an empty-string path.
-        assert_eq!(
-            comment_file_path_from_metadata(Some(r#"{"filePath":null}"#)),
-            None
-        );
-        assert_eq!(
-            comment_file_path_from_metadata(Some(r#"{"filePath":"  "}"#)),
-            None
-        );
-        assert_eq!(comment_file_path_from_metadata(Some("not json")), None);
-        assert_eq!(comment_file_path_from_metadata(None), None);
-    }
-
-    #[test]
-    fn import_upload_payload_labels_inline_comments_as_review_comments() {
-        use difflore_core::contract::ImportedCommentEventType;
-
-        let mut item = imported_item(Some("user/fork"), None);
-        item.comments[0].metadata = Some(
-            r#"{"filePath":"src/http/request.rs","sourceRepoFullName":"user/fork","attachedRepoFullName":"user/fork"}"#
-                .to_owned(),
-        );
-
-        let upload = imported_review_upload(&item).expect("review with comments should upload");
-
-        assert_eq!(
-            upload.comments[0].event_type,
-            Some(ImportedCommentEventType::PullRequestReviewComment),
-            "a recorded filePath means the comment was inline on a diff"
-        );
-    }
-
-    #[test]
-    fn import_upload_payload_labels_discussion_comments_as_issue_comments() {
-        use difflore_core::contract::ImportedCommentEventType;
-
-        // GitHub PR discussion comments are anchored to the first changed
-        // file at import time, so they carry BOTH `sourceKind: issue_comment`
-        // and a borrowed filePath. The sourceKind must win, or the cloud
-        // would label them as inline review comments.
-        let mut item = imported_item(Some("user/fork"), None);
-        item.comments[0].metadata = Some(
-            r#"{"filePath":"src/lib.rs","sourceRepoFullName":"user/fork","attachedRepoFullName":"user/fork","sourceKind":"issue_comment"}"#
-                .to_owned(),
-        );
-        item.comments[0].comment_url =
-            Some("https://github.com/user/fork/pull/7#issuecomment-99".to_owned());
-
-        let upload = imported_review_upload(&item).expect("review with comments should upload");
-        assert_eq!(
-            upload.comments[0].event_type,
-            Some(ImportedCommentEventType::IssueComment),
-            "sourceKind=issue_comment outranks the anchored filePath"
-        );
-        assert_eq!(
-            upload.comments[0].file_path.as_deref(),
-            Some("src/lib.rs"),
-            "the anchored path still flows into the payload for file-pattern extraction"
-        );
-
-        // GitLab MR-level discussion notes carry `sourceKind: mr_comment`
-        // and map to the same webhook bucket.
-        assert_eq!(
-            comment_event_type(
-                Some(r#"{"filePath":null,"sourceKind":"mr_comment"}"#),
-                None,
-                "https://gitlab.com/group/project/-/merge_requests/4#note_200",
-            ),
-            Some(ImportedCommentEventType::IssueComment),
-        );
-    }
-
-    #[test]
-    fn import_upload_payload_labels_review_bodies_as_pull_request_review() {
-        use difflore_core::contract::ImportedCommentEventType;
-
-        // Top-level review bodies carry no filePath/sourceKind metadata
-        // (durability signal only, or nothing) — the GitHub URL fragment is
-        // the local marker.
-        let mut item = imported_item(Some("user/fork"), None);
-        item.comments[0].metadata = Some(r#"{"resolved":true,"reactionsTotal":1}"#.to_owned());
-        item.comments[0].comment_url =
-            Some("https://github.com/user/fork/pull/7#pullrequestreview-42".to_owned());
-        item.comments[0].line_number = None;
-
-        let upload = imported_review_upload(&item).expect("review with comments should upload");
-        assert_eq!(
-            upload.comments[0].event_type,
-            Some(ImportedCommentEventType::PullRequestReview),
-        );
-    }
-
-    #[test]
-    fn comment_event_type_is_omitted_when_locally_unknown() {
-        use difflore_core::contract::ImportedCommentEventType;
-
-        // No metadata + unrecognized URL: stay silent so the cloud's own
-        // derivation (which sees the same inputs) decides — explicit wrong
-        // labels would override it.
-        assert_eq!(
-            comment_event_type(
-                None,
-                None,
-                "https://gitlab.example/p/-/merge_requests/4#note_7"
-            ),
-            None,
-        );
-        assert_eq!(comment_event_type(Some("not json"), None, ""), None);
-        // Legacy inline rows that lost filePath metadata are still recognized
-        // by their GitHub fragment, mirroring the cloud's derivation.
-        assert_eq!(
-            comment_event_type(None, None, "https://github.com/u/r/pull/7#discussion_r100"),
-            Some(ImportedCommentEventType::PullRequestReviewComment),
-        );
-
-        // The optional field must vanish from the wire payload (not serialize
-        // as null) so pre-eventType cloud deployments see an unchanged shape,
-        // and the serialized values must match the cloud zod enum exactly.
-        let mut wire = review(7, 1);
-        wire.comments[0].event_type = None;
-        let json = serde_json::to_string(&wire).expect("serialize upload payload");
-        assert!(!json.contains("eventType"), "omitted, got: {json}");
-
-        wire.comments[0].event_type = Some(ImportedCommentEventType::IssueComment);
-        let json = serde_json::to_string(&wire).expect("serialize upload payload");
-        assert!(
-            json.contains(r#""eventType":"issue_comment""#),
-            "got: {json}"
-        );
-        assert_eq!(
-            serde_json::to_string(&ImportedCommentEventType::PullRequestReviewComment).unwrap(),
-            r#""pull_request_review_comment""#
-        );
-        assert_eq!(
-            serde_json::to_string(&ImportedCommentEventType::PullRequestReview).unwrap(),
-            r#""pull_request_review""#
-        );
-    }
-
-    #[test]
     fn local_candidate_gate_keeps_review_rules_and_skips_chatter() {
         assert!(is_high_signal_review_comment_for_paths(
             "We should validate the header before parsing because otherwise malformed requests panic.",
@@ -1808,7 +1454,7 @@ mod tests {
         );
         assert_eq!(
             title,
-            "Review: Prefer Mapping[str, str] here instead of dict[str, str]"
+            "Prefer Mapping[str, str] here instead of dict[str, str]"
         );
         assert_eq!(
             file_pattern_from_path("src/http/headers.py").as_deref(),
@@ -2367,6 +2013,10 @@ We should validate the header before parsing because malformed requests panic.\n
         );
         assert!(candidate.confidence < CAPTURE_CONFIDENCE_HIGH);
         assert!(candidate.confidence >= CAPTURE_CONFIDENCE_LOW);
+        assert_eq!(
+            candidate.source_kind,
+            ReviewSourceKind::Bot("github-actions[bot]".to_owned())
+        );
     }
 
     #[test]
@@ -2397,6 +2047,10 @@ We should validate the header before parsing because malformed requests panic.\n
             candidate.confidence,
         );
         assert!(candidate.confidence >= CAPTURE_CONFIDENCE_HIGH);
+        assert_eq!(
+            candidate.source_kind,
+            ReviewSourceKind::Bot("coderabbitai[bot]".to_owned())
+        );
     }
 
     #[test]
@@ -2417,6 +2071,7 @@ We should validate the header before parsing because malformed requests panic.\n
                 .expect("resolved human directive should draft a candidate");
         assert_eq!(candidate.route, CaptureRoute::Candidate);
         assert!(candidate.confidence >= CAPTURE_CONFIDENCE_HIGH);
+        assert_eq!(candidate.source_kind, ReviewSourceKind::Human);
     }
 
     #[test]
@@ -2646,7 +2301,7 @@ We should validate the header before parsing because malformed requests panic.\n
             active_candidate_next_step_commands(),
             &[
                 "difflore status",
-                "difflore memory active",
+                "difflore rules active",
                 "difflore recall --diff",
                 "difflore review --diff all",
             ],
@@ -2654,24 +2309,9 @@ We should validate the header before parsing because malformed requests panic.\n
         assert_eq!(
             pending_candidate_next_step_commands("acme/widgets"),
             vec![
-                "difflore memory review".to_owned(),
+                "difflore rules review".to_owned(),
                 "difflore drafts list --repo acme/widgets --json".to_owned(),
                 "difflore drafts approve --all --repo acme/widgets --yes".to_owned(),
-            ],
-        );
-
-        let cloud_commands = cloud_upload_next_step_commands()
-            .iter()
-            .map(|(cmd, _)| *cmd)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            cloud_commands,
-            vec![
-                "difflore cloud sync",
-                "difflore status",
-                "difflore recall --diff",
-                "difflore cloud impact",
-                "difflore review --diff all",
             ],
         );
     }
@@ -2685,7 +2325,7 @@ We should validate the header before parsing because malformed requests panic.\n
             let full = format!("{prefix}{command}{suffix}");
 
             assert_eq!(
-                command, "difflore memory review",
+                command, "difflore rules review",
                 "hint must steer to a real command"
             );
             assert!(
@@ -2772,6 +2412,134 @@ We should validate the header before parsing because malformed requests panic.\n
             memories.iter().any(|c| c.name.contains("Prefer Mapping")),
             "memories: {memories:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn local_candidates_persist_bot_source_kind_on_pending_draft() {
+        let db = fresh_import_pool().await;
+        seed_imported_review_comments(
+            &db,
+            &[(
+                "Please validate the header before parsing because otherwise malformed requests panic.",
+                "src/http/request.rs",
+            )],
+        )
+        .await;
+        sqlx::query("UPDATE review_comments SET author = ?1")
+            .bind("coderabbitai[bot]")
+            .execute(&db)
+            .await
+            .expect("mark imported comment as bot-authored");
+
+        let source_scope = github_scope("acme/widgets");
+        let progress = run_local_candidates(
+            &db,
+            "github",
+            "acme/widgets",
+            &source_scope,
+            5,
+            &[],
+            &HashSet::new(),
+        )
+        .await;
+
+        assert_eq!(progress.candidates_created, 1);
+        assert_eq!(
+            progress.candidates_activated, 0,
+            "bot-authored directives must never auto-activate"
+        );
+        assert_eq!(progress.candidates_pending, 1);
+        let memories = difflore_core::skills::list_candidates(&db, None, None)
+            .await
+            .expect("list pending memories");
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].source_kind, "bot:coderabbitai[bot]");
+    }
+
+    /// Rewrite the seeded comment's metadata with the reply linkage ingest
+    /// writes (`earlierThreadAuthors`), keeping the provenance keys the local
+    /// candidate gate reads.
+    async fn attach_thread_linkage(db: &sqlx::SqlitePool, earlier_authors: &[&str]) {
+        let metadata = serde_json::json!({
+            "filePath": "src/http/request.rs",
+            "sourceRepoFullName": "acme/widgets",
+            "attachedRepoFullName": "acme/widgets",
+            "resolved": true,
+            "earlierThreadAuthors": earlier_authors,
+        })
+        .to_string();
+        sqlx::query("UPDATE review_comments SET metadata = ?1")
+            .bind(&metadata)
+            .execute(db)
+            .await
+            .expect("attach reply linkage metadata");
+    }
+
+    #[tokio::test]
+    async fn local_candidates_persist_human_override_bot_for_human_reply_in_bot_thread() {
+        let db = fresh_import_pool().await;
+        seed_imported_review_comments(
+            &db,
+            &[(
+                "Please validate the header before parsing because otherwise malformed requests panic.",
+                "src/http/request.rs",
+            )],
+        )
+        .await;
+        // The human comment sits in a thread a bot commented in first.
+        attach_thread_linkage(&db, &["coderabbitai[bot]"]).await;
+
+        let source_scope = github_scope("acme/widgets");
+        let progress = run_local_candidates(
+            &db,
+            "github",
+            "acme/widgets",
+            &source_scope,
+            5,
+            &[],
+            &HashSet::new(),
+        )
+        .await;
+
+        assert_eq!(progress.candidates_created, 1);
+        let memories = difflore_core::skills::list_candidates(&db, None, None)
+            .await
+            .expect("list pending memories");
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].source_kind, "human_override_bot");
+    }
+
+    #[tokio::test]
+    async fn local_candidates_keep_human_source_kind_for_human_reply_in_human_thread() {
+        let db = fresh_import_pool().await;
+        seed_imported_review_comments(
+            &db,
+            &[(
+                "Please validate the header before parsing because otherwise malformed requests panic.",
+                "src/http/request.rs",
+            )],
+        )
+        .await;
+        attach_thread_linkage(&db, &["bob"]).await;
+
+        let source_scope = github_scope("acme/widgets");
+        let progress = run_local_candidates(
+            &db,
+            "github",
+            "acme/widgets",
+            &source_scope,
+            5,
+            &[],
+            &HashSet::new(),
+        )
+        .await;
+
+        assert_eq!(progress.candidates_created, 1);
+        let memories = difflore_core::skills::list_candidates(&db, None, None)
+            .await
+            .expect("list pending memories");
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].source_kind, "human");
     }
 
     #[tokio::test]
@@ -3260,7 +3028,6 @@ We should validate the header before parsing because malformed requests panic.\n
             exclude_prs: vec![9, 9, 10],
             since: None,
             include_open: true,
-            upload: false,
             distill: ImportDistillArg::Heuristic,
             dry_run: true,
             json: true,
@@ -3282,7 +3049,6 @@ We should validate the header before parsing because malformed requests panic.\n
         // Deduped (the two 9s collapse) and sorted for stable JSON output.
         assert_eq!(payload["excludePrs"], serde_json::json!([9, 10]));
         assert_eq!(payload["includeOpen"], true);
-        assert_eq!(payload["upload"], false);
         assert_eq!(payload["localCandidates"], true);
         assert_eq!(payload["distill"], "heuristic");
         assert_eq!(payload["localCandidateBudget"], 25);
@@ -3301,7 +3067,7 @@ We should validate the header before parsing because malformed requests panic.\n
     }
 
     #[test]
-    fn import_json_payload_reports_cloud_upload_queue_result() {
+    fn import_json_payload_reports_import_result() {
         let progress = ImportProgress {
             prs_total: 2,
             prs_fetched: 1,
@@ -3320,7 +3086,6 @@ We should validate the header before parsing because malformed requests panic.\n
             result: &progress,
             distill: ImportDistillArg::Heuristic,
             local_candidates: None,
-            uploaded_reviews: 7,
         });
 
         assert_eq!(payload["provider"], "github");
@@ -3334,8 +3099,57 @@ We should validate the header before parsing because malformed requests panic.\n
         assert_eq!(payload["commentsImported"], 13);
         assert_eq!(payload["prsMissing"], 2);
         assert_eq!(payload["missingPrNumbers"], serde_json::json!([404, 405]));
-        assert_eq!(payload["uploadedReviews"], 7);
-        assert_eq!(payload["cloudUploadQueued"], true);
+        assert!(payload.get("uploadedReviews").is_none());
+        assert!(payload.get("cloudUploadQueued").is_none());
+    }
+
+    #[test]
+    fn import_json_payload_reports_actual_local_distill() {
+        let progress = ImportProgress {
+            prs_total: 2,
+            prs_fetched: 2,
+            comments_imported: 8,
+            comments_skipped: 0,
+            prs_missing: 0,
+            missing_pr_numbers: Vec::new(),
+        };
+        let local_progress = LocalCandidateProgress {
+            budget: 25,
+            comments_considered: 8,
+            candidates_created: 3,
+            candidates_pending: 3,
+            ..LocalCandidateProgress::default()
+        };
+        let payload = import_json_payload(&ImportReport {
+            provider: "github",
+            gitlab_host: None,
+            repo: "acme/fork",
+            source_repo: "acme/upstream",
+            max_prs: 2,
+            requested_max_prs: 2,
+            result: &progress,
+            distill: ImportDistillArg::Heuristic,
+            local_candidates: Some(&local_progress),
+        });
+
+        assert_eq!(payload["localCandidates"]["distill"], "heuristic");
+        assert_eq!(payload["localCandidates"]["candidatesPending"], 3);
+    }
+
+    #[test]
+    fn local_agent_fallback_warning_explains_heuristic_limits_and_setup() {
+        let lines = local_agent_fallback_warning_lines(
+            ImportDistillArg::Auto,
+            "all local-agent distillers failed: codex not found",
+        );
+        let text = lines.join("\n");
+
+        assert!(text.contains("falling back to heuristic"), "{text}");
+        assert!(text.contains("requested distill=auto"), "{text}");
+        assert!(text.contains("reason:"), "{text}");
+        assert!(text.contains("deterministic extraction"), "{text}");
+        assert!(text.contains("review suggested rules"), "{text}");
+        assert!(text.contains("difflore providers setup"), "{text}");
     }
 
     #[test]
@@ -3358,14 +3172,13 @@ We should validate the header before parsing because malformed requests panic.\n
             result: &progress,
             distill: ImportDistillArg::Heuristic,
             local_candidates: None,
-            uploaded_reviews: 0,
         });
 
         assert_eq!(payload["provider"], "gitlab");
         assert_eq!(payload["gitlabHost"], "gitlab.corp.example");
         assert_eq!(payload["repo"], "group/sub/project");
         assert_eq!(payload["maxPrsClamped"], false);
-        assert_eq!(payload["cloudUploadQueued"], false);
+        assert!(payload.get("cloudUploadQueued").is_none());
     }
 
     fn import_args_with_budget(max_prs: usize) -> ImportArgs {
@@ -3379,7 +3192,6 @@ We should validate the header before parsing because malformed requests panic.\n
             exclude_prs: Vec::new(),
             since: None,
             include_open: false,
-            upload: false,
             distill: ImportDistillArg::Auto,
             dry_run: false,
             json: true,

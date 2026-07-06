@@ -49,12 +49,12 @@ USAGE
 
 {build_rules}
   import-reviews      Turn past GitHub/GitLab review comments into rules
-  memory              Autopilot local rules and review what remains
+  rules               Review and approve drafted rules; triage clears the obvious ones
   learn               Force DiffLore to learn from the latest session now
 
 {connect_agents}
   agents              Connect DiffLore to local coding agents
-  export              Write a static snapshot to AGENTS.md or CLAUDE.md
+  export              Write snapshots to AGENTS.md, CLAUDE.md, Cursor .mdc, or OCR
 
 {use_rules}
   recall              Preview the rules an agent would see for a diff

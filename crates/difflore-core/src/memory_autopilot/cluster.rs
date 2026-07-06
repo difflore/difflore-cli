@@ -263,6 +263,7 @@ mod tests {
             raw_description: None,
             content_hash: None,
             origin: "session_mined".to_owned(),
+            source_kind: "human".to_owned(),
             source_repo: Some("hizachlee/cortex".to_owned()),
             file_patterns: patterns.into_iter().map(str::to_owned).collect(),
             verdict: Some("KEEP".to_owned()),

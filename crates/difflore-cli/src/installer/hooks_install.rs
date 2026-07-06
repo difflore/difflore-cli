@@ -28,6 +28,12 @@ use super::common::{cwd_path, error_outcome, home_path};
 use super::json_config::{load_json_object, write_json_object};
 use super::{InstallState, Status, TargetOutcome, TargetStatus};
 
+const HOOK_FAST_TIMEOUT_SECS: u16 = 5;
+const HOOK_DEFAULT_TIMEOUT_SECS: u16 = 10;
+const LEGACY_HOOK_PRE_TOOL_TIMEOUT_MS: u16 = 2000;
+const LEGACY_HOOK_FAST_TIMEOUT_MS: u16 = 5000;
+const LEGACY_HOOK_DEFAULT_TIMEOUT_MS: u16 = 10000;
+
 // ── Outcome helpers ──────────────────────────────────────────────────────
 
 fn skipped_outcome(name: &'static str, msg: impl Into<String>) -> TargetOutcome {
@@ -101,17 +107,18 @@ const CLAUDE_HOOK_EVENT_MATCHERS: &[(&str, Option<&str>)] = &[
     ("SessionEnd", None),
 ];
 
+fn claude_hook_group(event: &str, matcher: Option<&str>, command: &str) -> Value {
+    claude_hook_group_with_timeout(matcher, command, timeout_secs_for_event(event))
+}
+
 /// Build the hook group object for one Claude Code event — the single shape
 /// both [`merge_claude_code_hooks`] writes and [`render_claude_code_hook_block`]
-/// hashes. (`PreToolUse` only occurs in the legacy tables of
-/// [`legacy_claude_code_hook_blocks`]; its 2s budget is kept so legacy hashes
-/// reproduce the bytes old installers wrote.)
-fn claude_hook_group(event: &str, matcher: Option<&str>, command: &str) -> Value {
-    let timeout_ms = match event {
-        "PreToolUse" => 2000,
-        "PostToolUse" | "UserPromptSubmit" => 5000,
-        _ => 10000,
-    };
+/// hashes.
+fn claude_hook_group_with_timeout(
+    matcher: Option<&str>,
+    command: &str,
+    timeout_secs: u16,
+) -> Value {
     let mut group = serde_json::Map::new();
     if let Some(m) = matcher {
         group.insert("matcher".to_owned(), Value::from(m));
@@ -121,10 +128,25 @@ fn claude_hook_group(event: &str, matcher: Option<&str>, command: &str) -> Value
         Value::Array(vec![json!({
             "type": "command",
             "command": command,
-            "timeout": timeout_ms,
+            "timeout": timeout_secs,
         })]),
     );
     Value::Object(group)
+}
+
+fn timeout_secs_for_event(event: &str) -> u16 {
+    match event {
+        "PostToolUse" | "UserPromptSubmit" => HOOK_FAST_TIMEOUT_SECS,
+        _ => HOOK_DEFAULT_TIMEOUT_SECS,
+    }
+}
+
+fn legacy_timeout_ms_for_event(event: &str) -> u16 {
+    match event {
+        "PreToolUse" => LEGACY_HOOK_PRE_TOOL_TIMEOUT_MS,
+        "PostToolUse" | "UserPromptSubmit" => LEGACY_HOOK_FAST_TIMEOUT_MS,
+        _ => LEGACY_HOOK_DEFAULT_TIMEOUT_MS,
+    }
 }
 
 /// Merge `DiffLore` lifecycle hooks into `~/.claude/settings.json`. Returns the
@@ -285,7 +307,32 @@ pub(super) fn install_codex_hooks(bin: &str, dry_run: bool) -> TargetOutcome {
         Err(e) => return error_outcome("Codex hooks", e),
     };
     let res = merge_codex_hooks(&path, bin, dry_run);
-    finalize_hook_outcome("Codex hooks", &path, res)
+    finalize_codex_hook_outcome(&path, res)
+}
+
+fn finalize_codex_hook_outcome(primary_path: &Path, res: anyhow::Result<bool>) -> TargetOutcome {
+    match res {
+        Ok(existed) => {
+            let mut detail = primary_path.display().to_string();
+            if let Some(hint) = codex_hooks_disabled_hint() {
+                detail = format!("{detail} ({hint})");
+            }
+            TargetOutcome {
+                name: "Codex hooks",
+                status: if existed {
+                    Status::Updated
+                } else {
+                    Status::Installed
+                },
+                detail,
+            }
+        }
+        Err(e) => TargetOutcome {
+            name: "Codex hooks",
+            status: Status::Error(e.to_string()),
+            detail: String::new(),
+        },
+    }
 }
 
 pub(super) const CODEX_HOOK_EVENT_MATCHERS: &[(&str, Option<&str>)] = &[
@@ -302,14 +349,13 @@ pub(super) const CODEX_HOOK_EVENT_MATCHERS: &[(&str, Option<&str>)] = &[
     ("SessionStart", Some("startup|clear|compact")),
     ("UserPromptSubmit", None),
     ("Stop", None),
-    ("SessionEnd", None),
 ];
 
 fn codex_hook_group(event: &str, matcher: Option<&str>, command: &str) -> Value {
-    let timeout_ms = match event {
-        "PostToolUse" | "UserPromptSubmit" => 5000,
-        _ => 10000,
-    };
+    codex_hook_group_with_timeout(matcher, command, timeout_secs_for_event(event))
+}
+
+fn codex_hook_group_with_timeout(matcher: Option<&str>, command: &str, timeout_secs: u16) -> Value {
     let mut group = serde_json::Map::new();
     if let Some(m) = matcher {
         group.insert("matcher".to_owned(), Value::from(m));
@@ -319,7 +365,7 @@ fn codex_hook_group(event: &str, matcher: Option<&str>, command: &str) -> Value 
         Value::Array(vec![json!({
             "type": "command",
             "command": command,
-            "timeout": timeout_ms,
+            "timeout": timeout_secs,
         })]),
     );
     Value::Object(group)
@@ -390,6 +436,37 @@ pub(super) fn remove_codex_hooks(hooks_path: &Path, dry_run: bool) -> anyhow::Re
     remove_difflore_hook_entries(hooks_path, "codex", dry_run, true)
 }
 
+pub(super) fn probe_codex_hooks(name: &'static str, path: &Path) -> TargetStatus {
+    let mut status = probe_json_hooks_by_nested_command(name, path, "codex");
+    if matches!(status.state, InstallState::Installed)
+        && let Some(hint) = codex_hooks_disabled_hint()
+    {
+        status.state = InstallState::Conflict;
+        status.detail = Some(hint);
+    }
+    status
+}
+
+fn codex_hooks_disabled_hint() -> Option<String> {
+    let path = home_path(&[".codex", "config.toml"]).ok()?;
+    codex_hooks_disabled_hint_at(&path)
+}
+
+fn codex_hooks_disabled_hint_at(path: &Path) -> Option<String> {
+    let raw = fs::read_to_string(path).ok()?;
+    let parsed = raw.parse::<toml::Value>().ok()?;
+    let features = parsed.get("features")?.as_table()?;
+    for key in ["hooks", "codex_hooks"] {
+        if features.get(key).and_then(toml::Value::as_bool) == Some(false) {
+            return Some(format!(
+                "{} disables Codex hooks with [features].{key}=false; remove it or set it to true",
+                path.display()
+            ));
+        }
+    }
+    None
+}
+
 // ── Cursor hooks ────────────────────────────────────────────────────────
 
 pub(super) fn install_cursor_hooks(bin: &str, dry_run: bool) -> TargetOutcome {
@@ -444,7 +521,7 @@ pub(super) fn merge_cursor_hooks(path: &Path, bin: &str, dry_run: bool) -> anyho
         arr.push(json!({
             "name": "difflore",
             "command": command,
-            "timeout": 5000,
+            "timeout": HOOK_FAST_TIMEOUT_SECS,
         }));
     }
 
@@ -516,7 +593,7 @@ pub(super) fn merge_gemini_cli_hooks(
         "name": "difflore",
         "type": "command",
         "command": command,
-        "timeout": 5000,
+        "timeout": HOOK_FAST_TIMEOUT_SECS,
     });
     let mut existed = false;
     for event in GEMINI_HOOK_EVENTS {
@@ -951,6 +1028,8 @@ pub(super) fn render_codex_hook_block(bin: &str) -> Vec<Value> {
 /// 2. interim: PostToolUse gained `Bash` while PreToolUse(Read) was still
 ///    registered (the render fn missed that matcher change, so manifests from
 ///    that window recorded hashes that never matched any bytes on disk).
+/// 3. final millisecond-era render before hook timeouts were corrected from
+///    5000/10000 to 5/10 seconds.
 ///
 /// Append a new entry whenever the rendered shape changes (and bump
 /// `HOOKS_JSON_BLOCK_VERSION`); never edit existing entries — they must keep
@@ -974,16 +1053,54 @@ pub(super) fn legacy_claude_code_hook_blocks(bin: &str) -> Vec<Vec<Value>> {
             ("Stop", None),
             ("SessionEnd", None),
         ],
+        &[
+            ("PostToolUse", Some(CLAUDE_POST_TOOL_USE_MATCHER)),
+            ("SessionStart", Some("startup|clear|compact")),
+            ("UserPromptSubmit", None),
+            ("Stop", None),
+            ("SessionEnd", None),
+        ],
     ];
     legacy_tables
         .iter()
         .map(|table| {
             table
                 .iter()
-                .map(|(event, matcher)| claude_hook_group(event, *matcher, &command))
+                .map(|(event, matcher)| {
+                    claude_hook_group_with_timeout(
+                        *matcher,
+                        &command,
+                        legacy_timeout_ms_for_event(event),
+                    )
+                })
                 .collect()
         })
         .collect()
+}
+
+/// Historical Codex hook block: millisecond-era timeouts and the retired
+/// `SessionEnd` group that Codex never fires.
+pub(super) fn legacy_codex_hook_blocks(bin: &str) -> Vec<Vec<Value>> {
+    let command = hook_command_string(bin, "codex");
+    let legacy_table: &[(&str, Option<&str>)] = &[
+        ("PostToolUse", Some("apply_patch|Bash|Write|Edit|MultiEdit")),
+        ("SessionStart", Some("startup|clear|compact")),
+        ("UserPromptSubmit", None),
+        ("Stop", None),
+        ("SessionEnd", None),
+    ];
+    vec![
+        legacy_table
+            .iter()
+            .map(|(event, matcher)| {
+                codex_hook_group_with_timeout(
+                    *matcher,
+                    &command,
+                    legacy_timeout_ms_for_event(event),
+                )
+            })
+            .collect(),
+    ]
 }
 
 /// The Cursor hook entries DiffLore contributes, one per [`CURSOR_HOOK_EVENTS`]
@@ -996,10 +1113,35 @@ pub(super) fn render_cursor_hook_block(bin: &str) -> Vec<Value> {
             json!({
                 "name": "difflore",
                 "command": command,
-                "timeout": 5000,
+                "timeout": HOOK_FAST_TIMEOUT_SECS,
             })
         })
         .collect()
+}
+
+/// Historical Cursor hook block before timeout values were corrected from
+/// milliseconds to seconds.
+pub(super) fn legacy_cursor_hook_blocks(bin: &str) -> Vec<Vec<Value>> {
+    let command = hook_command_string(bin, "cursor");
+    let legacy_events = &[
+        "afterFileEdit",
+        "afterMCPExecution",
+        "afterShellExecution",
+        "beforeSubmitPrompt",
+        "stop",
+    ];
+    vec![
+        legacy_events
+            .iter()
+            .map(|_event| {
+                json!({
+                    "name": "difflore",
+                    "command": command,
+                    "timeout": LEGACY_HOOK_FAST_TIMEOUT_MS,
+                })
+            })
+            .collect(),
+    ]
 }
 
 /// The Gemini CLI hook groups DiffLore contributes, one per
@@ -1011,7 +1153,7 @@ pub(super) fn render_gemini_cli_hook_block(bin: &str) -> Vec<Value> {
         "name": "difflore",
         "type": "command",
         "command": command,
-        "timeout": 5000,
+        "timeout": HOOK_FAST_TIMEOUT_SECS,
     });
     GEMINI_HOOK_EVENTS
         .iter()
@@ -1022,6 +1164,36 @@ pub(super) fn render_gemini_cli_hook_block(bin: &str) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// Historical Gemini hook block before timeout values were corrected from
+/// milliseconds to seconds.
+pub(super) fn legacy_gemini_cli_hook_blocks(bin: &str) -> Vec<Vec<Value>> {
+    let command = hook_command_string(bin, "gemini-cli");
+    let legacy_events = &[
+        "SessionStart",
+        "BeforeAgent",
+        "AfterAgent",
+        "AfterTool",
+        "SessionEnd",
+    ];
+    let hook_entry = json!({
+        "name": "difflore",
+        "type": "command",
+        "command": command,
+        "timeout": LEGACY_HOOK_FAST_TIMEOUT_MS,
+    });
+    vec![
+        legacy_events
+            .iter()
+            .map(|_event| {
+                json!({
+                    "matcher": "*",
+                    "hooks": [hook_entry.clone()],
+                })
+            })
+            .collect(),
+    ]
 }
 
 /// The Windsurf hook entries DiffLore contributes, one per
@@ -1182,6 +1354,46 @@ mod tests {
 
     const BIN: &str = "/tmp/fake/difflore";
 
+    fn collect_timeouts(value: &Value, out: &mut Vec<u64>) {
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    collect_timeouts(item, out);
+                }
+            }
+            Value::Object(obj) => {
+                if let Some(timeout) = obj.get("timeout").and_then(Value::as_u64) {
+                    out.push(timeout);
+                }
+                for value in obj.values() {
+                    collect_timeouts(value, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn current_rendered_hook_timeouts_are_seconds_not_milliseconds() {
+        let renders = [
+            ("Claude Code", render_claude_code_hook_block(BIN)),
+            ("Codex", render_codex_hook_block(BIN)),
+            ("Cursor", render_cursor_hook_block(BIN)),
+            ("Gemini", render_gemini_cli_hook_block(BIN)),
+        ];
+        for (name, groups) in renders {
+            let mut timeouts = Vec::new();
+            for group in groups {
+                collect_timeouts(&group, &mut timeouts);
+            }
+            assert!(!timeouts.is_empty(), "{name} should set hook timeouts");
+            assert!(
+                timeouts.iter().all(|timeout| *timeout > 0 && *timeout < 60),
+                "{name} timeouts must be seconds-scale, got {timeouts:?}"
+            );
+        }
+    }
+
     #[test]
     fn hook_command_string_normalizes_backslashes_to_forward_slashes() {
         let cmd = hook_command_string(r"C:\Users\me\difflore.exe", "claude-code");
@@ -1273,7 +1485,8 @@ mod tests {
             "Edit|MultiEdit|Write|Bash"
         );
         assert_eq!(
-            v["hooks"]["PostToolUse"][0]["hooks"][0]["timeout"], 5000,
+            v["hooks"]["PostToolUse"][0]["hooks"][0]["timeout"].as_u64(),
+            Some(u64::from(HOOK_FAST_TIMEOUT_SECS)),
             "PostToolUse keeps its 5s budget"
         );
         assert!(
@@ -1454,6 +1667,12 @@ mod tests {
 
     #[test]
     fn codex_hooks_reinstall_replaces_difflore_preserving_user_hooks() {
+        assert!(
+            CODEX_HOOK_EVENT_MATCHERS
+                .iter()
+                .all(|(event, _)| *event != "SessionEnd"),
+            "Codex does not support SessionEnd hooks"
+        );
         let (tmp, _) = tmp_settings_path();
         let path = tmp.path().join(".codex/hooks.json");
         fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
@@ -1472,6 +1691,11 @@ mod tests {
                         }
                     ],
                     "Stop": [
+                        {
+                            "hooks": [{"type": "command", "command": "/old/bin/difflore-hook --client codex"}]
+                        }
+                    ],
+                    "SessionEnd": [
                         {
                             "hooks": [{"type": "command", "command": "/old/bin/difflore-hook --client codex"}]
                         }
@@ -1515,6 +1739,15 @@ mod tests {
             let cmd = difflore_groups[0]["hooks"][0]["command"]
                 .as_str()
                 .expect("cmd");
+            assert_eq!(
+                difflore_groups[0]["hooks"][0]["timeout"].as_u64(),
+                Some(if *event == "PostToolUse" || *event == "UserPromptSubmit" {
+                    u64::from(HOOK_FAST_TIMEOUT_SECS)
+                } else {
+                    u64::from(HOOK_DEFAULT_TIMEOUT_SECS)
+                }),
+                "{event} timeout must be seconds, not milliseconds"
+            );
             assert!(cmd.contains("--client codex"), "got: {cmd}");
             assert!(cmd.contains("difflore-hook"), "hook shim missing: {cmd}");
             assert!(
@@ -1529,6 +1762,32 @@ mod tests {
                 ),
             }
         }
+        assert!(
+            v["hooks"].get("SessionEnd").is_none(),
+            "Codex has no SessionEnd event; old difflore group should be removed: {v}"
+        );
+    }
+
+    #[test]
+    fn codex_hooks_disabled_hint_detects_current_and_legacy_feature_flags() {
+        let (_tmp, path) = tmp_settings_path();
+        fs::write(&path, "[features]\nhooks = false\n").expect("seed");
+        let hint = codex_hooks_disabled_hint_at(&path).expect("disabled hint");
+        assert!(hint.contains("[features].hooks=false"), "{hint}");
+
+        fs::write(&path, "[features]\ncodex_hooks = false\n").expect("seed legacy");
+        let hint = codex_hooks_disabled_hint_at(&path).expect("legacy disabled hint");
+        assert!(hint.contains("[features].codex_hooks=false"), "{hint}");
+    }
+
+    #[test]
+    fn codex_hooks_disabled_hint_ignores_enabled_or_missing_flags() {
+        let (_tmp, path) = tmp_settings_path();
+        fs::write(&path, "[features]\nhooks = true\n").expect("seed");
+        assert!(codex_hooks_disabled_hint_at(&path).is_none());
+
+        fs::write(&path, "[model]\ndefault = \"gpt-5\"\n").expect("seed no features");
+        assert!(codex_hooks_disabled_hint_at(&path).is_none());
     }
 
     #[test]
@@ -1543,7 +1802,11 @@ mod tests {
             let arr = v["hooks"][event].as_array().expect("event array");
             assert_eq!(arr.len(), 1, "expected one entry for {event}");
             assert_eq!(arr[0]["name"], "difflore");
-            assert_eq!(arr[0]["timeout"], 5000);
+            assert_eq!(
+                arr[0]["timeout"].as_u64(),
+                Some(u64::from(HOOK_FAST_TIMEOUT_SECS))
+            );
+            assert!(arr[0]["timeout"].as_u64().is_some_and(|t| t < 60));
             let cmd = arr[0]["command"].as_str().expect("cmd");
             assert!(cmd.contains("--client cursor"), "got: {cmd}");
             assert!(cmd.contains("difflore-hook"), "hook shim missing: {cmd}");
@@ -1593,7 +1856,11 @@ mod tests {
             let inner = groups[0]["hooks"].as_array().expect("inner");
             assert_eq!(inner[0]["name"], "difflore");
             assert_eq!(inner[0]["type"], "command");
-            assert_eq!(inner[0]["timeout"], 5000);
+            assert_eq!(
+                inner[0]["timeout"].as_u64(),
+                Some(u64::from(HOOK_FAST_TIMEOUT_SECS))
+            );
+            assert!(inner[0]["timeout"].as_u64().is_some_and(|t| t < 60));
             let cmd = inner[0]["command"].as_str().expect("cmd");
             assert!(cmd.contains("--client gemini-cli"), "got: {cmd}");
         }

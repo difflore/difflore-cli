@@ -7,6 +7,7 @@ use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
 
 use super::evidence::{SkillDetailRow, fetch_skills_by_ids, has_strict_file_scope_match};
+use crate::context::retrieval::TargetScope;
 use crate::error::CoreError;
 
 #[cfg(test)]
@@ -77,6 +78,7 @@ pub(crate) async fn drain_mcp_query_outbox(
 /// drops rules tagged for other languages; an unknown extension falls through
 /// to NULL. `repo_scope` scopes retrieval to the current repo only — a NULL
 /// scope is not a runtime global fallback.
+#[cfg(test)]
 pub(crate) fn filter_from_file(
     target_file: Option<&str>,
     repo_scope: Option<&str>,
@@ -114,6 +116,7 @@ pub(crate) struct RetrieveRulesArgs<'a> {
     pub lexical_query: Option<&'a str>,
     pub top_k: usize,
     pub target_file: Option<&'a str>,
+    pub target_scope: Option<TargetScope<'a>>,
     pub repo_scopes: &'a [String],
     pub confidence_map: Option<&'a HashMap<String, f64>>,
     pub age_days_map: Option<&'a HashMap<String, f32>>,
@@ -133,6 +136,7 @@ pub(crate) async fn retrieve_rules_with_repo_scopes(
         lexical_query,
         top_k,
         target_file,
+        target_scope,
         repo_scopes,
         confidence_map,
         age_days_map,
@@ -160,11 +164,15 @@ pub(crate) async fn retrieve_rules_with_repo_scopes(
 
     let query_variants = retrieval_query_variants(query, lexical_query);
     let mut groups = Vec::with_capacity(scope_filters.len() * query_variants.len());
-    // Hook/MCP surfaces are single-file by contract; adapt the path into the
-    // generalised scope here so the latency-critical callers stay unchanged.
-    let target_scope = target_file.map(crate::context::retrieval::TargetScope::File);
+    // Hook/MCP surfaces are usually single-file by contract; callers that have
+    // a whole diff can pass an explicit changeset scope for the same retrieval
+    // path that `recall --diff` uses.
+    let target_scope = target_scope.or_else(|| target_file.map(TargetScope::File));
     for repo_scope in &scope_filters {
-        let filter = filter_from_file(target_file, repo_scope.as_deref());
+        let filter = crate::context::index_db::QueryFilter {
+            language: target_scope.and_then(|scope| scope.language_hint()),
+            repo_scope: repo_scope.clone(),
+        };
         for query_variant in &query_variants {
             groups.push(
                 crate::context::retrieval::retrieve_rules_with_confidence(
@@ -280,7 +288,7 @@ pub(crate) async fn cross_repo_starter_scored(
             confidence_map,
             age_days_map,
             effectiveness_map: None,
-            target_scope: Some(crate::context::retrieval::TargetScope::File(target_file)),
+            target_scope: Some(TargetScope::File(target_file)),
             // Every repo's rules are eligible; results remain labeled as
             // cross-repo starter suggestions.
             repo_scopes: &[],
@@ -434,6 +442,7 @@ mod tests {
             confidence_score,
             file_patterns: file_patterns.map(str::to_owned),
             origin: "pr_review".to_owned(),
+            source_kind: "human".to_owned(),
             source_repo: source_repo.map(str::to_owned),
             trigger: None,
             check_prompt: None,
@@ -673,9 +682,7 @@ mod tests {
                 confidence_map: Some(&confidence_map),
                 age_days_map: None,
                 effectiveness_map: None,
-                target_scope: Some(crate::context::retrieval::TargetScope::File(
-                    "src/http/handler.rs",
-                )),
+                target_scope: Some(TargetScope::File("src/http/handler.rs")),
                 repo_scopes: &repo_scopes,
                 ann_enabled: false,
                 local_query_embedding: false,
@@ -695,9 +702,7 @@ mod tests {
                 confidence_map: Some(&confidence_map),
                 age_days_map: Some(&age_days_map),
                 effectiveness_map: None,
-                target_scope: Some(crate::context::retrieval::TargetScope::File(
-                    "src/http/handler.rs",
-                )),
+                target_scope: Some(TargetScope::File("src/http/handler.rs")),
                 repo_scopes: &repo_scopes,
                 ann_enabled: false,
                 local_query_embedding: false,
@@ -717,6 +722,7 @@ mod tests {
                 lexical_query: Some(intent),
                 top_k: candidate_limit,
                 target_file: Some("src/http/handler.rs"),
+                target_scope: None,
                 repo_scopes: &repo_scopes,
                 confidence_map: Some(&confidence_map),
                 age_days_map: Some(&age_days_map),
@@ -775,6 +781,7 @@ mod tests {
                 lexical_query: Some("Avoid unwrap in request handlers"),
                 top_k: 5,
                 target_file: Some("src/http/handler.rs"),
+                target_scope: None,
                 repo_scopes: &[],
                 confidence_map: None,
                 age_days_map: None,
@@ -790,7 +797,7 @@ mod tests {
 
         assert!(
             hits.is_empty(),
-            "MCP recall must not fall back to global memory when no repo scope is available"
+            "MCP recall must not fall back to global rules when no repo scope is available"
         );
     }
 }
@@ -917,7 +924,7 @@ mod filter_from_file_tests {
     fn empty_recall_retry_query_keeps_file_and_distinctive_intent_terms() {
         let retry = build_empty_recall_retry_query(
             "packages/router/src/parser.ts",
-            "Please search review memory for deeply nested optional route parsing with no exact wording",
+            "Please search review rules for deeply nested optional route parsing with no exact wording",
         )
         .expect("retry query");
 

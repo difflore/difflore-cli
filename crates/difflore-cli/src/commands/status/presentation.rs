@@ -10,8 +10,8 @@ use std::fmt::Write as _;
 use crate::style::{self, sym};
 
 use super::queries::{
-    AcceptedEditProofFunnel, LocalAcceptedProof, LocalHeroEvidence, LocalMcpRuleServe,
-    LocalRecallProof, MemoryInboxSummary, ProvenRuleDrilldown,
+    LocalAcceptedProof, LocalHeroEvidence, LocalMcpRuleServe, LocalRecallProof, MemoryInboxSummary,
+    ProvenRuleDrilldown,
 };
 use super::transform::{CandidatePreview, NextAction, RepoScopeStatus, plural};
 use super::{CloudProofSummary, RecallTraceSummary};
@@ -22,6 +22,7 @@ use super::transform::LaneStatusSummary;
 
 /// One rule that already earned accepted edits -- the most concrete "it works"
 /// signal to show in plain language.
+#[cfg(test)]
 fn format_top_rule(rule: &ProvenRuleDrilldown) -> String {
     let mut line = format!(
         "{}: {} accepted edit{}",
@@ -40,13 +41,21 @@ fn format_top_rule(rule: &ProvenRuleDrilldown) -> String {
     line
 }
 
+fn format_repo_distribution(repos: &[crate::support::util::RepoRuleCount]) -> String {
+    repos
+        .iter()
+        .map(|entry| format!("{} ({})", entry.repo, entry.count))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn format_local_hero_evidence(hero: &LocalHeroEvidence) -> Vec<String> {
     let scope_note = if hero.scope == "currentRepo" {
         ""
     } else {
         " (best on this machine)"
     };
-    let mut lines = vec![format!("best local memory{scope_note}: {}", hero.title)];
+    let mut lines = vec![format!("best local rules{scope_note}: {}", hero.title)];
 
     let mut trail = Vec::new();
     if let Some(source) = hero
@@ -87,11 +96,7 @@ fn format_local_hero_evidence(hero: &LocalHeroEvidence) -> Vec<String> {
 
     let real_agent_serves = hero.agent_serves.max(0);
     let mut metrics = format!(
-        "{} accepted edit{} | {} signed diff{} | {} recall{} | {} ready for agent{}",
-        hero.accepted_edits,
-        plural(hero.accepted_edits),
-        hero.signed_diff_proofs,
-        plural(hero.signed_diff_proofs),
+        "{} recall{} | {} ready for agent{}",
         hero.recall_events,
         plural(hero.recall_events),
         real_agent_serves,
@@ -110,7 +115,7 @@ fn format_local_hero_evidence(hero: &LocalHeroEvidence) -> Vec<String> {
         );
     }
     if let Some(rank) = hero.best_recall_rank.filter(|rank| *rank > 0) {
-        let _ = write!(metrics, " | best matched memory #{rank}");
+        let _ = write!(metrics, " | best matched rule #{rank}");
     }
     lines.push(metrics);
 
@@ -133,14 +138,11 @@ fn format_scoped_recall(scope: &RepoScopeStatus) -> String {
         upstream,
         scope.review_source_repo_full_name.as_deref(),
     ) {
-        (0, n, Some(source)) if n > 0 => format!(
-            "ready ({} memor{} from {})",
-            n,
-            if n == 1 { "y" } else { "ies" },
-            source
-        ),
+        (0, n, Some(source)) if n > 0 => {
+            format!("ready ({} rule{} from {})", n, plural(n), source)
+        }
         (s, n, Some(source)) if n > 0 => format!("ready ({s} scoped + {n} from {source})"),
-        (s, _, _) => format!("ready ({} memor{})", s, if s == 1 { "y" } else { "ies" }),
+        (s, _, _) => format!("ready ({} rule{})", s, plural(s)),
     }
 }
 
@@ -197,9 +199,9 @@ fn format_readiness(selected_lane: &str, lane_status: &LaneStatusSummary) -> Vec
     if show_beta {
         lines.push(
             if lane_status.local_beta.ready {
-                "beta: ready | local review memory is working"
+                "beta: ready | local review rules is working"
             } else {
-                "beta: not yet | no usable local review memory yet"
+                "beta: not yet | no usable local review rules yet"
             }
             .to_owned(),
         );
@@ -228,7 +230,6 @@ pub(super) struct StatusTextView<'a> {
     pub(super) local_proof: &'a LocalAcceptedProof,
     pub(super) local_recall_proof: &'a LocalRecallProof,
     pub(super) local_mcp_serves: &'a LocalMcpRuleServe,
-    pub(super) accepted_edit_funnel: &'a AcceptedEditProofFunnel,
     pub(super) cloud_proof: Option<&'a CloudProofSummary>,
     pub(super) recall_trace: &'a RecallTraceSummary,
     pub(super) proven_rule: Option<&'a ProvenRuleDrilldown>,
@@ -250,7 +251,6 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
         local_proof,
         local_recall_proof,
         local_mcp_serves,
-        accepted_edit_funnel,
         cloud_proof,
         recall_trace,
         proven_rule,
@@ -274,13 +274,21 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
         let _ = writeln!(out);
     }
 
-    // Memory & recall: what a new user needs to understand first.
-    let _ = writeln!(out, "{}", style::ok("Memory"));
+    // Rules & recall: what a new user needs to understand first.
+    let _ = writeln!(out, "{}", style::ok("Rules"));
     let _ = writeln!(
         out,
         "  {bullet} active on this machine: {active_rules} rule{}",
         plural(active_rules)
     );
+    if active_rules > 0 && !scope.scoped_recall_ready && !memory_inbox.active_rule_repos.is_empty()
+    {
+        let _ = writeln!(
+            out,
+            "    rules live in: {}",
+            format_repo_distribution(&memory_inbox.active_rule_repos)
+        );
+    }
     if active_rules == 0 {
         let _ = writeln!(
             out,
@@ -295,7 +303,7 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
     let _ = writeln!(out, "  {bullet} drafts: {drafts}");
     if pending_candidates_for_repo > 0 {
         if let Some(repo) = scope.repo_full_name.as_deref() {
-            let _ = writeln!(out, "    review: {}", style::cmd("difflore memory review"));
+            let _ = writeln!(out, "    review: {}", style::cmd("difflore rules review"));
             let _ = writeln!(
                 out,
                 "    agent: {}",
@@ -310,7 +318,7 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
             );
         }
     } else if pending_candidates > 0 {
-        let _ = writeln!(out, "    review: {}", style::cmd("difflore memory review"));
+        let _ = writeln!(out, "    review: {}", style::cmd("difflore rules review"));
         let _ = writeln!(
             out,
             "    agent: {}",
@@ -321,12 +329,12 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
     if discoveries > 0 {
         let _ = writeln!(
             out,
-            "  {bullet} candidate memories: {discoveries} waiting for local review"
+            "  {bullet} candidate rules: {discoveries} waiting for local review"
         );
         if let Some(latest) = memory_inbox.local_discoveries.latest.first() {
             let _ = writeln!(out, "    latest: {}", style::pewter(&latest.title));
         }
-        let _ = writeln!(out, "    review: {}", style::cmd("difflore memory review"));
+        let _ = writeln!(out, "    review: {}", style::cmd("difflore rules review"));
         let _ = writeln!(
             out,
             "    cloud: {}",
@@ -364,27 +372,13 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
         }
     }
 
-    // Value: concrete accepted-edit activity. Link details stay in --json.
+    // Value: coverage and recall activity. Accepted-edit details stay in --json.
     let _ = writeln!(out);
     let _ = writeln!(
         out,
         "{}",
         style::ok(&format!("Value (last {}d)", local_proof.window_days))
     );
-    let accepted = local_proof.accepted_proof_signatures + local_proof.accepted_hook_outcomes;
-    if accepted > 0 {
-        let traced = local_proof.accepted_outcomes_linked_to_prior_recall;
-        let traced_note = if traced > 0 {
-            format!(" | {traced} via captured recall-to-edit loop")
-        } else {
-            " | recall-to-edit loop not captured yet".to_owned()
-        };
-        let _ = writeln!(
-            out,
-            "  {bullet} {accepted} edit{} accepted{traced_note}",
-            plural(accepted),
-        );
-    }
     // Count only non-empty lookups as "serves": a call that returned no rule
     // delivered no memory, so it must not inflate the value summary.
     let agent_serves = local_mcp_serves
@@ -408,9 +402,6 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
     if !signal_parts.is_empty() {
         let _ = writeln!(out, "  {bullet} signals: {}", signal_parts.join(" | "));
     }
-    if let Some(line) = format_accepted_edit_funnel(accepted_edit_funnel) {
-        let _ = writeln!(out, "  {bullet} {line}");
-    }
     if recall_trace.events > 0 {
         let mut trace = format!(
             "{} trace (24h): {} event{} | {} rule{} injected",
@@ -431,11 +422,7 @@ pub(super) fn render_text(view: &StatusTextView<'_>) -> String {
         }
         let _ = writeln!(out, "  {bullet} {trace}");
     }
-    if accepted > 0
-        && let Some(rule) = proven_rule
-    {
-        let _ = writeln!(out, "  {bullet} top memory: {}", format_top_rule(rule));
-    }
+    let _ = proven_rule;
     if let Some(hero) = local_hero_evidence {
         for (index, line) in format_local_hero_evidence(hero).into_iter().enumerate() {
             if index == 0 {
@@ -551,56 +538,13 @@ fn format_cloud_proof(summary: &CloudProofSummary) -> Vec<String> {
             plural(summary.source_evidence_items)
         ));
     }
-    if summary.accepted_fix_outcomes_last30 > 0 {
-        proof_parts.push(format!(
-            "{}/{} accepted outcome{} in 30d",
-            summary.accepted_fix_outcomes_last30,
-            summary
-                .total_fixes_last30
-                .max(summary.accepted_fix_outcomes_last30),
-            if summary
-                .total_fixes_last30
-                .max(summary.accepted_fix_outcomes_last30)
-                == 1
-            {
-                ""
-            } else {
-                "s"
-            }
-        ));
-    }
-    if summary.saved_review_minutes > 0 {
-        proof_parts.push(format!(
-            "{} saved review minute{}",
-            summary.saved_review_minutes,
-            plural(summary.saved_review_minutes)
-        ));
-    }
     if !proof_parts.is_empty() {
         lines.push(format!(
-            "cloud accepted-outcome activity: {}",
+            "cloud coverage and recall: {}",
             proof_parts.join(" | ")
         ));
     }
     lines
-}
-
-fn format_accepted_edit_funnel(funnel: &AcceptedEditProofFunnel) -> Option<String> {
-    if funnel.ready_for_cloud_value {
-        return Some("accepted-edit proof: cloud attribution ready".to_owned());
-    }
-    if funnel.blockers.is_empty() && funnel.accepted_edit_upload_pending == 0 {
-        return None;
-    }
-
-    let mut line = format!("accepted-edit proof: {}", funnel.stage);
-    if let Some(blocker) = funnel.blockers.first() {
-        let _ = write!(line, " | blocker: {blocker}");
-    }
-    if let Some(command) = funnel.next_commands.first() {
-        let _ = write!(line, " | next: {command}");
-    }
-    Some(line)
 }
 
 fn top_candidates_heading(
@@ -609,12 +553,12 @@ fn top_candidates_heading(
     pending_candidates_for_repo: i64,
 ) -> String {
     match candidate_scope {
-        "currentRepo" => "Pending memory drafts for current repo".to_owned(),
+        "currentRepo" => "Pending rule drafts for current repo".to_owned(),
         "all" if scope.repo_full_name.is_some() && pending_candidates_for_repo == 0 => {
-            "Pending memory drafts from other repos".to_owned()
+            "Pending rule drafts from other repos".to_owned()
         }
-        "all" => "Pending memory drafts across repos".to_owned(),
-        _ => "Pending memory drafts".to_owned(),
+        "all" => "Pending rule drafts across repos".to_owned(),
+        _ => "Pending rule drafts".to_owned(),
     }
 }
 
@@ -629,10 +573,10 @@ fn top_candidates_scope_note(
         pending_candidates_for_repo,
     ) {
         ("all", Some(repo), 0) => Some(format!(
-            "current repo {repo} has 0 pending memory drafts; these are not counted as ready for this repo"
+            "current repo {repo} has 0 pending rule drafts; these are not counted as ready for this repo"
         )),
         ("all", None, _) => Some(
-            "no supported origin/upstream git remote detected; add one for repo-scoped memory guidance"
+            "no supported origin/upstream git remote detected; add one for repo-scoped rule guidance"
                 .to_owned(),
         ),
         _ => None,
@@ -682,7 +626,7 @@ mod tests {
             "Return 413 for large request bodies: 2 accepted edits from gin-gonic/gin"
         );
         // No linkage internals leak into the human line.
-        assert!(!out.contains("memory-use proof"));
+        assert!(!out.contains("rule-use proof"));
         assert!(!out.contains("hook outcome"));
     }
 
@@ -718,15 +662,17 @@ mod tests {
 
         let lines = format_local_hero_evidence(&hero);
         let out = lines.join("\n");
-        assert!(out.contains("best local memory (best on this machine)"));
+        assert!(out.contains("best local rules (best on this machine)"));
         assert!(out.contains("learned from tanstack/router"));
         assert!(out.contains("used on difflore-fixtures/router#4"));
-        assert!(out.contains("5 accepted edits"));
-        assert!(out.contains("5 signed diffs"));
+        assert!(out.contains("7 recalls"));
+        assert!(out.contains("6 ready for agents"));
         assert!(out.contains("6 file-matched deliveries"));
         assert!(out.contains("not current-repo readiness"));
+        assert!(!out.contains("accepted edits"));
+        assert!(!out.contains("signed diffs"));
         assert!(!out.contains("accepted edit proof"));
-        assert!(!out.contains("memory-use proof"));
+        assert!(!out.contains("rule-use proof"));
     }
 
     #[test]
@@ -734,6 +680,9 @@ mod tests {
         let value = serde_json::to_value(LocalAcceptedProof {
             window_days: 30,
             recall_lookback_days: 7,
+            proof_grade: "observed_value".to_owned(),
+            review_comments_avoided: 0,
+            review_comments_avoided_total: 0,
             accepted_proof_signatures: 0,
             accepted_hook_outcomes: 2,
             accepted_outcomes_linked_to_prior_recall: 2,
@@ -762,16 +711,16 @@ mod tests {
 
         assert_eq!(
             top_candidates_heading("all", &scope, 0),
-            "Pending memory drafts from other repos"
+            "Pending rule drafts from other repos"
         );
         assert!(
             top_candidates_scope_note("all", &scope, 0)
                 .expect("note")
-                .contains("current repo acme/app has 0 pending memory drafts")
+                .contains("current repo acme/app has 0 pending rule drafts")
         );
         assert_eq!(
             top_candidates_heading("currentRepo", &scope, 2),
-            "Pending memory drafts for current repo"
+            "Pending rule drafts for current repo"
         );
         assert!(top_candidates_scope_note("currentRepo", &scope, 2).is_none());
     }
@@ -916,6 +865,13 @@ mod tests {
         LocalAcceptedProof {
             window_days: 30,
             recall_lookback_days: 7,
+            proof_grade: if accepted_signatures > 0 {
+                "auditable_accepted_edit".to_owned()
+            } else {
+                "none".to_owned()
+            },
+            review_comments_avoided: 0,
+            review_comments_avoided_total: 0,
             accepted_proof_signatures: accepted_signatures,
             accepted_hook_outcomes: 0,
             accepted_outcomes_linked_to_prior_recall: linked,
@@ -931,28 +887,6 @@ mod tests {
 
     fn empty_memory_inbox() -> MemoryInboxSummary {
         MemoryInboxSummary::empty(0, 0, false)
-    }
-
-    fn empty_accepted_edit_funnel() -> AcceptedEditProofFunnel {
-        AcceptedEditProofFunnel {
-            window_days: 30,
-            stage: "no_accepted_edit_captured".to_owned(),
-            ready_for_cloud_value: false,
-            blockers: Vec::new(),
-            next_commands: Vec::new(),
-            repo_scope_ready: false,
-            agent_recall_ready: false,
-            accepted_edit_captured: false,
-            accepted_edit_rows_last30: 0,
-            accepted_edit_rows_for_current_repo: 0,
-            accepted_edit_rows_without_repo: 0,
-            accepted_edit_upload_pending: 0,
-            accepted_edit_upload_failed: 0,
-            accepted_edit_rows_missing_rule_ids: 0,
-            accepted_edit_rows_with_cloud_rule_ids: 0,
-            accepted_edit_rows_with_local_rule_ids: 0,
-            last_upload_error: None,
-        }
     }
 
     fn empty_recall_trace() -> RecallTraceSummary {
@@ -1030,7 +964,6 @@ mod tests {
             local_proof: proof,
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
-            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: None,
             local_hero_evidence: None,
@@ -1055,11 +988,11 @@ mod tests {
         assert!(out.contains("difflore try"), "{out}");
         assert!(out.contains("no supported origin/upstream"), "{out}");
         // Value-first, human framing via the plain section headers.
-        assert!(out.contains("Memory") && out.contains("Value"), "{out}");
+        assert!(out.contains("Rules") && out.contains("Value"), "{out}");
         // Internal release-gate vocabulary stays out of the human view.
         assert!(!out.contains("countsAsProductionEvidence"), "{out}");
         assert!(!out.contains("Lane boundary"), "{out}");
-        assert!(!out.contains("memory-use proof"), "{out}");
+        assert!(!out.contains("rule-use proof"), "{out}");
     }
 
     #[test]
@@ -1101,7 +1034,6 @@ mod tests {
             local_proof: &proof_with(0, 0, 0),
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
-            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: None,
             local_hero_evidence: None,
@@ -1140,7 +1072,7 @@ mod tests {
             estimated_tokens: 0,
         };
         let next = NextAction {
-            command: "difflore memory review".to_owned(),
+            command: "difflore rules review".to_owned(),
             reason: "review pending drafts into active local rules".to_owned(),
             blocked_by: None,
         };
@@ -1163,7 +1095,6 @@ mod tests {
             local_proof: &proof_with(0, 0, 0),
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
-            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: None,
             local_hero_evidence: None,
@@ -1176,7 +1107,7 @@ mod tests {
         });
 
         assert!(out.contains("drafts: 8 pending (8 for this repo)"), "{out}");
-        assert!(out.contains("review: difflore memory review"), "{out}");
+        assert!(out.contains("review: difflore rules review"), "{out}");
         assert!(
             out.contains("agent: difflore drafts list --repo acme/widgets --json"),
             "{out}"
@@ -1204,7 +1135,7 @@ mod tests {
         };
         let next = NextAction {
             command: "difflore review --diff all".to_owned(),
-            reason: "review recalled memories against the current diff".to_owned(),
+            reason: "review recalled rules against the current diff".to_owned(),
             blocked_by: None,
         };
         let memory_inbox = empty_memory_inbox();
@@ -1226,7 +1157,6 @@ mod tests {
             local_proof: &proof_with(0, 0, 0),
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
-            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: Some(&proven_rule()),
             local_hero_evidence: None,
@@ -1242,7 +1172,7 @@ mod tests {
             out.contains("signals: 5 recalls | 64 ready for agents"),
             "{out}"
         );
-        assert!(!out.contains("top memory"), "{out}");
+        assert!(!out.contains("top rule"), "{out}");
         assert!(!out.contains("no accepted edits yet"), "{out}");
     }
 
@@ -1264,7 +1194,7 @@ mod tests {
         };
         let next = NextAction {
             command: "difflore import-reviews".to_owned(),
-            reason: "seed local memories from past PR reviews".to_owned(),
+            reason: "seed local rules from past PR reviews".to_owned(),
             blocked_by: None,
         };
         let memory_inbox = empty_memory_inbox();
@@ -1289,7 +1219,6 @@ mod tests {
             local_proof: &empty_proof,
             local_recall_proof: &empty_recall,
             local_mcp_serves: &empty_serves,
-            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &empty_recall_trace(),
             proven_rule: None,
             local_hero_evidence: None,
@@ -1308,20 +1237,17 @@ mod tests {
     }
 
     #[test]
-    fn value_line_qualifies_recall_traced_edits() {
+    fn value_line_keeps_accepted_edit_details_out_of_text() {
         let traced = render_with_proof(&proof_with(8, 3, 32));
-        assert!(traced.contains("8 edits accepted"), "{traced}");
+        assert!(!traced.contains("8 edits accepted"), "{traced}");
         assert!(!traced.contains("review-minutes saved"), "{traced}");
-        assert!(
-            traced.contains("3 via captured recall-to-edit loop"),
-            "{traced}"
-        );
+        assert!(!traced.contains("captured recall-to-edit loop"), "{traced}");
 
         // No captured loop: do not imply a closed loop the proof does not show.
         let untraced = render_with_proof(&proof_with(5, 0, 20));
-        assert!(untraced.contains("5 edits accepted"), "{untraced}");
+        assert!(!untraced.contains("5 edits accepted"), "{untraced}");
         assert!(
-            untraced.contains("recall-to-edit loop not captured yet"),
+            !untraced.contains("recall-to-edit loop not captured yet"),
             "{untraced}"
         );
     }
@@ -1347,12 +1273,13 @@ mod tests {
         assert!(out.contains("cloud corpus: 7 repos | 237 PRs"), "{out}");
         assert!(out.contains("484 review comments"), "{out}");
         assert!(
-            out.contains("cloud accepted-outcome activity: 505 source evidence items"),
+            out.contains("cloud coverage and recall: 505 source evidence items"),
             "{out}"
         );
-        assert!(out.contains("58/58 accepted outcomes in 30d"), "{out}");
-        assert!(out.contains("232 saved"), "{out}");
-        assert!(out.contains("review minutes"), "{out}");
+        assert!(!out.contains("recall-backed"), "{out}");
+        assert!(!out.contains("outcomes in 30d"), "{out}");
+        assert!(!out.contains("232 saved"), "{out}");
+        assert!(!out.contains("review minutes"), "{out}");
     }
 
     #[test]
@@ -1387,7 +1314,6 @@ mod tests {
                 local_proof: &proof,
                 local_recall_proof: &recall,
                 local_mcp_serves: serves,
-                accepted_edit_funnel: &empty_accepted_edit_funnel(),
                 recall_trace: &empty_recall_trace(),
                 proven_rule: None,
                 local_hero_evidence: None,
@@ -1448,7 +1374,7 @@ mod tests {
         };
         let next = NextAction {
             command: "difflore status".to_owned(),
-            reason: "inspect local memory".to_owned(),
+            reason: "inspect local rules".to_owned(),
             blocked_by: None,
         };
         let memory_inbox = empty_memory_inbox();
@@ -1471,7 +1397,6 @@ mod tests {
             local_proof: &proof,
             local_recall_proof: &recall,
             local_mcp_serves: &serves,
-            accepted_edit_funnel: &empty_accepted_edit_funnel(),
             recall_trace: &recall_trace_with_drop("retrieval_empty"),
             proven_rule: None,
             local_hero_evidence: None,

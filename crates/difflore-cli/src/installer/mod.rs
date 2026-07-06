@@ -393,6 +393,46 @@ mod tests {
     }
 
     #[test]
+    fn json_probe_requires_crush_stdio_type_shape() {
+        let (_tmp, path) = test_util::tmp_named_path("crush.json");
+        fs::write(
+            &path,
+            r#"{ "mcp": { "difflore": { "command": "/tmp/fake/difflore", "args": ["mcp-server"] } } }"#,
+        )
+        .expect("write config");
+
+        let status = common::probe_json_install(
+            "Crush",
+            &path,
+            "mcp",
+            "/tmp/fake/difflore",
+            json_config::McpEntryShape::StdioTyped,
+        );
+        assert_eq!(status.state, InstallState::Conflict);
+        assert!(
+            status
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("type=(missing)"))
+        );
+
+        fs::write(
+            &path,
+            r#"{ "mcp": { "difflore": { "type": "stdio", "command": "/tmp/fake/difflore", "args": ["mcp-server"] } } }"#,
+        )
+        .expect("write config");
+
+        let status = common::probe_json_install(
+            "Crush",
+            &path,
+            "mcp",
+            "/tmp/fake/difflore",
+            json_config::McpEntryShape::StdioTyped,
+        );
+        assert_eq!(status.state, InstallState::Installed);
+    }
+
+    #[test]
     fn failed_outcome_names_only_counts_real_errors() {
         let outcomes = vec![
             TargetOutcome {

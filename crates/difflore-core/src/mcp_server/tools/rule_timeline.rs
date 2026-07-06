@@ -105,7 +105,7 @@ pub(crate) async fn tool_rule_timeline(
         return Err((
             -32602,
             format!(
-                "rule '{rule_id}' not found; run `difflore status --json` to inspect local memory."
+                "rule '{rule_id}' not found; run `difflore status --json` to inspect local rules."
             ),
         ));
     };

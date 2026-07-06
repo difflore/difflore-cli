@@ -26,6 +26,9 @@ pub(crate) struct SkillDetailRow {
     pub(crate) confidence_score: f64,
     pub(crate) file_patterns: Option<String>,
     pub(crate) origin: String,
+    /// Originating reviewer bucket (`human`, `bot:<name>`, or
+    /// `human_override_bot`) for review-imported rules.
+    pub(crate) source_kind: String,
     /// Source repo attribution. Pulled so `render_full_rule_with_examples` can
     /// emit a `Source: owner/repo` line that the agent can cite downstream.
     pub(crate) source_repo: Option<String>,
@@ -54,6 +57,7 @@ pub(crate) fn render_full_rule_with_examples(
         r#type: &row.r#type,
         confidence: row.confidence_score,
         origin: &row.origin,
+        source_kind: &row.source_kind,
         source_repo: row.source_repo.as_deref(),
         file_patterns: &file_patterns,
         description: &row.description,
@@ -375,7 +379,7 @@ pub(crate) async fn fetch_skills_by_ids(
         serde_json::to_string(ids).map_err(|e| CoreError::Internal(format!("encode ids: {e}")))?;
     let rows = sqlx::query_as::<_, SkillDetailRow>(
         "SELECT id, name, description, type, tags, confidence_score, file_patterns, origin, \
-                source_repo, `trigger`, check_prompt \
+                source_kind, source_repo, `trigger`, check_prompt \
          FROM skills WHERE id IN (SELECT value FROM json_each(?1)) AND status = 'active'",
     )
     .bind(ids_json)

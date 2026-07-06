@@ -8,7 +8,7 @@ use super::{MemoryDoc, Source, read_dir_docs_with_ext};
 
 pub struct ClaudeCodeMemorySource;
 
-const ID: &str = "claude-code-memory";
+pub const CLAUDE_CODE_MEMORY_SOURCE_ID: &str = "claude-code-memory";
 
 /// Convert an absolute repo path to Claude Code's project slug, replacing
 /// path separators and filename-hostile chars (including the Windows drive
@@ -50,7 +50,7 @@ fn claude_home_dir() -> Option<PathBuf> {
 
 impl Source for ClaudeCodeMemorySource {
     fn id(&self) -> &'static str {
-        ID
+        CLAUDE_CODE_MEMORY_SOURCE_ID
     }
     fn label(&self) -> &'static str {
         "Claude Code memory"
@@ -65,7 +65,7 @@ impl Source for ClaudeCodeMemorySource {
         if !dir.is_dir() {
             return Ok(Vec::new());
         }
-        read_dir_docs_with_ext(ID, &dir, "md")
+        read_dir_docs_with_ext(CLAUDE_CODE_MEMORY_SOURCE_ID, &dir, "md")
     }
 }
 
@@ -114,7 +114,10 @@ mod tests {
 
         assert!(detected);
         assert_eq!(docs.len(), 2);
-        assert!(docs.iter().all(|d| d.source_id == ID));
+        assert!(
+            docs.iter()
+                .all(|d| d.source_id == CLAUDE_CODE_MEMORY_SOURCE_ID)
+        );
         assert!(docs[0].path.ends_with("a.md"));
         assert_eq!(docs[0].content, "rule a");
         assert!(docs[1].path.ends_with("b.md"));

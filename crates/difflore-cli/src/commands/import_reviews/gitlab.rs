@@ -117,7 +117,6 @@ pub(super) async fn verify_gitlab_project_access(
 pub(super) async fn run_gitlab_import(
     db: &SqlitePool,
     opts: GitlabImportOptions,
-    upload: bool,
     json: bool,
 ) -> Result<ImportProgress, String> {
     let host = opts.host.clone();
@@ -194,19 +193,8 @@ pub(super) async fn run_gitlab_import(
             .join(", ");
         println!("  missing MRs:            {missing}");
     }
-    // Phrase as "requested": upload runs after this summary, so a later
-    // failure must not contradict an earlier "uploaded: yes".
-    println!(
-        "  upload requested:       {}",
-        if upload { "yes" } else { "no" }
-    );
     println!();
-    if upload {
-        println!(
-            "  {} Uploading imported comments for extraction...",
-            style::emerald(style::sym::TIP),
-        );
-    } else if result.comments_imported > 0 {
+    if result.comments_imported > 0 {
         println!(
             "  {} Imports stayed local.",
             style::emerald(style::sym::TIP),

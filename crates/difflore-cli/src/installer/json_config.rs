@@ -42,10 +42,10 @@ pub(super) fn write_json_object(
     Ok(())
 }
 
-/// Merge `{ <servers_key>: { difflore: { command, args: ["mcp-server"] } } }`
-/// into a JSON object, preserving every other entry. `servers_key` is
-/// "mcpServers" for most tools, "servers" for Copilot CLI. Returns true if a
-/// prior `difflore` entry existed (an update rather than a first install).
+/// Merge DiffLore's MCP entry into a JSON object, preserving every other
+/// entry. `servers_key` is "mcpServers" for most tools and "mcp" for clients
+/// that use a shorter top-level key. Returns true if a prior `difflore` entry
+/// existed (an update rather than a first install).
 fn merge_difflore_entry_with_key(
     config: &mut serde_json::Map<String, Value>,
     bin: &str,
@@ -188,12 +188,14 @@ pub(super) fn finish_json_install(
 // Rendered-block helpers
 
 /// Wire shape of the `difflore` entry written under `<servers_key>.difflore`.
-/// Most clients take the standard `{command, args}`; opencode nests
+/// Most clients take the standard `{command, args}`; Crush includes an
+/// explicit `{type:"stdio", command, args}`; opencode nests
 /// `{type:"local", command:[bin,"mcp-server"], enabled:true}` under its `mcp`
 /// key (https://opencode.ai/docs/mcp-servers/).
 #[derive(Clone, Copy)]
 pub(super) enum McpEntryShape {
     Standard,
+    StdioTyped,
     Opencode,
 }
 
@@ -204,6 +206,11 @@ pub(super) enum McpEntryShape {
 pub(super) fn render_mcp_json_block(bin: &str, shape: McpEntryShape) -> Value {
     match shape {
         McpEntryShape::Standard => json!({
+            "command": bin,
+            "args": [MCP_SERVER_ARG],
+        }),
+        McpEntryShape::StdioTyped => json!({
+            "type": "stdio",
             "command": bin,
             "args": [MCP_SERVER_ARG],
         }),
@@ -228,11 +235,11 @@ pub(super) fn extract_mcp_json_block(path: &PathBuf, servers_key: &str) -> Optio
 
 fn public_config_path(name: &str, path: &Path) -> String {
     match name {
-        "Copilot CLI" => "~/.github/copilot/mcp.json".to_owned(),
+        "Copilot CLI" => "~/.copilot/mcp-config.json".to_owned(),
         "Antigravity" => "~/.gemini/antigravity/mcp_config.json".to_owned(),
-        "Crush" => "~/.config/crush/mcp.json".to_owned(),
+        "Crush" => "~/.config/crush/crush.json".to_owned(),
         "Roo Code" => "./.roo/mcp.json".to_owned(),
-        "Warp" => "~/.warp/mcp.json".to_owned(),
+        "Warp" => "~/.warp/.mcp.json".to_owned(),
         "OpenCode" => "~/.config/opencode/opencode.json".to_owned(),
         _ => path.display().to_string(),
     }
@@ -256,11 +263,10 @@ mod tests {
     fn json_installers_write_difflore_under_servers_key() {
         // (relative path, servers_key) — one row per client surface.
         let cases: &[(&str, &str)] = &[
-            (".github/copilot/mcp.json", "servers"),
+            (".copilot/mcp-config.json", "mcpServers"),
             (".gemini/antigravity/mcp_config.json", "mcpServers"),
-            (".config/crush/mcp.json", "mcpServers"),
             (".roo/mcp.json", "mcpServers"),
-            (".warp/mcp.json", "mcpServers"),
+            (".warp/.mcp.json", "mcpServers"),
         ];
         for (rel, key) in cases {
             let (tmp, _) = tmp_settings_path();
@@ -276,6 +282,23 @@ mod tests {
             assert_eq!(entry["command"], BIN, "wrong command for {rel}");
             assert_eq!(entry["args"], json!(["mcp-server"]), "wrong args for {rel}");
         }
+    }
+
+    #[test]
+    fn crush_shape_writes_stdio_type_under_mcp_key() {
+        let (tmp, _) = tmp_settings_path();
+        let path = tmp.path().join(".config/crush/crush.json");
+        let existed =
+            install_json_config_at(&path, BIN, "mcp", McpEntryShape::StdioTyped, false).unwrap();
+        assert!(!existed, "first Crush install must report a new entry");
+        let v = read_json(&path);
+        let entry = v
+            .get("mcp")
+            .and_then(|s| s.get("difflore"))
+            .expect("mcp.difflore missing");
+        assert_eq!(entry["type"], "stdio");
+        assert_eq!(entry["command"], BIN);
+        assert_eq!(entry["args"], json!(["mcp-server"]));
     }
 
     #[test]
@@ -366,7 +389,7 @@ mod tests {
         // A file that only ever held difflore should end up `{}` (the
         // mcpServers block is dropped once empty, not left as `{}`).
         for (rel, key) in &[
-            (".github/copilot/mcp.json", "servers"),
+            (".copilot/mcp-config.json", "mcpServers"),
             (".roo/mcp.json", "mcpServers"),
         ] {
             let (tmp, _) = tmp_settings_path();

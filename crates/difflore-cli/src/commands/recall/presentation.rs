@@ -42,7 +42,7 @@ pub(super) fn render_cross_repo_starter_human(hits: &[LocalRuleHit], file: &str)
     }
     println!();
     println!(
-        "  {} Make them this repo's own memory: {}",
+        "  {} Make them this repo's own rules: {}",
         style::pewter(sym::TIP),
         style::cmd("difflore import-reviews"),
     );
@@ -288,7 +288,7 @@ pub(super) fn render_local_recall_human(
             );
         } else {
             println!(
-                "  {} Local memory has {} rule{} for this repo; try a broader query or inspect status: {}",
+                "  {} Local rules have {} rule{} for this repo; try a broader query or inspect status: {}",
                 style::pewter(sym::TIP),
                 local.rules_indexed,
                 if local.rules_indexed == 1 { "" } else { "s" },
@@ -397,7 +397,7 @@ pub(super) fn render_cloud_recall_human(
 ) {
     if !recall.logged_in {
         println!(
-            "  {} Local recall is shown above. Sign in to append cloud PR review memory: {}",
+            "  {} Local recall is shown above. Sign in to append cloud PR review rules: {}",
             style::pewter(sym::BULLET),
             style::cmd("difflore cloud login"),
         );
@@ -405,7 +405,7 @@ pub(super) fn render_cloud_recall_human(
     }
     let Some(repo) = recall.repo_full_name.as_deref() else {
         println!(
-            "  {} Local recall is shown above. Cloud PR review memory needs a supported repo remote.",
+            "  {} Local recall is shown above. Cloud PR review rules need a supported repo remote.",
             style::pewter(sym::BULLET),
         );
         return;
@@ -446,7 +446,7 @@ pub(super) fn render_cloud_recall_human(
     println!(
         "{}",
         style::ok(&format!(
-            "Top {} cloud review memories for {} | file={} repo={} scope={}",
+            "Top {} cloud review rules for {} | file={} repo={} scope={}",
             recall.verdicts.len(),
             recall_subject(intent),
             file.unwrap_or("(none)"),
@@ -485,7 +485,7 @@ pub(super) fn render_cloud_recall_human(
     println!(
         "  {}",
         style::pewter(
-            "cloud ranked these memories; the CLI only supplied intent, file, and repo context",
+            "cloud ranked these rules; the CLI only supplied intent, file, and repo context",
         ),
     );
 }

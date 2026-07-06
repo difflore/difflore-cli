@@ -13,7 +13,7 @@ pub struct PastVerdict {
     pub extraction_id: String,
     pub code_snippet: String,
     pub issue_text: String,
-    /// "approved" | "rejected" (mirrors the cloud extraction status).
+    /// "approved" | "rejected" (mirrors the cloud rule approval status).
     pub status: String,
     pub reason: Option<String>,
     pub similarity: f32,
@@ -113,6 +113,7 @@ pub struct RuleMatchEvidenceRecord {
     pub id: String,
     pub title: String,
     pub origin: String,
+    pub source_kind: String,
     pub confidence: f64,
     pub similarity: f64,
     #[serde(rename = "file_patterns")]

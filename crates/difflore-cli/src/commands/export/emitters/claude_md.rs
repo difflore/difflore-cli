@@ -6,4 +6,5 @@ pub(crate) static CLAUDE_MD: super::Emitter = super::Emitter {
     format: "claude-md",
     file_name: "CLAUDE.md",
     engine: Some("claude"),
+    kind: super::EmitterKind::MarkerBlock,
 };

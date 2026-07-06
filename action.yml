@@ -1,0 +1,100 @@
+name: "DiffLore Review"
+description: "Team-rules-aware AI code review gate. Local-first: your code and your LLM key never touch DiffLore servers."
+branding: { icon: "book-open", color: "purple" }
+inputs:
+  engine:
+    description: "Local review engine: claude | codex"
+    default: "claude"
+  strict:
+    description: "Also fail on low-confidence suggestions"
+    default: "false"
+  difflore-version:
+    description: "DiffLore version to install (default: latest release)"
+    default: "latest"
+  difflore-token:
+    description: "Optional DiffLore Cloud token for pulling the shared team rule set"
+    required: false
+  master-key:
+    description: "Optional 64-character hex DIFFLORE_MASTER_KEY for headless runners"
+    required: false
+runs:
+  using: "composite"
+  steps:
+    - name: Install DiffLore
+      shell: bash
+      run: |
+        if [ "${{ inputs.difflore-version }}" = "latest" ]; then
+          curl -fsSL https://difflore.dev/install.sh | sh
+          echo "$HOME/.difflore/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.difflore/bin:$PATH"
+        else
+          cargo install difflore-cli --version "${{ inputs.difflore-version }}" --locked
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+        fi
+        difflore --version
+    - name: Hydrate team rules
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.master-key }}" ]; then
+          export DIFFLORE_MASTER_KEY="${{ inputs.master-key }}"
+        fi
+        if [ -n "${{ inputs.difflore-token }}" ]; then
+          DIFFLORE_CLOUD_TOKEN="${{ inputs.difflore-token }}" difflore cloud sync --pull
+        else
+          echo "::notice::no difflore-token; relying on committed export files (CLAUDE.md/AGENTS.md/.cursorrules) read natively by the engine"
+        fi
+    - name: Install review engine
+      shell: bash
+      run: |
+        if [ "${{ inputs.engine }}" = "claude" ]; then
+          npm install -g @anthropic-ai/claude-code
+        elif [ "${{ inputs.engine }}" = "codex" ]; then
+          npm install -g @openai/codex
+        else
+          echo "unsupported engine: ${{ inputs.engine }}" >&2
+          exit 2
+        fi
+    - name: DiffLore review gate
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.master-key }}" ]; then
+          export DIFFLORE_MASTER_KEY="${{ inputs.master-key }}"
+        fi
+        difflore providers add --tool "${{ inputs.engine }}"
+        difflore providers set-active "${{ inputs.engine }}-cli"
+        ARGS="--ci --json"
+        [ "${{ inputs.strict }}" = "true" ] && ARGS="$ARGS --strict"
+        if [ -n "${{ github.event.pull_request.number }}" ]; then
+          ARGS="$ARGS --pr ${{ github.event.pull_request.number }} --no-checkout"
+        fi
+        set -o pipefail
+        difflore review $ARGS | tee difflore-review.json
+    - name: Summary
+      if: always()
+      shell: bash
+      run: |
+        {
+          jq -r '
+            def pct: (((. // 0) * 100) | round | tostring + "%");
+            def esc: tostring | gsub("\\|"; "\\|") | gsub("\n"; " ");
+            [
+              "## DiffLore review",
+              "",
+              "- Status: `" + (.status // "unknown") + "`",
+              "- Outcome: `" + (.outcome // "unknown") + "`",
+              "- Scope: " + (.scope // "unknown"),
+              "- Findings: " + (((.findings // []) | length) | tostring),
+              (if .diagnostic then "- Diagnostic: " + (.diagnostic.message // .diagnostic.kind // "") else empty end),
+              "",
+              (if ((.findings // []) | length) == 0 then
+                "No findings."
+              else
+                "| File | Line | Confidence | Rule | Summary |",
+                "| --- | ---: | ---: | --- | --- |",
+                ((.findings // [])[] |
+                  "| `" + (.file // "-") + "` | " + ((.line // "-") | tostring) + " | " + (.confidence | pct) + " | " + ((.rule // .id // "-") | esc) + " | " + ((.summary // "") | esc) + " |")
+              end)
+            ] | .[]
+          ' difflore-review.json 2>/dev/null || echo "no machine-readable findings (see job log)"
+        } >> "$GITHUB_STEP_SUMMARY"

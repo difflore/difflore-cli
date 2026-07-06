@@ -11,7 +11,7 @@ mod import;
 mod simple_files;
 mod splitter;
 
-pub use claude_code_memory::ClaudeCodeMemorySource;
+pub use claude_code_memory::{CLAUDE_CODE_MEMORY_SOURCE_ID, ClaudeCodeMemorySource};
 pub use import::{
     AgentFileImportOptions, AgentFileImportReport, DEFAULT_AGENT_FILE_REVIEW_RULE_CONFIDENCE,
     import_agent_files_for_repo, import_agent_files_for_repo_with_options,
@@ -35,6 +35,15 @@ pub trait Source: Send + Sync {
     fn label(&self) -> &'static str;
     fn detect(&self, repo_root: &Path) -> bool;
     fn read(&self, repo_root: &Path) -> Result<Vec<MemoryDoc>, CoreError>;
+}
+
+/// True when any registered agent-file source detects importable material at
+/// `repo_root` — the exact same detection `import-agent-files` runs, so CLI
+/// onboarding hints cannot drift from what the importer actually reads.
+pub fn any_source_detects(repo_root: &Path) -> bool {
+    registered_sources()
+        .iter()
+        .any(|source| source.detect(repo_root))
 }
 
 pub fn registered_sources() -> &'static [&'static dyn Source] {

@@ -114,6 +114,7 @@ pub struct MemoryListItem {
     pub title: String,
     pub summary: Option<String>,
     pub origin: Option<String>,
+    pub source_kind: Option<String>,
     pub source_repo: Option<String>,
     pub file_patterns: Vec<String>,
     pub updated_at: Option<String>,
@@ -193,6 +194,7 @@ pub struct MemoryRuleItem {
     pub id: String,
     pub name: String,
     pub origin: String,
+    pub source_kind: String,
     pub source_repo: Option<String>,
     pub file_patterns: Vec<String>,
     pub updated_at: String,
@@ -396,11 +398,11 @@ pub async fn load_memory_items(pool: &SqlitePool, filter: MemoryListFilter) -> R
         },
         items,
         warnings: inbox.warnings,
-        note: "MCP memory tools can read and propose. Use the DiffLore CLI to approve, reject, sync, archive, or otherwise govern memory.".to_owned(),
+        note: "MCP rule tools can read and propose. Use the DiffLore CLI to approve, reject, sync, archive, or otherwise govern rules.".to_owned(),
     })
 }
 
-pub async fn get_memory_item(pool: &SqlitePool, item_id: &str) -> Result<Option<MemoryItemDetail>> {
+pub async fn get_rule_item(pool: &SqlitePool, item_id: &str) -> Result<Option<MemoryItemDetail>> {
     let trimmed = item_id.trim();
     if trimmed.is_empty() {
         return Ok(None);
@@ -795,7 +797,7 @@ async fn find_session_mined_row_by_content_hash(
 
 fn session_candidate_not_found(content_hash: &str) -> CoreError {
     CoreError::NotFound(format!(
-        "candidate memory `session:{}` not found",
+        "candidate rule `session:{}` not found",
         content_hash.trim()
     ))
 }
@@ -803,7 +805,7 @@ fn session_candidate_not_found(content_hash: &str) -> CoreError {
 fn validate_session_candidate(candidate: &SessionMinedCandidate, outbox_id: i64) -> Result<()> {
     candidate.validate().map_err(|err| {
         CoreError::Validation(format!(
-            "candidate memory row {outbox_id} is invalid and cannot be approved locally: {err}"
+            "candidate rule row {outbox_id} is invalid and cannot be approved locally: {err}"
         ))
     })
 }
@@ -863,7 +865,7 @@ async fn load_rule_section(
         .fetch_one(pool)
         .await?;
     let rows = sqlx::query(
-        "SELECT id, name, origin, source_repo, file_patterns, \
+        "SELECT id, name, origin, source_kind, source_repo, file_patterns, \
                 COALESCE(updated_at, installed_at) AS updated_at \
          FROM skills \
          WHERE status = ?1 \
@@ -883,6 +885,9 @@ async fn load_rule_section(
                 id: row.try_get("id").unwrap_or_default(),
                 name: row.try_get("name").unwrap_or_default(),
                 origin: row.try_get("origin").unwrap_or_default(),
+                source_kind: row
+                    .try_get("source_kind")
+                    .unwrap_or_else(|_| "human".to_owned()),
                 source_repo: row.try_get("source_repo").ok(),
                 file_patterns: parse_string_list(file_patterns.as_deref()),
                 updated_at: row.try_get("updated_at").unwrap_or_default(),
@@ -1244,12 +1249,13 @@ fn active_rule_item(rule: &MemoryRuleItem) -> MemoryListItem {
         title: rule.name.clone(),
         summary: None,
         origin: Some(rule.origin.clone()),
+        source_kind: Some(rule.source_kind.clone()),
         source_repo: rule.source_repo.clone(),
         file_patterns: rule.file_patterns.clone(),
         updated_at: Some(rule.updated_at.clone()),
         review_hint: Some("served to agents when recall matches".to_owned()),
         commands: MemoryItemCommands {
-            show: format!("difflore memory show rule:{}", rule.id),
+            show: format!("difflore rules show rule:{}", rule.id),
             approve: None,
             reject: None,
         },
@@ -1267,14 +1273,15 @@ fn draft_rule_item(rule: &MemoryRuleItem) -> MemoryListItem {
         title: rule.name.clone(),
         summary: None,
         origin: Some(rule.origin.clone()),
+        source_kind: Some(rule.source_kind.clone()),
         source_repo: rule.source_repo.clone(),
         file_patterns: rule.file_patterns.clone(),
         updated_at: Some(rule.updated_at.clone()),
         review_hint: Some("approve locally before agents can use it".to_owned()),
         commands: MemoryItemCommands {
-            show: format!("difflore memory show draft:{}", rule.id),
-            approve: Some(format!("difflore memory approve draft:{}", rule.id)),
-            reject: Some(format!("difflore memory reject draft:{}", rule.id)),
+            show: format!("difflore rules show draft:{}", rule.id),
+            approve: Some(format!("difflore rules approve draft:{}", rule.id)),
+            reject: Some(format!("difflore rules reject draft:{}", rule.id)),
         },
     }
 }
@@ -1290,14 +1297,15 @@ fn session_discovery_item(discovery: &SessionMinedDiscovery) -> MemoryListItem {
         title: discovery.title.clone(),
         summary: Some(truncate_summary(&discovery.body, 240)),
         origin: Some("session_mined".to_owned()),
+        source_kind: Some("human".to_owned()),
         source_repo: Some(discovery.source_repo.clone()),
         file_patterns: discovery.file_patterns.clone(),
         updated_at: Some(discovery.created_at_ms.to_string()),
         review_hint: Some(session_review_hint(&discovery.gate_verdict)),
         commands: MemoryItemCommands {
-            show: format!("difflore memory show {}", discovery.item_id),
-            approve: Some(format!("difflore memory approve {}", discovery.item_id)),
-            reject: Some(format!("difflore memory reject {}", discovery.item_id)),
+            show: format!("difflore rules show {}", discovery.item_id),
+            approve: Some(format!("difflore rules approve {}", discovery.item_id)),
+            reject: Some(format!("difflore rules reject {}", discovery.item_id)),
         },
     }
 }
@@ -1320,14 +1328,15 @@ async fn draft_detail(pool: &SqlitePool, draft_id: &str) -> Result<Option<Memory
         title: draft.name.clone(),
         summary: Some(truncate_summary(&draft.description, 240)),
         origin: Some(draft.origin.clone()),
+        source_kind: Some(draft.source_kind.clone()),
         source_repo: draft.source_repo.clone(),
         file_patterns: draft.file_patterns.clone(),
         updated_at: Some(draft.installed_at.clone()),
         review_hint: Some("approve locally before agents can use it".to_owned()),
         commands: MemoryItemCommands {
-            show: format!("difflore memory show draft:{}", draft.id),
-            approve: Some(format!("difflore memory approve draft:{}", draft.id)),
-            reject: Some(format!("difflore memory reject draft:{}", draft.id)),
+            show: format!("difflore rules show draft:{}", draft.id),
+            approve: Some(format!("difflore rules approve draft:{}", draft.id)),
+            reject: Some(format!("difflore rules reject draft:{}", draft.id)),
         },
     };
     let provenance = draft
@@ -1367,7 +1376,7 @@ async fn session_detail(pool: &SqlitePool, content_hash: &str) -> Result<Option<
 
 async fn active_rule_detail(pool: &SqlitePool, rule_id: &str) -> Result<Option<MemoryItemDetail>> {
     let row = sqlx::query(
-        "SELECT id, name, description, origin, source_repo, file_patterns, \
+        "SELECT id, name, description, origin, source_kind, source_repo, file_patterns, \
                 COALESCE(updated_at, installed_at) AS updated_at \
          FROM skills \
          WHERE id = ?1 AND status = 'active'",
@@ -1391,12 +1400,13 @@ async fn active_rule_detail(pool: &SqlitePool, rule_id: &str) -> Result<Option<M
         title: row.try_get("name").unwrap_or_default(),
         summary: Some(truncate_summary(&description, 240)),
         origin: row.try_get("origin").ok(),
+        source_kind: row.try_get("source_kind").ok(),
         source_repo: row.try_get("source_repo").ok(),
         file_patterns: parse_string_list(file_patterns_raw.as_deref()),
         updated_at: row.try_get("updated_at").ok(),
         review_hint: Some("served to agents when recall matches".to_owned()),
         commands: MemoryItemCommands {
-            show: format!("difflore memory show rule:{id}"),
+            show: format!("difflore rules show rule:{id}"),
             approve: None,
             reject: None,
         },
@@ -1481,11 +1491,11 @@ fn query_matches(query: Option<&str>, item: &MemoryListItem) -> bool {
 fn session_review_hint(verdict: &str) -> String {
     let trimmed = verdict.trim();
     if trimmed.eq_ignore_ascii_case("KEEP") {
-        "review as a new memory".to_owned()
+        "review as a new rule".to_owned()
     } else if trimmed.eq_ignore_ascii_case("DROP") {
         "probably reject".to_owned()
     } else if let Some(target) = trimmed.strip_prefix("MERGE:") {
-        format!("merge with existing memory `{}`", target.trim())
+        format!("merge with existing rule `{}`", target.trim())
     } else if trimmed.is_empty() {
         "needs review".to_owned()
     } else {
@@ -1528,13 +1538,13 @@ pub fn parse_session_item_id(item_id: &str) -> Result<String> {
     let value = value.trim();
     if value.is_empty() {
         return Err(CoreError::Validation(
-            "memory inbox item id is missing its value".to_owned(),
+            "rules inbox item id is missing its value".to_owned(),
         ));
     }
     match prefix {
         "session" => Ok(value.to_owned()),
         _ => Err(CoreError::Validation(format!(
-            "unsupported memory inbox item prefix `{prefix}`"
+            "unsupported rules inbox item prefix `{prefix}`"
         ))),
     }
 }
@@ -1582,6 +1592,7 @@ mod tests {
                 id TEXT PRIMARY KEY NOT NULL,
                 name TEXT NOT NULL,
                 origin TEXT NOT NULL DEFAULT 'manual',
+                source_kind TEXT NOT NULL DEFAULT 'human',
                 source_repo TEXT,
                 file_patterns TEXT,
                 status TEXT NOT NULL,

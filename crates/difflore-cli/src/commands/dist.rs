@@ -16,13 +16,14 @@ use crate::support::util::exit_code;
 const REQUIRED_SKILL_DIRS: &[&str] = &[
     "difflore-onboard",
     "knowledge-agent",
-    "memory-candidate-triage",
+    "rule-candidate-triage",
     "remember-rule-guide",
     "rule-diff",
     "rule-gap",
     "rule-journey",
     "rule-search",
     "rule-why-fired",
+    "rules-review",
     "session-recap",
     "smart-explore",
 ];

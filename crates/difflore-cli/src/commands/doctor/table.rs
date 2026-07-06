@@ -234,6 +234,14 @@ fn format_count_map(map: &std::collections::BTreeMap<String, usize>) -> String {
         .join(", ")
 }
 
+fn format_repo_distribution(repos: &[crate::support::util::RepoRuleCount]) -> String {
+    repos
+        .iter()
+        .map(|entry| format!("{} ({})", entry.repo, entry.count))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn binary_row(version: &str) -> Row {
     // Always Ready: if the binary couldn't run, we wouldn't be here.
     Row::ready_ok("binary", format!("v{version}"))
@@ -388,9 +396,9 @@ fn project_db_row(probe: &ProjectDbProbe) -> Row {
             severity: Severity::Blocker,
             status: Status::Warn,
             label: "project db",
-            value: "no memory indexed".to_owned(),
+            value: "no rules indexed".to_owned(),
             hints: vec![
-                "recall returns nothing without memory: import review history first".to_owned(),
+                "recall returns nothing without rules: import review history first".to_owned(),
                 "difflore status   (shows the shortest local path for this repo)".to_owned(),
                 "difflore import-reviews --max-prs 50".to_owned(),
             ],
@@ -444,19 +452,25 @@ fn project_db_row(probe: &ProjectDbProbe) -> Row {
 
     let (value, import_cmd) = match repo_full_name {
         Some(repo) => (
-            format!("0 memories for {repo} | {total_rules} on this machine"),
+            format!("0 rules for {repo} | {total_rules} on this machine"),
             format!("difflore import-reviews --repo {repo}"),
         ),
         None => (
-            format!("{total_rules} memories on this machine | no supported repo remote detected"),
+            format!("{total_rules} rules on this machine | no supported repo remote detected"),
             "difflore status".to_owned(),
         ),
     };
     let mut hints = vec![
-        "no current-repo memory is ready; doctor will not show unrelated repo activity here"
+        "no current-repo rules are ready; doctor will not show unrelated repo activity here"
             .to_owned(),
         "difflore status   (shows the repo-scoped value path)".to_owned(),
     ];
+    if !probe.active_rule_repos.is_empty() {
+        hints.push(format!(
+            "rules currently live in: {}",
+            format_repo_distribution(&probe.active_rule_repos)
+        ));
+    }
     if let Some(repo) = repo_full_name {
         if let Some(source) = review_source_repo_full_name {
             hints.push(format!(
@@ -567,7 +581,7 @@ fn mcp_row(snapshot: &installer::McpStatusSnapshot) -> Row {
             repair: Some("difflore agents status".to_owned()),
         }
     } else if installed.is_empty() {
-        // No agent wired up. CLI recall and memory browsing still work,
+        // No agent wired up. CLI recall and rules browsing still work,
         // so this is Optional rather than a hard blocker — wiring an
         // agent unlocks the agent-side experience but is not on the
         // path to local value.
@@ -704,7 +718,7 @@ fn provider_row(probe: &ProviderProbe) -> Row {
             label: "provider",
             value: "none configured".to_owned(),
             hints: vec![
-                "needed for `difflore fix` only; recall and memory work without it".to_owned(),
+                "needed for `difflore fix` only; recall and rules work without it".to_owned(),
                 "difflore providers setup".to_owned(),
             ],
             repair: None,
@@ -782,7 +796,7 @@ fn cloud_row(probe: &CloudProbe) -> Row {
             label: "cloud",
             value: "local runtime".to_owned(),
             hints: vec![
-                "team sync, dashboard, and uploaded review analysis: difflore cloud login"
+                "team rule set, approval workflow, coverage and recall reporting: difflore cloud login"
                     .to_owned(),
             ],
             repair: None,
@@ -817,62 +831,43 @@ fn cloud_impact_hints(impact: &CloudImpactProbe) -> Vec<String> {
     }
 
     if let Some(fix) = &impact.fix_scorecard {
-        let accepted_outcomes = fix
-            .roi
-            .as_ref()
-            .map_or(0, |roi| roi.accepted_fix_outcomes_last30);
-        if fix.last30.total > 0 {
-            let accepted = format!(
-                "{}/{} accepted edit proof{} in 30d",
-                fix.last30.accepted,
-                fix.last30.total,
-                if fix.last30.total == 1 { "" } else { "s" },
-            );
-            let mut proof_parts = vec![accepted];
-            if let Some(roi) = &fix.roi {
-                if roi.source_evidence_items > 0 {
-                    proof_parts.push(format_count(
-                        "source evidence item",
-                        roi.source_evidence_items,
-                    ));
-                }
-                if roi.saved_review_minutes > 0 {
-                    proof_parts.push(format!("{} saved review minutes", roi.saved_review_minutes));
-                }
+        if let Some(roi) = &fix.roi {
+            let mut proof_parts = Vec::new();
+            if roi.agent_rules_served_last30 > 0 {
+                proof_parts.push(format!(
+                    "{} rule{} recalled into agent sessions (30d)",
+                    roi.agent_rules_served_last30,
+                    if roi.agent_rules_served_last30 == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ));
             }
-            hints.push(format!("accepted-fix proof: {}", proof_parts.join(" · ")));
-        } else if accepted_outcomes > 0 {
-            let mut proof_parts = vec![format_count("accepted outcome", accepted_outcomes)];
-            if let Some(roi) = &fix.roi {
-                if roi.source_evidence_items > 0 {
-                    proof_parts.push(format_count(
-                        "source evidence item",
-                        roi.source_evidence_items,
-                    ));
-                }
-                let saved_minutes = roi
-                    .saved_review_minutes_last30
-                    .max(roi.saved_review_minutes)
-                    .max(roi.modeled_review_minutes);
-                if saved_minutes > 0 {
-                    proof_parts.push(format!("{saved_minutes} saved review minutes"));
-                }
+            if roi.agent_rules_fired_last30 > 0 {
+                proof_parts.push(format!(
+                    "{} rule{} matched by path triggers (30d)",
+                    roi.agent_rules_fired_last30,
+                    if roi.agent_rules_fired_last30 == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ));
             }
-            hints.push(format!(
-                "accepted outcome activity: {}",
-                proof_parts.join(" · ")
-            ));
-        } else if let Some(roi) = &fix.roi
-            && roi.source_evidence_items > 0
-        {
-            hints.push(format!(
-                "source evidence: {}",
-                format_count("item", roi.source_evidence_items)
-            ));
+            if roi.source_evidence_items > 0 {
+                proof_parts.push(format_count(
+                    "source evidence item",
+                    roi.source_evidence_items,
+                ));
+            }
+            if !proof_parts.is_empty() {
+                hints.push(format!("coverage and recall: {}", proof_parts.join(" · ")));
+            }
         }
     } else if let Some(error) = impact.fix_scorecard_error.as_deref() {
         hints.push(format!(
-            "accepted-fix proof unavailable: {}",
+            "coverage and recall unavailable: {}",
             short_detail(error)
         ));
     }
@@ -977,7 +972,7 @@ fn embedder_row_from_kind(
                         .to_owned(),
                     hints: vec![
                         format!("recent embedding degradation: {}", recent.summary()),
-                        "run `difflore doctor --report` for the Memory pipeline breakdown"
+                        "run `difflore doctor --report` for the Rules pipeline breakdown"
                             .to_owned(),
                         "run `difflore cloud login` if credentials or scope may be stale"
                             .to_owned(),
@@ -1000,7 +995,7 @@ fn embedder_row_from_kind(
                     ),
                     hints: vec![
                         format!("recent embedding degradation: {}", recent.summary()),
-                        "run `difflore doctor --report` for the Memory pipeline breakdown"
+                        "run `difflore doctor --report` for the Rules pipeline breakdown"
                             .to_owned(),
                         "check provider reachability and key limits".to_owned(),
                         "difflore embeddings setup".to_owned(),
@@ -1098,7 +1093,7 @@ fn git_hooks_row(state: &GitHookState) -> Row {
             label: "git hooks",
             value: "pre-commit not installed".to_owned(),
             hints: vec![
-                "optional; run `difflore init` if you want pre-commit memory checks".to_owned(),
+                "optional; run `difflore init` if you want pre-commit rules checks".to_owned(),
             ],
             repair: None,
         },
@@ -1325,6 +1320,7 @@ mod tests {
         let row = project_db_row(&ProjectDbProbe {
             db_available: true,
             total_rules: 41,
+            active_rule_repos: Vec::new(),
             prs_imported: 0,
             repo_full_name: Some("warpengine-github/viggle-web".to_owned()),
             review_source_repo_full_name: None,
@@ -1335,6 +1331,39 @@ mod tests {
         assert_ready_ok(&row, "project db");
         assert!(row.value.contains("0 local PRs imported"), "{}", row.value);
         assert!(!row.value.contains("0 PRs imported"), "{}", row.value);
+    }
+
+    #[test]
+    fn project_db_row_shows_where_machine_memory_lives_when_current_repo_is_empty() {
+        let row = project_db_row(&ProjectDbProbe {
+            db_available: true,
+            total_rules: 43,
+            active_rule_repos: vec![
+                crate::support::util::RepoRuleCount {
+                    repo: "warpengine-github/viggle-web".to_owned(),
+                    count: 31,
+                },
+                crate::support::util::RepoRuleCount {
+                    repo: "warpengine-github/viggle-backend".to_owned(),
+                    count: 4,
+                },
+            ],
+            prs_imported: 0,
+            repo_full_name: Some("difflore/difflore-cli".to_owned()),
+            review_source_repo_full_name: None,
+            scoped_active_rules: 0,
+            review_source_active_rules: 0,
+        });
+
+        assert!(matches!(row.severity, Severity::Blocker));
+        assert!(
+            row.hints
+                .iter()
+                .any(|hint| hint
+                    .contains("rules currently live in: warpengine-github/viggle-web (31)")),
+            "{:?}",
+            row.hints
+        );
     }
 
     #[test]
@@ -1365,7 +1394,6 @@ mod tests {
                         accepted_fixes_last30: 0,
                         accepted_fix_outcomes_last30: 58,
                         repeat_comment_signals: 58,
-                        review_comments_avoided: 0,
                         modeled_review_minutes: 232,
                         saved_review_minutes: 232,
                         saved_review_minutes_last30: 232,
@@ -1386,8 +1414,12 @@ mod tests {
         let hints = row.hints.join("\n");
         assert!(hints.contains("484 review comments"), "{hints}");
         assert!(hints.contains("505 source evidence items"), "{hints}");
-        assert!(hints.contains("58 accepted outcomes"), "{hints}");
-        assert!(hints.contains("accepted outcome activity"), "{hints}");
+        assert!(
+            hints.contains("61 rules matched by path triggers"),
+            "{hints}"
+        );
+        assert!(!hints.contains("2 rules cited"), "{hints}");
+        assert!(hints.contains("coverage and recall"), "{hints}");
         assert!(hints.contains("difflore cloud impact"), "{hints}");
     }
 

@@ -214,8 +214,8 @@ pub(crate) async fn tool_remember_rule(
     }
 
     let item_id = format!("rule:{}", skill.id);
-    let show_command = format!("difflore memory show {item_id}");
-    let disable_command = format!("difflore memory disable {item_id}");
+    let show_command = format!("difflore rules show {item_id}");
+    let disable_command = format!("difflore rules disable {item_id}");
     let capture_status = match (outcome.deduped, is_active) {
         (false, false) => "captured_pending",
         (true, false) => "strengthened_pending",
@@ -233,7 +233,7 @@ pub(crate) async fn tool_remember_rule(
             )
         } else {
             format!(
-                "~ strengthened existing memory rule **{}** (`{}`). \
+                "~ strengthened existing rule **{}** (`{}`). \
                  Inspect with `{show_command}`.",
                 skill.name, skill.id,
             )
@@ -245,7 +245,7 @@ pub(crate) async fn tool_remember_rule(
             "repo-wide"
         };
         format!(
-            "+1 memory rule saved from agent chat as **{}** (`{}`), {pattern_hint}. \
+            "+1 rule saved from agent chat as **{}** (`{}`), {pattern_hint}. \
              I treated the user's explicit remember request as approval, so it is active and available to agents now. \
              Inspect with `{show_command}`.",
             skill.name, skill.id,
@@ -259,7 +259,7 @@ pub(crate) async fn tool_remember_rule(
     let warn_suffix = if outcome.captures_today >= skills::REMEMBER_WARN_THRESHOLD {
         format!(
             "\n\nWarning: {} conversation captures today (cap: {}). \
-             Audit with `difflore memory inbox`.",
+             Audit with `difflore rules inbox`.",
             outcome.captures_today,
             skills::REMEMBER_DAILY_LIMIT,
         )

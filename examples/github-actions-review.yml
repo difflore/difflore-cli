@@ -1,0 +1,17 @@
+# .github/workflows/difflore-review.yml - copy into your repo
+name: DiffLore Review
+on: { pull_request: {} }
+permissions: { contents: read, pull-requests: read }
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: difflore/difflore-cli@main
+        with:
+          engine: claude
+          difflore-token: ${{ secrets.DIFFLORE_CLOUD_TOKEN }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ github.token }}

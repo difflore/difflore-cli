@@ -5,7 +5,6 @@ mod correction_nudge;
 mod dispatch;
 mod drift_report;
 mod fire_log;
-mod pre_submit_nudge;
 mod project;
 mod remember_nudge;
 

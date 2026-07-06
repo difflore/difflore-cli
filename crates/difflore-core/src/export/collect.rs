@@ -29,6 +29,7 @@ pub struct ExportRule {
     pub r#type: String,
     pub confidence: f64,
     pub origin: String,
+    pub source_kind: String,
     pub source: String,
     /// Canonical lower-cased `owner/repo` the rule was learned from, when the
     /// stored `source_repo` parses. `None` = explicit local rule.
@@ -103,6 +104,7 @@ struct ExportRuleRow {
     r#type: String,
     confidence_score: f64,
     origin: String,
+    source_kind: String,
     source: String,
     source_repo: Option<String>,
     check_prompt: Option<String>,
@@ -148,7 +150,7 @@ pub async fn collect_rules_for_export_with_scopes(
     // Deterministic ORDER BY keeps re-exports byte-stable so the content-hash
     // short-circuit in writeback actually fires.
     let sql = format!(
-        "SELECT id, name, description, type as \"type\", confidence_score, origin, source, \
+        "SELECT id, name, description, type as \"type\", confidence_score, origin, source_kind, source, \
          source_repo, check_prompt, file_patterns \
          FROM skills WHERE status = 'active'{engine_clause} \
          ORDER BY name COLLATE NOCASE, id"
@@ -181,6 +183,7 @@ pub async fn collect_rules_for_export_with_scopes(
                 r#type: row.r#type,
                 confidence: row.confidence_score,
                 origin: row.origin,
+                source_kind: row.source_kind,
                 source: row.source,
                 repo_scope,
                 check_prompt: row.check_prompt,
@@ -427,6 +430,51 @@ mod tests {
                 .await
                 .expect("collect agents");
         assert_eq!(agents.rules.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn collect_engine_gate_filters_cursor_disabled_rules() {
+        let pool = pool().await;
+        insert_rule(
+            &pool,
+            "r-cursor-on",
+            "Cursor on",
+            "cloud",
+            Some("acme/widgets"),
+            "active",
+            0,
+            None,
+        )
+        .await;
+        sqlx::query("UPDATE skills SET enabled_for_cursor = 1 WHERE id = 'r-cursor-on'")
+            .execute(&pool)
+            .await
+            .expect("enable cursor");
+        insert_rule(
+            &pool,
+            "r-cursor-off",
+            "Cursor off",
+            "cloud",
+            Some("acme/widgets"),
+            "active",
+            0,
+            None,
+        )
+        .await;
+
+        let cursor = collect_rules_for_export_with_scopes(
+            &pool,
+            &scopes(),
+            ExportCollectOptions {
+                engine: Some("cursor"),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("collect cursor");
+
+        let ids: Vec<&str> = cursor.rules.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["r-cursor-on"]);
     }
 
     #[tokio::test]

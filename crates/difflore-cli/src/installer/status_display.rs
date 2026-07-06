@@ -155,6 +155,7 @@ fn display_mcp_binary(binary: &str) -> String {
 fn public_status_detail(detail: &str, binary: &str) -> String {
     let mut out = detail.replace(binary, "difflore").replace('\\', "/");
     for (suffix, label) in [
+        ("/.copilot/mcp-config.json", "~/.copilot/mcp-config.json"),
         ("/.github/copilot/mcp.json", "~/.github/copilot/mcp.json"),
         (
             "/.gemini/antigravity/mcp_config.json",
@@ -163,7 +164,9 @@ fn public_status_detail(detail: &str, binary: &str) -> String {
         ("/.codex/config.toml", "~/.codex/config.toml"),
         ("/.claude/settings.json", "~/.claude/settings.json"),
         ("/.cursor/mcp.json", "~/.cursor/mcp.json"),
+        ("/.config/crush/crush.json", "~/.config/crush/crush.json"),
         ("/.config/crush/mcp.json", "~/.config/crush/mcp.json"),
+        ("/.warp/.mcp.json", "~/.warp/.mcp.json"),
         ("/.warp/mcp.json", "~/.warp/mcp.json"),
     ] {
         out = replace_path_ending(&out, suffix, label);

@@ -14,27 +14,26 @@ Use this when the user wants to start using DiffLore in a private or public repo
 3. Confirm `difflore agents install` was run or that `difflore init` wired the detected local AI CLIs.
 4. Run `difflore import-reviews --dry-run`.
 5. If the dry run is healthy, run `difflore import-reviews`.
-6. If drafts were created, run `difflore memory review` before calling them active rules.
+6. If drafts were created, run `difflore rules review` before calling them active rules.
 7. Run `difflore recall --diff`.
-8. End with a concrete `difflore status` receipt. Only call it value when accepted edits were actually captured.
+8. End with concrete rule-write receipts from `difflore status` or the write commands you ran.
 
 ## Receipts
 
-After every write step, echo the concrete receipt line DiffLore printed, such as:
+After every write step, echo the concrete rule-write receipt line DiffLore printed, such as:
 
-- `+N local memory writes`
+- `+N local rule writes`
 - `+1 rule captured from agent chat`
-- `+N accepted edits recorded for local value tracking`
 
-If a command writes nothing, say what the next command is and do not invent value numbers.
+If a command writes no rules, say what the next command is and do not invent value numbers.
 If a command creates pending candidates, say they were saved for review and are
 not active rules until approved. Never report "N learnings" unless the command
 printed that number.
 
 ## Upgrade Path
 
-Keep local private review backlog import first. Cloud login, upload, and team sync are upgrades:
+Keep local private review backlog import first. Cloud login and team sync are upgrades:
 
-- Use `difflore cloud login` only when the user asks for team sync, multi-device access, managed tokens, or managed embeddings.
-- Use `difflore import-reviews --upload` only after the user has opted into cloud processing.
-- Existing local conversation captures and imported candidates stay local unless explicitly synced.
+- Use `difflore cloud login` only when the user asks for team sync, multi-device access, team rule governance, or approval-workflow dashboards.
+- Use `difflore cloud sync` only after the user wants approved rules or explicit include-flag queues synced to Cloud.
+- Existing local conversation captures, raw queues, and imported candidates stay local unless explicitly synced.

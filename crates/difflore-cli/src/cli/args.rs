@@ -29,10 +29,10 @@ pub(crate) struct FixCliArgs {
     pub(crate) yes: bool,
 
     /// Diff scope: `staged`, `worktree`, or `all` (auto-detect; default).
-    #[arg(long, value_name = "SCOPE")]
+    #[arg(long, value_name = "SCOPE", num_args = 0..=1, default_missing_value = "all")]
     pub(crate) diff: Option<String>,
 
-    /// Print which recalled memories produced each finding.
+    /// Print which recalled rules produced each finding.
     #[arg(long, hide = true)]
     pub(crate) explain_rules: bool,
 
@@ -85,10 +85,10 @@ pub(crate) struct ReviewCliArgs {
     pub(crate) strict: bool,
 
     /// Diff scope: `staged`, `worktree`, or `all` (auto-detect; default).
-    #[arg(long, value_name = "SCOPE")]
+    #[arg(long, value_name = "SCOPE", num_args = 0..=1, default_missing_value = "all")]
     pub(crate) diff: Option<String>,
 
-    /// Print which recalled memories produced each finding.
+    /// Print which recalled rules produced each finding.
     #[arg(long, hide = true)]
     pub(crate) explain_rules: bool,
 
@@ -134,11 +134,11 @@ pub(crate) struct SyncCliArgs {
     #[arg(long)]
     pub(crate) include_observations: bool,
 
-    /// Also upload raw session-mined memory candidates. Skipped by default.
+    /// Also upload raw session-mined rule candidates. Skipped by default.
     #[arg(long)]
     pub(crate) include_candidates: bool,
 
-    /// Also upload raw imported-review, review-metric, and trajectory telemetry. Skipped by default.
+    /// Also sync optional raw review-metric and trajectory telemetry. Skipped by default.
     #[arg(long)]
     pub(crate) include_telemetry: bool,
 
@@ -171,7 +171,7 @@ pub(crate) struct ImportReviewsCliArgs {
     #[arg(long)]
     pub(crate) repo: Option<String>,
 
-    /// Import from an upstream GitHub repo and attach memory to this repo.
+    /// Import from an upstream GitHub repo and attach rules to this repo.
     #[arg(long, value_name = "OWNER/REPO")]
     pub(crate) from_upstream: Option<String>,
 
@@ -203,17 +203,8 @@ pub(crate) struct ImportReviewsCliArgs {
     #[arg(long)]
     pub(crate) include_open: bool,
 
-    /// Upload imported reviews for cloud extraction instead of local drafting.
-    #[arg(long)]
-    pub(crate) upload: bool,
-
-    /// Local distillation strategy when not uploading.
-    #[arg(
-        long,
-        value_enum,
-        default_value_t = ImportDistillArg::Auto,
-        conflicts_with = "upload"
-    )]
+    /// Local distillation strategy.
+    #[arg(long, value_enum, default_value_t = ImportDistillArg::Auto)]
     pub(crate) distill: ImportDistillArg,
 
     /// Preview what would be imported without writing or uploading.
@@ -265,7 +256,11 @@ pub(crate) enum ExportFormatArg {
     AgentsMd,
     /// `CLAUDE.md` at the repo root (only rules enabled for the claude engine).
     ClaudeMd,
-    /// Both emitters.
+    /// `.cursor/rules/difflore-*.mdc` Cursor rules (all active rules, scoped by globs).
+    CursorMd,
+    /// `.opencodereview/rule.json` for Alibaba Open Code Review (all active rules).
+    OpenCodeReview,
+    /// All static export targets: AGENTS.md, CLAUDE.md, Cursor .mdc, and Open Code Review JSON.
     All,
 }
 
@@ -281,7 +276,8 @@ pub(crate) enum MemoryPackageFormatArg {
 
 #[derive(Args)]
 pub(crate) struct ExportCliArgs {
-    /// Target format(s): `agents-md`, `claude-md`, or `all`. Repeatable.
+    /// Target format(s): `agents-md`, `claude-md`, `cursor-md`, `open-code-review`, or `all`.
+    /// Repeatable.
     #[arg(long, value_enum, value_name = "FORMAT", default_values_t = [ExportFormatArg::All])]
     pub(crate) format: Vec<ExportFormatArg>,
 

@@ -22,15 +22,18 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::clients::ClientId;
+
 use super::{
-    common::{MCP_SERVER_ARG, difflore_mcp_record_path, resolve_difflore_binary},
+    common::{MCP_SERVER_ARG, difflore_mcp_record_path, home_path, resolve_difflore_binary},
     goose_yaml::{extract_goose_block, render_goose_block},
     hooks_install::{
-        extract_hook_groups_on_disk, legacy_claude_code_hook_blocks, render_claude_code_hook_block,
+        extract_hook_groups_on_disk, legacy_claude_code_hook_blocks, legacy_codex_hook_blocks,
+        legacy_cursor_hook_blocks, legacy_gemini_cli_hook_blocks, render_claude_code_hook_block,
         render_codex_hook_block, render_cursor_hook_block, render_gemini_cli_hook_block,
         render_windsurf_hook_block,
     },
-    json_config::{extract_mcp_json_block, render_mcp_json_block},
+    json_config::{McpEntryShape, extract_mcp_json_block, render_mcp_json_block},
     registry::{self, AgentSpec, BlockKind, HookSurface},
 };
 
@@ -147,8 +150,10 @@ pub(super) fn on_disk_block_hash(spec: &AgentSpec, _cli_bin: &str) -> Option<Str
     match registry::block_kind_of(spec) {
         BlockKind::McpJson => {
             let servers_key = registry::servers_key_of(spec)?;
-            let value = extract_mcp_json_block(&path, servers_key)?;
-            Some(hash_block(&value_bytes(&value)))
+            if let Some(value) = extract_mcp_json_block(&path, servers_key) {
+                return Some(hash_block(&value_bytes(&value)));
+            }
+            legacy_mcp_json_on_disk_hash(spec)
         }
         BlockKind::GooseYaml => {
             let block = extract_goose_block(&path)?;
@@ -173,15 +178,57 @@ pub(super) fn on_disk_block_hash(spec: &AgentSpec, _cli_bin: &str) -> Option<Str
 /// of skipping it as locally edited. Empty for surfaces whose rendered shape
 /// never changed.
 pub(super) fn legacy_render_hashes(spec: &AgentSpec, cli_bin: &str) -> Vec<String> {
-    if registry::block_kind_of(spec) == BlockKind::HooksJson
-        && matches!(registry::hook_surface_of(spec), Some(HookSurface::Claude))
-    {
-        return legacy_claude_code_hook_blocks(cli_bin)
+    if registry::block_kind_of(spec) == BlockKind::HooksJson {
+        let Some(surface) = registry::hook_surface_of(spec) else {
+            return Vec::new();
+        };
+        return legacy_hook_blocks(surface, cli_bin)
             .iter()
             .map(|groups| hash_block(&hook_groups_bytes(groups)))
             .collect();
     }
+    if registry::block_kind_of(spec) == BlockKind::McpJson {
+        return legacy_mcp_json_render_shapes(spec)
+            .into_iter()
+            .map(|shape| hash_block(&value_bytes(&render_mcp_json_block(cli_bin, shape))))
+            .collect();
+    }
     Vec::new()
+}
+
+fn legacy_hook_blocks(surface: HookSurface, cli_bin: &str) -> Vec<Vec<Value>> {
+    match surface {
+        HookSurface::Claude => legacy_claude_code_hook_blocks(cli_bin),
+        HookSurface::Codex => legacy_codex_hook_blocks(cli_bin),
+        HookSurface::Cursor => legacy_cursor_hook_blocks(cli_bin),
+        HookSurface::Gemini => legacy_gemini_cli_hook_blocks(cli_bin),
+        HookSurface::Windsurf => Vec::new(),
+    }
+}
+
+fn legacy_mcp_json_on_disk_hash(spec: &AgentSpec) -> Option<String> {
+    let (segments, servers_key) = legacy_mcp_json_location(spec)?;
+    let path = home_path(segments).ok()?;
+    let value = extract_mcp_json_block(&path, servers_key)?;
+    Some(hash_block(&value_bytes(&value)))
+}
+
+const fn legacy_mcp_json_location(
+    spec: &AgentSpec,
+) -> Option<(&'static [&'static str], &'static str)> {
+    match spec.client {
+        ClientId::CopilotCli => Some((&[".github", "copilot", "mcp.json"], "servers")),
+        ClientId::Crush => Some((&[".config", "crush", "mcp.json"], "mcpServers")),
+        ClientId::Warp => Some((&[".warp", "mcp.json"], "mcpServers")),
+        _ => None,
+    }
+}
+
+fn legacy_mcp_json_render_shapes(spec: &AgentSpec) -> Vec<McpEntryShape> {
+    match spec.client {
+        ClientId::CopilotCli | ClientId::Crush | ClientId::Warp => vec![McpEntryShape::Standard],
+        _ => Vec::new(),
+    }
 }
 
 /// The render fn for each hook surface. Kept here so the manifest, not the
@@ -451,18 +498,12 @@ mod tests {
     fn mcp_json_block_round_trips_then_diverges_on_edit() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let path = tmp.path().join("mcp.json");
-        install_json_config_at(
-            &path,
-            MCP_BIN,
-            "mcpServers",
-            super::super::json_config::McpEntryShape::Standard,
-            false,
-        )
-        .expect("install");
+        install_json_config_at(&path, MCP_BIN, "mcpServers", McpEntryShape::Standard, false)
+            .expect("install");
 
         let render_hash = hash_block(&value_bytes(&render_mcp_json_block(
             MCP_BIN,
-            super::super::json_config::McpEntryShape::Standard,
+            McpEntryShape::Standard,
         )));
         let extracted = extract_mcp_json_block(&path, "mcpServers").expect("difflore entry");
         assert_eq!(
@@ -638,14 +679,47 @@ mod tests {
     }
 
     #[test]
-    fn legacy_render_hashes_only_cover_the_claude_hook_surface() {
-        // Other surfaces never changed shape; their legacy list must be empty
-        // so the recognition path cannot mis-adopt anything there.
-        for name in ["Codex hooks", "Cursor hooks", "Cursor", "Goose"] {
+    fn legacy_render_hashes_cover_changed_surfaces_only() {
+        for name in [
+            "Claude Code hooks",
+            "Codex hooks",
+            "Cursor hooks",
+            "Gemini hooks",
+            "Copilot CLI",
+            "Crush",
+            "Warp",
+        ] {
+            assert!(
+                !legacy_render_hashes(spec(name), MCP_BIN).is_empty(),
+                "{name} should recognise legacy renders"
+            );
+        }
+        // Unchanged surfaces keep an empty legacy list so the recognition path
+        // cannot mis-adopt unrelated local edits.
+        for name in ["Cursor", "Goose", "OpenCode", "Windsurf hooks"] {
             assert!(
                 legacy_render_hashes(spec(name), MCP_BIN).is_empty(),
                 "{name} should have no legacy renders"
             );
+        }
+    }
+
+    #[test]
+    fn legacy_json_locations_pin_old_paths_and_keys_for_migration() {
+        let cases = [
+            (
+                "Copilot CLI",
+                &[".github", "copilot", "mcp.json"][..],
+                "servers",
+            ),
+            ("Crush", &[".config", "crush", "mcp.json"][..], "mcpServers"),
+            ("Warp", &[".warp", "mcp.json"][..], "mcpServers"),
+        ];
+        for (name, expected_segments, expected_key) in cases {
+            let (segments, key) =
+                legacy_mcp_json_location(spec(name)).unwrap_or_else(|| panic!("{name} legacy"));
+            assert_eq!(segments, expected_segments, "{name} legacy path");
+            assert_eq!(key, expected_key, "{name} legacy servers key");
         }
     }
 

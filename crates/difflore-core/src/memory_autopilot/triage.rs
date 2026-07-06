@@ -516,16 +516,16 @@ fn build_ai_session_cleanup_prompt(
         "candidateGroups": groups_payload,
         "activeRules": active_payload,
     }))?;
-    let system_prompt = "You are DiffLore's local memory autopilot cleanup curator. You clean raw \
-        session-mined candidate memories before a human sees them. Judge semantics, not keywords. \
+    let system_prompt = "You are DiffLore's local rule triage cleanup curator. You clean raw \
+        session-mined candidate rules before a human sees them. Judge semantics, not keywords. \
         Return JSON only. Be conservative: only delete or fold when highly confident.";
     let user_prompt = format!(
         "Review the session-mined candidate groups and active rules below.\n\n\
-         Your job is to reduce noisy memory inbox items:\n\
+         Your job is to reduce noisy rules inbox items:\n\
          - action \"keep\": leave the group visible because it is durable, reusable, repo-specific, \
            and worth a human reviewing or enabling.\n\
          - action \"delete\": remove the group because it is one-off, process narration, vague, \
-           too broad, low-value, contradictory/noisy, or not useful as coding-agent memory.\n\
+           too broad, low-value, contradictory/noisy, or not useful as a coding-agent rule.\n\
          - action \"covered_by_active\": remove the group because an active rule from the SAME \
            sourceRepo already captures the same useful guidance. Include activeRuleId. Never use \
            an active rule from another repo as coverage.\n\
@@ -1028,7 +1028,7 @@ async fn record_ai_cleanup_active_covered_event(
             reason: decision
                 .reason
                 .as_deref()
-                .unwrap_or("local AI cleanup found this candidate covered by active memory"),
+                .unwrap_or("local AI cleanup found this candidate covered by an active rule"),
             payload: json!({
                 "source": "local_ai_cleanup",
                 "confidence": decision.confidence,
@@ -1154,6 +1154,7 @@ mod tests {
             raw_description: None,
             content_hash: None,
             origin: "session_mined".to_owned(),
+            source_kind: "human".to_owned(),
             source_repo: Some("owner/repo".to_owned()),
             file_patterns: vec!["src/**/*.rs".to_owned()],
             verdict: Some("KEEP".to_owned()),
@@ -1387,6 +1388,7 @@ mod tests {
             body: "Use void 0 instead of undefined.".to_owned(),
             content_hash: None,
             origin: "manual".to_owned(),
+            source_kind: "human".to_owned(),
             source_repo: Some("other/repo".to_owned()),
             file_patterns: vec!["**/*.ts".to_owned()],
             updated_at: "2026-06-25T00:00:00Z".to_owned(),
@@ -1438,6 +1440,7 @@ mod tests {
             body: "Use sentence case for documentation headings.".to_owned(),
             content_hash: None,
             origin: "manual".to_owned(),
+            source_kind: "human".to_owned(),
             source_repo: Some("owner/repo".to_owned()),
             file_patterns: vec!["docs/**/*.md".to_owned()],
             updated_at: "2026-06-25T00:00:00Z".to_owned(),

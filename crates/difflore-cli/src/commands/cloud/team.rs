@@ -74,7 +74,7 @@ const fn accepted_fix_proof_non_counting_warnings() -> [&'static str; 6] {
     [
         "missing team workspace",
         "missing recalled rule id",
-        "missing linked memory activity",
+        "missing linked rule activity",
         "unexpected client",
         "missing target PR number",
         "unlinked local rule id",

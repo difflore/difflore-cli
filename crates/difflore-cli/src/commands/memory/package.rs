@@ -15,13 +15,13 @@ use crate::runtime::CommandContext;
 use crate::style;
 use crate::support::util::{exit_code, exit_err, json_or};
 
-const PACKAGE_SCHEMA_VERSION: &str = "difflore.memory-package.v1";
-const RULE_SCHEMA_VERSION: &str = "difflore.memory-rule.v1";
+const PACKAGE_SCHEMA_VERSION: &str = "difflore.rule-package.v1";
+const RULE_SCHEMA_VERSION: &str = "difflore.rule.v1";
 const PACKAGE_VERSION: u32 = 1;
 const HASH_ALGORITHM: &str = "sha1";
 const MANIFEST_FILE: &str = "manifest.json";
 const RULES_DIR: &str = "rules";
-const MD_META_START: &str = "<!-- difflore-memory-rule";
+const MD_META_START: &str = "<!-- difflore-rule";
 const MD_META_END: &str = "-->";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -326,7 +326,7 @@ fn build_package(
         rule.hash = rule_hash(rule);
     }
     let manifest = PackageManifest {
-        package_id: format!("difflore-memory-{}", short_hash(&exported_at_utc)),
+        package_id: format!("difflore-rules-{}", short_hash(&exported_at_utc)),
         exported_at_utc,
         difflore_version: env!("CARGO_PKG_VERSION").to_owned(),
         format,
@@ -1107,7 +1107,7 @@ fn print_export_report(report: &ExportPackageReport) {
     let verb = if report.dry_run {
         "Export package plan"
     } else {
-        "Exported memory package"
+        "Exported rule package"
     };
     println!("{}", style::title(verb));
     println!("  format: {}", report.format);
@@ -1136,7 +1136,7 @@ fn print_import_report(report: &ImportPackageReport) {
     let verb = if report.dry_run {
         "Import package plan"
     } else {
-        "Imported memory package"
+        "Imported rule package"
     };
     println!("{}", style::title(verb));
     println!("  format: {}", report.format);

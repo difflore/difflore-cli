@@ -22,9 +22,9 @@ difflore status   # read accepted edits, not the heading
 - **Nothing applied or only recall/agent-ready activity? Say nothing.**
 - Mention pending captures only if this task created them and the command output
   gave concrete ids; label them as pending review, not active agent behavior.
-- Do not mention "top memory", "best memory", recall counts, ready-for-agent
+- Do not mention "top rule", "best rule", recall counts, ready-for-agent
   counts, or "no accepted edits yet" in the recap line.
-- Name a source repo only if you are citing a specific memory that directly
+- Name a source repo only if you are citing a specific rule that directly
   shaped the edit in your main summary, not as a generic recap metric.
 - Do not translate accepted edits into saved time, ROI, avoided comments, or
   reduced review rework.

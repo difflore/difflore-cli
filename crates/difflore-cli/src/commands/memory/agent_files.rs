@@ -10,7 +10,7 @@ use super::exit_structured_err;
 pub(crate) async fn handle_import_agent_files(ctx: &CommandContext, json: bool) {
     let repo_scope = detect_primary_repo_scope(ctx).await.unwrap_or_else(|| {
         exit_structured_err(
-            "memory import-agent-files requires a GitHub/GitLab origin remote",
+            "rules import-agent-files requires a GitHub/GitLab origin remote",
             json,
         )
     });
@@ -47,6 +47,7 @@ pub(crate) async fn handle_import_agent_files(ctx: &CommandContext, json: bool) 
                     "softPreferencesActive": report.soft_preferences_active,
                     "referenceEntriesSkipped": report.reference_entries_skipped,
                     "deduped": report.deduped,
+                    "claudeCodeAutoMemoryCandidates": report.claude_code_auto_memory_candidates,
                     "sourcesDetected": report.sources_detected,
                 }),
                 "{}"
@@ -57,7 +58,7 @@ pub(crate) async fn handle_import_agent_files(ctx: &CommandContext, json: bool) 
 
     println!(
         "{} imported {} agent-file entries for {}",
-        style::ok("Memory"),
+        style::ok("Rules"),
         report.entries_seen,
         style::ident(repo_scope.as_str())
     );
@@ -82,10 +83,14 @@ pub(crate) async fn handle_import_agent_files(ctx: &CommandContext, json: bool) 
             style::ident(&report.deduped.to_string())
         );
     }
+    println!(
+        "  mined {} candidates from Claude Code auto-memory",
+        style::ident(&report.claude_code_auto_memory_candidates.to_string())
+    );
     if report.review_rules_pending > 0 {
         println!(
             "  review             {}",
-            style::cmd("difflore memory inbox")
+            style::cmd("difflore rules inbox")
         );
     }
 }

@@ -41,7 +41,7 @@ Each issue must be a JSON object with these fields:
 - existingCode: copy the EXACT affected source line(s) verbatim from the diff, without the leading +/- marker (optional, string; helps pinpoint the precise location)
 - suggestion: how to fix it (optional, string)
 
-Matched rules are the user's review memory and should be treated as authoritative review criteria. If the diff directly matches a rule's bad pattern, contradicts a rule's recommendation, or removes code a rule says is required, report that issue even when the change is small or the code still compiles. Do not return [] when a matched rule clearly applies to the diff.
+Matched rules are the user's team review rules and should be treated as authoritative review criteria. If the diff directly matches a rule's bad pattern, contradicts a rule's recommendation, or removes code a rule says is required, report that issue even when the change is small or the code still compiles. Do not return [] when a matched rule clearly applies to the diff.
 
 Return ONLY a JSON array. No markdown, no explanation, no code blocks. Just the raw JSON array.
 If no issues are found, return an empty array: []"#;
@@ -86,7 +86,7 @@ pub(super) fn render_repo_context_section(repo_context_facts: Option<&str>) -> S
 
 /// Render the per-review dynamic suffix. Empty inputs produce an empty string.
 ///
-/// `past_verdicts` is review-memory recall placed at the front of the segment
+/// `past_verdicts` is prior-verdict rule recall placed at the front of the segment
 /// so the LLM reads prior verdicts before the current diff; omitted when `None`
 /// or empty.
 pub(super) fn render_dynamic_suffix(

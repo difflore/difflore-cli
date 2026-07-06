@@ -1,4 +1,4 @@
-//! Compatibility surface for local memory draft review.
+//! Compatibility surface for local rule draft review.
 
 use std::io::{self, BufRead, IsTerminal, Write};
 
@@ -12,10 +12,17 @@ use crate::support::util::{
     confirm_destructive, exit_code, exit_err, init_db, json_compact_or, validate_owner_repo,
 };
 
-pub(crate) async fn handle_list(repo: Option<String>, limit: Option<usize>, json: bool) {
+pub(crate) async fn handle_list(
+    repo: Option<String>,
+    limit: Option<usize>,
+    source_kind: Option<String>,
+    json: bool,
+) {
     validate_repo_arg(repo.as_deref());
+    let source_kind = normalize_source_kind_filter(source_kind.as_deref(), json);
     let db = init_db().await;
-    let drafts = load_drafts(&db, repo.as_deref(), limit, json).await;
+    let drafts =
+        load_filtered_drafts(&db, repo.as_deref(), limit, source_kind.as_deref(), json).await;
 
     if json {
         println!(
@@ -24,6 +31,7 @@ pub(crate) async fn handle_list(repo: Option<String>, limit: Option<usize>, json
                 &json!({
                     "count": drafts.len(),
                     "repo": repo,
+                    "sourceKind": source_kind,
                     "drafts": drafts,
                 }),
                 "{}"
@@ -33,18 +41,18 @@ pub(crate) async fn handle_list(repo: Option<String>, limit: Option<usize>, json
     }
 
     if drafts.is_empty() {
-        println!("No pending memory drafts.");
+        println!("No pending rule drafts.");
         return;
     }
 
-    println!("Pending memory drafts ({}):\n", drafts.len());
+    println!("Pending rule drafts ({}):\n", drafts.len());
     for draft in &drafts {
         print_draft_summary(draft);
     }
     println!(
         "\n  {} review interactively with {}",
         style::emerald(style::sym::TIP),
-        style::cmd("difflore memory review")
+        style::cmd("difflore rules review")
     );
 }
 
@@ -60,24 +68,30 @@ pub(crate) async fn handle_show(id: String, json: bool) {
     print_draft_full(&draft);
 }
 
-pub(crate) async fn handle_review(repo: Option<String>, limit: Option<usize>) {
+pub(crate) async fn handle_review(
+    repo: Option<String>,
+    limit: Option<usize>,
+    source_kind: Option<String>,
+) {
     validate_repo_arg(repo.as_deref());
+    let source_kind = normalize_source_kind_filter(source_kind.as_deref(), false);
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         exit_err(
-            "interactive draft review requires a terminal. Prefer `difflore memory inbox`, \
-             `difflore memory approve draft:<id>`, or \
-             `difflore memory reject draft:<id>`.",
+            "interactive draft review requires a terminal. Prefer `difflore rules inbox`, \
+             `difflore rules approve draft:<id>`, or \
+             `difflore rules reject draft:<id>`.",
         );
     }
 
     let db = init_db().await;
-    let drafts = load_drafts(&db, repo.as_deref(), limit, false).await;
+    let drafts =
+        load_filtered_drafts(&db, repo.as_deref(), limit, source_kind.as_deref(), false).await;
     if drafts.is_empty() {
-        println!("No pending memory drafts.");
+        println!("No pending rule drafts.");
         return;
     }
 
-    println!("Reviewing {} pending memory draft(s).\n", drafts.len());
+    println!("Reviewing {} pending rule draft(s).\n", drafts.len());
     let stdin = io::stdin();
     let mut reader = stdin.lock();
     for (idx, draft) in drafts.iter().enumerate() {
@@ -154,7 +168,7 @@ pub(crate) async fn handle_approve(
         confirm_non_empty_bulk("approve", &drafts, repo.as_deref(), json);
         if let Err(e) = confirm_destructive(
             yes,
-            &format!("approve {} pending memory draft(s)?", drafts.len()),
+            &format!("approve {} pending rule draft(s)?", drafts.len()),
         ) {
             exit_structured_err(&format!("{e:#}"), json);
         }
@@ -192,7 +206,7 @@ pub(crate) async fn handle_approve(
         );
     } else {
         println!(
-            "{} Approved memory draft {}.",
+            "{} Approved rule draft {}.",
             style::ok(style::sym::OK),
             style::ident(&activated.id)
         );
@@ -214,7 +228,7 @@ pub(crate) async fn handle_reject(
         confirm_non_empty_bulk("reject", &drafts, repo.as_deref(), json);
         if let Err(e) = confirm_destructive(
             yes,
-            &format!("reject {} pending memory draft(s)?", drafts.len()),
+            &format!("reject {} pending rule draft(s)?", drafts.len()),
         ) {
             exit_structured_err(&format!("{e:#}"), json);
         }
@@ -252,7 +266,7 @@ pub(crate) async fn handle_reject(
         );
     } else {
         println!(
-            "{} Rejected memory draft {}.",
+            "{} Rejected rule draft {}.",
             style::ok(style::sym::OK),
             style::ident(&id)
         );
@@ -266,19 +280,63 @@ async fn load_drafts(
     json: bool,
 ) -> Vec<CandidateRule> {
     list_candidates(db, repo, limit).await.unwrap_or_else(|e| {
-        exit_structured_err(&format!("failed to list pending memory drafts: {e}"), json)
+        exit_structured_err(&format!("failed to list pending rule drafts: {e}"), json)
     })
+}
+
+async fn load_filtered_drafts(
+    db: &difflore_core::SqlitePool,
+    repo: Option<&str>,
+    limit: Option<usize>,
+    source_kind: Option<&str>,
+    json: bool,
+) -> Vec<CandidateRule> {
+    let initial_limit = if source_kind.is_some() { None } else { limit };
+    let mut drafts = load_drafts(db, repo, initial_limit, json).await;
+    if let Some(source_kind) = source_kind {
+        drafts.retain(|draft| source_kind_matches(&draft.source_kind, source_kind));
+        if let Some(limit) = limit {
+            drafts.truncate(limit);
+        }
+    }
+    drafts
 }
 
 async fn load_draft_by_id(db: &difflore_core::SqlitePool, id: &str, json: bool) -> CandidateRule {
     list_candidates(db, None, None)
         .await
         .unwrap_or_else(|e| {
-            exit_structured_err(&format!("failed to list pending memory drafts: {e}"), json)
+            exit_structured_err(&format!("failed to list pending rule drafts: {e}"), json)
         })
         .into_iter()
         .find(|draft| draft.id == id)
-        .unwrap_or_else(|| exit_structured_err(&format!("memory draft `{id}` not found"), json))
+        .unwrap_or_else(|| exit_structured_err(&format!("rule draft `{id}` not found"), json))
+}
+
+fn normalize_source_kind_filter(raw: Option<&str>, json: bool) -> Option<String> {
+    let raw = raw?.trim();
+    if raw.is_empty() {
+        exit_structured_err("--source-kind must not be empty", json);
+    }
+    if raw == "human" || raw == "human_override_bot" || raw == "bot" || raw == "bot:*" {
+        return Some(raw.to_owned());
+    }
+    if let Some(bot) = raw.strip_prefix("bot:")
+        && !bot.trim().is_empty()
+    {
+        return Some(raw.to_owned());
+    }
+    exit_structured_err(
+        "--source-kind must be human, human_override_bot, bot, bot:*, or bot:<name>",
+        json,
+    );
+}
+
+fn source_kind_matches(value: &str, filter: &str) -> bool {
+    match filter {
+        "bot" | "bot:*" => value.starts_with("bot:"),
+        _ => value == filter,
+    }
 }
 
 fn validate_repo_arg(repo: Option<&str>) {
@@ -311,7 +369,7 @@ fn confirm_non_empty_bulk(action: &str, drafts: &[CandidateRule], repo: Option<&
     }
     let scope = repo.map_or("all repos".to_owned(), |repo| format!("repo {repo}"));
     exit_structured_err(
-        &format!("no pending memory drafts to {action} for {scope}"),
+        &format!("no pending rule drafts to {action} for {scope}"),
         json,
     );
 }
@@ -332,7 +390,7 @@ fn print_action_result(action: &str, ids: &[String], json: bool) {
         return;
     }
     println!(
-        "{} {} {} memory draft(s).",
+        "{} {} {} rule draft(s).",
         style::ok(style::sym::OK),
         capitalize(action),
         ids.len()
@@ -342,8 +400,9 @@ fn print_action_result(action: &str, ids: &[String], json: bool) {
 fn print_draft_summary(draft: &CandidateRule) {
     println!("  {} {}", style::ident(&draft.id), draft.name);
     println!(
-        "    origin={}  source_repo={}  captured={}",
+        "    origin={}  source_kind={}  source_repo={}  captured={}",
         draft.origin,
+        draft.source_kind,
         draft.source_repo.as_deref().unwrap_or("-"),
         draft.installed_at
     );
@@ -365,6 +424,7 @@ fn print_draft_full(draft: &CandidateRule) {
     println!("\n{}", style::ident(&draft.name));
     println!("  id: {}", draft.id);
     println!("  origin: {}", draft.origin);
+    println!("  source_kind: {}", draft.source_kind);
     println!(
         "  source_repo: {}",
         draft.source_repo.as_deref().unwrap_or("-")
@@ -457,7 +517,7 @@ fn flush_stdout() {
 
 fn exit_action_err(action: &str, id: &str, error: &difflore_core::CoreError, json: bool) -> ! {
     exit_structured_err(
-        &format!("failed to {action} memory draft `{id}`: {error}"),
+        &format!("failed to {action} rule draft `{id}`: {error}"),
         json,
     )
 }
@@ -468,4 +528,29 @@ fn exit_structured_err(message: &str, json: bool) -> ! {
         exit_code(1);
     }
     exit_err(message);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_kind_matches;
+
+    #[test]
+    fn source_kind_filter_matches_exact_and_bot_wildcard() {
+        assert!(source_kind_matches("human", "human"));
+        assert!(source_kind_matches(
+            "human_override_bot",
+            "human_override_bot"
+        ));
+        assert!(source_kind_matches("bot:coderabbitai[bot]", "bot:*"));
+        assert!(source_kind_matches("bot:coderabbitai[bot]", "bot"));
+        assert!(source_kind_matches(
+            "bot:coderabbitai[bot]",
+            "bot:coderabbitai[bot]"
+        ));
+        assert!(!source_kind_matches("human", "bot:*"));
+        assert!(!source_kind_matches(
+            "bot:reviewdog[bot]",
+            "bot:coderabbitai[bot]"
+        ));
+    }
 }
