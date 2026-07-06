@@ -29,7 +29,7 @@ pub(crate) struct FixCliArgs {
     pub(crate) yes: bool,
 
     /// Diff scope: `staged`, `worktree`, or `all` (auto-detect; default).
-    #[arg(long, value_name = "SCOPE")]
+    #[arg(long, value_name = "SCOPE", num_args = 0..=1, default_missing_value = "all")]
     pub(crate) diff: Option<String>,
 
     /// Print which recalled rules produced each finding.
@@ -85,7 +85,7 @@ pub(crate) struct ReviewCliArgs {
     pub(crate) strict: bool,
 
     /// Diff scope: `staged`, `worktree`, or `all` (auto-detect; default).
-    #[arg(long, value_name = "SCOPE")]
+    #[arg(long, value_name = "SCOPE", num_args = 0..=1, default_missing_value = "all")]
     pub(crate) diff: Option<String>,
 
     /// Print which recalled rules produced each finding.

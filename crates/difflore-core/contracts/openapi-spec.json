@@ -438,7 +438,14 @@
             "type": "string"
           },
           "maxSeats": {
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "githubOrg": {
             "anyOf": [
@@ -11536,7 +11543,14 @@
                         "type": "string"
                       },
                       "maxSeats": {
-                        "type": "number"
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       },
                       "githubOrg": {
                         "anyOf": [

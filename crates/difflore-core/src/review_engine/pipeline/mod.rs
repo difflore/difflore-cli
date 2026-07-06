@@ -60,6 +60,83 @@ pub(super) fn repo_scopes_for_input(input: &ReviewCheckInput) -> Vec<String> {
 /// behind a consistency benchmark.
 const JUDGE_CANDIDATE_POOL_TOP_K: usize = 18;
 
+/// Per-file supplemental recall: multi-file diffs previously built ONE
+/// blended retrieval query, letting one file's context starve the other
+/// changed files' rules (2026-07-06 canary A/B: an intlayer violation was
+/// missed in a two-file diff and caught in a single-file scope). Each changed
+/// file (capped) now contributes its own small recall, and the pools are
+/// merged round-robin so every file gets a seat before any file gets two.
+const PER_FILE_SUPPLEMENT_MAX_FILES: usize = 10;
+const PER_FILE_SUPPLEMENT_TOP_K: usize = 6;
+
+/// Slice a diff down to one file's section. Handles both the packed review
+/// format (`## File: <path>` sections with ```diff fences) and raw unified
+/// diffs (`diff --git` headers). Returns `None` when the file has no section,
+/// e.g. because diff packing dropped it under the char budget.
+fn diff_slice_for_file<'a>(diff: &'a str, file: &str) -> Option<&'a str> {
+    // Packed format first: "## File: <path>" section headers.
+    let packed_header = format!("## File: {file}\n");
+    if let Some(pos) = diff.find(&packed_header) {
+        let body = &diff[pos..];
+        let end = body[packed_header.len()..]
+            .find("\n## File: ")
+            .map_or(body.len(), |n| packed_header.len() + n + 1);
+        return Some(&body[..end]);
+    }
+    // Diff-record format (CLI worktree/staged assembly): sections open with
+    // "--- a/<path>\n+++ b/<path>\n" and there is no `diff --git` line.
+    let rec_header = format!("--- a/{file}\n+++ b/{file}\n");
+    if let Some(pos) = diff.find(&rec_header) {
+        let body = &diff[pos..];
+        let end = body[rec_header.len()..]
+            .find("\n--- a/")
+            .map_or(body.len(), |n| rec_header.len() + n + 1);
+        return Some(&body[..end]);
+    }
+    // Raw unified diff: "diff --git a/<path> b/<path>" headers.
+    let raw_header_suffix = format!(" b/{file}");
+    for (idx, _) in diff.match_indices("diff --git ") {
+        let line_end = diff[idx..].find('\n').map(|n| idx + n)?;
+        if diff[idx..line_end].ends_with(&raw_header_suffix) {
+            let rest = &diff[line_end..];
+            let end = rest
+                .find("\ndiff --git ")
+                .map_or(diff.len(), |n| line_end + n + 1);
+            return Some(&diff[idx..end]);
+        }
+    }
+    None
+}
+
+/// Round-robin merge of recall pools with `source_id` dedupe: pool 0 is the
+/// blended changeset recall, the rest are per-file supplements. Fairness over
+/// depth — every pool seats its best rule before any pool seats its second.
+fn merge_recall_pools(
+    pools: Vec<Vec<crate::context::types::ContextSourceItemRecord>>,
+    cap: usize,
+) -> Vec<crate::context::types::ContextSourceItemRecord> {
+    let mut seen = std::collections::HashSet::new();
+    let mut merged = Vec::new();
+    let mut iters: Vec<_> = pools.into_iter().map(Vec::into_iter).collect();
+    let mut exhausted = false;
+    while merged.len() < cap && !exhausted {
+        exhausted = true;
+        for it in &mut iters {
+            if merged.len() >= cap {
+                break;
+            }
+            for item in it.by_ref() {
+                if seen.insert(item.source_id.clone()) {
+                    merged.push(item);
+                    exhausted = false;
+                    break;
+                }
+            }
+        }
+    }
+    merged
+}
+
 /// Prepared matched-rule context: rendered rules text plus the parallel
 /// id/title/count bookkeeping the rest of the pipeline consumes.
 struct PreparedReviewRules {
@@ -166,6 +243,46 @@ async fn prepare_review_rules(
             };
         }
     };
+
+    let mut pack = pack;
+    if changeset.len() >= 2 {
+        let mut pools = vec![std::mem::take(&mut pack.rule_context)];
+        for file in changeset.iter().take(PER_FILE_SUPPLEMENT_MAX_FILES) {
+            let slice = diff_slice_for_file(&input.diff_content, file).unwrap_or("");
+            let intent = crate::context::intent_filter::build_review_intent_text(Some(file), slice);
+            let file_query = if intent.trim().is_empty() {
+                format!("review changes in {file}")
+            } else {
+                intent
+            };
+            match crate::context::orchestrator::prepare_with_scope_and_repo_scopes_with_top_k(
+                db,
+                &input.project_id,
+                input.engine.as_deref().unwrap_or("claude"),
+                &file_query,
+                Some("review"),
+                Some(crate::context::retrieval::TargetScope::File(file)),
+                repo_scopes,
+                Some(PER_FILE_SUPPLEMENT_TOP_K),
+            )
+            .await
+            {
+                Ok(file_pack) => pools.push(file_pack.rule_context),
+                Err(e) => {
+                    if crate::infra::env::debug_providers() {
+                        eprintln!("[{log_tag}] per-file recall failed for {file}: {e:?}; skipping");
+                    }
+                }
+            }
+        }
+        // Judge-on: its candidate pool bound. Judge-off: the engine prompt is
+        // the bound, so give every per-file pool room for its top rules
+        // (round two matters: a file's most relevant rule is not always its
+        // recall #1) while staying lean.
+        let pool_cap = top_k_override
+            .unwrap_or_else(|| (pools.len() * crate::context::DEFAULT_TOP_K_RULES).min(12));
+        pack.rule_context = merge_recall_pools(pools, pool_cap);
+    }
 
     let reranked =
         crate::context::intent_filter::maybe_rerank_for_review(&pack.rule_context, retrieval_query);
@@ -1647,4 +1764,81 @@ pub async fn run_review_with_trajectory(
         trajectory,
     )
     .await)
+}
+
+#[cfg(test)]
+mod recall_merge_tests {
+    use super::{diff_slice_for_file, merge_recall_pools};
+    use crate::context::types::ContextSourceItemRecord;
+
+    fn item(id: &str) -> ContextSourceItemRecord {
+        ContextSourceItemRecord {
+            source_type: "rule".to_owned(),
+            source_id: id.to_owned(),
+            relative_path: None,
+            start_line: None,
+            end_line: None,
+            title: None,
+            content: String::new(),
+            score: 1.0,
+        }
+    }
+
+    #[test]
+    fn round_robin_gives_every_pool_a_seat_before_depth() {
+        let merged = merge_recall_pools(
+            vec![
+                vec![item("a1"), item("a2"), item("a3")],
+                vec![item("b1"), item("b2")],
+                vec![item("c1")],
+            ],
+            4,
+        );
+        let ids: Vec<_> = merged.iter().map(|i| i.source_id.as_str()).collect();
+        assert_eq!(ids, ["a1", "b1", "c1", "a2"]);
+    }
+
+    #[test]
+    fn merge_dedupes_by_source_id() {
+        let merged = merge_recall_pools(
+            vec![vec![item("a1"), item("x")], vec![item("x"), item("b2")]],
+            10,
+        );
+        let ids: Vec<_> = merged.iter().map(|i| i.source_id.as_str()).collect();
+        assert_eq!(ids, ["a1", "x", "b2"]);
+    }
+
+    #[test]
+    fn diff_slice_extracts_record_format_section() {
+        let rec = "--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n+one\n--- a/bar.ts\n+++ b/bar.ts\n@@ -2 +2 @@\n+two\n";
+        let slice = diff_slice_for_file(rec, "bar.ts").unwrap();
+        assert!(slice.contains("+two"));
+        assert!(!slice.contains("+one"));
+        let slice = diff_slice_for_file(rec, "foo.ts").unwrap();
+        assert!(slice.contains("+one"));
+        assert!(!slice.contains("+two"));
+    }
+
+    #[test]
+    fn diff_slice_extracts_packed_file_section() {
+        let packed = "intro\n\n## File: foo.ts\n\n```diff\n+one\n```\n\n## File: bar.ts\n\n```diff\n+two\n```\n";
+        let slice = diff_slice_for_file(packed, "bar.ts").unwrap();
+        assert!(slice.contains("+two"));
+        assert!(!slice.contains("+one"));
+        let slice = diff_slice_for_file(packed, "foo.ts").unwrap();
+        assert!(slice.contains("+one"));
+        assert!(!slice.contains("+two"));
+    }
+
+    #[test]
+    fn diff_slice_extracts_one_file_section() {
+        let diff = "diff --git a/foo.ts b/foo.ts\n+++ b/foo.ts\n+one\ndiff --git a/bar.ts b/bar.ts\n+++ b/bar.ts\n+two\n";
+        let slice = diff_slice_for_file(diff, "bar.ts").unwrap();
+        assert!(slice.contains("+two"));
+        assert!(!slice.contains("+one"));
+        let slice = diff_slice_for_file(diff, "foo.ts").unwrap();
+        assert!(slice.contains("+one"));
+        assert!(!slice.contains("+two"));
+        assert!(diff_slice_for_file(diff, "baz.ts").is_none());
+    }
 }
