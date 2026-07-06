@@ -90,7 +90,7 @@ tempfile = "3"
 toml = "0.8"
 # East-Asian-width-aware display-width for wrapping/spinner repaint so CJK
 # (zh/ja) content wraps and clears at the correct cell count.
-unicode-width = "0.1"
+unicode-width = "0.2"
 # Query the real controlling terminal's cell width (Windows console API / TIOCGWINSZ)
 # instead of relying solely on $COLUMNS, which Windows shells don't export.
 terminal_size = "0.4"
