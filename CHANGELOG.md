@@ -5,6 +5,21 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-06
+
+### Added
+
+- Added source-kind provenance and author-type ingest for review-derived rule
+  evidence.
+- Added bot activation gating for cloud-aware recall and sync flows.
+
+### Changed
+
+- Updated the vendored Cloud OpenAPI contract for team capacity, impact
+  drilldowns, and rule recall evidence.
+- Improved recall union coverage so accepted fixes can match prior cloud and
+  local rule evidence more consistently.
+
 ## [0.6.0] - 2026-07-01
 
 ### Added
