@@ -6,7 +6,7 @@
 
 source-repo:   difflore-cloud
 source-path:   src/contracts/openapi/api.json
-source-commit: 61151a55a7e0f0ab678fdc614427d5eb7c0e5c0a
+source-commit: 1bfd5012d3f2d7831ccadf3af6d7ed2930fdafe6
 
 # sha256 of the vendored openapi-spec.json currently checked in here.
 spec-sha256:   e2ae25a0970d4656ccc7e2f68d4fe84898546736949cdfb8228c67f3b2892ea2
