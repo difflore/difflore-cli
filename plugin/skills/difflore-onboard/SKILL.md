@@ -1,6 +1,6 @@
 ---
 name: difflore-onboard
-description: Guide a user through first local difflore value in a repo: init, import private PR review backlog locally, wire local AI CLIs, preview recall, and report receipts after each step.
+description: "Guide a user through first local difflore value in a repo: init, import private PR review backlog locally, wire local AI CLIs, preview recall, and report receipts after each step."
 ---
 
 # DiffLore Onboard
