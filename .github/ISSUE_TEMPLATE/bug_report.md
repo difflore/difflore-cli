@@ -8,35 +8,17 @@ assignees: ''
 
 **What you ran**
 
-Command, agent integration, or workflow.
+The full `difflore` command.
 
 **What happened**
 
-Paste the error, output, or screenshot.
+Paste the error or output.
 
 **What you expected**
 
-What should have happened instead.
-
 **Environment**
-
-Run `difflore doctor --report` and attach the generated report if possible.
-Tokens and API keys are redacted.
 
 - OS:
 - `difflore --version`:
-- Install method:
-- Agent integration, if any:
-- `gh auth status` works? yes/no/not relevant
-
-**Reproduction**
-
-Smallest steps that trigger the issue. Link or anonymize any repo/PR context.
-
-**Logs**
-
-If useful, rerun with:
-
-```bash
-RUST_LOG=debug difflore <command>
-```
+- Agent CLI and model (`--agent`, `--model`):
+- `gh auth status` works? yes/no

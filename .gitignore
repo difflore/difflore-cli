@@ -1,47 +1,5 @@
-node_modules
-dist
-dist-pwa
-build
-CONOUT$
+/target
+/docs/
 .env
-.env.local
-.env.*.local
-.claude/worktrees/
-.claude/scheduled_tasks.lock
-.codex/worktrees/
-.windsurf/
-
-# codex review loop runtime artifacts
-.codex-runtime/
-.codex-review-loop/
-docs/
-src-tauri/target/
-target*
-scratch*
-*.db
-*.db-shm
-*.db-wal
-!crates/difflore-core/migrations/*.sql
-scratch
-
-extensions/vscode/dist/
-extensions/vscode/webview/dist/
-extensions/vscode/*.vsix
-.worktrees/
-
-# `difflore doctor report` outputs — local-machine diagnostics, never commit
-difflore-bug-report-*.md
-difflore-doctor-*.md
-
-# asciinema raw recordings — commit only the converted SVG/GIF outputs
-assets/*.cast
-
-# local bacon watcher config
-bacon.toml
-
-# local developer install helper
-scripts/dev-install.sh
-
-# SQLx workspace-level cache is redundant for published crates. Keep only the
-# crate-local caches under crates/*/.sqlx so crates.io tarballs compile offline.
-/.sqlx/
+.env.*
+.DS_Store

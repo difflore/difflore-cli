@@ -1,0 +1,61 @@
+
+difflore  facebook/react
+300 maintainer review comments across 165 pull requests
+
+11 unwritten rules
+
+  1  Test DevTools through real React roots and public APIs, not mocked internals.
+     Internal mocks repeat implementation and miss cross-version regressions.
+     seen in 6 PRs · packages/react-devtools-*/**
+     ↳ https://github.com/react/react/pull/37137#discussion_r3666354658
+
+  2  Use strict `!== null` checks for optional values unless weak equality is justified.
+     Reviewers require a specific reason for weak equality.
+     seen in 4 PRs
+     ↳ https://github.com/react/react/pull/37457#discussion_r3895116168
+
+  3  Derive or adjust DevTools view state during render or event handlers, never effects or refs.
+     Post-paint effects paint stale UI and thrash selection.
+     seen in 4 PRs · packages/react-devtools-shared/src/devtools/views/**
+     ↳ https://github.com/react/react/pull/36944#discussion_r3674709918
+
+  4  Use Flow chunk types to narrow `ReactFlightClient` handler state, not `any` or runtime checks.
+     Flow already encodes initialized versus blocked chunks.
+     seen in 3 PRs · packages/react-client/src/ReactFlightClient.js
+     ↳ https://github.com/react/react/pull/37542#discussion_r3956537669
+
+  5  Let impossible states throw in DevTools instead of silently guarding them.
+     Silent fallbacks hide real bugs and produce incorrect results.
+     seen in 3 PRs · packages/react-devtools-*/**
+     ↳ https://github.com/react/react/pull/35929#discussion_r2867800362
+
+  6  Create hot-path callbacks with `.bind` instead of per-call closures.
+     Avoids extra closure allocation in server and DOM hot paths.
+     seen in 3 PRs · packages/react-*/src/**
+     ↳ https://github.com/react/react/pull/37457#discussion_r3893390607
+
+  7  Add host-config methods instead of inspecting opaque Flight chunk or reference types.
+     Host configs own concrete chunk shapes and backpressure behavior.
+     seen in 2 PRs · packages/react-server/src/ReactFlightServer.js
+     ↳ https://github.com/react/react/pull/36984#discussion_r3551339327
+
+  8  Gate view-transition attributes and Offscreen behavior behind the matching ReactFeatureFlags flag.
+     Unflagged builds must keep existing rendering behavior.
+     seen in 2 PRs · packages/**
+     ↳ https://github.com/react/react/pull/36917#discussion_r3511278174
+
+  9  Keep hand-tuned loops in hot paths like ReactPerformanceTrackProperties unless measurements justify changes.
+     Hot paths need fine-tuned performance, not stylistic refactors.
+     seen in 2 PRs
+     ↳ https://github.com/react/react/pull/35776#discussion_r2805917779
+
+ 10  Set new ReactFeatureFlags to `__EXPERIMENTAL__` before default enablement or removal.
+     OSS needs an enabled experimental state before cleanup.
+     seen in 2 PRs · packages/shared/ReactFeatureFlags.js
+     ↳ https://github.com/react/react/pull/37290#discussion_r3784252070
+
+ 11  Assert console output with `assertConsoleErrorDev` or `assertConsoleDev` between `act` calls.
+     Raw console mocks bypass the required assertion tracking.
+     seen in 2 PRs · packages/**/src/__tests__/**
+     ↳ https://github.com/react/react/pull/36564#discussion_r3453971042
+

@@ -5,6 +5,28 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.8.0] - Unreleased
+
+difflore is now one command: point it at a GitHub repo and it prints the
+unwritten rules from that repo's code review history.
+
+### Changed
+
+- `difflore <owner/repo>` reads recent maintainer review comments through the
+  GitHub API, asks your own agent CLI (Claude Code, Codex or Pi) which
+  expectations recur, and prints each rule with a link to a review it came
+  from. `--write` saves them to AGENTS.md, CLAUDE.md or a Cursor rule.
+- The workspace is a single crate with five dependencies.
+- Installs through the shell, PowerShell and npm installers.
+
+### Removed
+
+- Cloud sync, accounts and billing, including the upload of edited file bodies
+  after `cloud login`.
+- GitLab import, the MCP server, agent hooks, rule recall, `review`, `fix`,
+  `ask`, embeddings, session mining, the Claude Code and Codex plugins, and the
+  GitHub Action.
+
 ## [0.7.0] - 2026-07-06
 
 ### Added

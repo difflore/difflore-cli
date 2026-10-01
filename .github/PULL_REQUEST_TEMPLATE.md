@@ -8,8 +8,8 @@ What problem does this solve?
 
 ## Verification
 
-- [ ] `cargo fmt --all --check`
-- [ ] Relevant `cargo check` or `cargo test`
+- [ ] `cargo fmt --check`
+- [ ] `cargo clippy --all-targets` and `cargo test`
 - [ ] Manual check, if applicable:
 
 ## Notes
