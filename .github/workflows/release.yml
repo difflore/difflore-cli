@@ -56,7 +56,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
           submodules: recursive
@@ -121,7 +121,7 @@ jobs:
       - name: enable windows longpaths
         run: |
           git config --global core.longpaths true
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
           submodules: recursive
@@ -180,7 +180,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
           submodules: recursive
@@ -230,7 +230,7 @@ jobs:
     outputs:
       val: ${{ steps.host.outputs.manifest }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
           submodules: recursive
@@ -280,64 +280,51 @@ jobs:
         run: |
           # Write and read notes from a file to avoid quoting breaking things
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
-          awk '
-            /^## Install difflore-cli / {
-              print
-              print ""
-              print "```sh"
-              print "curl -fsSL https://difflore.dev/install.sh | sh"
-              print "```"
-              print ""
-              in_install = 1
-              replaced = 1
-              next
-            }
 
-            in_install && /^## Download difflore-cli / {
-              in_install = 0
-              print
-              next
-            }
+          gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
 
-            !in_install {
-              print
-            }
-
-            END {
-              if (!replaced) {
-                print "error: release notes did not contain an install section" > "/dev/stderr"
-                exit 1
-              }
-            }
-          ' "$RUNNER_TEMP/notes.txt" > "$RUNNER_TEMP/notes.rewritten.txt"
-          mv "$RUNNER_TEMP/notes.rewritten.txt" "$RUNNER_TEMP/notes.txt"
-
-          release_args=(--target "$RELEASE_COMMIT" --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt")
-          if [ -n "$PRERELEASE_FLAG" ]; then
-            release_args+=("$PRERELEASE_FLAG")
-          fi
-
-          if gh release view "${{ needs.plan.outputs.tag }}" >/dev/null 2>&1; then
-            echo "Release ${{ needs.plan.outputs.tag }} already exists; updating metadata and replacing matching assets."
-            gh release edit "${{ needs.plan.outputs.tag }}" "${release_args[@]}"
-            gh release upload "${{ needs.plan.outputs.tag }}" artifacts/* --clobber
-          else
-            gh release create "${{ needs.plan.outputs.tag }}" "${release_args[@]}" artifacts/*
-          fi
+  publish-npm:
+    needs:
+      - plan
+      - host
+    runs-on: "ubuntu-22.04"
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PLAN: ${{ needs.plan.outputs.val }}
+    if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
+    steps:
+      - name: Fetch npm packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: npm/
+          merge-multiple: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20.x'
+          registry-url: 'https://registry.npmjs.org'
+      - run: |
+          for release in $(echo "$PLAN" | jq --compact-output '.releases[] | select([.artifacts[] | endswith("-npm-package.tar.gz")] | any)'); do
+            pkg=$(echo "$release" | jq '.artifacts[] | select(endswith("-npm-package.tar.gz"))' --raw-output)
+            npm publish --access public "./npm/${pkg}"
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   announce:
     needs:
       - plan
       - host
+      - publish-npm
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' }}
+    if: ${{ always() && needs.host.result == 'success' && (needs.publish-npm.result == 'skipped' || needs.publish-npm.result == 'success') }}
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
           submodules: recursive

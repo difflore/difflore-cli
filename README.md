@@ -1,237 +1,100 @@
 # difflore
 
-[![CI](https://img.shields.io/github/actions/workflow/status/difflore/difflore-cli/ci.yml?branch=main&label=CI)](https://github.com/difflore/difflore-cli/actions)
-[![crates.io](https://img.shields.io/crates/v/difflore-cli.svg)](https://crates.io/crates/difflore-cli)
-[![Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![MCP](https://img.shields.io/badge/MCP-stdio-green.svg)](https://modelcontextprotocol.io)
+Every repo has rules nobody wrote down. They live in code review: the same
+comment, left by the same maintainers, on pull request after pull request.
 
-Never write the same review comment twice. DiffLore mines the rules your team
-already settled in PR/MR review, keeps capturing the corrections you make in
-live coding sessions, and hands the approved, source-traceable result to Claude
-Code, Codex, Cursor, and other local AI CLIs before they write or review code.
-Review engines are free now; your team's judgment isn't.
+difflore reads a GitHub repo's review history and gives those rules back to
+you, each one linked to the reviews it came from. Save them as `AGENTS.md`,
+`CLAUDE.md` or a Cursor rule, and your coding agent follows them before the
+next review has to ask.
 
-![How DiffLore works: PR review comments and live session corrections are mined into source-traced rules, you approve the real ones, and your coding agent recalls them over MCP before it edits](.github/assets/difflore-concept.gif)
+```console
+$ difflore rust-lang/cargo
 
-DiffLore builds a local system of record for your team's rules from two places —
-your team's past PR/MR reviews and your live coding sessions — and keeps you in
-control of what the agent sees:
+difflore  rust-lang/cargo
+300 maintainer review comments across 142 pull requests
 
-1. **Mine** — import review history, capture rules mid-conversation, and observe
-   edits as they happen. Every rule stays traceable to its source.
-2. **Review** — new rules arrive as candidates. You approve the real conventions,
-   reject the noise, and pause anything that stops being useful.
-3. **Serve** — active rules reach your agents over MCP and hooks, right before
-   they edit the files that trigger them.
+12 unwritten rules
 
-No account required for the local workflow.
+  1  Commit the failing test with its buggy snapshot first, then the fix.
+     The fix commit's snapshot diff then demonstrates the behaviour change.
+     seen in 19 PRs
+     ↳ https://github.com/rust-lang/cargo/pull/17545#discussion_r4154892995
 
-## Why
+  2  Split refactorings and unrelated changes into separate atomic commits.
+     Cargo merges preserve individual commits; reviewers request C-SPLIT extractions.
+     seen in 6 PRs
+     ↳ https://github.com/rust-lang/cargo/pull/17296#discussion_r3695853827
+  …
+```
 
-AI coding agents know public code. They do not know the review decisions your
-team already made:
-
-- "Use this helper in billing paths."
-- "Do not bypass this auth wrapper."
-- "This package handles retries; do not add a second loop."
-- "This service rejects raw SQL outside migrations."
-
-Those rules are buried in old review threads — exactly where your agent never
-looks. DiffLore mines them into local rules, keeps the source evidence attached,
-and hands agents the relevant rules before they edit matching code.
+More results: [cargo](examples/rust-lang-cargo/AGENTS.md),
+[React](examples/facebook-react/AGENTS.md),
+[Next.js](examples/vercel-next.js/AGENTS.md).
 
 ## Install
 
-```bash
-curl -fsSL https://difflore.dev/install.sh | sh
+```sh
+npx difflore owner/repo
 ```
 
-Or with cargo:
+or install the binary:
 
-```bash
+```sh
+curl -LsSf https://github.com/difflore/difflore-cli/releases/latest/download/difflore-cli-installer.sh | sh
 cargo install difflore-cli
 ```
 
-Update later with `difflore update`.
+difflore needs two things you probably have already:
 
-GitHub import uses your local `git` remote and GitHub CLI auth:
+- **GitHub access.** It uses `GITHUB_TOKEN`, `GH_TOKEN` or your `gh auth login`
+  session. Private repos work with a token that can read them. Public repos
+  work without one, within GitHub's 60 requests per hour.
+- **An agent CLI to think with.** It runs your own
+  [Claude Code](https://docs.anthropic.com/en/docs/claude-code),
+  [Codex](https://github.com/openai/codex) or
+  [Pi](https://github.com/earendil-works/pi) in non-interactive mode, on your subscription
+  or key. Nothing is sent anywhere else.
 
-```bash
-gh auth login
+## Use
+
+```sh
+difflore                      # the repo in this directory
+difflore vercel/next.js       # any GitHub repo
+difflore --write              # add the rules to ./AGENTS.md
+difflore --write claude       # or CLAUDE.md
+difflore --write cursor       # or .cursor/rules/difflore.mdc
+difflore --json               # machine-readable, with all evidence
 ```
 
-GitLab import uses a stored PAT with `read_api` scope:
+`--write` keeps the rest of your file: the rules live between
+`<!-- difflore:start -->` and `<!-- difflore:end -->`, and running it again
+replaces only that block.
 
-```bash
-echo "<TOKEN>" | difflore auth gitlab
-```
+| Option | Default | |
+|---|---|---|
+| `--limit` | 300 | most recent maintainer review comments to read |
+| `--rules` | 15 | maximum rules to keep |
+| `--min-prs` | 2 | a rule must come from at least this many pull requests |
+| `--agent` | first of `claude`, `codex`, `pi` | also `DIFFLORE_AGENT` |
+| `--model` | the agent's default | also `DIFFLORE_MODEL` |
+| `--jobs` | 4 | agent calls at once |
+| `--all-reviewers` | off | include reviewers who are not owners, members or collaborators |
+| `--refresh` | off | refetch instead of using the 24-hour cache |
 
-## Quickstart
+## How it works
 
-Fastest look — a bundled demo, no setup:
+1. Fetches the newest pull request review comments through the GitHub API.
+   It keeps top-level comments from owners, members and collaborators, and
+   drops replies, bots and one-word comments.
+2. Sends them in batches to your agent CLI, which names the expectations that
+   come up in more than one comment and cites the comments by id.
+3. Merges the candidates, drops generic advice and anything that appears in fewer than two pull
+   requests or cites a comment that does not exist, and ranks the rest by how
+   many pull requests they appear in.
 
-```bash
-difflore try
-```
-
-On a real repo:
-
-```bash
-cd your-repo
-difflore init
-difflore import-reviews --dry-run   # see what it would mine, change nothing
-difflore import-reviews
-difflore rules review              # approve or reject each rule
-difflore agents install             # wire into Claude Code / Cursor / Codex / ...
-difflore recall --diff              # rules that match your current diff
-```
-
-That flow imports merged review history, turns review comments into
-source-backed rule candidates, lets you approve or reject them, and wires
-DiffLore into detected local agents.
-
-## On a real repo
-
-Pointed at one dogfood workspace, DiffLore mined 237 PRs and 484 human review
-comments into source-backed rule candidates, each traceable to the exact review
-comment that set it. You approve the few real conventions and drop the rest;
-DiffLore doesn't decide for you.
-
-Want to see the extraction quality on your own code? See
-[Design partners](#design-partners) below.
-
-## Local by default
-
-DiffLore works with private repos and local AI CLIs. A cloud account is not
-required.
-
-- Rules and activity live in local SQLite.
-- `difflore import-reviews` imports review history and drafts rule candidates
-  locally by default.
-- `difflore cloud login` / `difflore cloud sync` are opt-in; raw local queues
-  are never uploaded by default.
-- Static exports to `AGENTS.md` / `CLAUDE.md` are optional snapshots. Treat
-  them as soft context: agents apply rules from a large static file
-  unreliably (no strict compliance). Live `agents install` is diff-aware,
-  and `difflore review` is the only path where matched rules are enforced
-  deterministically.
-
-## Keys & privacy
-
-DiffLore does not need DiffLore-hosted AI keys for the local-first path.
-
-- Review and mining flows use your installed local agent CLI, such as Claude
-  Code or Codex, or an API key you provide in your own shell or CI.
-- Semantic search defaults to local keyword matching. Run
-  `difflore embeddings setup` only when you want BYOK semantic vectors with
-  your own OpenAI-compatible embedding key.
-- `difflore embeddings setup --no-key` supports keyless local embedding
-  providers, such as Ollama's OpenAI-compatible endpoint.
-- The normal `difflore cloud sync` path synchronizes approved rule text and
-  metadata. It does not upload source code, diffs, or API keys; raw local
-  queues require explicit include flags.
-
-## Run the gate in CI
-
-DiffLore can fail a pull request or merge request with the same local review
-gate you run on your machine:
-
-```yaml
-- uses: difflore/difflore-cli@main
-  with:
-    engine: claude
-  env:
-    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-```
-
-See [`examples/github-actions-review.yml`](examples/github-actions-review.yml)
-and [`examples/gitlab-ci-review.yml`](examples/gitlab-ci-review.yml) for
-copy-pasteable workflows. If you have a shared team rule set, pass
-`DIFFLORE_CLOUD_TOKEN` so CI can run `difflore cloud sync --pull`; otherwise
-commit static exports such as `CLAUDE.md`, `AGENTS.md`, or `.cursor/rules/*.mdc`.
-
-No GitHub App, no hosted webhooks — the gate runs inside your CI, your code and
-LLM keys stay in your infrastructure, and the same model works on GitHub and
-GitLab.
-
-The gate complements your engine's own review rather than replacing it: run
-both. Generic findings come from the engine; the gate reports only violations
-of your approved team rules, with provenance, so every catch is a review
-comment nobody had to write.
-
-## Agent support
-
-```bash
-difflore agents install
-difflore agents status
-```
-
-DiffLore installs MCP entries and lifecycle hooks where the local agent supports
-them. The installer detects common local coding agents, including Claude Code,
-Codex, Cursor, Gemini CLI, Windsurf, Goose, OpenCode, Copilot CLI, Crush, Roo
-Code, Warp, and Antigravity.
-
-## Commands
-
-| Command | Purpose |
-| --- | --- |
-| `difflore try` | Run the demo |
-| `difflore init` | Set up the current repo |
-| `difflore import-reviews` | Import private GitHub PR or GitLab MR review backlog locally |
-| `difflore rules` | Show active rules, review queue, paused rules, sync state, and next action |
-| `difflore rules review` | Review pending local rules |
-| `difflore agents install` | Wire DiffLore into local AI CLIs and agents |
-| `difflore agents status` | Show which agents are connected |
-| `difflore status` | Show readiness and the next command |
-| `difflore recall --diff` | Retrieve matching rules for the current diff |
-| `difflore review --diff all` | Run your review engine (Claude Code, Codex, ...) on the current diff with team rules loaded; modifies nothing |
-| `difflore fix` | Apply rule-aware local fixes |
-| `difflore ask "..."` | Ask the team's source-backed rules a question |
-| `difflore export` | Write static snapshots to `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`, or `.opencodereview/rule.json` |
-| `difflore capabilities --json` | Print the machine-readable CLI/MCP contract |
-
-Run `difflore --help` for the full command list.
-
-## Optional Cloud
-
-The cloud layer is for teams: one shared, approved rule set, an approval
-workflow with source provenance, dashboards, and managed semantic recall.
-Everything local is free for individuals, forever; paid plans start when the
-second person joins. Review import and first-pass distillation stay local; cloud
-sync is an explicit opt-in.
-
-```bash
-difflore cloud login
-difflore cloud status
-difflore cloud sync
-difflore rules team-candidates
-```
-
-Use the local CLI first when you want a no-account path. Use cloud when multiple
-people need one shared, approved rule set and review workflow.
-
-## Design partners
-
-I'm looking for a handful of teams to judge real output. The deal is simple:
-point the CLI at one of your repos (or I run it on a public one you pick), look
-at the extracted rules, and tell me which are real conventions and which are
-noise. Harsh verdicts are the useful ones. Open an issue, or email me at
-hello@difflore.dev.
-
-## Development
-
-```bash
-cargo fmt --all --check
-cargo check -p difflore-cli
-cargo test -p difflore-cli
-```
-
-Issues and PRs are welcome. Do not include secrets, private PR text, or private
-code in examples.
-
-For suspected vulnerabilities, please follow [SECURITY.md](SECURITY.md) instead
-of opening a public issue.
+Comments are cached in `~/.cache/difflore` for a day.
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE).
+Apache-2.0

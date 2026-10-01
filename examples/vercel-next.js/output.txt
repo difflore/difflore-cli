@@ -1,0 +1,26 @@
+
+difflore  vercel/next.js
+196 maintainer review comments across 58 pull requests
+
+4 unwritten rules
+
+  1  Use test-harness helpers like `next.fetch`/`next.distDir`, not raw fetch, spawns, or paths
+     E2E harness already provides server fetch, dist dir, next-bin utilities
+     seen in 2 PRs · test/**
+     ↳ https://github.com/vercel/next.js/pull/99191#discussion_r4132903933
+
+  2  Exercise features in both `next dev` and `next build`/`next start` e2e tests
+     E2E cases must cover dev and production modes, not one
+     seen in 2 PRs · test/**
+     ↳ https://github.com/vercel/next.js/pull/97956#discussion_r4102960987
+
+  3  Prefer keyed lookups over `#[turbo_tasks::function]` for per-chunk-group accessors
+     turbo_tasks functions create a task per chunk group
+     seen in 2 PRs · turbopack/crates/turbopack-core/src/module_graph/**
+     ↳ https://github.com/vercel/next.js/pull/98733#discussion_r4147017809
+
+  4  Gate prerender render-stage access via `finalStage`, not stored stage fields
+     Past bugs let stages resolve in shell prerenders lacking stages
+     seen in 2 PRs · packages/next/src/server/**
+     ↳ https://github.com/vercel/next.js/pull/98034#discussion_r4147087738
+

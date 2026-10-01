@@ -1,0 +1,66 @@
+
+difflore  rust-lang/cargo
+300 maintainer review comments across 142 pull requests
+
+12 unwritten rules
+
+  1  Commit the failing test with its buggy snapshot first, then the fix.
+     The fix commit's snapshot diff then demonstrates the behaviour change.
+     seen in 19 PRs
+     ↳ https://github.com/rust-lang/cargo/pull/17545#discussion_r4154892995
+
+  2  Split refactorings and unrelated changes into separate atomic commits.
+     Cargo merges preserve individual commits; reviewers request C-SPLIT extractions.
+     seen in 6 PRs
+     ↳ https://github.com/rust-lang/cargo/pull/17296#discussion_r3695853827
+
+  3  Use snapbox wildcards like `[..]` for volatile or irrelevant snapshot output.
+     Exact expectations break when rustc flags or values change.
+     seen in 3 PRs · tests/**
+     ↳ https://github.com/rust-lang/cargo/pull/17518#discussion_r4111791774
+
+  4  Check git CLI flags against Cargo's minimum supported Git version before use.
+     Newer flags silently raise MSGV and break older distro Gits.
+     seen in 3 PRs · src/sources/git/**
+     ↳ https://github.com/rust-lang/cargo/pull/17422#discussion_r3906543386
+
+  5  Format book callouts as mdBook admonitions like `> [!NOTE]` or `> [!WARNING]`.
+     The book renders mdBook alert syntax instead of plain 'Note:' paragraphs.
+     seen in 2 PRs · doc/book/**
+     ↳ https://github.com/rust-lang/cargo/pull/17384#discussion_r3834957328
+
+  6  Disclose LLM involvement; AI-authored PRs need pre-arranged reviewers and human-written communication.
+     Cargo adopted rust-lang/rust's LLM policy with Cargo-specific interpretations.
+     seen in 2 PRs
+     ↳ https://github.com/rust-lang/cargo/pull/17517#discussion_r4115585962
+
+  7  Keep per-session state on `GlobalContext`, not global statics or threaded parameters.
+     In-process tests share one process; globals leak across test contexts.
+     seen in 2 PRs · src/**
+     ↳ https://github.com/rust-lang/cargo/pull/17513#discussion_r4099695231
+
+  8  Use `with_stderr_data` snapshot assertions instead of `*_contains` matching.
+     cargo-test-support prefers redacted snapshots over substring assertions.
+     seen in 2 PRs · tests/**
+     ↳ https://github.com/rust-lang/cargo/pull/17220#discussion_r3590498155
+
+  9  Prefer `IndexMap`/`IndexSet` over `HashMap`/`HashSet`.
+     clippy.toml's disallowed_methods enforces deterministic iteration order.
+     seen in 2 PRs · **/*.rs
+     ↳ https://github.com/rust-lang/cargo/pull/17180#discussion_r3526335161
+
+ 10  Write `type(scope): summary` commits with lowercase Cargo-subcommand scopes like `fix(run)`.
+     Cargo convention scopes types to the uncapitalized subcommand name.
+     seen in 2 PRs
+     ↳ https://github.com/rust-lang/cargo/pull/17513#discussion_r4098540700
+
+ 11  Document unstable features in unstable.md; stable docs copy it at stabilization.
+     Stable documentation is ported verbatim from unstable.md.
+     seen in 2 PRs · doc/book/**
+     ↳ https://github.com/rust-lang/cargo/pull/17517#discussion_r4107919198
+
+ 12  Mirror config option changes in config.md and environment-variables.md's config table.
+     The env-var page duplicates config keys and gets forgotten.
+     seen in 2 PRs · doc/book/src/reference/**
+     ↳ https://github.com/rust-lang/cargo/pull/17329#discussion_r3928079597
+

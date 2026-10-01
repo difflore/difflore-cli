@@ -1,30 +1,14 @@
 [workspace]
 members = ["cargo:."]
 
-# Config for 'dist'
 [dist]
-# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.32.0"
-# Only the CLI crate ships user-facing binaries.
-packages = ["difflore-cli"]
-# CI backends to support
 ci = "github"
-# The installers to generate for each app
-installers = ["shell", "powershell", "msi"]
-# Target platforms to build apps for (Rust target-triple syntax)
+installers = ["shell", "powershell", "npm"]
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
-# Path that installers should place binaries in
-install-path = "~/.difflore/bin"
-# Where to host releases
+install-path = "CARGO_HOME"
 hosting = "github"
-# Run release checks before release artifacts are built or published.
 plan-jobs = ["./release-preflight"]
-# Whether to install an updater program
-install-updater = true
-# Keep the generated workflow check from rejecting the intentionally customized
-# GitHub Release notes install section.
-allow-dirty = ["ci"]
-
-[dist.dependencies.apt]
-libdbus-1-dev = "*"
-pkg-config = "*"
+install-updater = false
+npm-package = "difflore"
+publish-jobs = ["npm"]
