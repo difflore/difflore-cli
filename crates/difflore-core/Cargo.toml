@@ -22,7 +22,7 @@ sqlx = { version = "0.8", default-features = false, features = [
   "migrate",
   "macros",
 ] }
-dirs = "6"
+dirs = "7"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = [
   "clock",
