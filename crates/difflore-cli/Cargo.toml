@@ -73,7 +73,7 @@ globset = { version = "0.4", default-features = false }
 interprocess = { version = "2", features = ["tokio"] }
 colored = "3"
 which = "8"
-gate4agent = "0.2"
+gate4agent = "0.4"
 dirs = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 anyhow = "1"
